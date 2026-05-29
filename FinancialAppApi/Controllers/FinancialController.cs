@@ -313,23 +313,6 @@ public class FinancialController : ControllerBase
             }
         }
 
-        // Target allocations and budgets (using setting values)
-        var targetEssentials = setting.MonthlyIncome * setting.EssentialsAlloc;
-        var targetGrowth = setting.MonthlyIncome * setting.GrowthAlloc;
-        var targetStability = setting.MonthlyIncome * setting.StabilityAlloc;
-        var targetRewards = setting.MonthlyIncome * setting.RewardsAlloc;
-
-        var categories = new[]
-        {
-            new { name = "Essentials", allocation = setting.EssentialsAlloc, target = targetEssentials, budget = selectedBudgetEssentials, netChange = selectedNetEssentials, remaining = selectedRemEssentials },
-            new { name = "Growth", allocation = setting.GrowthAlloc, target = targetGrowth, budget = selectedBudgetGrowth, netChange = selectedNetGrowth, remaining = selectedRemGrowth },
-            new { name = "Stability", allocation = setting.StabilityAlloc, target = targetStability, budget = selectedBudgetStability, netChange = selectedRemStability, remaining = selectedRemStability },
-            new { name = "Rewards", allocation = setting.RewardsAlloc, target = targetRewards, budget = selectedBudgetRewards, netChange = selectedNetRewards, remaining = selectedRemRewards }
-        };
-
-        // Monthly Stats calculations
-        var totalBalance = selectedRemEssentials + selectedRemStability + selectedRemRewards;
-
         // Active cycle range and transactions
         var activeRange = GetCycleRange(year, activeMonthIndex, cycleDay);
         var activeCycleTxs = allTransactions.Where(t =>
@@ -340,6 +323,27 @@ public class FinancialController : ControllerBase
             }
             return false;
         }).ToList();
+
+        // Target allocations and budgets (using actual cycle income)
+        var selectedCycleIncome = activeCycleTxs
+            .Where(t => t.LedgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase) || string.Equals(t.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
+            .Sum(t => t.Amount);
+
+        var targetEssentials = selectedCycleIncome * setting.EssentialsAlloc;
+        var targetGrowth = selectedCycleIncome * setting.GrowthAlloc;
+        var targetStability = selectedCycleIncome * setting.StabilityAlloc;
+        var targetRewards = selectedCycleIncome * setting.RewardsAlloc;
+
+        var categories = new[]
+        {
+            new { name = "Essentials", allocation = setting.EssentialsAlloc, target = targetEssentials, budget = selectedBudgetEssentials, netChange = selectedNetEssentials, remaining = selectedRemEssentials },
+            new { name = "Growth", allocation = setting.GrowthAlloc, target = targetGrowth, budget = selectedBudgetGrowth, netChange = selectedNetGrowth, remaining = selectedRemGrowth },
+            new { name = "Stability", allocation = setting.StabilityAlloc, target = targetStability, budget = selectedBudgetStability, netChange = selectedNetStability, remaining = selectedRemStability },
+            new { name = "Rewards", allocation = setting.RewardsAlloc, target = targetRewards, budget = selectedBudgetRewards, netChange = selectedNetRewards, remaining = selectedRemRewards }
+        };
+
+        // Monthly Stats calculations
+        var totalBalance = selectedRemEssentials + selectedRemStability + selectedRemRewards;
 
         var monthlyInflow = activeCycleTxs.Where(t => t.Amount > 0).Sum(t => t.Amount);
 
@@ -378,17 +382,60 @@ public class FinancialController : ControllerBase
             })
             .ToList();
 
-        var selectedMonthRecurring = activeCycleTxs
-            .Where(t => t.Id.StartsWith("rec-"))
-            .Select(t => new
+        // Calculate all active recurring payments (subscriptions) for this cycle, checking if they are paid
+        var activeRecurringList = new List<object>();
+        foreach (var rp in allRecurring)
+        {
+            if (!rp.Active) continue;
+            if (!DateTime.TryParse(rp.StartDate, out var rpStartDate)) continue;
+            DateTime? rpEndDate = null;
+            if (!string.IsNullOrEmpty(rp.EndDate) && DateTime.TryParse(rp.EndDate, out var parsedEndDate))
             {
-                id = t.Id,
-                name = t.Description,
-                amount = Math.Abs(t.Amount), // positive on UI
-                category = t.Category,
-                ledgerCategory = t.LedgerCategory,
-                dueDate = t.Date
-            })
+                rpEndDate = parsedEndDate;
+            }
+
+            DateTime billingDate;
+            if (cycleDay == 1)
+            {
+                billingDate = new DateTime(activeRange.start.Year, activeRange.start.Month, Math.Min(rp.DueDate, DateTime.DaysInMonth(activeRange.start.Year, activeRange.start.Month)));
+            }
+            else
+            {
+                if (rp.DueDate >= cycleDay)
+                {
+                    billingDate = new DateTime(activeRange.start.Year, activeRange.start.Month, Math.Min(rp.DueDate, DateTime.DaysInMonth(activeRange.start.Year, activeRange.start.Month)));
+                }
+                else
+                {
+                    billingDate = new DateTime(activeRange.end.Year, activeRange.end.Month, Math.Min(rp.DueDate, DateTime.DaysInMonth(activeRange.end.Year, activeRange.end.Month)));
+                }
+            }
+
+            if (billingDate >= activeRange.start && billingDate <= activeRange.end && billingDate >= rpStartDate && (rpEndDate == null || billingDate <= rpEndDate.Value))
+            {
+                var instanceId = $"{rp.Id}-{activeYear}-{activeMonthIndex}";
+                var paidTx = allTransactions.FirstOrDefault(t => t.Id == instanceId);
+                var isPaid = paidTx != null;
+
+                activeRecurringList.Add(new
+                {
+                    id = instanceId,
+                    recurringPaymentId = rp.Id,
+                    name = rp.Name,
+                    amount = Math.Abs(rp.Amount), // positive on UI
+                    category = rp.Category,
+                    ledgerCategory = rp.LedgerCategory,
+                    dueDate = billingDate.ToString("yyyy-MM-dd"),
+                    isPaid = isPaid,
+                    status = isPaid ? "Paid" : "Pending",
+                    paidDate = isPaid ? paidTx.Date : null
+                });
+            }
+        }
+
+        var selectedMonthRecurring = activeRecurringList
+            .OrderBy(r => ((dynamic)r).status == "Pending" ? 0 : 1)
+            .ThenBy(r => ((dynamic)r).dueDate)
             .ToList();
 
         var (pendingNotifications, dismissedNotifications) = await GetSubscriptionAlertsAsync(_context);
@@ -469,6 +516,15 @@ public class FinancialController : ControllerBase
             ? trendPointsList.GetRange(trendPointsList.Count - 3, 3)
             : trendPointsList.ToList();
 
+        var availableYears = allTransactions
+            .Select(t => DateTime.TryParse(t.Date, out var d) ? d.Year : (int?)null)
+            .Where(y => y.HasValue)
+            .Select(y => y!.Value)
+            .Append(DateTime.Now.Year)
+            .Distinct()
+            .OrderBy(y => y)
+            .ToList();
+
         return Ok(new
         {
             setting = new
@@ -488,7 +544,7 @@ public class FinancialController : ControllerBase
             stats = new
             {
                 totalBalance,
-                monthlyIncome = setting.MonthlyIncome,
+                monthlyIncome = selectedCycleIncome,
                 monthlyInflow,
                 monthlyExpenses = monthlyOutflow,
                 activeRecurringTotal,
@@ -506,7 +562,8 @@ public class FinancialController : ControllerBase
             monthlyCategoryBreakdown,
             last3CategoryBreakdown,
             last6CategoryBreakdown,
-            yearlyCategoryBreakdown
+            yearlyCategoryBreakdown,
+            availableYears
         });
     }
 
@@ -569,6 +626,24 @@ public class FinancialController : ControllerBase
                 else if (categoryName.Equals("Rewards", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[3], out pct);
 
                 return t.Amount * (pct / 100m);
+            }
+        }
+        if (!string.IsNullOrEmpty(t.LedgerCategory) && t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = t.LedgerCategory.Substring("Transfer:".Length).Split(new[] { "->" }, System.StringSplitOptions.None);
+            if (parts.Length == 2)
+            {
+                var source = parts[0].Trim();
+                var target = parts[1].Trim();
+
+                if (string.Equals(categoryName, source, StringComparison.OrdinalIgnoreCase))
+                {
+                    return -Math.Abs(t.Amount);
+                }
+                if (string.Equals(categoryName, target, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Math.Abs(t.Amount);
+                }
             }
         }
         return 0;
