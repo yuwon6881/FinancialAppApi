@@ -30,4 +30,7 @@ public class FinancialSetting
 
     [Required]
     public int CycleDay { get; set; } = 28; // Day of the month representing the cycle start (e.g. 28th)
+
+    // New property for dark theme preference
+    public bool DarkMode { get; set; } = false;
 }

@@ -619,7 +619,24 @@ public class FinancialController : ControllerBase
         setting.StabilityAlloc = updateDto.StabilityAlloc;
         setting.RewardsAlloc = updateDto.RewardsAlloc;
         setting.CycleDay = updateDto.CycleDay;
+        setting.DarkMode = updateDto.DarkMode;
 
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // PUT: api/financial/dark-mode
+    [HttpPut("dark-mode")]
+    public async Task<IActionResult> UpdateDarkMode([FromBody] UpdateDarkModeDto dto)
+    {
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+        if (setting == null)
+        {
+            setting = new FinancialSetting();
+            _context.FinancialSettings.Add(setting);
+        }
+
+        setting.DarkMode = dto.DarkMode;
         await _context.SaveChangesAsync();
         return NoContent();
     }
@@ -692,4 +709,11 @@ public class UpdateSettingsDto
     public decimal StabilityAlloc { get; set; }
     public decimal RewardsAlloc { get; set; }
     public int CycleDay { get; set; }
+    // New property for dark theme preference
+    public bool DarkMode { get; set; } = false;
+}
+
+public class UpdateDarkModeDto
+{
+    public bool DarkMode { get; set; }
 }

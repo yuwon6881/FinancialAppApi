@@ -37,6 +37,17 @@ public static class DbInitializer
             // Ignore if column already dropped or not supported
         }
 
+        // Add DarkMode column if it does not yet exist
+        try
+        {
+            context.Database.ExecuteSqlRaw("ALTER TABLE [FinancialSettings] ADD COLUMN [DarkMode] INTEGER NOT NULL DEFAULT 0;");
+        }
+        catch (Exception)
+        {
+            // Ignore if column already exists
+        }
+
+
         // 1. Seed Transaction Categories if empty
         if (!context.TransactionCategories.Any())
         {
