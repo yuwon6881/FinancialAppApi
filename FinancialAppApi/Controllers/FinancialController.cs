@@ -370,6 +370,7 @@ public class FinancialController : ControllerBase
         var recentTransactions = activeCycleTxs
             .Where(t => !t.Id.StartsWith("rec-"))
             .OrderByDescending(t => t.Date)
+            .ThenByDescending(t => t.Id)
             .Take(5)
             .Select(t => new
             {

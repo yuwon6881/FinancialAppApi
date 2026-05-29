@@ -29,6 +29,7 @@ public class TransactionsController : ControllerBase
         {
             return await _context.Transactions
                 .OrderByDescending(t => t.Date)
+                .ThenByDescending(t => t.Id)
                 .ToListAsync();
         }
 
@@ -52,6 +53,7 @@ public class TransactionsController : ControllerBase
             return false;
         })
         .OrderByDescending(t => t.Date)
+        .ThenByDescending(t => t.Id)
         .ToList();
     }
 
