@@ -15,5 +15,4 @@ public class AppDbContext : DbContext
     public DbSet<TransactionCategory> TransactionCategories => Set<TransactionCategory>();
     public DbSet<AppUser> AppUsers => Set<AppUser>();
     public DbSet<UserSession> UserSessions => Set<UserSession>();
-    public DbSet<RecurringPaymentDismissal> RecurringPaymentDismissals => Set<RecurringPaymentDismissal>();
 }

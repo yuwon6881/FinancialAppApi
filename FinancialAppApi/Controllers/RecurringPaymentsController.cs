@@ -128,48 +128,6 @@ public class RecurringPaymentsController : ControllerBase
         return NoContent();
     }
 
-    public class DismissDto
-    {
-        public string Id { get; set; } = string.Empty; // Format: "{rpId}-{year}-{month}"
-    }
-
-    // POST: api/recurring-payments/dismiss
-    [HttpPost("dismiss")]
-    public async Task<IActionResult> DismissRecurringPayment([FromBody] DismissDto dto)
-    {
-        if (string.IsNullOrEmpty(dto.Id)) return BadRequest("Invalid ID");
-        
-        var parts = dto.Id.Split('-');
-        if (parts.Length < 3) return BadRequest("Invalid ID format");
-        
-        var yearStr = parts[parts.Length - 2];
-        var monthStr = parts[parts.Length - 1];
-        
-        if (!int.TryParse(yearStr, out var year) || !int.TryParse(monthStr, out var month))
-        {
-            return BadRequest("Invalid year/month in ID");
-        }
-        
-        var rpId = string.Join("-", parts.Take(parts.Length - 2));
-
-        var exists = await _context.RecurringPaymentDismissals.AnyAsync(d => d.Id == dto.Id);
-        if (!exists)
-        {
-            var dismissal = new RecurringPaymentDismissal
-            {
-                Id = dto.Id,
-                RecurringPaymentId = rpId,
-                Year = year,
-                Month = month,
-                DismissedAt = DateTime.UtcNow.ToString("yyyy-MM-dd")
-            };
-            _context.RecurringPaymentDismissals.Add(dismissal);
-            await _context.SaveChangesAsync();
-        }
-
-        return Ok();
-    }
-
     private static RecurringPaymentDto MapToDto(RecurringPayment rp)
     {
         return new RecurringPaymentDto

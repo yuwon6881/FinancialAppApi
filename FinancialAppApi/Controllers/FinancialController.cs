@@ -20,10 +20,10 @@ public class FinancialController : ControllerBase
         _context = context;
     }
 
-    public static async Task<(List<object> Pending, List<object> Dismissed)> GetSubscriptionAlertsAsync(AppDbContext context)
+    public static async Task<List<object>> GetSubscriptionAlertsAsync(AppDbContext context)
     {
         var setting = await context.FinancialSettings.FirstOrDefaultAsync();
-        if (setting == null) return (new List<object>(), new List<object>());
+        if (setting == null) return new List<object>();
         var cycleDay = setting.CycleDay;
 
         var activeRecurring = await context.RecurringPayments.Where(r => r.Active).ToListAsync();
@@ -32,7 +32,6 @@ public class FinancialController : ControllerBase
         var todayMonthIdx = Array.IndexOf(Months, todayMonth) + 1;
 
         var pending = new List<object>();
-        var dismissed = new List<object>();
 
         foreach (var rp in activeRecurring)
         {
@@ -96,7 +95,7 @@ public class FinancialController : ControllerBase
             }
         }
 
-        return (pending, dismissed);
+        return pending;
     }
 
     private static string GetDayWithSuffix(int day)
@@ -438,7 +437,7 @@ public class FinancialController : ControllerBase
             .ThenBy(r => ((dynamic)r).dueDate)
             .ToList();
 
-        var (pendingNotifications, dismissedNotifications) = await GetSubscriptionAlertsAsync(_context);
+        var pendingNotifications = await GetSubscriptionAlertsAsync(_context);
 
         var monthlyCategoryBreakdown = activeCycleTxs
             .Where(t => t.Amount < 0)
@@ -578,7 +577,7 @@ public class FinancialController : ControllerBase
                 balance = ObfuscationHelper.Obfuscate((decimal)((dynamic)tp).balance)
             }).ToList(),
             pendingNotifications,
-            dismissedNotifications,
+            dismissedNotifications = new List<object>(),
             monthlyCategoryBreakdown = monthlyCategoryBreakdown.Select(cb => new
             {
                 category = cb.category,

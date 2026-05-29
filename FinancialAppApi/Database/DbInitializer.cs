@@ -63,6 +63,23 @@ public static class DbInitializer
             // Ignore if column already exists
         }
 
+        // Clean up: drop the unused RecurringPaymentDismissals table
+        try
+        {
+            if (isPostgres)
+            {
+                context.Database.ExecuteSqlRaw("DROP TABLE IF EXISTS \"RecurringPaymentDismissals\";");
+            }
+            else
+            {
+                context.Database.ExecuteSqlRaw("DROP TABLE IF EXISTS [RecurringPaymentDismissals];");
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore
+        }
+
 
         // 1. Seed Transaction Categories if empty
         if (!context.TransactionCategories.Any())
