@@ -63,6 +63,23 @@ public static class DbInitializer
             // Ignore if column already exists
         }
 
+        // Add Currency column if it does not yet exist
+        try
+        {
+            if (isPostgres)
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"Currency\" text NOT NULL DEFAULT 'USD';");
+            }
+            else
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE [FinancialSettings] ADD COLUMN [Currency] TEXT NOT NULL DEFAULT 'USD';");
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore if column already exists
+        }
+
         // Clean up: drop the unused RecurringPaymentDismissals table
         try
         {

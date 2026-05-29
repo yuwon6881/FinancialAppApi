@@ -33,4 +33,7 @@ public class FinancialSetting
 
     // New property for dark theme preference
     public bool DarkMode { get; set; } = false;
+
+    [Required]
+    public string Currency { get; set; } = "USD";
 }

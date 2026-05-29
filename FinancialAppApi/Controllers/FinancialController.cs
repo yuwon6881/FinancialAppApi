@@ -536,7 +536,8 @@ public class FinancialController : ControllerBase
                 stabilityAlloc = setting.StabilityAlloc,
                 rewardsAlloc = setting.RewardsAlloc,
                 cycleDay = setting.CycleDay,
-                darkMode = setting.DarkMode
+                darkMode = setting.DarkMode,
+                currency = setting.Currency
             },
             cycleLabel = selectedCycleLabel,
             categories,
@@ -620,6 +621,7 @@ public class FinancialController : ControllerBase
         setting.RewardsAlloc = updateDto.RewardsAlloc;
         setting.CycleDay = updateDto.CycleDay;
         setting.DarkMode = updateDto.DarkMode;
+        setting.Currency = updateDto.Currency;
 
         await _context.SaveChangesAsync();
         return NoContent();
@@ -711,6 +713,7 @@ public class UpdateSettingsDto
     public int CycleDay { get; set; }
     // New property for dark theme preference
     public bool DarkMode { get; set; } = false;
+    public string Currency { get; set; } = "USD";
 }
 
 public class UpdateDarkModeDto
