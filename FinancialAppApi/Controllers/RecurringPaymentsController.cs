@@ -56,6 +56,51 @@ public class RecurringPaymentsController : ControllerBase
         return Ok(payment);
     }
 
+    // PUT: api/recurring-payments/{id}
+    [HttpPut("{id}")]
+    public async Task<IActionResult> PutRecurringPayment(string id, RecurringPayment payment)
+    {
+        if (id != payment.Id)
+        {
+            return BadRequest("ID mismatch");
+        }
+
+        var existing = await _context.RecurringPayments.FindAsync(id);
+        if (existing == null)
+        {
+            return NotFound();
+        }
+
+        existing.Name = payment.Name;
+        existing.Amount = payment.Amount;
+        existing.Frequency = payment.Frequency;
+        existing.Category = payment.Category;
+        existing.LedgerCategory = payment.LedgerCategory;
+        existing.NextDueDate = payment.NextDueDate;
+        existing.DueDate = payment.DueDate;
+        existing.StartDate = payment.StartDate;
+        existing.EndDate = payment.EndDate;
+        existing.Active = payment.Active;
+
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            if (!await _context.RecurringPayments.AnyAsync(e => e.Id == id))
+            {
+                return NotFound();
+            }
+            else
+            {
+                throw;
+            }
+        }
+
+        return Ok(existing);
+    }
+
     // DELETE: api/recurring-payments/{id}
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteRecurringPayment(string id)
