@@ -64,6 +64,15 @@ public class TransactionsController : ControllerBase
             transaction.Id = $"tx-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
         }
 
+        if (string.Equals(transaction.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
+        {
+            var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+            if (setting != null)
+            {
+                transaction.LedgerCategory = $"IncomeSplit:{setting.EssentialsAlloc * 100:0.##},{setting.GrowthAlloc * 100:0.##},{setting.StabilityAlloc * 100:0.##},{setting.RewardsAlloc * 100:0.##}";
+            }
+        }
+
         _context.Transactions.Add(transaction);
         await _context.SaveChangesAsync();
 

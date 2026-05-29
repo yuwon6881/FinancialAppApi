@@ -274,10 +274,10 @@ public class FinancialController : ControllerBase
                 }).ToList();
 
                 // Calculate category Net Changes in this cycle using LedgerCategory
-                var netEssentials = cycleTxs.Where(t => string.Equals(t.LedgerCategory, "Essentials", StringComparison.OrdinalIgnoreCase)).Sum(t => t.Amount);
-                var netGrowth = cycleTxs.Where(t => string.Equals(t.LedgerCategory, "Growth", StringComparison.OrdinalIgnoreCase)).Sum(t => t.Amount);
-                var netStability = cycleTxs.Where(t => string.Equals(t.LedgerCategory, "Stability", StringComparison.OrdinalIgnoreCase)).Sum(t => t.Amount);
-                var netRewards = cycleTxs.Where(t => string.Equals(t.LedgerCategory, "Rewards", StringComparison.OrdinalIgnoreCase)).Sum(t => t.Amount);
+                var netEssentials = cycleTxs.Sum(t => GetCategoryAmount(t, "Essentials"));
+                var netGrowth = cycleTxs.Sum(t => GetCategoryAmount(t, "Growth"));
+                var netStability = cycleTxs.Sum(t => GetCategoryAmount(t, "Stability"));
+                var netRewards = cycleTxs.Sum(t => GetCategoryAmount(t, "Rewards"));
 
                 if (y == activeYear && m == activeMonthIndex)
                 {
@@ -546,5 +546,28 @@ public class FinancialController : ControllerBase
 
         await _context.SaveChangesAsync();
         return NoContent();
+    }
+
+    private static decimal GetCategoryAmount(Transaction t, string categoryName)
+    {
+        if (string.Equals(t.LedgerCategory, categoryName, StringComparison.OrdinalIgnoreCase))
+        {
+            return t.Amount;
+        }
+        if (!string.IsNullOrEmpty(t.LedgerCategory) && t.LedgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = t.LedgerCategory.Substring("IncomeSplit:".Length).Split(',');
+            if (parts.Length == 4)
+            {
+                decimal pct = 0;
+                if (categoryName.Equals("Essentials", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[0], out pct);
+                else if (categoryName.Equals("Growth", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[1], out pct);
+                else if (categoryName.Equals("Stability", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[2], out pct);
+                else if (categoryName.Equals("Rewards", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[3], out pct);
+
+                return t.Amount * (pct / 100m);
+            }
+        }
+        return 0;
     }
 }
