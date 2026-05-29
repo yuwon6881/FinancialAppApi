@@ -536,7 +536,8 @@ public class FinancialController : ControllerBase
                 growthAlloc = setting.GrowthAlloc,
                 stabilityAlloc = setting.StabilityAlloc,
                 rewardsAlloc = setting.RewardsAlloc,
-                cycleDay = setting.CycleDay
+                cycleDay = setting.CycleDay,
+                darkMode = setting.DarkMode
             },
             cycleLabel = selectedCycleLabel,
             categories,
