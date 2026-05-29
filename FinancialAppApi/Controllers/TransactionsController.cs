@@ -20,17 +20,18 @@ public class TransactionsController : ControllerBase
 
     // GET: api/transactions
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<Transaction>>> GetTransactions(
+    public async Task<ActionResult<IEnumerable<TransactionDto>>> GetTransactions(
         [FromQuery(Name = "month")] string? queryMonth = null, 
         [FromQuery(Name = "year")] int? queryYear = null)
     {
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
         if (setting == null)
         {
-            return await _context.Transactions
+            var txs = await _context.Transactions
                 .OrderByDescending(t => t.Date)
                 .ThenByDescending(t => t.Id)
                 .ToListAsync();
+            return Ok(txs.Select(MapToDto).ToList());
         }
 
         string activeMonth = queryMonth ?? setting.SelectedMonth;
@@ -44,7 +45,7 @@ public class TransactionsController : ControllerBase
 
         var allTransactions = await _context.Transactions.ToListAsync();
 
-        return allTransactions.Where(t =>
+        var filtered = allTransactions.Where(t =>
         {
             if (DateTime.TryParse(t.Date, out var date))
             {
@@ -54,17 +55,25 @@ public class TransactionsController : ControllerBase
         })
         .OrderByDescending(t => t.Date)
         .ThenByDescending(t => t.Id)
+        .Select(MapToDto)
         .ToList();
+
+        return Ok(filtered);
     }
 
     // POST: api/transactions
     [HttpPost]
-    public async Task<ActionResult<Transaction>> PostTransaction(Transaction transaction)
+    public async Task<ActionResult<TransactionDto>> PostTransaction(TransactionDto dto)
     {
-        if (string.IsNullOrWhiteSpace(transaction.Id))
+        var transaction = new Transaction
         {
-            transaction.Id = $"tx-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
-        }
+            Id = string.IsNullOrWhiteSpace(dto.Id) ? $"tx-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}" : dto.Id,
+            Date = dto.Date,
+            Description = dto.Description,
+            Category = dto.Category,
+            LedgerCategory = dto.LedgerCategory,
+            Amount = ObfuscationHelper.Deobfuscate(dto.Amount)
+        };
 
         if (string.Equals(transaction.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
         {
@@ -78,7 +87,7 @@ public class TransactionsController : ControllerBase
         _context.Transactions.Add(transaction);
         await _context.SaveChangesAsync();
 
-        return CreatedAtAction(nameof(GetTransactions), new { id = transaction.Id }, transaction);
+        return CreatedAtAction(nameof(GetTransactions), new { id = transaction.Id }, MapToDto(transaction));
     }
 
     // DELETE: api/transactions/{id}
@@ -96,4 +105,27 @@ public class TransactionsController : ControllerBase
 
         return NoContent();
     }
+
+    private static TransactionDto MapToDto(Transaction t)
+    {
+        return new TransactionDto
+        {
+            Id = t.Id,
+            Date = t.Date,
+            Description = t.Description,
+            Category = t.Category,
+            LedgerCategory = t.LedgerCategory,
+            Amount = ObfuscationHelper.Obfuscate(t.Amount)
+        };
+    }
+}
+
+public class TransactionDto
+{
+    public string? Id { get; set; }
+    public string Date { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public string LedgerCategory { get; set; } = string.Empty;
+    public string Amount { get; set; } = string.Empty;
 }

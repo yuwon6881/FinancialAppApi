@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using FinancialAppApi.Models;
@@ -26,6 +27,16 @@ public static class DbInitializer
             context.Database.EnsureCreated();
         }
 
+        // Try to drop the MonthlyIncome column if it exists in SQLite database table
+        try
+        {
+            context.Database.ExecuteSqlRaw("ALTER TABLE [FinancialSettings] DROP COLUMN [MonthlyIncome];");
+        }
+        catch (Exception)
+        {
+            // Ignore if column already dropped or not supported
+        }
+
         // 1. Seed Transaction Categories if empty
         if (!context.TransactionCategories.Any())
         {
@@ -52,7 +63,6 @@ public static class DbInitializer
             var now = DateTime.Now;
             var settings = new FinancialSetting
             {
-                MonthlyIncome = 4000.00m,
                 TargetStabilityFund = 10000.00m,
                 SelectedMonth = now.ToString("MMM"), // e.g., "May"
                 SelectedYear = now.Year,             // e.g., 2026

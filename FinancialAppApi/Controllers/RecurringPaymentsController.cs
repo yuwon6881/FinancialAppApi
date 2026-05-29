@@ -20,24 +20,35 @@ public class RecurringPaymentsController : ControllerBase
 
     // GET: api/recurring-payments
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<RecurringPayment>>> GetRecurringPayments()
+    public async Task<ActionResult<IEnumerable<RecurringPaymentDto>>> GetRecurringPayments()
     {
-        return await _context.RecurringPayments.ToListAsync();
+        var list = await _context.RecurringPayments.ToListAsync();
+        return Ok(list.Select(MapToDto).ToList());
     }
 
     // POST: api/recurring-payments
     [HttpPost]
-    public async Task<ActionResult<RecurringPayment>> PostRecurringPayment(RecurringPayment payment)
+    public async Task<ActionResult<RecurringPaymentDto>> PostRecurringPayment(RecurringPaymentDto dto)
     {
-        if (string.IsNullOrWhiteSpace(payment.Id))
+        var payment = new RecurringPayment
         {
-            payment.Id = $"rec-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
-        }
+            Id = string.IsNullOrWhiteSpace(dto.Id) ? $"rec-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}" : dto.Id,
+            Name = dto.Name,
+            Amount = ObfuscationHelper.Deobfuscate(dto.Amount),
+            Frequency = dto.Frequency,
+            Category = dto.Category,
+            LedgerCategory = dto.LedgerCategory,
+            NextDueDate = dto.NextDueDate,
+            DueDate = dto.DueDate,
+            StartDate = dto.StartDate,
+            Active = dto.Active,
+            EndDate = dto.EndDate
+        };
 
         _context.RecurringPayments.Add(payment);
         await _context.SaveChangesAsync();
 
-        return CreatedAtAction(nameof(GetRecurringPayments), new { id = payment.Id }, payment);
+        return CreatedAtAction(nameof(GetRecurringPayments), new { id = payment.Id }, MapToDto(payment));
     }
 
     // PUT: api/recurring-payments/{id}/toggle
@@ -53,14 +64,14 @@ public class RecurringPaymentsController : ControllerBase
         payment.Active = !payment.Active;
         await _context.SaveChangesAsync();
 
-        return Ok(payment);
+        return Ok(MapToDto(payment));
     }
 
     // PUT: api/recurring-payments/{id}
     [HttpPut("{id}")]
-    public async Task<IActionResult> PutRecurringPayment(string id, RecurringPayment payment)
+    public async Task<IActionResult> PutRecurringPayment(string id, RecurringPaymentDto dto)
     {
-        if (id != payment.Id)
+        if (id != dto.Id)
         {
             return BadRequest("ID mismatch");
         }
@@ -71,16 +82,16 @@ public class RecurringPaymentsController : ControllerBase
             return NotFound();
         }
 
-        existing.Name = payment.Name;
-        existing.Amount = payment.Amount;
-        existing.Frequency = payment.Frequency;
-        existing.Category = payment.Category;
-        existing.LedgerCategory = payment.LedgerCategory;
-        existing.NextDueDate = payment.NextDueDate;
-        existing.DueDate = payment.DueDate;
-        existing.StartDate = payment.StartDate;
-        existing.EndDate = payment.EndDate;
-        existing.Active = payment.Active;
+        existing.Name = dto.Name;
+        existing.Amount = ObfuscationHelper.Deobfuscate(dto.Amount);
+        existing.Frequency = dto.Frequency;
+        existing.Category = dto.Category;
+        existing.LedgerCategory = dto.LedgerCategory;
+        existing.NextDueDate = dto.NextDueDate;
+        existing.DueDate = dto.DueDate;
+        existing.StartDate = dto.StartDate;
+        existing.EndDate = dto.EndDate;
+        existing.Active = dto.Active;
 
         try
         {
@@ -98,7 +109,7 @@ public class RecurringPaymentsController : ControllerBase
             }
         }
 
-        return Ok(existing);
+        return Ok(MapToDto(existing));
     }
 
     // DELETE: api/recurring-payments/{id}
@@ -158,4 +169,37 @@ public class RecurringPaymentsController : ControllerBase
 
         return Ok();
     }
+
+    private static RecurringPaymentDto MapToDto(RecurringPayment rp)
+    {
+        return new RecurringPaymentDto
+        {
+            Id = rp.Id,
+            Name = rp.Name,
+            Amount = ObfuscationHelper.Obfuscate(rp.Amount),
+            Frequency = rp.Frequency,
+            Category = rp.Category,
+            LedgerCategory = rp.LedgerCategory,
+            NextDueDate = rp.NextDueDate,
+            DueDate = rp.DueDate,
+            StartDate = rp.StartDate,
+            Active = rp.Active,
+            EndDate = rp.EndDate
+        };
+    }
+}
+
+public class RecurringPaymentDto
+{
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string Amount { get; set; } = string.Empty;
+    public string Frequency { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public string LedgerCategory { get; set; } = string.Empty;
+    public string NextDueDate { get; set; } = string.Empty;
+    public int DueDate { get; set; }
+    public string StartDate { get; set; } = string.Empty;
+    public bool Active { get; set; }
+    public string? EndDate { get; set; }
 }

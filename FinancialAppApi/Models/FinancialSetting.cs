@@ -8,9 +8,6 @@ public class FinancialSetting
     public int Id { get; set; }
 
     [Required]
-    public decimal MonthlyIncome { get; set; }
-
-    [Required]
     public decimal TargetStabilityFund { get; set; }
 
     [Required]

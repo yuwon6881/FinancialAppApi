@@ -80,7 +80,7 @@ public class FinancialController : ControllerBase
                                 id = instanceId,
                                 recurringPaymentId = rp.Id,
                                 name = rp.Name,
-                                amount = rp.Amount,
+                                amount = ObfuscationHelper.Obfuscate(rp.Amount),
                                 category = rp.Category,
                                 ledgerCategory = rp.LedgerCategory,
                                 billingDate = billingDate.ToString("yyyy-MM-dd"),
@@ -160,7 +160,6 @@ public class FinancialController : ControllerBase
             var now = DateTime.Now;
             setting = new FinancialSetting
             {
-                MonthlyIncome = 4000.00m,
                 TargetStabilityFund = 10000.00m,
                 SelectedMonth = now.ToString("MMM"),
                 SelectedYear = now.Year,
@@ -336,10 +335,10 @@ public class FinancialController : ControllerBase
 
         var categories = new[]
         {
-            new { name = "Essentials", allocation = setting.EssentialsAlloc, target = targetEssentials, budget = selectedBudgetEssentials, netChange = selectedNetEssentials, remaining = selectedRemEssentials },
-            new { name = "Growth", allocation = setting.GrowthAlloc, target = targetGrowth, budget = selectedBudgetGrowth, netChange = selectedNetGrowth, remaining = selectedRemGrowth },
-            new { name = "Stability", allocation = setting.StabilityAlloc, target = targetStability, budget = selectedBudgetStability, netChange = selectedNetStability, remaining = selectedRemStability },
-            new { name = "Rewards", allocation = setting.RewardsAlloc, target = targetRewards, budget = selectedBudgetRewards, netChange = selectedNetRewards, remaining = selectedRemRewards }
+            new { name = "Essentials", allocation = setting.EssentialsAlloc, target = ObfuscationHelper.Obfuscate(targetEssentials), budget = ObfuscationHelper.Obfuscate(selectedBudgetEssentials), netChange = ObfuscationHelper.Obfuscate(selectedNetEssentials), remaining = ObfuscationHelper.Obfuscate(selectedRemEssentials) },
+            new { name = "Growth", allocation = setting.GrowthAlloc, target = ObfuscationHelper.Obfuscate(targetGrowth), budget = ObfuscationHelper.Obfuscate(selectedBudgetGrowth), netChange = ObfuscationHelper.Obfuscate(selectedNetGrowth), remaining = ObfuscationHelper.Obfuscate(selectedRemGrowth) },
+            new { name = "Stability", allocation = setting.StabilityAlloc, target = ObfuscationHelper.Obfuscate(targetStability), budget = ObfuscationHelper.Obfuscate(selectedBudgetStability), netChange = ObfuscationHelper.Obfuscate(selectedNetStability), remaining = ObfuscationHelper.Obfuscate(selectedRemStability) },
+            new { name = "Rewards", allocation = setting.RewardsAlloc, target = ObfuscationHelper.Obfuscate(targetRewards), budget = ObfuscationHelper.Obfuscate(selectedBudgetRewards), netChange = ObfuscationHelper.Obfuscate(selectedNetRewards), remaining = ObfuscationHelper.Obfuscate(selectedRemRewards) }
         };
 
         // Monthly Stats calculations
@@ -423,7 +422,7 @@ public class FinancialController : ControllerBase
                     id = instanceId,
                     recurringPaymentId = rp.Id,
                     name = rp.Name,
-                    amount = Math.Abs(rp.Amount), // positive on UI
+                    amount = ObfuscationHelper.Obfuscate(Math.Abs(rp.Amount)), // positive on UI
                     category = rp.Category,
                     ledgerCategory = rp.LedgerCategory,
                     dueDate = billingDate.ToString("yyyy-MM-dd"),
@@ -530,47 +529,82 @@ public class FinancialController : ControllerBase
         {
             setting = new
             {
-                setting.MonthlyIncome,
-                setting.TargetStabilityFund,
-                setting.SelectedMonth,
-                setting.SelectedYear,
-                setting.EssentialsAlloc,
-                setting.GrowthAlloc,
-                setting.StabilityAlloc,
-                setting.RewardsAlloc,
-                setting.CycleDay
+                targetStabilityFund = ObfuscationHelper.Obfuscate(setting.TargetStabilityFund),
+                selectedMonth = setting.SelectedMonth,
+                selectedYear = setting.SelectedYear,
+                essentialsAlloc = setting.EssentialsAlloc,
+                growthAlloc = setting.GrowthAlloc,
+                stabilityAlloc = setting.StabilityAlloc,
+                rewardsAlloc = setting.RewardsAlloc,
+                cycleDay = setting.CycleDay
             },
             cycleLabel = selectedCycleLabel,
             categories,
             stats = new
             {
-                totalBalance,
-                monthlyIncome = selectedCycleIncome,
-                monthlyInflow,
-                monthlyExpenses = monthlyOutflow,
-                activeRecurringTotal,
+                totalBalance = ObfuscationHelper.Obfuscate(totalBalance),
+                monthlyIncome = ObfuscationHelper.Obfuscate(selectedCycleIncome),
+                monthlyInflow = ObfuscationHelper.Obfuscate(monthlyInflow),
+                monthlyExpenses = ObfuscationHelper.Obfuscate(monthlyOutflow),
+                activeRecurringTotal = ObfuscationHelper.Obfuscate(activeRecurringTotal),
                 growthPercentAchieved = (double)Math.Max(0, growthPercentAchieved),
                 essentialsPercentRemaining = (double)essentialsPercentRemaining,
                 stabilityPercentReached = (double)Math.Max(0, stabilityPercentReached)
             },
-            recentTransactions,
+            recentTransactions = recentTransactions.Select(t => new
+            {
+                id = t.id,
+                date = t.date,
+                description = t.description,
+                category = t.category,
+                ledgerCategory = t.ledgerCategory,
+                amount = ObfuscationHelper.Obfuscate(t.amount)
+            }).ToList(),
             activeRecurringPayments = selectedMonthRecurring,
-            trendPoints,
-            last3TrendPoints,
-            last6TrendPoints,
+            trendPoints = trendPoints.Select(tp => new
+            {
+                month = ((dynamic)tp).month,
+                balance = ObfuscationHelper.Obfuscate((decimal)((dynamic)tp).balance)
+            }).ToList(),
+            last3TrendPoints = last3TrendPoints.Select(tp => new
+            {
+                month = ((dynamic)tp).month,
+                balance = ObfuscationHelper.Obfuscate((decimal)((dynamic)tp).balance)
+            }).ToList(),
+            last6TrendPoints = last6TrendPoints.Select(tp => new
+            {
+                month = ((dynamic)tp).month,
+                balance = ObfuscationHelper.Obfuscate((decimal)((dynamic)tp).balance)
+            }).ToList(),
             pendingNotifications,
             dismissedNotifications,
-            monthlyCategoryBreakdown,
-            last3CategoryBreakdown,
-            last6CategoryBreakdown,
-            yearlyCategoryBreakdown,
+            monthlyCategoryBreakdown = monthlyCategoryBreakdown.Select(cb => new
+            {
+                category = cb.category,
+                amount = ObfuscationHelper.Obfuscate(cb.amount)
+            }).ToList(),
+            last3CategoryBreakdown = last3CategoryBreakdown.Select(cb => new
+            {
+                category = ((dynamic)cb).category,
+                amount = ObfuscationHelper.Obfuscate((decimal)((dynamic)cb).amount)
+            }).ToList(),
+            last6CategoryBreakdown = last6CategoryBreakdown.Select(cb => new
+            {
+                category = ((dynamic)cb).category,
+                amount = ObfuscationHelper.Obfuscate((decimal)((dynamic)cb).amount)
+            }).ToList(),
+            yearlyCategoryBreakdown = yearlyCategoryBreakdown.Select(cb => new
+            {
+                category = cb.category,
+                amount = ObfuscationHelper.Obfuscate(cb.amount)
+            }).ToList(),
             availableYears
         });
     }
 
     // PUT: api/financial/settings
     [HttpPut("settings")]
-    public async Task<IActionResult> UpdateSettings([FromBody] FinancialSetting updateDto)
+    public async Task<IActionResult> UpdateSettings([FromBody] UpdateSettingsDto updateDto)
     {
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
         if (setting == null)
@@ -579,8 +613,7 @@ public class FinancialController : ControllerBase
             _context.FinancialSettings.Add(setting);
         }
 
-        setting.MonthlyIncome = updateDto.MonthlyIncome;
-        setting.TargetStabilityFund = updateDto.TargetStabilityFund;
+        setting.TargetStabilityFund = ObfuscationHelper.Deobfuscate(updateDto.TargetStabilityFund);
         setting.EssentialsAlloc = updateDto.EssentialsAlloc;
         setting.GrowthAlloc = updateDto.GrowthAlloc;
         setting.StabilityAlloc = updateDto.StabilityAlloc;
@@ -649,4 +682,14 @@ public class FinancialController : ControllerBase
         }
         return 0;
     }
+}
+
+public class UpdateSettingsDto
+{
+    public string TargetStabilityFund { get; set; } = string.Empty;
+    public decimal EssentialsAlloc { get; set; }
+    public decimal GrowthAlloc { get; set; }
+    public decimal StabilityAlloc { get; set; }
+    public decimal RewardsAlloc { get; set; }
+    public int CycleDay { get; set; }
 }
