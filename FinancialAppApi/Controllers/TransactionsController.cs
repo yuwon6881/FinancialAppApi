@@ -22,8 +22,18 @@ public class TransactionsController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<IEnumerable<TransactionDto>>> GetTransactions(
         [FromQuery(Name = "month")] string? queryMonth = null, 
-        [FromQuery(Name = "year")] int? queryYear = null)
+        [FromQuery(Name = "year")] int? queryYear = null,
+        [FromQuery(Name = "all")] bool all = false)
     {
+        if (all)
+        {
+            var txs = await _context.Transactions
+                .OrderByDescending(t => t.Date)
+                .ThenByDescending(t => t.Id)
+                .ToListAsync();
+            return Ok(txs.Select(MapToDto).ToList());
+        }
+
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
         if (setting == null)
         {
