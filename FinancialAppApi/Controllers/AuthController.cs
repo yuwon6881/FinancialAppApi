@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using Microsoft.AspNetCore.Identity;
+using FinancialAppApi.Filters;
 
 namespace FinancialAppApi.Controllers;
 
@@ -118,6 +119,42 @@ public class AuthController : ControllerBase
             }
         }
         return Ok(new { message = "Logged out successfully" });
+    }
+
+    public class VerifyPasswordRequest
+    {
+        public string Password { get; set; } = string.Empty;
+    }
+
+    // POST: api/auth/verify-password
+    [AuthorizeToken]
+    [HttpPost("verify-password")]
+    public async Task<IActionResult> VerifyPassword([FromBody] VerifyPasswordRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Password))
+        {
+            return BadRequest(new { message = "Password is required" });
+        }
+
+        var username = HttpContext.Items["Username"] as string;
+        if (string.IsNullOrEmpty(username))
+        {
+            return Unauthorized(new { message = "User not found in session" });
+        }
+
+        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username.ToLower() == username.ToLower());
+        if (user == null)
+        {
+            return Unauthorized(new { message = "User not found" });
+        }
+
+        var result = _passwordHasher.VerifyHashedPassword(user.Username, user.PasswordHash, request.Password);
+        if (result == PasswordVerificationResult.Failed)
+        {
+            return Ok(new { verified = false, message = "Incorrect password" });
+        }
+
+        return Ok(new { verified = true });
     }
 }
 
