@@ -27,10 +27,19 @@ public static class DbInitializer
             context.Database.EnsureCreated();
         }
 
-        // Try to drop the MonthlyIncome column if it exists in SQLite database table
+        var isPostgres = context.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) ?? false;
+
+        // Try to drop the MonthlyIncome column if it exists in SQLite/PostgreSQL database table
         try
         {
-            context.Database.ExecuteSqlRaw("ALTER TABLE [FinancialSettings] DROP COLUMN [MonthlyIncome];");
+            if (isPostgres)
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" DROP COLUMN IF EXISTS \"MonthlyIncome\";");
+            }
+            else
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE [FinancialSettings] DROP COLUMN [MonthlyIncome];");
+            }
         }
         catch (Exception)
         {
@@ -40,7 +49,14 @@ public static class DbInitializer
         // Add DarkMode column if it does not yet exist
         try
         {
-            context.Database.ExecuteSqlRaw("ALTER TABLE [FinancialSettings] ADD COLUMN [DarkMode] INTEGER NOT NULL DEFAULT 0;");
+            if (isPostgres)
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"DarkMode\" boolean NOT NULL DEFAULT FALSE;");
+            }
+            else
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE [FinancialSettings] ADD COLUMN [DarkMode] INTEGER NOT NULL DEFAULT 0;");
+            }
         }
         catch (Exception)
         {
