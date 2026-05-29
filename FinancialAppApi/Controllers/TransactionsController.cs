@@ -57,11 +57,57 @@ public class TransactionsController : ControllerBase
 
     // POST: api/transactions
     [HttpPost]
-    public async Task<ActionResult<Transaction>> PostTransaction(Transaction transaction)
+    public async Task<ActionResult<object>> PostTransaction(Transaction transaction)
     {
         if (string.IsNullOrWhiteSpace(transaction.Id))
         {
             transaction.Id = $"tx-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        }
+
+        if (string.Equals(transaction.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
+        {
+            if (transaction.Amount <= 0)
+            {
+                return BadRequest(new { message = "Income transactions must have a positive amount." });
+            }
+
+            var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+            if (setting == null)
+            {
+                var now = DateTime.Now;
+                setting = new FinancialSetting
+                {
+                    MonthlyIncome = 4000.00m,
+                    TargetStabilityFund = 10000.00m,
+                    SelectedMonth = now.ToString("MMM"),
+                    SelectedYear = now.Year,
+                    EssentialsAlloc = 0.50m,
+                    GrowthAlloc = 0.25m,
+                    StabilityAlloc = 0.15m,
+                    RewardsAlloc = 0.10m,
+                    CycleDay = 28
+                };
+                _context.FinancialSettings.Add(setting);
+                await _context.SaveChangesAsync();
+            }
+
+            var incomeSplitReferenceId = transaction.Id;
+            var splitAllocations = FinancialController.GetIncomeSplitAllocations(transaction.Amount, setting);
+            var splitTransactions = splitAllocations.Select(split => new Transaction
+            {
+                Id = $"{incomeSplitReferenceId}-split-{split.LedgerCategory.ToLowerInvariant()}",
+                Date = transaction.Date,
+                Description = transaction.Description,
+                Category = transaction.Category,
+                LedgerCategory = split.LedgerCategory,
+                Amount = split.Amount,
+                IsSplitFromIncome = true
+            }).ToList();
+
+            _context.Transactions.AddRange(splitTransactions);
+            await _context.SaveChangesAsync();
+
+            return CreatedAtAction(nameof(GetTransactions), new { id = incomeSplitReferenceId }, splitTransactions);
         }
 
         _context.Transactions.Add(transaction);

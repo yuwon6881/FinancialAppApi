@@ -130,6 +130,22 @@ public class FinancialController : ControllerBase
         }
     }
 
+    public static IReadOnlyList<(string LedgerCategory, decimal Amount)> GetIncomeSplitAllocations(decimal amount, FinancialSetting setting)
+    {
+        var growthAmount = decimal.Round(amount * setting.GrowthAlloc, 2, MidpointRounding.AwayFromZero);
+        var stabilityAmount = decimal.Round(amount * setting.StabilityAlloc, 2, MidpointRounding.AwayFromZero);
+        var rewardsAmount = decimal.Round(amount * setting.RewardsAlloc, 2, MidpointRounding.AwayFromZero);
+        var essentialsAmount = amount - growthAmount - stabilityAmount - rewardsAmount;
+
+        return new List<(string LedgerCategory, decimal Amount)>
+        {
+            ("Essentials", essentialsAmount),
+            ("Growth", growthAmount),
+            ("Stability", stabilityAmount),
+            ("Rewards", rewardsAmount)
+        };
+    }
+
     private static (string month, int year) GetCycleMonthAndYearForDate(DateTime date, int cycleDay)
     {
         int year = date.Year;

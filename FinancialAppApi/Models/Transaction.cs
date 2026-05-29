@@ -21,4 +21,6 @@ public class Transaction
 
     [Required]
     public decimal Amount { get; set; }
+
+    public bool? IsSplitFromIncome { get; set; }
 }
