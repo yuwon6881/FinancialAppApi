@@ -20,18 +20,77 @@ public class TransactionsController : ControllerBase
 
     // GET: api/transactions
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<TransactionDto>>> GetTransactions(
+    public async Task<IActionResult> GetTransactions(
         [FromQuery(Name = "month")] string? queryMonth = null, 
         [FromQuery(Name = "year")] int? queryYear = null,
-        [FromQuery(Name = "all")] bool all = false)
+        [FromQuery(Name = "all")] bool all = false,
+        [FromQuery(Name = "page")] int page = 1,
+        [FromQuery(Name = "pageSize")] int pageSize = 10,
+        [FromQuery(Name = "search")] string? search = null,
+        [FromQuery(Name = "ledgerCategory")] string? ledgerCategory = null,
+        [FromQuery(Name = "category")] string? category = null,
+        [FromQuery(Name = "txType")] string? txType = null)
     {
         if (all)
         {
-            var txs = await _context.Transactions
+            var query = _context.Transactions.AsQueryable();
+
+            // Search: description, category, ledgerCategory
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var s = search.Trim().ToLower();
+                query = query.Where(t =>
+                    t.Description.ToLower().Contains(s) ||
+                    t.Category.ToLower().Contains(s) ||
+                    t.LedgerCategory.ToLower().Contains(s));
+            }
+
+            // Ledger category filter (comma-separated e.g. "Growth,Rewards")
+            if (!string.IsNullOrWhiteSpace(ledgerCategory))
+            {
+                var buckets = ledgerCategory.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(b => b.Trim().ToLower()).ToList();
+
+                query = query.Where(t =>
+                    buckets.Any(bucket =>
+                        bucket == "income"
+                            ? (t.LedgerCategory.ToLower() == "income" || t.LedgerCategory.ToLower().StartsWith("incomesplit:"))
+                            : (t.LedgerCategory.ToLower() == bucket || t.LedgerCategory.ToLower().Contains(bucket))));
+            }
+
+            // Subcategory filter (comma-separated)
+            if (!string.IsNullOrWhiteSpace(category))
+            {
+                var cats = category.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(c => c.Trim().ToLower()).ToList();
+                query = query.Where(t => cats.Contains(t.Category.ToLower()));
+            }
+
+            // Inflow / Outflow filter
+            if (!string.IsNullOrWhiteSpace(txType))
+            {
+                if (txType == "inflow")
+                    query = query.Where(t => t.Amount > 0);
+                else if (txType == "outflow")
+                    query = query.Where(t => t.Amount < 0);
+            }
+
+            var total = await query.CountAsync();
+
+            var txs = await query
                 .OrderByDescending(t => t.Date)
                 .ThenByDescending(t => t.Id)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
                 .ToListAsync();
-            return Ok(txs.Select(MapToDto).ToList());
+
+            return Ok(new
+            {
+                items = txs.Select(MapToDto).ToList(),
+                total,
+                page,
+                pageSize
+            });
         }
 
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
