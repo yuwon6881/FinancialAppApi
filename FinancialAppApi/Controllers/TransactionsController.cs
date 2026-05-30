@@ -85,16 +85,49 @@ public class TransactionsController : ControllerBase
             Amount = ObfuscationHelper.Deobfuscate(dto.Amount)
         };
 
+        string splitSpec = "";
         if (string.Equals(transaction.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
         {
             var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
             if (setting != null)
             {
-                transaction.LedgerCategory = $"IncomeSplit:{setting.EssentialsAlloc * 100:0.##},{setting.GrowthAlloc * 100:0.##},{setting.StabilityAlloc * 100:0.##},{setting.RewardsAlloc * 100:0.##}";
+                splitSpec = $"{setting.EssentialsAlloc * 100:0.##},{setting.GrowthAlloc * 100:0.##},{setting.StabilityAlloc * 100:0.##},{setting.RewardsAlloc * 100:0.##}";
             }
+        }
+        else if (!string.IsNullOrEmpty(transaction.LedgerCategory) && transaction.LedgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase))
+        {
+            splitSpec = transaction.LedgerCategory.Substring("IncomeSplit:".Length);
+            transaction.LedgerCategory = "Income";
         }
 
         _context.Transactions.Add(transaction);
+
+        if (!string.IsNullOrEmpty(splitSpec))
+        {
+            var parts = splitSpec.Split(',');
+            if (parts.Length == 4)
+            {
+                var categories = new[] { "Essentials", "Growth", "Stability", "Rewards" };
+                for (int i = 0; i < 4; i++)
+                {
+                    if (decimal.TryParse(parts[i], out var pct) && pct > 0)
+                    {
+                        var splitAmount = transaction.Amount * (pct / 100m);
+                        var splitTx = new Transaction
+                        {
+                            Id = $"{transaction.Id}-split-{categories[i]}",
+                            Date = transaction.Date,
+                            Description = $"[Split: {categories[i]}] {transaction.Description}",
+                            Category = "Other",
+                            LedgerCategory = $"Transfer:Income->{categories[i]}",
+                            Amount = splitAmount
+                        };
+                        _context.Transactions.Add(splitTx);
+                    }
+                }
+            }
+        }
+
         await _context.SaveChangesAsync();
 
         return CreatedAtAction(nameof(GetTransactions), new { id = transaction.Id }, MapToDto(transaction));
@@ -110,18 +143,56 @@ public class TransactionsController : ControllerBase
             return NotFound();
         }
 
+        // Delete existing splits first
+        var existingSplits = await _context.Transactions
+            .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
+            .ToListAsync();
+        _context.Transactions.RemoveRange(existingSplits);
+
         transaction.Date = dto.Date;
         transaction.Description = dto.Description;
         transaction.Category = dto.Category;
         transaction.LedgerCategory = dto.LedgerCategory;
         transaction.Amount = ObfuscationHelper.Deobfuscate(dto.Amount);
 
+        string splitSpec = "";
         if (string.Equals(transaction.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
         {
             var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
             if (setting != null)
             {
-                transaction.LedgerCategory = $"IncomeSplit:{setting.EssentialsAlloc * 100:0.##},{setting.GrowthAlloc * 100:0.##},{setting.StabilityAlloc * 100:0.##},{setting.RewardsAlloc * 100:0.##}";
+                splitSpec = $"{setting.EssentialsAlloc * 100:0.##},{setting.GrowthAlloc * 100:0.##},{setting.StabilityAlloc * 100:0.##},{setting.RewardsAlloc * 100:0.##}";
+            }
+        }
+        else if (!string.IsNullOrEmpty(transaction.LedgerCategory) && transaction.LedgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase))
+        {
+            splitSpec = transaction.LedgerCategory.Substring("IncomeSplit:".Length);
+            transaction.LedgerCategory = "Income";
+        }
+
+        if (!string.IsNullOrEmpty(splitSpec))
+        {
+            var parts = splitSpec.Split(',');
+            if (parts.Length == 4)
+            {
+                var categories = new[] { "Essentials", "Growth", "Stability", "Rewards" };
+                for (int i = 0; i < 4; i++)
+                {
+                    if (decimal.TryParse(parts[i], out var pct) && pct > 0)
+                    {
+                        var splitAmount = transaction.Amount * (pct / 100m);
+                        var splitTx = new Transaction
+                        {
+                            Id = $"{transaction.Id}-split-{categories[i]}",
+                            Date = transaction.Date,
+                            Description = $"[Split: {categories[i]}] {transaction.Description}",
+                            Category = "Other",
+                            LedgerCategory = $"Transfer:Income->{categories[i]}",
+                            Amount = splitAmount
+                        };
+                        _context.Transactions.Add(splitTx);
+                    }
+                }
             }
         }
 
@@ -138,6 +209,11 @@ public class TransactionsController : ControllerBase
         {
             return NotFound();
         }
+
+        var splits = await _context.Transactions
+            .Where(t => t.Id.StartsWith(id + "-split-"))
+            .ToListAsync();
+        _context.Transactions.RemoveRange(splits);
 
         _context.Transactions.Remove(transaction);
         await _context.SaveChangesAsync();
