@@ -3,6 +3,8 @@ using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
+using System.Globalization;
+using System.Text;
 
 namespace FinancialAppApi.Controllers;
 
@@ -33,48 +35,7 @@ public class TransactionsController : ControllerBase
     {
         if (all)
         {
-            var query = _context.Transactions.AsQueryable();
-
-            // Search: description, category, ledgerCategory
-            if (!string.IsNullOrWhiteSpace(search))
-            {
-                var s = search.Trim().ToLower();
-                query = query.Where(t =>
-                    t.Description.ToLower().Contains(s) ||
-                    t.Category.ToLower().Contains(s) ||
-                    t.LedgerCategory.ToLower().Contains(s));
-            }
-
-            // Ledger category filter (comma-separated e.g. "Growth,Rewards")
-            if (!string.IsNullOrWhiteSpace(ledgerCategory))
-            {
-                var buckets = ledgerCategory.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(b => b.Trim().ToLower()).ToList();
-
-                query = query.Where(t =>
-                    buckets.Any(bucket =>
-                        bucket == "income"
-                            ? (t.LedgerCategory.ToLower() == "income" || t.LedgerCategory.ToLower().StartsWith("incomesplit:"))
-                            : (t.LedgerCategory.ToLower() == bucket || t.LedgerCategory.ToLower().Contains(bucket))));
-            }
-
-            // Subcategory filter (comma-separated)
-            if (!string.IsNullOrWhiteSpace(category))
-            {
-                var cats = category.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(c => c.Trim().ToLower()).ToList();
-                query = query.Where(t => cats.Contains(t.Category.ToLower()));
-            }
-
-            // Inflow / Outflow filter
-            if (!string.IsNullOrWhiteSpace(txType))
-            {
-                if (txType == "inflow")
-                    query = query.Where(t => t.Amount > 0);
-                else if (txType == "outflow")
-                    query = query.Where(t => t.Amount < 0);
-            }
-
+            var query = ApplyAllFilters(_context.Transactions.AsQueryable(), search, ledgerCategory, category, txType);
             var total = await query.CountAsync();
 
             var txs = await query
@@ -128,6 +89,52 @@ public class TransactionsController : ControllerBase
         .ToList();
 
         return Ok(filtered);
+    }
+
+    // GET: api/transactions/export
+    [HttpGet("export")]
+    public async Task<IActionResult> ExportTransactions(
+        [FromQuery(Name = "search")] string? search = null,
+        [FromQuery(Name = "ledgerCategory")] string? ledgerCategory = null,
+        [FromQuery(Name = "category")] string? category = null,
+        [FromQuery(Name = "txType")] string? txType = null)
+    {
+        var query = ApplyAllFilters(_context.Transactions.AsNoTracking(), search, ledgerCategory, category, txType);
+        var rows = await query
+            .OrderByDescending(t => t.Date)
+            .ThenByDescending(t => t.Id)
+            .Select(t => new { t.Date, t.Description, t.Category, t.LedgerCategory, t.Amount })
+            .ToListAsync();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("Date,Description,Category,Ledger Category,Debit (Outflow),Credit (Inflow)");
+
+        foreach (var t in rows)
+        {
+            var isTransfer = t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase);
+            var isOutflow = t.Amount < 0;
+            var debit = isTransfer ? FormatAmount(t.Amount) : (isOutflow ? FormatAmount(Math.Abs(t.Amount)) : "");
+            var credit = isTransfer ? FormatAmount(t.Amount) : (!isOutflow ? FormatAmount(t.Amount) : "");
+
+            sb.AppendLine(string.Join(",", new[]
+            {
+                EscapeCsvField(t.Date),
+                EscapeCsvField(t.Description),
+                EscapeCsvField(t.Category),
+                EscapeCsvField(DisplayLedgerCategory(t.LedgerCategory)),
+                EscapeCsvField(debit),
+                EscapeCsvField(credit)
+            }));
+        }
+
+        var csvBytes = Encoding.UTF8.GetBytes(sb.ToString());
+        var preamble = Encoding.UTF8.GetPreamble();
+        var output = new byte[preamble.Length + csvBytes.Length];
+        Buffer.BlockCopy(preamble, 0, output, 0, preamble.Length);
+        Buffer.BlockCopy(csvBytes, 0, output, preamble.Length, csvBytes.Length);
+
+        var fileName = $"financial_ledger_{DateTime.Now:yyyy-MM-dd}.csv";
+        return File(output, "text/csv", fileName);
     }
 
     // POST: api/transactions
@@ -291,6 +298,82 @@ public class TransactionsController : ControllerBase
             LedgerCategory = t.LedgerCategory,
             Amount = ObfuscationHelper.Obfuscate(t.Amount)
         };
+    }
+
+    private static IQueryable<Transaction> ApplyAllFilters(
+        IQueryable<Transaction> query,
+        string? search,
+        string? ledgerCategory,
+        string? category,
+        string? txType)
+    {
+        // Search: description, category, ledgerCategory
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var s = search.Trim().ToLower();
+            query = query.Where(t =>
+                t.Description.ToLower().Contains(s) ||
+                t.Category.ToLower().Contains(s) ||
+                t.LedgerCategory.ToLower().Contains(s));
+        }
+
+        // Ledger category filter (comma-separated e.g. "Growth,Rewards")
+        if (!string.IsNullOrWhiteSpace(ledgerCategory))
+        {
+            var buckets = ledgerCategory.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(b => b.Trim().ToLower()).ToList();
+
+            query = query.Where(t =>
+                buckets.Any(bucket =>
+                    bucket == "income"
+                        ? (t.LedgerCategory.ToLower() == "income" || t.LedgerCategory.ToLower().StartsWith("incomesplit:"))
+                        : (t.LedgerCategory.ToLower() == bucket || t.LedgerCategory.ToLower().Contains(bucket))));
+        }
+
+        // Subcategory filter (comma-separated)
+        if (!string.IsNullOrWhiteSpace(category))
+        {
+            var cats = category.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(c => c.Trim().ToLower()).ToList();
+            query = query.Where(t => cats.Contains(t.Category.ToLower()));
+        }
+
+        // Inflow / Outflow filter
+        if (!string.IsNullOrWhiteSpace(txType))
+        {
+            if (txType == "inflow")
+                query = query.Where(t => t.Amount > 0);
+            else if (txType == "outflow")
+                query = query.Where(t => t.Amount < 0);
+        }
+
+        return query;
+    }
+
+    private static string EscapeCsvField(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        if (value.Contains(',') || value.Contains('"') || value.Contains('\n'))
+        {
+            return $"\"{value.Replace("\"", "\"\"")}\"";
+        }
+        return value;
+    }
+
+    private static string FormatAmount(decimal amount)
+    {
+        return amount.ToString("0.00", CultureInfo.InvariantCulture);
+    }
+
+    private static string DisplayLedgerCategory(string ledgerCategory)
+    {
+        if (ledgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase)) return "Income";
+        if (ledgerCategory.StartsWith("Transfer:Income->", StringComparison.OrdinalIgnoreCase))
+        {
+            return ledgerCategory.Substring("Transfer:Income->".Length);
+        }
+        if (ledgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase)) return "Transfer";
+        return ledgerCategory;
     }
 }
 
