@@ -31,11 +31,13 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "search")] string? search = null,
         [FromQuery(Name = "ledgerCategory")] string? ledgerCategory = null,
         [FromQuery(Name = "category")] string? category = null,
-        [FromQuery(Name = "txType")] string? txType = null)
+        [FromQuery(Name = "txType")] string? txType = null,
+        [FromQuery(Name = "startDate")] string? startDate = null,
+        [FromQuery(Name = "endDate")] string? endDate = null)
     {
         if (all)
         {
-            var query = ApplyAllFilters(_context.Transactions.AsQueryable(), search, ledgerCategory, category, txType);
+            var query = ApplyAllFilters(_context.Transactions.AsQueryable(), search, ledgerCategory, category, txType, startDate, endDate);
             var total = await query.CountAsync();
 
             var txs = await query
@@ -97,9 +99,11 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "search")] string? search = null,
         [FromQuery(Name = "ledgerCategory")] string? ledgerCategory = null,
         [FromQuery(Name = "category")] string? category = null,
-        [FromQuery(Name = "txType")] string? txType = null)
+        [FromQuery(Name = "txType")] string? txType = null,
+        [FromQuery(Name = "startDate")] string? startDate = null,
+        [FromQuery(Name = "endDate")] string? endDate = null)
     {
-        var query = ApplyAllFilters(_context.Transactions.AsNoTracking(), search, ledgerCategory, category, txType);
+        var query = ApplyAllFilters(_context.Transactions.AsNoTracking(), search, ledgerCategory, category, txType, startDate, endDate);
         var rows = await query
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.Id)
@@ -305,8 +309,19 @@ public class TransactionsController : ControllerBase
         string? search,
         string? ledgerCategory,
         string? category,
-        string? txType)
+        string? txType,
+        string? startDate,
+        string? endDate)
     {
+        if (!string.IsNullOrWhiteSpace(startDate))
+        {
+            query = query.Where(t => t.Date.CompareTo(startDate) >= 0);
+        }
+        if (!string.IsNullOrWhiteSpace(endDate))
+        {
+            query = query.Where(t => t.Date.CompareTo(endDate) <= 0);
+        }
+
         // Search: description, category, ledgerCategory
         if (!string.IsNullOrWhiteSpace(search))
         {
