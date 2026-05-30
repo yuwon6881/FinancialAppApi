@@ -100,6 +100,35 @@ public class TransactionsController : ControllerBase
         return CreatedAtAction(nameof(GetTransactions), new { id = transaction.Id }, MapToDto(transaction));
     }
 
+    // PUT: api/transactions/{id}
+    [HttpPut("{id}")]
+    public async Task<IActionResult> PutTransaction(string id, TransactionDto dto)
+    {
+        var transaction = await _context.Transactions.FindAsync(id);
+        if (transaction == null)
+        {
+            return NotFound();
+        }
+
+        transaction.Date = dto.Date;
+        transaction.Description = dto.Description;
+        transaction.Category = dto.Category;
+        transaction.LedgerCategory = dto.LedgerCategory;
+        transaction.Amount = ObfuscationHelper.Deobfuscate(dto.Amount);
+
+        if (string.Equals(transaction.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
+        {
+            var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+            if (setting != null)
+            {
+                transaction.LedgerCategory = $"IncomeSplit:{setting.EssentialsAlloc * 100:0.##},{setting.GrowthAlloc * 100:0.##},{setting.StabilityAlloc * 100:0.##},{setting.RewardsAlloc * 100:0.##}";
+            }
+        }
+
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
     // DELETE: api/transactions/{id}
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteTransaction(string id)

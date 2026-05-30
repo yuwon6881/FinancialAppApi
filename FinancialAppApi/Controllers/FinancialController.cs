@@ -524,6 +524,48 @@ public class FinancialController : ControllerBase
             .OrderBy(y => y)
             .ToList();
 
+        // Calculate average net additions to Rewards category for the past 3 cycles preceding the active cycle.
+        decimal totalPastRewards = 0;
+        int activeMonthsCount = 0;
+        int tempMonth = activeMonthIndex;
+        int tempYear = activeYear;
+
+        for (int i = 0; i < 3; i++)
+        {
+            tempMonth--;
+            if (tempMonth < 1)
+            {
+                tempMonth = 12;
+                tempYear--;
+            }
+
+            var range = GetCycleRange(tempYear, tempMonth, cycleDay);
+            var cycleTxsForMonth = allTransactions.Where(t =>
+            {
+                if (DateTime.TryParse(t.Date, out var date))
+                {
+                    return date >= range.start && date <= range.end;
+                }
+                return false;
+            }).ToList();
+
+            if (cycleTxsForMonth.Any())
+            {
+                var netRewards = cycleTxsForMonth.Sum(t => GetCategoryAmount(t, "Rewards"));
+                totalPastRewards += netRewards;
+                activeMonthsCount++;
+            }
+        }
+
+        decimal pastThreeMonthsRewardsAverage = 0;
+        bool hasRewardsHistory = false;
+        if (activeMonthsCount > 0)
+        {
+            pastThreeMonthsRewardsAverage = totalPastRewards / activeMonthsCount;
+            // Only count as having history if the average savings rate is positive (saving up)
+            hasRewardsHistory = pastThreeMonthsRewardsAverage > 0;
+        }
+
         return Ok(new
         {
             setting = new
@@ -550,7 +592,9 @@ public class FinancialController : ControllerBase
                 activeRecurringTotal = ObfuscationHelper.Obfuscate(activeRecurringTotal),
                 growthPercentAchieved = (double)Math.Max(0, growthPercentAchieved),
                 essentialsPercentRemaining = (double)essentialsPercentRemaining,
-                stabilityPercentReached = (double)Math.Max(0, stabilityPercentReached)
+                stabilityPercentReached = (double)Math.Max(0, stabilityPercentReached),
+                pastThreeMonthsRewardsAverage = ObfuscationHelper.Obfuscate(pastThreeMonthsRewardsAverage),
+                hasRewardsHistory = hasRewardsHistory
             },
             recentTransactions = recentTransactions.Select(t => new
             {
@@ -620,7 +664,10 @@ public class FinancialController : ControllerBase
         setting.StabilityAlloc = updateDto.StabilityAlloc;
         setting.RewardsAlloc = updateDto.RewardsAlloc;
         setting.CycleDay = updateDto.CycleDay;
-        setting.DarkMode = updateDto.DarkMode;
+        if (updateDto.DarkMode.HasValue)
+        {
+            setting.DarkMode = updateDto.DarkMode.Value;
+        }
         setting.Currency = updateDto.Currency;
 
         await _context.SaveChangesAsync();
@@ -712,7 +759,7 @@ public class UpdateSettingsDto
     public decimal RewardsAlloc { get; set; }
     public int CycleDay { get; set; }
     // New property for dark theme preference
-    public bool DarkMode { get; set; } = false;
+    public bool? DarkMode { get; set; }
     public string Currency { get; set; } = "USD";
 }
 
