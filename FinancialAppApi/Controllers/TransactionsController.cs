@@ -118,7 +118,7 @@ public class TransactionsController : ControllerBase
                             Id = $"{transaction.Id}-split-{categories[i]}",
                             Date = transaction.Date,
                             Description = $"[Split: {categories[i]}] {transaction.Description}",
-                            Category = "Other",
+                            Category = "Transfer",
                             LedgerCategory = $"Transfer:Income->{categories[i]}",
                             Amount = splitAmount
                         };
@@ -186,7 +186,7 @@ public class TransactionsController : ControllerBase
                             Id = $"{transaction.Id}-split-{categories[i]}",
                             Date = transaction.Date,
                             Description = $"[Split: {categories[i]}] {transaction.Description}",
-                            Category = "Other",
+                            Category = "Transfer",
                             LedgerCategory = $"Transfer:Income->{categories[i]}",
                             Amount = splitAmount
                         };

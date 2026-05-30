@@ -149,10 +149,16 @@ public static class DbInitializer
                 new() { Id = "cat-6", Name = "Investment" },
                 new() { Id = "cat-7", Name = "Entertainment" },
                 new() { Id = "cat-8", Name = "Transport" },
-                new() { Id = "cat-9", Name = "Other" }
+                new() { Id = "cat-9", Name = "Other" },
+                new() { Id = "cat-10", Name = "Transfer" }
             };
 
             context.TransactionCategories.AddRange(categories);
+            context.SaveChanges();
+        }
+        else if (!context.TransactionCategories.Any(c => c.Name == "Transfer"))
+        {
+            context.TransactionCategories.Add(new() { Id = "cat-10", Name = "Transfer" });
             context.SaveChanges();
         }
 
