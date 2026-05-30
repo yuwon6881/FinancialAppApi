@@ -343,7 +343,7 @@ public class FinancialController : ControllerBase
         // Monthly Stats calculations
         var totalBalance = selectedRemEssentials + selectedRemStability + selectedRemRewards;
 
-        var monthlyInflow = activeCycleTxs.Where(t => t.Amount > 0).Sum(t => t.Amount);
+        var monthlyInflow = activeCycleTxs.Where(t => t.Amount > 0 && !t.LedgerCategory.StartsWith("Transfer:")).Sum(t => t.Amount);
 
         // Outflow (Absolute sum of negative transactions in selected cycle)
         var monthlyOutflow = Math.Abs(activeCycleTxs.Where(t => t.Amount < 0).Sum(t => t.Amount));
