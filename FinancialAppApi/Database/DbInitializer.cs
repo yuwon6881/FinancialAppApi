@@ -97,6 +97,44 @@ public static class DbInitializer
             // Ignore
         }
 
+        // Create WishlistItems table if it doesn't exist
+        try
+        {
+            if (isPostgres)
+            {
+                context.Database.ExecuteSqlRaw(@"
+                    CREATE TABLE IF NOT EXISTS ""WishlistItems"" (
+                        ""Id"" SERIAL PRIMARY KEY,
+                        ""Name"" TEXT NOT NULL,
+                        ""Price"" NUMERIC NOT NULL,
+                        ""LinkUrl"" TEXT,
+                        ""Priority"" TEXT NOT NULL DEFAULT 'Medium',
+                        ""IsPurchased"" BOOLEAN NOT NULL DEFAULT FALSE,
+                        ""PurchasedAt"" TIMESTAMP,
+                        ""CreatedAt"" TIMESTAMP NOT NULL DEFAULT NOW(),
+                        ""IsActive"" BOOLEAN NOT NULL DEFAULT FALSE
+                    );");
+            }
+            else
+            {
+                context.Database.ExecuteSqlRaw(@"
+                    CREATE TABLE IF NOT EXISTS [WishlistItems] (
+                        [Id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                        [Name] TEXT NOT NULL,
+                        [Price] TEXT NOT NULL,
+                        [LinkUrl] TEXT,
+                        [Priority] TEXT NOT NULL DEFAULT 'Medium',
+                        [IsPurchased] INTEGER NOT NULL DEFAULT 0,
+                        [PurchasedAt] TEXT,
+                        [CreatedAt] TEXT NOT NULL,
+                        [IsActive] INTEGER NOT NULL DEFAULT 0
+                    );");
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore
+        }
 
         // 1. Seed Transaction Categories if empty
         if (!context.TransactionCategories.Any())
