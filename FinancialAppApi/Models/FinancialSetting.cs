@@ -35,5 +35,8 @@ public class FinancialSetting
     public bool DarkMode { get; set; } = false;
 
     [Required]
+    public bool HideSensitive { get; set; } = true;
+
+    [Required]
     public string Currency { get; set; } = "USD";
 }

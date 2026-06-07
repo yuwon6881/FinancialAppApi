@@ -166,7 +166,8 @@ public class FinancialController : ControllerBase
                 GrowthAlloc = 0.25m,
                 StabilityAlloc = 0.15m,
                 RewardsAlloc = 0.10m,
-                CycleDay = 28
+                CycleDay = 28,
+                HideSensitive = true
             };
             _context.FinancialSettings.Add(setting);
             await _context.SaveChangesAsync();
@@ -579,6 +580,7 @@ public class FinancialController : ControllerBase
                 rewardsAlloc = setting.RewardsAlloc,
                 cycleDay = setting.CycleDay,
                 darkMode = setting.DarkMode,
+                hideSensitive = setting.HideSensitive,
                 currency = setting.Currency
             },
             cycleLabel = selectedCycleLabel,
@@ -668,6 +670,10 @@ public class FinancialController : ControllerBase
         {
             setting.DarkMode = updateDto.DarkMode.Value;
         }
+        if (updateDto.HideSensitive.HasValue)
+        {
+            setting.HideSensitive = updateDto.HideSensitive.Value;
+        }
         setting.Currency = updateDto.Currency;
 
         await _context.SaveChangesAsync();
@@ -686,6 +692,22 @@ public class FinancialController : ControllerBase
         }
 
         setting.DarkMode = dto.DarkMode;
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // PUT: api/financial/hide-sensitive
+    [HttpPut("hide-sensitive")]
+    public async Task<IActionResult> UpdateHideSensitive([FromBody] UpdateHideSensitiveDto dto)
+    {
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+        if (setting == null)
+        {
+            setting = new FinancialSetting();
+            _context.FinancialSettings.Add(setting);
+        }
+
+        setting.HideSensitive = dto.HideSensitive;
         await _context.SaveChangesAsync();
         return NoContent();
     }
@@ -760,10 +782,16 @@ public class UpdateSettingsDto
     public int CycleDay { get; set; }
     // New property for dark theme preference
     public bool? DarkMode { get; set; }
+    public bool? HideSensitive { get; set; }
     public string Currency { get; set; } = "USD";
 }
 
 public class UpdateDarkModeDto
 {
     public bool DarkMode { get; set; }
+}
+
+public class UpdateHideSensitiveDto
+{
+    public bool HideSensitive { get; set; }
 }

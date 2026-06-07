@@ -80,6 +80,23 @@ public static class DbInitializer
             // Ignore if column already exists
         }
 
+        // Add HideSensitive column if it does not yet exist
+        try
+        {
+            if (isPostgres)
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"HideSensitive\" boolean NOT NULL DEFAULT TRUE;");
+            }
+            else
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE [FinancialSettings] ADD COLUMN [HideSensitive] INTEGER NOT NULL DEFAULT 1;");
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore if column already exists
+        }
+
         // Clean up: drop the unused RecurringPaymentDismissals table
         try
         {
@@ -175,7 +192,8 @@ public static class DbInitializer
                 GrowthAlloc = 0.25m,
                 StabilityAlloc = 0.15m,
                 RewardsAlloc = 0.10m,
-                CycleDay = 28
+                CycleDay = 28,
+                HideSensitive = true
             };
 
             context.FinancialSettings.Add(settings);
