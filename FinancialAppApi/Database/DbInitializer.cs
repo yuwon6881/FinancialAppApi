@@ -153,6 +153,23 @@ public static class DbInitializer
             // Ignore
         }
 
+        // Add IsLocked column to UserSessions if it does not yet exist
+        try
+        {
+            if (isPostgres)
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE \"UserSessions\" ADD COLUMN \"IsLocked\" boolean NOT NULL DEFAULT FALSE;");
+            }
+            else
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE [UserSessions] ADD COLUMN [IsLocked] INTEGER NOT NULL DEFAULT 0;");
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore if column already exists
+        }
+
         // 1. Seed Transaction Categories if empty
         if (!context.TransactionCategories.Any())
         {

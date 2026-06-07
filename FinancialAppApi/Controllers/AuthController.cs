@@ -121,6 +121,29 @@ public class AuthController : ControllerBase
         return Ok(new { message = "Logged out successfully" });
     }
 
+    // POST: api/auth/lock
+    [AuthorizeToken]
+    [HttpPost("lock")]
+    public async Task<IActionResult> LockSession()
+    {
+        if (Request.Headers.TryGetValue("Authorization", out var authHeaderValues))
+        {
+            var authHeader = authHeaderValues.ToString();
+            if (authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                var token = authHeader.Substring("Bearer ".Length).Trim();
+                var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
+                if (session != null)
+                {
+                    session.IsLocked = true;
+                    await _context.SaveChangesAsync();
+                    return Ok(new { message = "Session locked" });
+                }
+            }
+        }
+        return BadRequest(new { message = "Invalid session" });
+    }
+
     public class VerifyPasswordRequest
     {
         public string Password { get; set; } = string.Empty;
@@ -152,6 +175,22 @@ public class AuthController : ControllerBase
         if (result == PasswordVerificationResult.Failed)
         {
             return Ok(new { verified = false, message = "Incorrect password" });
+        }
+
+        // Unlock the session if verified successfully
+        if (Request.Headers.TryGetValue("Authorization", out var authHeaderValues))
+        {
+            var authHeader = authHeaderValues.ToString();
+            if (authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                var token = authHeader.Substring("Bearer ".Length).Trim();
+                var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
+                if (session != null)
+                {
+                    session.IsLocked = false;
+                    await _context.SaveChangesAsync();
+                }
+            }
         }
 
         return Ok(new { verified = true });

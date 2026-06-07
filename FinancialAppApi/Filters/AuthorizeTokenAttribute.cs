@@ -48,6 +48,17 @@ public class AuthorizeTokenAttribute : Attribute, IAsyncActionFilter
             return;
         }
 
+        if (session.IsLocked)
+        {
+            var path = context.HttpContext.Request.Path.Value ?? "";
+            if (!path.Contains("/auth/verify-password", StringComparison.OrdinalIgnoreCase) && 
+                !path.Contains("/auth/logout", StringComparison.OrdinalIgnoreCase))
+            {
+                context.Result = new ObjectResult(new { message = "Session is locked" }) { StatusCode = 423 };
+                return;
+            }
+        }
+
         // Store username in context items for reference
         context.HttpContext.Items["Username"] = session.Username;
 

@@ -16,4 +16,7 @@ public class UserSession
 
     [Required]
     public DateTime ExpiresAt { get; set; }
+
+    [Required]
+    public bool IsLocked { get; set; } = false;
 }
