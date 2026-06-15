@@ -50,6 +50,8 @@ app.UseCors("AllowFrontend");
 
 app.UseAuthorization();
 
+app.MapGet("/api/ping", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
+
 app.MapControllers();
 
 // Database initialization and seeding
