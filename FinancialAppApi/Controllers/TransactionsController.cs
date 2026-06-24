@@ -145,6 +145,15 @@ public class TransactionsController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<TransactionDto>> PostTransaction(TransactionDto dto)
     {
+        if (!string.IsNullOrWhiteSpace(dto.Id))
+        {
+            var existingTx = await _context.Transactions.FirstOrDefaultAsync(t => t.Id == dto.Id);
+            if (existingTx != null)
+            {
+                return Ok(MapToDto(existingTx));
+            }
+        }
+
         var transaction = new Transaction
         {
             Id = string.IsNullOrWhiteSpace(dto.Id) ? $"tx-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}" : dto.Id,
