@@ -354,13 +354,9 @@ public class FinancialController : ControllerBase
         // Metric ratios from Excel formulas
         var growthPercentAchieved = selectedNetGrowth / (targetGrowth > 0 ? targetGrowth : 1m);
         
-        // Essentials remaining: starts at 100% (= targetEssentials) and decreases as spend is logged (only outflows/expenses)
-        var activeOutflowsEssentials = activeCycleTxs
-            .Where(t => string.Equals(t.LedgerCategory, "Essentials", StringComparison.OrdinalIgnoreCase) && t.Amount < 0)
-            .Sum(t => t.Amount);
-
+        // Essentials remaining: calculated based on the actual remaining balance in the Essentials category
         var essentialsPercentRemaining = targetEssentials > 0 
-            ? Math.Max(0m, (targetEssentials + activeOutflowsEssentials) / targetEssentials) 
+            ? Math.Max(0m, selectedRemEssentials / targetEssentials) 
             : 0m;
             
         var stabilityPercentReached = selectedRemStability / (setting.TargetStabilityFund > 0 ? setting.TargetStabilityFund : 1m);
