@@ -79,6 +79,7 @@ public class TransactionsController : ControllerBase
 
         var filtered = allTransactions.Where(t =>
         {
+            if (string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase)) return false;
             if (DateTime.TryParse(t.Date, out var date))
             {
                 return date >= cycleStart && date <= cycleEnd;
@@ -322,6 +323,9 @@ public class TransactionsController : ControllerBase
         string? startDate,
         string? endDate)
     {
+        // Exclude Discarded transactions from ledger listings
+        query = query.Where(t => t.LedgerCategory != "Discarded");
+
         if (!string.IsNullOrWhiteSpace(startDate))
         {
             query = query.Where(t => t.Date.CompareTo(startDate) >= 0);

@@ -412,6 +412,7 @@ public class FinancialController : ControllerBase
                 var instanceId = $"{rp.Id}-{activeYear}-{activeMonthIndex}";
                 var paidTx = allTransactions.FirstOrDefault(t => t.Id == instanceId);
                 var isPaid = paidTx != null;
+                var isDiscarded = paidTx != null && string.Equals(paidTx.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase);
 
                 activeRecurringList.Add(new
                 {
@@ -423,8 +424,9 @@ public class FinancialController : ControllerBase
                     ledgerCategory = rp.LedgerCategory,
                     dueDate = billingDate.ToString("yyyy-MM-dd"),
                     isPaid = isPaid,
-                    status = isPaid ? "Paid" : "Pending",
-                    paidDate = isPaid ? paidTx.Date : null
+                    isDiscarded = isDiscarded,
+                    status = isDiscarded ? "Discarded" : (isPaid ? "Paid" : "Pending"),
+                    paidDate = isPaid && !isDiscarded ? paidTx.Date : null
                 });
             }
         }
@@ -521,7 +523,7 @@ public class FinancialController : ControllerBase
             .OrderBy(y => y)
             .ToList();
 
-        // Calculate average net additions to Rewards category for the past 3 cycles preceding the active cycle.
+        // Calculate average net additions (inflows) to Rewards category for up to 3 cycles (active cycle + 2 preceding).
         decimal totalPastRewards = 0;
         int activeMonthsCount = 0;
         int tempMonth = activeMonthIndex;
@@ -529,13 +531,6 @@ public class FinancialController : ControllerBase
 
         for (int i = 0; i < 3; i++)
         {
-            tempMonth--;
-            if (tempMonth < 1)
-            {
-                tempMonth = 12;
-                tempYear--;
-            }
-
             var range = GetCycleRange(tempYear, tempMonth, cycleDay);
             var cycleTxsForMonth = allTransactions.Where(t =>
             {
@@ -548,9 +543,21 @@ public class FinancialController : ControllerBase
 
             if (cycleTxsForMonth.Any())
             {
-                var netRewards = cycleTxsForMonth.Sum(t => GetCategoryAmount(t, "Rewards"));
-                totalPastRewards += netRewards;
+                // Only count positive allocations/inflows to the Rewards category (savings rate capacity)
+                var positiveRewards = cycleTxsForMonth
+                    .Select(t => GetCategoryAmount(t, "Rewards"))
+                    .Where(amt => amt > 0)
+                    .Sum();
+
+                totalPastRewards += positiveRewards;
                 activeMonthsCount++;
+            }
+
+            tempMonth--;
+            if (tempMonth < 1)
+            {
+                tempMonth = 12;
+                tempYear--;
             }
         }
 
@@ -559,7 +566,7 @@ public class FinancialController : ControllerBase
         if (activeMonthsCount > 0)
         {
             pastThreeMonthsRewardsAverage = totalPastRewards / activeMonthsCount;
-            // Only count as having history if the average savings rate is positive (saving up)
+            // Only count as having history if the average savings rate is positive
             hasRewardsHistory = pastThreeMonthsRewardsAverage > 0;
         }
 
