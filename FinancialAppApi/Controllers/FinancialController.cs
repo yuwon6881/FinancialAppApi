@@ -432,7 +432,7 @@ public class FinancialController : ControllerBase
         }
 
         var selectedMonthRecurring = activeRecurringList
-            .OrderBy(r => ((dynamic)r).status == "Pending" ? 0 : 1)
+            .OrderBy(r => ((dynamic)r).status == "Pending" ? 0 : ((dynamic)r).status == "Paid" ? 1 : 2)
             .ThenBy(r => ((dynamic)r).dueDate)
             .ToList();
 
