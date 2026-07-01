@@ -44,6 +44,12 @@ public class TransactionCategoriesController : ControllerBase
             return BadRequest(new { message = $"Category '{category.Name}' already exists." });
         }
 
+        if (string.Equals(category.Name, "Transfer", StringComparison.OrdinalIgnoreCase) || 
+            string.Equals(category.Name, "Adjustment", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(new { message = "Cannot create system-reserved category names." });
+        }
+
         if (string.IsNullOrWhiteSpace(category.Id))
         {
             category.Id = $"cat-{Guid.NewGuid().ToString("N")}";
@@ -63,6 +69,12 @@ public class TransactionCategoriesController : ControllerBase
         if (category == null)
         {
             return NotFound();
+        }
+
+        if (string.Equals(category.Name, "Transfer", StringComparison.OrdinalIgnoreCase) || 
+            string.Equals(category.Name, "Adjustment", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest("Cannot delete system-reserved categories.");
         }
 
         _context.TransactionCategories.Remove(category);
