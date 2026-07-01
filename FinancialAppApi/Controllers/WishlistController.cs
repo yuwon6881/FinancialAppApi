@@ -100,7 +100,6 @@ namespace FinancialAppApi.Controllers
 
             item.Name = updatedItem.Name;
             item.Price = updatedItem.Price;
-            item.LinkUrl = updatedItem.LinkUrl;
             item.Priority = updatedItem.Priority;
 
             if (updatedItem.IsActive && !item.IsActive)

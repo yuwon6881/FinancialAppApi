@@ -14,7 +14,6 @@ namespace FinancialAppApi.Models
         [Required]
         public decimal Price { get; set; }
 
-        public string? LinkUrl { get; set; }
 
         [Required]
         public string Priority { get; set; } = "Medium"; // High, Medium, Low
