@@ -39,4 +39,7 @@ public class FinancialSetting
 
     [Required]
     public string Currency { get; set; } = "USD";
+
+    [Required]
+    public bool VibrationEnabled { get; set; } = true;
 }

@@ -677,6 +677,10 @@ public class FinancialController : ControllerBase
         {
             setting.HideSensitive = updateDto.HideSensitive.Value;
         }
+        if (updateDto.VibrationEnabled.HasValue)
+        {
+            setting.VibrationEnabled = updateDto.VibrationEnabled.Value;
+        }
         setting.Currency = updateDto.Currency;
 
         await _context.SaveChangesAsync();
@@ -711,6 +715,22 @@ public class FinancialController : ControllerBase
         }
 
         setting.HideSensitive = dto.HideSensitive;
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // PUT: api/financial/vibration
+    [HttpPut("vibration")]
+    public async Task<IActionResult> UpdateVibration([FromBody] UpdateVibrationDto dto)
+    {
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+        if (setting == null)
+        {
+            setting = new FinancialSetting();
+            _context.FinancialSettings.Add(setting);
+        }
+
+        setting.VibrationEnabled = dto.VibrationEnabled;
         await _context.SaveChangesAsync();
         return NoContent();
     }
@@ -786,6 +806,7 @@ public class UpdateSettingsDto
     // New property for dark theme preference
     public bool? DarkMode { get; set; }
     public bool? HideSensitive { get; set; }
+    public bool? VibrationEnabled { get; set; }
     public string Currency { get; set; } = "USD";
 }
 
@@ -797,4 +818,9 @@ public class UpdateDarkModeDto
 public class UpdateHideSensitiveDto
 {
     public bool HideSensitive { get; set; }
+}
+
+public class UpdateVibrationDto
+{
+    public bool VibrationEnabled { get; set; }
 }
