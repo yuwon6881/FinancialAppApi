@@ -13,7 +13,7 @@ public class FinancialController : ControllerBase
 {
     private readonly AppDbContext _context;
 
-    private static readonly string[] Months = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    private static readonly string[] Months = FinancialConstants.MonthAbbreviations;
 
     public FinancialController(AppDbContext context)
     {
