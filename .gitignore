@@ -1,0 +1,7 @@
+bin/
+obj/
+FinancialAppApi/publish/
+*.user
+*.db
+*.db-shm
+*.db-wal
