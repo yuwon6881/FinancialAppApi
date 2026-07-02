@@ -20,6 +20,17 @@ public class FinancialController : ControllerBase
         _context = context;
     }
 
+    private async Task<FinancialSetting> GetOrCreateSettingAsync()
+    {
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+        if (setting == null)
+        {
+            setting = new FinancialSetting();
+            _context.FinancialSettings.Add(setting);
+        }
+        return setting;
+    }
+
     public static async Task<List<object>> GetSubscriptionAlertsAsync(AppDbContext context)
     {
         var setting = await context.FinancialSettings.FirstOrDefaultAsync();
@@ -27,6 +38,7 @@ public class FinancialController : ControllerBase
         var cycleDay = setting.CycleDay;
 
         var activeRecurring = await context.RecurringPayments.Where(r => r.Active).ToListAsync();
+        var existingTransactionIds = (await context.Transactions.Select(t => t.Id).ToListAsync()).ToHashSet();
         var today = DateTime.Today;
         var (todayMonth, todayYear) = GetCycleMonthAndYearForDate(today, cycleDay);
         var todayMonthIdx = Array.IndexOf(Months, todayMonth) + 1;
@@ -71,7 +83,7 @@ public class FinancialController : ControllerBase
                     if (billingDate <= today && billingDate >= startDate && (endDate == null || billingDate <= endDate.Value))
                     {
                         var instanceId = $"{rp.Id}-{y}-{m}";
-                        var isPaid = await context.Transactions.AnyAsync(t => t.Id == instanceId);
+                        var isPaid = existingTransactionIds.Contains(instanceId);
                         if (!isPaid)
                         {
                             var item = new
@@ -656,12 +668,7 @@ public class FinancialController : ControllerBase
     [HttpPut("settings")]
     public async Task<IActionResult> UpdateSettings([FromBody] UpdateSettingsDto updateDto)
     {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
-        if (setting == null)
-        {
-            setting = new FinancialSetting();
-            _context.FinancialSettings.Add(setting);
-        }
+        var setting = await GetOrCreateSettingAsync();
 
         setting.TargetStabilityFund = ObfuscationHelper.Deobfuscate(updateDto.TargetStabilityFund);
         setting.EssentialsAlloc = updateDto.EssentialsAlloc;
@@ -691,12 +698,7 @@ public class FinancialController : ControllerBase
     [HttpPut("dark-mode")]
     public async Task<IActionResult> UpdateDarkMode([FromBody] UpdateDarkModeDto dto)
     {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
-        if (setting == null)
-        {
-            setting = new FinancialSetting();
-            _context.FinancialSettings.Add(setting);
-        }
+        var setting = await GetOrCreateSettingAsync();
 
         setting.DarkMode = dto.DarkMode;
         await _context.SaveChangesAsync();
@@ -707,12 +709,7 @@ public class FinancialController : ControllerBase
     [HttpPut("hide-sensitive")]
     public async Task<IActionResult> UpdateHideSensitive([FromBody] UpdateHideSensitiveDto dto)
     {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
-        if (setting == null)
-        {
-            setting = new FinancialSetting();
-            _context.FinancialSettings.Add(setting);
-        }
+        var setting = await GetOrCreateSettingAsync();
 
         setting.HideSensitive = dto.HideSensitive;
         await _context.SaveChangesAsync();
@@ -723,12 +720,7 @@ public class FinancialController : ControllerBase
     [HttpPut("vibration")]
     public async Task<IActionResult> UpdateVibration([FromBody] UpdateVibrationDto dto)
     {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
-        if (setting == null)
-        {
-            setting = new FinancialSetting();
-            _context.FinancialSettings.Add(setting);
-        }
+        var setting = await GetOrCreateSettingAsync();
 
         setting.VibrationEnabled = dto.VibrationEnabled;
         await _context.SaveChangesAsync();
@@ -739,12 +731,7 @@ public class FinancialController : ControllerBase
     [HttpPost("select-period")]
     public async Task<IActionResult> SelectPeriod([FromBody] FinancialSetting periodDto)
     {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
-        if (setting == null)
-        {
-            setting = new FinancialSetting();
-            _context.FinancialSettings.Add(setting);
-        }
+        var setting = await GetOrCreateSettingAsync();
 
         setting.SelectedMonth = periodDto.SelectedMonth;
         setting.SelectedYear = periodDto.SelectedYear;

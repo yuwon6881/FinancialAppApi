@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using FinancialAppApi.Database;
+using FinancialAppApi.Extensions;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Filters;
@@ -12,21 +13,17 @@ public class AuthorizeTokenAttribute : Attribute, IAsyncActionFilter
     {
         var dbContext = context.HttpContext.RequestServices.GetRequiredService<AppDbContext>();
 
-        // Get Authorization header
-        if (!context.HttpContext.Request.Headers.TryGetValue("Authorization", out var authHeaderValues))
+        var tokenResult = context.HttpContext.Request.TryGetBearerToken(out var token);
+        if (tokenResult == BearerTokenResult.Missing)
         {
             context.Result = new UnauthorizedObjectResult(new { message = "Authorization header is missing" });
             return;
         }
-
-        var authHeader = authHeaderValues.ToString();
-        if (string.IsNullOrWhiteSpace(authHeader) || !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        if (tokenResult == BearerTokenResult.Malformed)
         {
             context.Result = new UnauthorizedObjectResult(new { message = "Invalid Authorization format. Use Bearer <token>" });
             return;
         }
-
-        var token = authHeader.Substring("Bearer ".Length).Trim();
 
         // Check token in database
         var session = await dbContext.UserSessions

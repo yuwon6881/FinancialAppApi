@@ -4,6 +4,7 @@ using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using Microsoft.AspNetCore.Identity;
 using FinancialAppApi.Filters;
+using FinancialAppApi.Extensions;
 
 namespace FinancialAppApi.Controllers;
 
@@ -103,19 +104,13 @@ public class AuthController : ControllerBase
     [HttpPost("logout")]
     public async Task<IActionResult> Logout()
     {
-        // Get Authorization header
-        if (Request.Headers.TryGetValue("Authorization", out var authHeaderValues))
+        if (Request.TryGetBearerToken(out var token) == BearerTokenResult.Ok)
         {
-            var authHeader = authHeaderValues.ToString();
-            if (authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
+            if (session != null)
             {
-                var token = authHeader.Substring("Bearer ".Length).Trim();
-                var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
-                if (session != null)
-                {
-                    _context.UserSessions.Remove(session);
-                    await _context.SaveChangesAsync();
-                }
+                _context.UserSessions.Remove(session);
+                await _context.SaveChangesAsync();
             }
         }
         return Ok(new { message = "Logged out successfully" });
@@ -126,19 +121,14 @@ public class AuthController : ControllerBase
     [HttpPost("lock")]
     public async Task<IActionResult> LockSession()
     {
-        if (Request.Headers.TryGetValue("Authorization", out var authHeaderValues))
+        if (Request.TryGetBearerToken(out var token) == BearerTokenResult.Ok)
         {
-            var authHeader = authHeaderValues.ToString();
-            if (authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
+            if (session != null)
             {
-                var token = authHeader.Substring("Bearer ".Length).Trim();
-                var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
-                if (session != null)
-                {
-                    session.IsLocked = true;
-                    await _context.SaveChangesAsync();
-                    return Ok(new { message = "Session locked" });
-                }
+                session.IsLocked = true;
+                await _context.SaveChangesAsync();
+                return Ok(new { message = "Session locked" });
             }
         }
         return BadRequest(new { message = "Invalid session" });
@@ -178,18 +168,13 @@ public class AuthController : ControllerBase
         }
 
         // Unlock the session if verified successfully
-        if (Request.Headers.TryGetValue("Authorization", out var authHeaderValues))
+        if (Request.TryGetBearerToken(out var token) == BearerTokenResult.Ok)
         {
-            var authHeader = authHeaderValues.ToString();
-            if (authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
+            if (session != null)
             {
-                var token = authHeader.Substring("Bearer ".Length).Trim();
-                var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
-                if (session != null)
-                {
-                    session.IsLocked = false;
-                    await _context.SaveChangesAsync();
-                }
+                session.IsLocked = false;
+                await _context.SaveChangesAsync();
             }
         }
 
