@@ -20,6 +20,12 @@ public class FinancialController : ControllerBase
         _context = context;
     }
 
+    private static List<object> ObfuscateTrendPoints(List<(string month, decimal balance)> points) =>
+        points.Select(p => (object)new { month = p.month, balance = ObfuscationHelper.Obfuscate(p.balance) }).ToList();
+
+    private static List<object> ObfuscateBreakdown(List<(string category, decimal amount)> breakdown) =>
+        breakdown.Select(b => (object)new { category = b.category, amount = ObfuscationHelper.Obfuscate(b.amount) }).ToList();
+
     private async Task<FinancialSetting> GetOrCreateSettingAsync()
     {
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
@@ -226,7 +232,7 @@ public class FinancialController : ControllerBase
         var stabilityBalance = 0.00m; // Default starting balance set to 0 as requested
         var rewardsBalance = 0.00m;
 
-        var trendPoints = new List<object>();
+        var trendPoints = new List<(string month, decimal balance)>();
         
         // Category details for the selected active month
         decimal selectedBudgetEssentials = 0;
@@ -315,11 +321,7 @@ public class FinancialController : ControllerBase
                 // Record trend point for the active year (Growth category only)
                 if (y == activeYear && m <= activeMonthIndex)
                 {
-                    trendPoints.Add(new
-                    {
-                        month = Months[m - 1],
-                        balance = growthBalance
-                    });
+                    trendPoints.Add((Months[m - 1], growthBalance));
                 }
             }
         }
@@ -450,16 +452,15 @@ public class FinancialController : ControllerBase
 
         var pendingNotifications = await GetSubscriptionAlertsAsync(_context);
 
-        var monthlyCategoryBreakdown = activeCycleTxs
+        // Groups outflow transactions by category (falling back to "Other"), summing absolute amounts.
+        List<(string category, decimal amount)> BuildBreakdown(List<Transaction> txs) => txs
             .Where(t => t.Amount < 0)
             .GroupBy(t => string.IsNullOrWhiteSpace(t.Category) ? "Other" : t.Category)
-            .Select(g => new
-            {
-                category = g.Key,
-                amount = Math.Abs(g.Sum(t => t.Amount))
-            })
+            .Select(g => (category: g.Key, amount: Math.Abs(g.Sum(t => t.Amount))))
             .OrderByDescending(b => b.amount)
             .ToList();
+
+        var monthlyCategoryBreakdown = BuildBreakdown(activeCycleTxs);
 
         var yearlyTxs = new List<Transaction>();
         for (int m = 1; m <= 12; m++)
@@ -476,16 +477,7 @@ public class FinancialController : ControllerBase
             yearlyTxs.AddRange(cycleTxsForMonth);
         }
 
-        var yearlyCategoryBreakdown = yearlyTxs
-            .Where(t => t.Amount < 0)
-            .GroupBy(t => string.IsNullOrWhiteSpace(t.Category) ? "Other" : t.Category)
-            .Select(g => new
-            {
-                category = g.Key,
-                amount = Math.Abs(g.Sum(t => t.Amount))
-            })
-            .OrderByDescending(b => b.amount)
-            .ToList();
+        var yearlyCategoryBreakdown = BuildBreakdown(yearlyTxs);
 
         // Helper: collect outflow transactions over a span of N cycles ending at the active cycle
         List<Transaction> GetTxsForLastNCycles(int n)
@@ -506,13 +498,6 @@ public class FinancialController : ControllerBase
             }
             return result;
         }
-
-        List<object> BuildBreakdown(List<Transaction> txs) => txs
-            .Where(t => t.Amount < 0)
-            .GroupBy(t => string.IsNullOrWhiteSpace(t.Category) ? "Other" : t.Category)
-            .Select(g => (object)new { category = g.Key, amount = Math.Abs(g.Sum(t => t.Amount)) })
-            .OrderByDescending(b => ((dynamic)b).amount)
-            .ToList();
 
         var last3CategoryBreakdown = BuildBreakdown(GetTxsForLastNCycles(3));
         var last6CategoryBreakdown = BuildBreakdown(GetTxsForLastNCycles(6));
@@ -623,43 +608,15 @@ public class FinancialController : ControllerBase
                 amount = ObfuscationHelper.Obfuscate(t.amount)
             }).ToList(),
             activeRecurringPayments = selectedMonthRecurring,
-            trendPoints = trendPoints.Select(tp => new
-            {
-                month = ((dynamic)tp).month,
-                balance = ObfuscationHelper.Obfuscate((decimal)((dynamic)tp).balance)
-            }).ToList(),
-            last3TrendPoints = last3TrendPoints.Select(tp => new
-            {
-                month = ((dynamic)tp).month,
-                balance = ObfuscationHelper.Obfuscate((decimal)((dynamic)tp).balance)
-            }).ToList(),
-            last6TrendPoints = last6TrendPoints.Select(tp => new
-            {
-                month = ((dynamic)tp).month,
-                balance = ObfuscationHelper.Obfuscate((decimal)((dynamic)tp).balance)
-            }).ToList(),
+            trendPoints = ObfuscateTrendPoints(trendPoints),
+            last3TrendPoints = ObfuscateTrendPoints(last3TrendPoints),
+            last6TrendPoints = ObfuscateTrendPoints(last6TrendPoints),
             pendingNotifications,
             dismissedNotifications = new List<object>(),
-            monthlyCategoryBreakdown = monthlyCategoryBreakdown.Select(cb => new
-            {
-                category = cb.category,
-                amount = ObfuscationHelper.Obfuscate(cb.amount)
-            }).ToList(),
-            last3CategoryBreakdown = last3CategoryBreakdown.Select(cb => new
-            {
-                category = ((dynamic)cb).category,
-                amount = ObfuscationHelper.Obfuscate((decimal)((dynamic)cb).amount)
-            }).ToList(),
-            last6CategoryBreakdown = last6CategoryBreakdown.Select(cb => new
-            {
-                category = ((dynamic)cb).category,
-                amount = ObfuscationHelper.Obfuscate((decimal)((dynamic)cb).amount)
-            }).ToList(),
-            yearlyCategoryBreakdown = yearlyCategoryBreakdown.Select(cb => new
-            {
-                category = cb.category,
-                amount = ObfuscationHelper.Obfuscate(cb.amount)
-            }).ToList(),
+            monthlyCategoryBreakdown = ObfuscateBreakdown(monthlyCategoryBreakdown),
+            last3CategoryBreakdown = ObfuscateBreakdown(last3CategoryBreakdown),
+            last6CategoryBreakdown = ObfuscateBreakdown(last6CategoryBreakdown),
+            yearlyCategoryBreakdown = ObfuscateBreakdown(yearlyCategoryBreakdown),
             availableYears
         });
     }
