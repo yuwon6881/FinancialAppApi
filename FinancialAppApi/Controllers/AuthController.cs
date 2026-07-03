@@ -180,6 +180,132 @@ public class AuthController : ControllerBase
 
         return Ok(new { verified = true });
     }
+
+    // GET: api/auth/biometric/status
+    [HttpGet("biometric/status")]
+    public async Task<IActionResult> GetBiometricStatus()
+    {
+        var username = HttpContext.Items["Username"] as string;
+        var cred = await _context.BiometricCredentials.FirstOrDefaultAsync();
+        if (cred == null)
+        {
+            return Ok(new { enrolled = false });
+        }
+        return Ok(new { enrolled = true, username = cred.Username, enrolledAt = cred.CreatedAt });
+    }
+
+    // POST: api/auth/biometric/register
+    [AuthorizeToken]
+    [HttpPost("biometric/register")]
+    public async Task<IActionResult> RegisterBiometric([FromBody] RegisterBiometricRequest request)
+    {
+        var username = HttpContext.Items["Username"] as string;
+        if (string.IsNullOrEmpty(username))
+        {
+            return Unauthorized(new { message = "User not found in session" });
+        }
+
+        if (string.IsNullOrWhiteSpace(request.CredentialId))
+        {
+            return BadRequest(new { message = "Credential ID is required." });
+        }
+
+        var existing = await _context.BiometricCredentials
+            .FirstOrDefaultAsync(b => b.Username.ToLower() == username.ToLower() && b.CredentialId == request.CredentialId);
+
+        if (existing == null)
+        {
+            existing = new BiometricCredential
+            {
+                Username = username,
+                CredentialId = request.CredentialId,
+                PublicKey = request.PublicKey ?? string.Empty,
+                CreatedAt = DateTime.UtcNow,
+                LastUsedAt = DateTime.UtcNow
+            };
+            _context.BiometricCredentials.Add(existing);
+        }
+        else
+        {
+            existing.PublicKey = request.PublicKey ?? existing.PublicKey;
+            existing.LastUsedAt = DateTime.UtcNow;
+        }
+
+        await _context.SaveChangesAsync();
+        return Ok(new { message = "Biometric credential registered successfully", enrolled = true });
+    }
+
+    // POST: api/auth/biometric/verify
+    [HttpPost("biometric/verify")]
+    public async Task<IActionResult> VerifyBiometric([FromBody] VerifyBiometricRequest request)
+    {
+        var cred = await _context.BiometricCredentials.FirstOrDefaultAsync();
+        if (cred == null)
+        {
+            return BadRequest(new { message = "No biometric credentials registered on server." });
+        }
+
+        // Clean up expired sessions first
+        var expiredSessions = await _context.UserSessions.Where(s => s.ExpiresAt < DateTime.UtcNow).ToListAsync();
+        if (expiredSessions.Any())
+        {
+            _context.UserSessions.RemoveRange(expiredSessions);
+        }
+
+        // Issue new token or unlock existing token session
+        if (Request.TryGetBearerToken(out var token) == BearerTokenResult.Ok)
+        {
+            var existingSession = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
+            if (existingSession != null)
+            {
+                existingSession.IsLocked = false;
+                cred.LastUsedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+                return Ok(new { verified = true, token = token, username = cred.Username });
+            }
+        }
+
+        var newToken = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+        var session = new UserSession
+        {
+            Token = newToken,
+            Username = cred.Username,
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(7),
+            IsLocked = false
+        };
+
+        cred.LastUsedAt = DateTime.UtcNow;
+        _context.UserSessions.Add(session);
+        await _context.SaveChangesAsync();
+
+        return Ok(new { verified = true, token = newToken, username = cred.Username });
+    }
+
+    // DELETE: api/auth/biometric/remove
+    [AuthorizeToken]
+    [HttpDelete("biometric/remove")]
+    public async Task<IActionResult> RemoveBiometric()
+    {
+        var creds = await _context.BiometricCredentials.ToListAsync();
+        if (creds.Any())
+        {
+            _context.BiometricCredentials.RemoveRange(creds);
+            await _context.SaveChangesAsync();
+        }
+        return Ok(new { message = "Biometric credentials removed", enrolled = false });
+    }
+}
+
+public class RegisterBiometricRequest
+{
+    public string CredentialId { get; set; } = string.Empty;
+    public string? PublicKey { get; set; }
+}
+
+public class VerifyBiometricRequest
+{
+    public string? CredentialId { get; set; }
 }
 
 public class RegisterRequest
