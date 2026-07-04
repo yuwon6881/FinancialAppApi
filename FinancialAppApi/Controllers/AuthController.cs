@@ -239,6 +239,12 @@ public class AuthController : ControllerBase
     [HttpPost("biometric/verify")]
     public async Task<IActionResult> VerifyBiometric([FromBody] VerifyBiometricRequest request)
     {
+        var appUser = await _context.AppUsers.FirstOrDefaultAsync();
+        if (appUser == null)
+        {
+            return BadRequest(new { message = "No user account exists. Please register first." });
+        }
+
         BiometricCredential? cred = null;
         if (request != null && !string.IsNullOrWhiteSpace(request.CredentialId))
         {
@@ -247,24 +253,9 @@ public class AuthController : ControllerBase
         }
         cred ??= await _context.BiometricCredentials.FirstOrDefaultAsync();
 
-        var appUser = await _context.AppUsers.FirstOrDefaultAsync();
-        if (appUser == null)
-        {
-            return BadRequest(new { message = "No user account exists. Please register first." });
-        }
-
         if (cred == null)
         {
-            cred = new BiometricCredential
-            {
-                Username = appUser.Username,
-                CredentialId = !string.IsNullOrWhiteSpace(request?.CredentialId) ? request.CredentialId : "default_biometric_id",
-                PublicKey = string.Empty,
-                CreatedAt = DateTime.UtcNow,
-                LastUsedAt = DateTime.UtcNow
-            };
-            _context.BiometricCredentials.Add(cred);
-            await _context.SaveChangesAsync();
+            return BadRequest(new { message = "Biometric authentication is not enrolled on the server for this account." });
         }
 
         // Clean up expired sessions first
