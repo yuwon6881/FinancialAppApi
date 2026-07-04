@@ -239,10 +239,17 @@ public class AuthController : ControllerBase
     [HttpPost("biometric/verify")]
     public async Task<IActionResult> VerifyBiometric([FromBody] VerifyBiometricRequest request)
     {
-        var cred = await _context.BiometricCredentials.FirstOrDefaultAsync();
+        BiometricCredential? cred = null;
+        if (request != null && !string.IsNullOrWhiteSpace(request.CredentialId))
+        {
+            cred = await _context.BiometricCredentials
+                .FirstOrDefaultAsync(b => b.CredentialId == request.CredentialId);
+        }
+        cred ??= await _context.BiometricCredentials.FirstOrDefaultAsync();
+
         if (cred == null)
         {
-            return BadRequest(new { message = "No biometric credentials registered on server." });
+            return BadRequest(new { message = "No biometric credentials registered on server. Please log in with password and re-enable biometrics in Settings." });
         }
 
         // Clean up expired sessions first
