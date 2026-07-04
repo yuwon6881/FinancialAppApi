@@ -168,6 +168,73 @@ public static class DbInitializer
             // Ignore
         }
 
+        // Drop the old non-cryptographic "biometric" credential table (no server-side
+        // signature verification - replaced by real WebAuthn credentials below).
+        try
+        {
+            if (isPostgres)
+            {
+                context.Database.ExecuteSqlRaw("DROP TABLE IF EXISTS \"BiometricCredentials\";");
+            }
+            else
+            {
+                context.Database.ExecuteSqlRaw("DROP TABLE IF EXISTS [BiometricCredentials];");
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore
+        }
+
+        // Create WebAuthnCredentials/WebAuthnChallenges tables if they don't exist
+        try
+        {
+            if (isPostgres)
+            {
+                context.Database.ExecuteSqlRaw(@"
+                    CREATE TABLE IF NOT EXISTS ""WebAuthnCredentials"" (
+                        ""CredentialId"" BYTEA PRIMARY KEY,
+                        ""Username"" TEXT NOT NULL,
+                        ""PublicKey"" BYTEA NOT NULL,
+                        ""SignCount"" BIGINT NOT NULL,
+                        ""DeviceLabel"" TEXT,
+                        ""CreatedAt"" TIMESTAMP NOT NULL
+                    );");
+                context.Database.ExecuteSqlRaw(@"
+                    CREATE TABLE IF NOT EXISTS ""WebAuthnChallenges"" (
+                        ""Id"" TEXT PRIMARY KEY,
+                        ""Purpose"" TEXT NOT NULL,
+                        ""Username"" TEXT NOT NULL,
+                        ""OptionsJson"" TEXT NOT NULL,
+                        ""ExpiresAt"" TIMESTAMP NOT NULL
+                    );");
+            }
+            else
+            {
+                context.Database.ExecuteSqlRaw(@"
+                    CREATE TABLE IF NOT EXISTS [WebAuthnCredentials] (
+                        [CredentialId] BLOB PRIMARY KEY,
+                        [Username] TEXT NOT NULL,
+                        [PublicKey] BLOB NOT NULL,
+                        [SignCount] INTEGER NOT NULL,
+                        [DeviceLabel] TEXT,
+                        [CreatedAt] TEXT NOT NULL
+                    );");
+                context.Database.ExecuteSqlRaw(@"
+                    CREATE TABLE IF NOT EXISTS [WebAuthnChallenges] (
+                        [Id] TEXT PRIMARY KEY,
+                        [Purpose] TEXT NOT NULL,
+                        [Username] TEXT NOT NULL,
+                        [OptionsJson] TEXT NOT NULL,
+                        [ExpiresAt] TEXT NOT NULL
+                    );");
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore if tables already exist
+        }
+
         // Add IsLocked column to UserSessions if it does not yet exist
         try
         {

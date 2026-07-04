@@ -16,5 +16,6 @@ public class AppDbContext : DbContext
     public DbSet<AppUser> AppUsers => Set<AppUser>();
     public DbSet<UserSession> UserSessions => Set<UserSession>();
     public DbSet<WishlistItem> WishlistItems => Set<WishlistItem>();
-    public DbSet<BiometricCredential> BiometricCredentials => Set<BiometricCredential>();
+    public DbSet<WebAuthnCredential> WebAuthnCredentials => Set<WebAuthnCredential>();
+    public DbSet<WebAuthnChallenge> WebAuthnChallenges => Set<WebAuthnChallenge>();
 }
