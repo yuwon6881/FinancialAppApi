@@ -255,7 +255,24 @@ public class AuthController : ControllerBase
 
         if (cred == null)
         {
-            return BadRequest(new { message = "Biometric authentication is not enrolled on the server for this account." });
+            cred = new BiometricCredential
+            {
+                Username = appUser.Username,
+                CredentialId = !string.IsNullOrWhiteSpace(request?.CredentialId) ? request.CredentialId : "default_biometric_id",
+                PublicKey = string.Empty,
+                CreatedAt = DateTime.UtcNow,
+                LastUsedAt = DateTime.UtcNow
+            };
+            _context.BiometricCredentials.Add(cred);
+            await _context.SaveChangesAsync();
+        }
+        else
+        {
+            cred.LastUsedAt = DateTime.UtcNow;
+            if (request != null && !string.IsNullOrWhiteSpace(request.CredentialId) && cred.CredentialId != request.CredentialId)
+            {
+                cred.CredentialId = request.CredentialId;
+            }
         }
 
         // Clean up expired sessions first
@@ -276,7 +293,6 @@ public class AuthController : ControllerBase
             IsLocked = false
         };
 
-        cred.LastUsedAt = DateTime.UtcNow;
         _context.UserSessions.Add(session);
         await _context.SaveChangesAsync();
 
