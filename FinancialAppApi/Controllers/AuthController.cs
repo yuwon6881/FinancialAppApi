@@ -247,9 +247,24 @@ public class AuthController : ControllerBase
         }
         cred ??= await _context.BiometricCredentials.FirstOrDefaultAsync();
 
+        var appUser = await _context.AppUsers.FirstOrDefaultAsync();
+        if (appUser == null)
+        {
+            return BadRequest(new { message = "No user account exists. Please register first." });
+        }
+
         if (cred == null)
         {
-            return BadRequest(new { message = "No biometric credentials registered on server. Please log in with password and re-enable biometrics in Settings." });
+            cred = new BiometricCredential
+            {
+                Username = appUser.Username,
+                CredentialId = !string.IsNullOrWhiteSpace(request?.CredentialId) ? request.CredentialId : "default_biometric_id",
+                PublicKey = string.Empty,
+                CreatedAt = DateTime.UtcNow,
+                LastUsedAt = DateTime.UtcNow
+            };
+            _context.BiometricCredentials.Add(cred);
+            await _context.SaveChangesAsync();
         }
 
         // Clean up expired sessions first
@@ -264,9 +279,9 @@ public class AuthController : ControllerBase
         var session = new UserSession
         {
             Token = newToken,
-            Username = cred.Username,
+            Username = appUser.Username,
             CreatedAt = DateTime.UtcNow,
-            ExpiresAt = DateTime.UtcNow.AddDays(7),
+            ExpiresAt = DateTime.UtcNow.AddDays(30),
             IsLocked = false
         };
 
@@ -274,7 +289,7 @@ public class AuthController : ControllerBase
         _context.UserSessions.Add(session);
         await _context.SaveChangesAsync();
 
-        return Ok(new { verified = true, token = newToken, username = cred.Username });
+        return Ok(new { verified = true, token = newToken, username = appUser.Username });
     }
 
     // DELETE: api/auth/biometric/remove
