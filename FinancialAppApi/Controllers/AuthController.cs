@@ -259,32 +259,9 @@ public class AuthController : ControllerBase
             _context.UserSessions.RemoveRange(expiredSessions);
         }
 
-        // Check if incoming request has a bearer token that belongs to an existing session
-        UserSession? session = null;
-        if (Request.TryGetBearerToken(out var token) == BearerTokenResult.Ok)
-        {
-            session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
-        }
-
-        // If no valid session from header, find any recent session for this user
-        session ??= await _context.UserSessions
-            .Where(s => s.Username.ToLower() == cred.Username.ToLower())
-            .OrderByDescending(s => s.CreatedAt)
-            .FirstOrDefaultAsync();
-
-        if (session != null)
-        {
-            // Unlock and extend session
-            session.IsLocked = false;
-            session.ExpiresAt = DateTime.UtcNow.AddDays(7);
-            cred.LastUsedAt = DateTime.UtcNow;
-            await _context.SaveChangesAsync();
-            return Ok(new { verified = true, token = session.Token, username = cred.Username });
-        }
-
-        // Otherwise create brand new session
+        // Always issue a fresh valid session for this user upon biometric authentication
         var newToken = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
-        session = new UserSession
+        var session = new UserSession
         {
             Token = newToken,
             Username = cred.Username,
