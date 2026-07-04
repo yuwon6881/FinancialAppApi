@@ -21,4 +21,9 @@ public class Transaction
 
     [Required]
     public decimal Amount { get; set; }
+
+    // Denormalized reference to the RecurringPayment this transaction was generated from, if any.
+    // Intentionally not a real FK: it must survive the parent RecurringPayment being deleted so
+    // historical cycles can still be identified as subscription payments.
+    public string? RecurringPaymentId { get; set; }
 }

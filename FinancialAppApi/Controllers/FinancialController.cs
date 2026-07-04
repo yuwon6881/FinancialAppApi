@@ -44,7 +44,13 @@ public class FinancialController : ControllerBase
         var cycleDay = setting.CycleDay;
 
         var activeRecurring = await context.RecurringPayments.Where(r => r.Active).ToListAsync();
-        var existingTransactionIds = (await context.Transactions.Select(t => t.Id).ToListAsync()).ToHashSet();
+        // Confirmed bills are persisted with a freshly generated transaction id (not the
+        // "{rp.Id}-{y}-{m}" convention below), so paid-detection has to go through the
+        // RecurringPaymentId link rather than an id match.
+        var recurringTransactionDates = await context.Transactions
+            .Where(t => t.RecurringPaymentId != null)
+            .Select(t => new { t.RecurringPaymentId, t.Date })
+            .ToListAsync();
         var today = DateTime.Today;
         var (todayMonth, todayYear) = GetCycleMonthAndYearForDate(today, cycleDay);
         var todayMonthIdx = Array.IndexOf(Months, todayMonth) + 1;
@@ -69,27 +75,15 @@ public class FinancialController : ControllerBase
                     var (cycleStart, cycleEnd, cycleLabel) = GetCycleRange(y, m, cycleDay);
 
                     // Find the payment date that falls inside this cycle
-                    DateTime billingDate;
-                    if (cycleDay == 1)
-                    {
-                        billingDate = new DateTime(cycleStart.Year, cycleStart.Month, Math.Min(rp.DueDate, DateTime.DaysInMonth(cycleStart.Year, cycleStart.Month)));
-                    }
-                    else
-                    {
-                        if (rp.DueDate >= cycleStart.Day)
-                        {
-                            billingDate = new DateTime(cycleStart.Year, cycleStart.Month, Math.Min(rp.DueDate, DateTime.DaysInMonth(cycleStart.Year, cycleStart.Month)));
-                        }
-                        else
-                        {
-                            billingDate = new DateTime(cycleEnd.Year, cycleEnd.Month, Math.Min(rp.DueDate, DateTime.DaysInMonth(cycleEnd.Year, cycleEnd.Month)));
-                        }
-                    }
+                    var billingDate = GetBillingDateForCycle(cycleStart, cycleEnd, cycleDay, rp.DueDate);
 
                     if (billingDate <= today && billingDate >= startDate && (endDate == null || billingDate <= endDate.Value))
                     {
                         var instanceId = $"{rp.Id}-{y}-{m}";
-                        var isPaid = existingTransactionIds.Contains(instanceId);
+                        var isPaid = recurringTransactionDates.Any(t =>
+                            t.RecurringPaymentId == rp.Id &&
+                            DateTime.TryParse(t.Date, out var paidTxDate) &&
+                            paidTxDate >= cycleStart && paidTxDate <= cycleEnd);
                         if (!isPaid)
                         {
                             var item = new
@@ -145,6 +139,19 @@ public class FinancialController : ControllerBase
             var lbl = $"{startDate.ToString("MMM")} {GetDayWithSuffix(startDate.Day)} ~ {endDate.ToString("MMM")} {GetDayWithSuffix(endDate.Day)}, {startDate.Year}";
             return (startDate, endDate, lbl);
         }
+    }
+
+    // Resolves which calendar date a recurring payment's day-of-month due date falls on within
+    // a given cycle. Compares against cycleStart.Day (already clamped to the month's length by
+    // GetCycleRange) rather than the raw cycleDay setting, so this agrees with GetCycleRange's
+    // own month-length clamping for cycle days near the end of a month (29-31).
+    private static DateTime GetBillingDateForCycle(DateTime cycleStart, DateTime cycleEnd, int cycleDay, int dueDate)
+    {
+        if (cycleDay == 1 || dueDate >= cycleStart.Day)
+        {
+            return new DateTime(cycleStart.Year, cycleStart.Month, Math.Min(dueDate, DateTime.DaysInMonth(cycleStart.Year, cycleStart.Month)));
+        }
+        return new DateTime(cycleEnd.Year, cycleEnd.Month, Math.Min(dueDate, DateTime.DaysInMonth(cycleEnd.Year, cycleEnd.Month)));
     }
 
     private static (string month, int year) GetCycleMonthAndYearForDate(DateTime date, int cycleDay)
@@ -377,7 +384,6 @@ public class FinancialController : ControllerBase
 
         // Fetch recent manual transactions for the cycle (max 5)
         var recentTransactions = activeCycleTxs
-            .Where(t => !t.Id.StartsWith("rec-"))
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.Id)
             .Take(5)
@@ -404,27 +410,15 @@ public class FinancialController : ControllerBase
                 rpEndDate = parsedEndDate;
             }
 
-            DateTime billingDate;
-            if (cycleDay == 1)
-            {
-                billingDate = new DateTime(activeRange.start.Year, activeRange.start.Month, Math.Min(rp.DueDate, DateTime.DaysInMonth(activeRange.start.Year, activeRange.start.Month)));
-            }
-            else
-            {
-                if (rp.DueDate >= cycleDay)
-                {
-                    billingDate = new DateTime(activeRange.start.Year, activeRange.start.Month, Math.Min(rp.DueDate, DateTime.DaysInMonth(activeRange.start.Year, activeRange.start.Month)));
-                }
-                else
-                {
-                    billingDate = new DateTime(activeRange.end.Year, activeRange.end.Month, Math.Min(rp.DueDate, DateTime.DaysInMonth(activeRange.end.Year, activeRange.end.Month)));
-                }
-            }
+            var billingDate = GetBillingDateForCycle(activeRange.start, activeRange.end, cycleDay, rp.DueDate);
 
             if (billingDate >= activeRange.start && billingDate <= activeRange.end && billingDate >= rpStartDate && (rpEndDate == null || billingDate <= rpEndDate.Value))
             {
                 var instanceId = $"{rp.Id}-{activeYear}-{activeMonthIndex}";
-                var paidTx = allTransactions.FirstOrDefault(t => t.Id == instanceId);
+                var paidTx = allTransactions.FirstOrDefault(t =>
+                    t.RecurringPaymentId == rp.Id &&
+                    DateTime.TryParse(t.Date, out var paidTxDate) &&
+                    paidTxDate >= activeRange.start && paidTxDate <= activeRange.end);
                 var isPaid = paidTx != null;
                 var isDiscarded = paidTx != null && string.Equals(paidTx.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase);
 
@@ -612,7 +606,6 @@ public class FinancialController : ControllerBase
             last3TrendPoints = ObfuscateTrendPoints(last3TrendPoints),
             last6TrendPoints = ObfuscateTrendPoints(last6TrendPoints),
             pendingNotifications,
-            dismissedNotifications = new List<object>(),
             monthlyCategoryBreakdown = ObfuscateBreakdown(monthlyCategoryBreakdown),
             last3CategoryBreakdown = ObfuscateBreakdown(last3CategoryBreakdown),
             last6CategoryBreakdown = ObfuscateBreakdown(last6CategoryBreakdown),

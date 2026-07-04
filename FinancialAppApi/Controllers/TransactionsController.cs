@@ -166,7 +166,8 @@ public class TransactionsController : ControllerBase
             Description = dto.Description,
             Category = dto.Category,
             LedgerCategory = dto.LedgerCategory,
-            Amount = ObfuscationHelper.Deobfuscate(dto.Amount)
+            Amount = ObfuscationHelper.Deobfuscate(dto.Amount),
+            RecurringPaymentId = dto.RecurringPaymentId
         };
 
         var splitSpec = await ResolveIncomeSplitSpecAsync(transaction);
@@ -200,6 +201,10 @@ public class TransactionsController : ControllerBase
         transaction.Category = dto.Category;
         transaction.LedgerCategory = dto.LedgerCategory;
         transaction.Amount = ObfuscationHelper.Deobfuscate(dto.Amount);
+        // Ledger edits (e.g. LedgerView) don't round-trip this field, so only overwrite it
+        // when the caller explicitly sends one -- otherwise a manual edit would silently
+        // sever the transaction's link back to its originating recurring payment.
+        transaction.RecurringPaymentId = dto.RecurringPaymentId ?? transaction.RecurringPaymentId;
 
         var splitSpec = await ResolveIncomeSplitSpecAsync(transaction);
         AddIncomeSplitTransactions(transaction, splitSpec);
@@ -289,7 +294,8 @@ public class TransactionsController : ControllerBase
             Description = t.Description,
             Category = t.Category,
             LedgerCategory = t.LedgerCategory,
-            Amount = ObfuscationHelper.Obfuscate(t.Amount)
+            Amount = ObfuscationHelper.Obfuscate(t.Amount),
+            RecurringPaymentId = t.RecurringPaymentId
         };
     }
 
@@ -392,4 +398,5 @@ public class TransactionDto
     public string Category { get; set; } = string.Empty;
     public string LedgerCategory { get; set; } = string.Empty;
     public string Amount { get; set; } = string.Empty;
+    public string? RecurringPaymentId { get; set; }
 }

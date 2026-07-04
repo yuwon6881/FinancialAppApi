@@ -114,6 +114,23 @@ public static class DbInitializer
             // Ignore if column already exists
         }
 
+        // Add RecurringPaymentId column to Transactions if it does not yet exist
+        try
+        {
+            if (isPostgres)
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE \"Transactions\" ADD COLUMN \"RecurringPaymentId\" text;");
+            }
+            else
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE [Transactions] ADD COLUMN [RecurringPaymentId] TEXT;");
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore if column already exists
+        }
+
         // Clean up: drop the unused RecurringPaymentDismissals table
         try
         {
