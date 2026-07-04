@@ -35,6 +35,11 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "startDate")] string? startDate = null,
         [FromQuery(Name = "endDate")] string? endDate = null)
     {
+        // page=0/negative would otherwise produce a negative Skip() offset,
+        // which Npgsql rejects with an unhandled 500 instead of a clean result.
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 500);
+
         if (all)
         {
             var query = ApplyAllFilters(_context.Transactions.AsQueryable(), search, ledgerCategory, category, txType, startDate, endDate);

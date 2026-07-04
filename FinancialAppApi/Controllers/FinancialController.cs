@@ -632,7 +632,10 @@ public class FinancialController : ControllerBase
         setting.GrowthAlloc = updateDto.GrowthAlloc;
         setting.StabilityAlloc = updateDto.StabilityAlloc;
         setting.RewardsAlloc = updateDto.RewardsAlloc;
-        setting.CycleDay = updateDto.CycleDay;
+        // CycleDay=0 (or negative) makes GetCycleRange's `new DateTime(year, month, cycleDay)`
+        // throw ArgumentOutOfRangeException on every subsequent dashboard/transactions
+        // request, with no self-recovery path via the API. Clamp to a valid day-of-month.
+        setting.CycleDay = Math.Clamp(updateDto.CycleDay, 1, 31);
         if (updateDto.DarkMode.HasValue)
         {
             setting.DarkMode = updateDto.DarkMode.Value;
