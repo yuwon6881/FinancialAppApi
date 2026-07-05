@@ -252,6 +252,8 @@ public class FinancialController : ControllerBase
         decimal selectedNetStability = 0;
         decimal selectedNetRewards = 0;
 
+        List<Transaction> activeCycleTxs = new();
+
         decimal selectedRemEssentials = 0;
         decimal selectedRemGrowth = 0;
         decimal selectedRemStability = 0;
@@ -309,6 +311,7 @@ public class FinancialController : ControllerBase
                     selectedNetGrowth = netGrowth;
                     selectedNetStability = netStability;
                     selectedNetRewards = netRewards;
+                    activeCycleTxs = cycleTxs;
                 }
 
                 // 3. Ending Balances for the cycle
@@ -333,16 +336,8 @@ public class FinancialController : ControllerBase
             }
         }
 
-        // Active cycle range and transactions
+        // Active cycle range (the transactions for it were already captured during the roll-forward loop above)
         var activeRange = GetCycleRange(year, activeMonthIndex, cycleDay);
-        var activeCycleTxs = allTransactions.Where(t =>
-        {
-            if (DateTime.TryParse(t.Date, out var date))
-            {
-                return date >= activeRange.start && date <= activeRange.end;
-            }
-            return false;
-        }).ToList();
 
         // Target allocations and budgets (using actual cycle income)
         var selectedCycleIncome = activeCycleTxs
@@ -419,8 +414,11 @@ public class FinancialController : ControllerBase
                     t.RecurringPaymentId == rp.Id &&
                     DateTime.TryParse(t.Date, out var paidTxDate) &&
                     paidTxDate >= activeRange.start && paidTxDate <= activeRange.end);
-                var isPaid = paidTx != null;
                 var isDiscarded = paidTx != null && string.Equals(paidTx.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase);
+                // A discard-marker transaction still counts as "the cycle's bill was actioned" for
+                // matching purposes above, but it is not a real payment -- isPaid must stay false
+                // for it so callers that don't also check isDiscarded don't treat it as Paid.
+                var isPaid = paidTx != null && !isDiscarded;
 
                 activeRecurringList.Add(new
                 {
