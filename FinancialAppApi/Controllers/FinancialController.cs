@@ -410,10 +410,19 @@ public class FinancialController : ControllerBase
             if (billingDate >= activeRange.start && billingDate <= activeRange.end && billingDate >= rpStartDate && (rpEndDate == null || billingDate <= rpEndDate.Value))
             {
                 var instanceId = $"{rp.Id}-{activeYear}-{activeMonthIndex}";
-                var paidTx = allTransactions.FirstOrDefault(t =>
-                    t.RecurringPaymentId == rp.Id &&
-                    DateTime.TryParse(t.Date, out var paidTxDate) &&
-                    paidTxDate >= activeRange.start && paidTxDate <= activeRange.end);
+                // FirstOrDefault with no ordering isn't guaranteed stable if more than one
+                // transaction ends up matching (e.g. duplicate/manually-backfilled data) -- order
+                // deterministically and prefer a real payment over a discard marker so the
+                // result can't flip between requests.
+                var paidTx = allTransactions
+                    .Where(t =>
+                        t.RecurringPaymentId == rp.Id &&
+                        DateTime.TryParse(t.Date, out var paidTxDate) &&
+                        paidTxDate >= activeRange.start && paidTxDate <= activeRange.end)
+                    .OrderBy(t => string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                    .ThenBy(t => t.Date, StringComparer.Ordinal)
+                    .ThenBy(t => t.Id, StringComparer.Ordinal)
+                    .FirstOrDefault();
                 var isDiscarded = paidTx != null && string.Equals(paidTx.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase);
                 // A discard-marker transaction still counts as "the cycle's bill was actioned" for
                 // matching purposes above, but it is not a real payment -- isPaid must stay false
