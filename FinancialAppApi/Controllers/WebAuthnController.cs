@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
+using FinancialAppApi.Extensions;
 
 namespace FinancialAppApi.Controllers;
 
@@ -282,18 +283,157 @@ public class WebAuthnController : ControllerBase
             _context.UserSessions.RemoveRange(expiredSessions);
         }
 
+        // A WebAuthn credential is enrolled per-device, so it doubles as a
+        // device identifier: replace whatever session this same credential
+        // last issued instead of leaving it to linger (e.g. the device's
+        // local storage was cleared/reinstalled, so it still had a valid,
+        // now-unreachable session from before).
+        var priorSessionsForCredential = await _context.UserSessions
+            .Where(s => s.CredentialId != null && s.CredentialId == storedCred.CredentialId)
+            .ToListAsync();
+        if (priorSessionsForCredential.Count > 0)
+        {
+            _context.UserSessions.RemoveRange(priorSessionsForCredential);
+        }
+
         var token = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
         _context.UserSessions.Add(new UserSession
         {
             Token = token,
             Username = storedCred.Username,
             CreatedAt = DateTime.UtcNow,
-            ExpiresAt = DateTime.UtcNow.AddDays(7)
+            ExpiresAt = DateTime.UtcNow.AddDays(7),
+            CredentialId = storedCred.CredentialId
         });
 
         await _context.SaveChangesAsync();
 
         return Ok(new { token, username = storedCred.Username });
+    }
+
+    // POST api/auth/webauthn/assert/options
+    // Authenticated re-verification (unlocking the lock screen, or proving
+    // identity to reveal sensitive figures) -- unlike login/options, this
+    // never issues a session, it just proves "it's still you" for a session
+    // that already exists.
+    [AuthorizeToken]
+    [HttpPost("assert/options")]
+    public async Task<IActionResult> AssertOptions()
+    {
+        var username = HttpContext.Items["Username"] as string;
+        if (string.IsNullOrEmpty(username))
+        {
+            return Unauthorized(new { message = "User not found in session" });
+        }
+
+        await CleanupExpiredChallengesAsync();
+
+        var credentials = await _context.WebAuthnCredentials
+            .Where(c => c.Username == username)
+            .Select(c => c.CredentialId)
+            .ToListAsync();
+        if (credentials.Count == 0)
+        {
+            return BadRequest(new { message = "Fingerprint login is not set up yet." });
+        }
+
+        var fido2 = BuildFido2();
+        var options = fido2.GetAssertionOptions(new GetAssertionOptionsParams
+        {
+            AllowedCredentials = credentials.Select(id => new PublicKeyCredentialDescriptor(id)).ToList(),
+            UserVerification = UserVerificationRequirement.Required
+        });
+
+        var challengeId = Guid.NewGuid().ToString("N");
+        _context.WebAuthnChallenges.Add(new WebAuthnChallenge
+        {
+            Id = challengeId,
+            Purpose = "assert",
+            Username = username,
+            OptionsJson = options.ToJson(),
+            ExpiresAt = DateTime.UtcNow.Add(ChallengeLifetime)
+        });
+        await _context.SaveChangesAsync();
+
+        return Ok(new { challengeId, options });
+    }
+
+    public class AssertVerifyRequest
+    {
+        public string ChallengeId { get; set; } = string.Empty;
+        public AuthenticatorAssertionRawResponse Credential { get; set; } = null!;
+    }
+
+    // POST api/auth/webauthn/assert/verify
+    // Mirrors verify-password: proves identity against the CALLER'S EXISTING
+    // session (unlocking it if locked) and never creates a new UserSession row.
+    [AuthorizeToken]
+    [HttpPost("assert/verify")]
+    public async Task<IActionResult> AssertVerify([FromBody] AssertVerifyRequest request)
+    {
+        var username = HttpContext.Items["Username"] as string;
+        if (string.IsNullOrEmpty(username))
+        {
+            return Unauthorized(new { message = "User not found in session" });
+        }
+
+        var challenge = await _context.WebAuthnChallenges
+            .FirstOrDefaultAsync(c => c.Id == request.ChallengeId && c.Purpose == "assert" && c.Username == username);
+        if (challenge == null || challenge.ExpiresAt < DateTime.UtcNow)
+        {
+            return Unauthorized(new { message = "Verification challenge expired or invalid. Please try again." });
+        }
+        _context.WebAuthnChallenges.Remove(challenge);
+
+        var storedCred = await _context.WebAuthnCredentials
+            .FirstOrDefaultAsync(c => c.CredentialId == request.Credential.RawId && c.Username == username);
+        if (storedCred == null)
+        {
+            await _context.SaveChangesAsync();
+            return Unauthorized(new { message = "Unrecognized fingerprint credential." });
+        }
+
+        var options = AssertionOptions.FromJson(challenge.OptionsJson);
+        var fido2 = BuildFido2();
+        var expectedUserHandle = Encoding.UTF8.GetBytes(storedCred.Username);
+
+        IsUserHandleOwnerOfCredentialIdAsync callback = (args, cancellationToken) =>
+            Task.FromResult(args.UserHandle.SequenceEqual(expectedUserHandle));
+
+        dynamic result;
+        try
+        {
+            result = await fido2.MakeAssertionAsync(new MakeAssertionParams
+            {
+                AssertionResponse = request.Credential,
+                OriginalOptions = options,
+                StoredPublicKey = storedCred.PublicKey,
+                StoredSignatureCounter = (uint)storedCred.SignCount,
+                IsUserHandleOwnerOfCredentialIdCallback = callback
+            });
+        }
+        catch (Exception e)
+        {
+            await _context.SaveChangesAsync();
+            return Unauthorized(new { message = "Fingerprint verification failed: " + e.Message });
+        }
+
+        storedCred.SignCount = result.SignCount;
+
+        // Unlock the caller's existing session if it was locked (same effect
+        // as verify-password) -- no session row is created or replaced here.
+        if (Request.TryGetBearerToken(out var token) == BearerTokenResult.Ok)
+        {
+            var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
+            if (session != null)
+            {
+                session.IsLocked = false;
+            }
+        }
+
+        await _context.SaveChangesAsync();
+
+        return Ok(new { verified = true });
     }
 
     // GET api/auth/webauthn/credentials

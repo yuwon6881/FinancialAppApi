@@ -48,8 +48,9 @@ public class AuthorizeTokenAttribute : Attribute, IAsyncActionFilter
         if (session.IsLocked)
         {
             var path = context.HttpContext.Request.Path.Value ?? "";
-            if (!path.Contains("/auth/verify-password", StringComparison.OrdinalIgnoreCase) && 
-                !path.Contains("/auth/logout", StringComparison.OrdinalIgnoreCase))
+            if (!path.Contains("/auth/verify-password", StringComparison.OrdinalIgnoreCase) &&
+                !path.Contains("/auth/logout", StringComparison.OrdinalIgnoreCase) &&
+                !path.Contains("/auth/webauthn/assert/", StringComparison.OrdinalIgnoreCase))
             {
                 context.Result = new ObjectResult(new { message = "Session is locked" }) { StatusCode = 423 };
                 return;

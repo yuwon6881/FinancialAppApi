@@ -19,4 +19,10 @@ public class UserSession
 
     [Required]
     public bool IsLocked { get; set; } = false;
+
+    // Set only for sessions issued via WebAuthn login (null for password
+    // logins). Lets a fresh fingerprint login on the same enrolled device
+    // replace whatever session it last issued instead of piling up a new
+    // row every time local storage is cleared/reinstalled.
+    public byte[]? CredentialId { get; set; }
 }

@@ -269,6 +269,23 @@ public static class DbInitializer
             // Ignore if column already exists
         }
 
+        // Add CredentialId column to UserSessions if it does not yet exist
+        try
+        {
+            if (isPostgres)
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE \"UserSessions\" ADD COLUMN \"CredentialId\" BYTEA;");
+            }
+            else
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE [UserSessions] ADD COLUMN [CredentialId] BLOB;");
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore if column already exists
+        }
+
         // 1. Seed Transaction Categories if empty
         if (!context.TransactionCategories.Any())
         {

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
+using FinancialAppApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,6 +20,8 @@ builder.Services.AddDbContext<AppDbContext>(options =>
         options.UseSqlite(connectionString);
     }
 });
+
+builder.Services.AddHostedService<SessionCleanupService>();
 
 // Configure Swagger/OpenAPI
 builder.Services.AddEndpointsApiExplorer();
