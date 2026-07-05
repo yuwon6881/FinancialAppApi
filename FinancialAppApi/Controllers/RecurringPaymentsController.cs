@@ -34,7 +34,7 @@ public class RecurringPaymentsController : ControllerBase
         {
             Id = string.IsNullOrWhiteSpace(dto.Id) ? $"rec-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}" : dto.Id,
             Name = dto.Name,
-            Amount = ObfuscationHelper.Deobfuscate(dto.Amount),
+            Amount = Math.Round(ObfuscationHelper.Deobfuscate(dto.Amount), 2, MidpointRounding.AwayFromZero),
             Frequency = dto.Frequency,
             Category = dto.Category,
             LedgerCategory = dto.LedgerCategory,
@@ -83,7 +83,7 @@ public class RecurringPaymentsController : ControllerBase
         }
 
         existing.Name = dto.Name;
-        existing.Amount = ObfuscationHelper.Deobfuscate(dto.Amount);
+        existing.Amount = Math.Round(ObfuscationHelper.Deobfuscate(dto.Amount), 2, MidpointRounding.AwayFromZero);
         existing.Frequency = dto.Frequency;
         existing.Category = dto.Category;
         existing.LedgerCategory = dto.LedgerCategory;

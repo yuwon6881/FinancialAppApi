@@ -166,7 +166,7 @@ public class TransactionsController : ControllerBase
             Description = dto.Description,
             Category = dto.Category,
             LedgerCategory = dto.LedgerCategory,
-            Amount = ObfuscationHelper.Deobfuscate(dto.Amount),
+            Amount = Math.Round(ObfuscationHelper.Deobfuscate(dto.Amount), 2, MidpointRounding.AwayFromZero),
             RecurringPaymentId = dto.RecurringPaymentId
         };
 
@@ -200,7 +200,7 @@ public class TransactionsController : ControllerBase
         transaction.Description = dto.Description;
         transaction.Category = dto.Category;
         transaction.LedgerCategory = dto.LedgerCategory;
-        transaction.Amount = ObfuscationHelper.Deobfuscate(dto.Amount);
+        transaction.Amount = Math.Round(ObfuscationHelper.Deobfuscate(dto.Amount), 2, MidpointRounding.AwayFromZero);
         // Ledger edits (e.g. LedgerView) don't round-trip this field, so only overwrite it
         // when the caller explicitly sends one -- otherwise a manual edit would silently
         // sever the transaction's link back to its originating recurring payment.
@@ -271,7 +271,7 @@ public class TransactionsController : ControllerBase
         {
             if (decimal.TryParse(parts[i], out var pct) && pct > 0)
             {
-                var splitAmount = transaction.Amount * (pct / 100m);
+                var splitAmount = Math.Round(transaction.Amount * (pct / 100m), 2, MidpointRounding.AwayFromZero);
                 _context.Transactions.Add(new Transaction
                 {
                     Id = $"{transaction.Id}-split-{categories[i]}",
