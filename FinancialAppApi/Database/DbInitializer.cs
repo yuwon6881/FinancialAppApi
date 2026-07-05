@@ -286,6 +286,33 @@ public static class DbInitializer
             // Ignore if column already exists
         }
 
+        // Sanitize existing transactions and recurring payments (rounding to 2 decimal places)
+        var allTransactions = context.Transactions.ToList();
+        var isDbModified = false;
+        foreach (var tx in allTransactions)
+        {
+            var roundedAmount = Math.Round(tx.Amount, 2, MidpointRounding.AwayFromZero);
+            if (tx.Amount != roundedAmount)
+            {
+                tx.Amount = roundedAmount;
+                isDbModified = true;
+            }
+        }
+        var allRecurring = context.RecurringPayments.ToList();
+        foreach (var rp in allRecurring)
+        {
+            var roundedAmount = Math.Round(rp.Amount, 2, MidpointRounding.AwayFromZero);
+            if (rp.Amount != roundedAmount)
+            {
+                rp.Amount = roundedAmount;
+                isDbModified = true;
+            }
+        }
+        if (isDbModified)
+        {
+            context.SaveChanges();
+        }
+
         // 1. Seed Transaction Categories if empty
         if (!context.TransactionCategories.Any())
         {
