@@ -113,6 +113,21 @@ public static class DbInitializer
         {
             // Ignore if column already exists
         }
+        try
+        {
+            if (isPostgres)
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"StabilityOverflowRedirect\" text NOT NULL DEFAULT 'Split: Growth 50%, Rewards 50%';");
+            }
+            else
+            {
+                context.Database.ExecuteSqlRaw("ALTER TABLE [FinancialSettings] ADD COLUMN [StabilityOverflowRedirect] TEXT NOT NULL DEFAULT 'Split: Growth 50%, Rewards 50%';");
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore if column already exists
+        }
 
         // Add RecurringPaymentId column to Transactions if it does not yet exist
         try

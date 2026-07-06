@@ -28,6 +28,8 @@ public class FinancialSetting
     [Required]
     public decimal RewardsAlloc { get; set; } = 0.10m;
 
+    public string StabilityOverflowRedirect { get; set; } = "Split: Growth 50%, Rewards 50%";
+
     [Required]
     public int CycleDay { get; set; } = 28; // Day of the month representing the cycle start (e.g. 28th)
 
