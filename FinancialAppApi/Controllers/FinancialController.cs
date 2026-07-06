@@ -582,7 +582,8 @@ public class FinancialController : ControllerBase
                 cycleDay = setting.CycleDay,
                 darkMode = setting.DarkMode,
                 hideSensitive = setting.HideSensitive,
-                currency = setting.Currency
+                currency = setting.Currency,
+                stabilityOverflowRedirect = setting.StabilityOverflowRedirect
             },
             cycleLabel = selectedCycleLabel,
             categories,
@@ -647,6 +648,10 @@ public class FinancialController : ControllerBase
         if (updateDto.VibrationEnabled.HasValue)
         {
             setting.VibrationEnabled = updateDto.VibrationEnabled.Value;
+        }
+        if (!string.IsNullOrEmpty(updateDto.StabilityOverflowRedirect))
+        {
+            setting.StabilityOverflowRedirect = updateDto.StabilityOverflowRedirect;
         }
         setting.Currency = updateDto.Currency;
 
@@ -755,6 +760,7 @@ public class UpdateSettingsDto
     public bool? HideSensitive { get; set; }
     public bool? VibrationEnabled { get; set; }
     public string Currency { get; set; } = "USD";
+    public string? StabilityOverflowRedirect { get; set; }
 }
 
 public class UpdateDarkModeDto
