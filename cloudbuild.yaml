@@ -26,8 +26,8 @@ steps:
       - '-c'
       - |
         set -euo pipefail
-        export PATH="$PATH:/root/.dotnet/tools"
-        export ConnectionStrings__DefaultConnection="$DB_CONNECTION"
+        export PATH="$$PATH:/root/.dotnet/tools"
+        export ConnectionStrings__DefaultConnection="$$DB_CONNECTION"
         cd FinancialAppApi
         dotnet tool install --global dotnet-ef --version 10.0.8
         dotnet ef database update
