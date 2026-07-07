@@ -27,3 +27,11 @@ public class Transaction
     // historical cycles can still be identified as subscription payments.
     public string? RecurringPaymentId { get; set; }
 }
+
+public class AutocompleteSuggestion
+{
+    public string Description { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public string LedgerCategory { get; set; } = string.Empty;
+    public string TxType { get; set; } = string.Empty;
+}

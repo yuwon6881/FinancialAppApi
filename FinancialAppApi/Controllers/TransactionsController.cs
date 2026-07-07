@@ -98,6 +98,42 @@ public class TransactionsController : ControllerBase
         return Ok(filtered);
     }
 
+    // GET: api/transactions/autocomplete
+    [HttpGet("autocomplete")]
+    public async Task<IActionResult> GetAutocompleteSuggestions()
+    {
+        var recentTxs = await _context.Transactions
+            .Where(t => t.LedgerCategory != "Discarded")
+            .OrderByDescending(t => t.Date)
+            .ThenByDescending(t => t.Id)
+            .Take(1000)
+            .Select(t => new { t.Description, t.Category, t.LedgerCategory, t.Amount })
+            .ToListAsync();
+
+        var suggestions = new List<AutocompleteSuggestion>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var tx in recentTxs)
+        {
+            var txType = tx.Amount >= 0 ? "inflow" : "outflow";
+            var key = $"{txType}:{tx.Description.Trim()}";
+            
+            if (!seen.Contains(key))
+            {
+                seen.Add(key);
+                suggestions.Add(new AutocompleteSuggestion
+                {
+                    Description = tx.Description.Trim(),
+                    Category = tx.Category,
+                    LedgerCategory = tx.LedgerCategory,
+                    TxType = txType
+                });
+            }
+        }
+
+        return Ok(suggestions);
+    }
+
     // GET: api/transactions/export
     [HttpGet("export")]
     public async Task<IActionResult> ExportTransactions(
