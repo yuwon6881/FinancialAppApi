@@ -117,6 +117,7 @@ Return only the JSON object.";
             model = "gemini-3.5-flash";
         var geminiUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}";
 
+        string? rawText = null;
         try
         {
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, geminiUrl);
@@ -139,6 +140,7 @@ Return only the JSON object.";
             }
 
             var responseBody = await response.Content.ReadAsStringAsync();
+            rawText = responseBody;
 
             // Parse Gemini response and extract the text content
             using var geminiDoc = JsonDocument.Parse(responseBody);
@@ -148,6 +150,8 @@ Return only the JSON object.";
                 .GetProperty("parts")[0]
                 .GetProperty("text")
                 .GetString() ?? "";
+
+            rawText = text;
 
             // Strip markdown code fences if Gemini wrapped the JSON
             text = text.Trim();
@@ -203,8 +207,8 @@ Return only the JSON object.";
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning(ex, "Failed to parse Gemini response as JSON");
-            return StatusCode(502, new { message = "Could not read the receipt. Please try a clearer photo." });
+            _logger.LogWarning(ex, "Failed to parse Gemini response as JSON. Raw text: {RawText}", rawText);
+            return StatusCode(502, new { message = "Could not read the receipt. Please try a clearer photo.", rawResponse = rawText });
         }
         catch (Exception ex)
         {
