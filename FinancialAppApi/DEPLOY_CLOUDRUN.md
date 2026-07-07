@@ -55,6 +55,27 @@ gcloud run deploy financialapp-api \
 - `--allow-unauthenticated` is required — this is a public API guarded by its own
   bearer-token auth, not Google IAM.
 
+## Baseline an existing database before first deploy
+This app now uses EF Core migrations instead of the old startup `DbInitializer`.
+If the target Postgres database already has the current schema, mark the baseline
+migration as applied before the first Cloud Run boot:
+
+```sql
+CREATE TABLE IF NOT EXISTS "__EFMigrationsHistory" (
+    "MigrationId" varchar(150) NOT NULL,
+    "ProductVersion" varchar(32) NOT NULL,
+    CONSTRAINT "PK___EFMigrationsHistory" PRIMARY KEY ("MigrationId")
+);
+
+INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+VALUES ('20260707120000_InitialCreate', '10.0.8')
+ON CONFLICT DO NOTHING;
+```
+
+Back up or restore into a scratch database first. If you point this app at an
+empty Postgres database, leave the history table alone and EF will create the
+schema on startup.
+
 ## After first deploy
 1. Cloud Run prints a service URL (`https://financialapp-api-*.run.app`).
 2. Point the Vercel frontend's API base URL at it.
@@ -66,6 +87,6 @@ gcloud run deploy financialapp-api \
 ## Notes carried over from the migration
 - The background session sweeper was removed; expired rows are pruned lazily on
   auth activity and live sessions are bounded per device, so scale-to-zero is safe.
-- `DbInitializer` still runs its idempotent schema checks on every cold start.
-  It's safe but does a handful of DB round-trips per boot; migrating it to EF Core
-  migrations later would trim cold-start latency.
+- EF Core migrations run on startup by default via `Database:MigrateOnStartup`.
+  For stricter production deploys, set that value to `false` and run
+  `dotnet ef database update` or an idempotent migration script as a deploy step.

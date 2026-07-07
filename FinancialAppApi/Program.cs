@@ -15,18 +15,16 @@ if (!string.IsNullOrEmpty(port))
 // Add services to the container.
 builder.Services.AddControllers();
 
-// Configure SQLite or PostgreSQL database dynamically
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? "";
+// Configure PostgreSQL database
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+if (string.IsNullOrWhiteSpace(connectionString))
+{
+    throw new InvalidOperationException("ConnectionStrings:DefaultConnection must be configured.");
+}
+
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
-    if (connectionString.Contains("Host=") || connectionString.Contains("Server=") || connectionString.Contains("Port="))
-    {
-        options.UseNpgsql(connectionString);
-    }
-    else
-    {
-        options.UseSqlite(connectionString);
-    }
+    options.UseNpgsql(connectionString);
 });
 
 // Expired sessions/challenges are pruned lazily on auth activity (login,
@@ -81,21 +79,27 @@ app.MapGet("/api/ping", () => Results.Ok(new { status = "healthy", timestamp = D
 
 app.MapControllers();
 
-// Database initialization and seeding
+// Database migration and seeding
 using (var scope = app.Services.CreateScope())
 {
     var services = scope.ServiceProvider;
     try
     {
         var context = services.GetRequiredService<AppDbContext>();
-        DbInitializer.Initialize(context);
+        if (app.Configuration.GetValue("Database:MigrateOnStartup", true))
+        {
+            context.Database.Migrate();
+        }
+
+        DbSeeder.Seed(context);
     }
     catch (Exception ex)
     {
-        Console.WriteLine("CRITICAL DATABASE INITIALIZATION ERROR:");
+        Console.WriteLine("CRITICAL DATABASE MIGRATION/SEEDING ERROR:");
         Console.WriteLine(ex.ToString());
         var logger = services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "An error occurred while seeding the database.");
+        logger.LogError(ex, "An error occurred while migrating or seeding the database.");
+        throw;
     }
 }
 
