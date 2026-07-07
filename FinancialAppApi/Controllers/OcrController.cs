@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using FinancialAppApi.Database;
 using FinancialAppApi.Filters;
 using System.Net.Http.Headers;
 using System.Text;
@@ -13,6 +15,7 @@ public class OcrController : ControllerBase
 {
     private readonly IConfiguration _configuration;
     private readonly ILogger<OcrController> _logger;
+    private readonly AppDbContext _context;
 
     // Reuse one HttpClient for the lifetime of the controller (singleton via DI would
     // be cleaner but this avoids touching Program.cs / DI setup for a single client).
@@ -21,10 +24,11 @@ public class OcrController : ControllerBase
         Timeout = TimeSpan.FromSeconds(30)
     };
 
-    public OcrController(IConfiguration configuration, ILogger<OcrController> logger)
+    public OcrController(IConfiguration configuration, ILogger<OcrController> logger, AppDbContext context)
     {
         _configuration = configuration;
         _logger = logger;
+        _context = context;
     }
 
     [HttpPost("scan-receipt")]
@@ -37,6 +41,13 @@ public class OcrController : ControllerBase
         var apiKey = _configuration["GeminiApiKey"];
         if (string.IsNullOrWhiteSpace(apiKey))
             return StatusCode(503, new { message = "OCR service is not configured. Ask your administrator to set the GeminiApiKey." });
+
+        var categories = await _context.TransactionCategories
+            .OrderBy(c => c.Name)
+            .Select(c => c.Name)
+            .ToListAsync();
+
+        var validLedgerCategories = new[] { "Essentials", "Growth", "Stability", "Rewards", "Income" };
 
         // Convert upload to base64
         string base64Image;
@@ -55,26 +66,26 @@ public class OcrController : ControllerBase
         };
 
         // Build Gemini request payload
-        var prompt = @"You are a receipt/invoice OCR assistant for a personal finance app.
+        var prompt = $@"You are a receipt/invoice OCR assistant for a personal finance app.
 Analyze this receipt image and extract the following fields. Return ONLY valid JSON, no markdown, no explanation.
 
 JSON schema:
-{
+{{
   ""description"": ""<merchant name or brief description of purchase, e.g. 'McDonald's', 'Grab Ride', 'Electricity Bill'>"",
   ""amount"": <numeric value, positive number, e.g. 24.50 — extract the TOTAL amount paid>,
   ""date"": ""<ISO date string YYYY-MM-DD if visible on receipt, otherwise null>"",
-  ""category"": ""<best-fit subcategory, e.g. 'Food & Dining', 'Transport', 'Utilities', 'Groceries', 'Shopping', 'Entertainment', 'Healthcare' — pick the most appropriate>"",
-  ""ledgerCategory"": ""<one of: Essentials, Growth, Stability, Rewards — pick based on spending type: Essentials for bills/food/transport/utilities, Rewards for dining-out/entertainment/shopping, Growth for investments/education, Stability for savings/insurance>"",
+  ""category"": ""<best-fit subcategory — MUST be one of the listed categories: {string.Join(", ", categories)} (fallback to 'Other')>"",
+  ""ledgerCategory"": ""<best-fit ledger category — MUST be one of: {string.Join(", ", validLedgerCategories)}>"",
   ""txType"": ""outflow"",
   ""confidence"": <0.0 to 1.0 indicating how confident you are in the extracted data>
-}
+}}
 
 Rules:
 - description: use the merchant/store name if visible; otherwise describe the purchase type
 - amount: extract the final TOTAL amount (after tax/tip if applicable); return as a plain number
 - date: only return a date if you can clearly read it on the receipt; otherwise null
-- category: pick the single most fitting category
-- ledgerCategory: most receipts are Essentials (food, transport, utilities) or Rewards (restaurants, entertainment)
+- category: pick the single most fitting category from this exact list: {string.Join(", ", categories)}. Do not make up your own category name.
+- ledgerCategory: pick the single most fitting ledger category from this list: {string.Join(", ", validLedgerCategories)} (Essentials is typically for food/transport/bills, Rewards for entertainment/shopping, Growth for investments/education, Stability for savings/insurance, Income for salary/inflows).
 - txType: always ""outflow"" for receipts (receipts are purchases)
 - If you cannot read the receipt clearly, still return your best guess with a low confidence score
 
@@ -194,7 +205,6 @@ Return only the JSON object.";
                 : 0.5;
 
             // Validate ledgerCategory is one of the allowed values
-            var validLedgerCategories = new[] { "Essentials", "Growth", "Stability", "Rewards", "Income" };
             if (!validLedgerCategories.Contains(ledgerCategory))
                 ledgerCategory = "Essentials";
 
