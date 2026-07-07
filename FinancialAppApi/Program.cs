@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
 
 var builder = WebApplication.CreateBuilder(args);
+var seedDatabase = args.Contains("--seed-database", StringComparer.OrdinalIgnoreCase);
 
 // Cloud Run (and most container PaaS) tell the app which port to listen on
 // via the PORT env var. Bind to it when present; otherwise fall back to the
@@ -79,27 +80,42 @@ app.MapGet("/api/ping", () => Results.Ok(new { status = "healthy", timestamp = D
 
 app.MapControllers();
 
-// Database migration and seeding
-using (var scope = app.Services.CreateScope())
+// Database maintenance is normally handled during deployment. Keeping it out
+// of Cloud Run startup avoids failed rollouts when the database connection is
+// briefly slow during the revision health check.
+var migrateOnStartup = app.Configuration.GetValue("Database:MigrateOnStartup", false);
+var seedOnStartup = app.Configuration.GetValue("Database:SeedOnStartup", false);
+if (migrateOnStartup || seedOnStartup || seedDatabase)
 {
-    var services = scope.ServiceProvider;
-    try
+    using (var scope = app.Services.CreateScope())
     {
-        var context = services.GetRequiredService<AppDbContext>();
-        if (app.Configuration.GetValue("Database:MigrateOnStartup", true))
+        var services = scope.ServiceProvider;
+        try
         {
-            context.Database.Migrate();
-        }
+            var context = services.GetRequiredService<AppDbContext>();
+            if (migrateOnStartup)
+            {
+                context.Database.Migrate();
+            }
 
-        DbSeeder.Seed(context);
+            if (seedOnStartup || seedDatabase)
+            {
+                DbSeeder.Seed(context);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("CRITICAL DATABASE MIGRATION/SEEDING ERROR:");
+            Console.WriteLine(ex.ToString());
+            var logger = services.GetRequiredService<ILogger<Program>>();
+            logger.LogError(ex, "An error occurred while migrating or seeding the database.");
+            throw;
+        }
     }
-    catch (Exception ex)
+
+    if (seedDatabase)
     {
-        Console.WriteLine("CRITICAL DATABASE MIGRATION/SEEDING ERROR:");
-        Console.WriteLine(ex.ToString());
-        var logger = services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "An error occurred while migrating or seeding the database.");
-        throw;
+        return;
     }
 }
 

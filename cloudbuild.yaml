@@ -32,6 +32,7 @@ steps:
         dotnet tool install --global dotnet-ef --version 10.0.8
         dotnet restore
         dotnet ef database update
+        dotnet run --no-launch-profile --no-build -- --seed-database
     id: Migrate
     waitFor:
       - Push
@@ -46,7 +47,7 @@ steps:
       - '--image=asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api:$COMMIT_SHA'
       - '--region=asia-southeast1'
       - '--platform=managed'
-      - '--update-env-vars=Database__MigrateOnStartup=false'
+      - '--update-env-vars=Database__MigrateOnStartup=false,Database__SeedOnStartup=false'
     id: Deploy
     waitFor:
       - Migrate
