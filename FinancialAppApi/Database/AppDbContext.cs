@@ -32,6 +32,7 @@ public class AppDbContext : DbContext
     public DbSet<WishlistItem> WishlistItems => Set<WishlistItem>();
     public DbSet<WebAuthnCredential> WebAuthnCredentials => Set<WebAuthnCredential>();
     public DbSet<WebAuthnChallenge> WebAuthnChallenges => Set<WebAuthnChallenge>();
+    public DbSet<ReceiptScanJob> ReceiptScanJobs => Set<ReceiptScanJob>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -76,6 +77,13 @@ public class AppDbContext : DbContext
             entity.Property(e => e.IsPurchased).HasDefaultValue(false);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
             entity.Property(e => e.IsActive).HasDefaultValue(false);
+        });
+
+        modelBuilder.Entity<ReceiptScanJob>(entity =>
+        {
+            entity.Property(e => e.Status).HasDefaultValue("queued");
+            entity.Property(e => e.MimeType).HasDefaultValue("image/jpeg");
+            entity.HasIndex(e => new { e.Username, e.Status, e.CreatedAt });
         });
     }
 }

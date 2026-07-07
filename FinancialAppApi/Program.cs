@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
+using FinancialAppApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 var seedDatabase = args.Contains("--seed-database", StringComparer.OrdinalIgnoreCase);
@@ -15,6 +16,8 @@ if (!string.IsNullOrEmpty(port))
 
 // Add services to the container.
 builder.Services.AddControllers();
+builder.Services.AddScoped<ReceiptScanProcessor>();
+builder.Services.AddSingleton<ReceiptScanTaskDispatcher>();
 
 // Configure PostgreSQL database
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
