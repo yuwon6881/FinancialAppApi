@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
+using FinancialAppApi.Services;
 using System.Globalization;
 using System.Text;
 
@@ -14,10 +15,40 @@ namespace FinancialAppApi.Controllers;
 public class TransactionsController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly CycleBalanceService _cycleBalanceService;
 
-    public TransactionsController(AppDbContext context)
+    public TransactionsController(AppDbContext context, CycleBalanceService cycleBalanceService)
     {
         _context = context;
+        _cycleBalanceService = cycleBalanceService;
+    }
+
+    // Invalidates every cached cycle balance snapshot at or after the cycle a given transaction
+    // date falls in -- a no-op if settings (and therefore CycleDay) don't exist yet, since in
+    // that case no snapshots have ever been computed either.
+    private async Task InvalidateCycleBalancesFromAsync(DateOnly date)
+    {
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+        if (setting == null) return;
+
+        var (year, monthIndex) = FinancialController.GetCycleYearAndMonthIndexForDate(date, setting.CycleDay);
+        await _cycleBalanceService.InvalidateFromAsync(year, monthIndex);
+    }
+
+    // Persists the pending transaction change and invalidates the affected cycle balance cache
+    // as one atomic database transaction. This app can be signed in on multiple devices at once,
+    // and the cache lives in the shared database (not per-device) -- without this, a dashboard
+    // read from another device landing in the gap between "transaction saved" and "cache
+    // invalidated" (two otherwise-separate commits) could see the new transaction data paired
+    // with a stale, not-yet-invalidated balance. Wrapping both in one transaction means any
+    // reader under Postgres's default Read Committed isolation sees either the fully-old state
+    // or the fully-new-and-invalidated state, never the in-between.
+    private async Task SaveAndInvalidateCycleBalancesAsync(DateOnly earliestAffectedDate)
+    {
+        await using var dbTransaction = await _context.Database.BeginTransactionAsync();
+        await _context.SaveChangesAsync();
+        await InvalidateCycleBalancesFromAsync(earliestAffectedDate);
+        await dbTransaction.CommitAsync();
     }
 
     // GET: api/transactions
@@ -208,7 +239,7 @@ public class TransactionsController : ControllerBase
         _context.Transactions.Add(transaction);
         AddIncomeSplitTransactions(transaction, splitSpec);
 
-        await _context.SaveChangesAsync();
+        await SaveAndInvalidateCycleBalancesAsync(transaction.Date);
 
         return CreatedAtAction(nameof(GetTransactions), new { id = transaction.Id }, MapToDto(transaction));
     }
@@ -227,6 +258,11 @@ public class TransactionsController : ControllerBase
         {
             return BadRequest(new { message = "Date must be in yyyy-MM-dd format." });
         }
+
+        // A backdated edit (date moved earlier) or a forward-dated correction (date moved later)
+        // both invalidate every cached cycle balance from whichever date is earlier -- the old
+        // cycle's running total no longer includes this transaction, and the new cycle's does.
+        var originalDate = transaction.Date;
 
         // Delete existing splits first
         var existingSplits = await _context.Transactions
@@ -247,7 +283,7 @@ public class TransactionsController : ControllerBase
         var splitSpec = await ResolveIncomeSplitSpecAsync(transaction);
         AddIncomeSplitTransactions(transaction, splitSpec);
 
-        await _context.SaveChangesAsync();
+        await SaveAndInvalidateCycleBalancesAsync(originalDate < putDate ? originalDate : putDate);
         return NoContent();
     }
 
@@ -267,7 +303,7 @@ public class TransactionsController : ControllerBase
         _context.Transactions.RemoveRange(splits);
 
         _context.Transactions.Remove(transaction);
-        await _context.SaveChangesAsync();
+        await SaveAndInvalidateCycleBalancesAsync(transaction.Date);
 
         return NoContent();
     }

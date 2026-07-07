@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
+using FinancialAppApi.Services;
 
 namespace FinancialAppApi.Controllers;
 
@@ -12,12 +13,14 @@ namespace FinancialAppApi.Controllers;
 public class FinancialController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly CycleBalanceService _cycleBalanceService;
 
     private static readonly string[] Months = FinancialConstants.MonthAbbreviations;
 
-    public FinancialController(AppDbContext context)
+    public FinancialController(AppDbContext context, CycleBalanceService cycleBalanceService)
     {
         _context = context;
+        _cycleBalanceService = cycleBalanceService;
     }
 
     private static List<object> ObfuscateTrendPoints(List<(string month, decimal balance)> points) =>
@@ -25,6 +28,18 @@ public class FinancialController : ControllerBase
 
     private static List<object> ObfuscateBreakdown(List<(string category, decimal amount)> breakdown) =>
         breakdown.Select(b => (object)new { category = b.category, amount = ObfuscationHelper.Obfuscate(b.amount) }).ToList();
+
+    // Fetches only one cycle's transactions (indexed by Date), bounding cost to that cycle's row
+    // count regardless of total transaction history.
+    private async Task<List<Transaction>> GetTransactionsForCycleAsync(int year, int monthIndex, int cycleDay)
+    {
+        var (start, end, _) = GetCycleRange(year, monthIndex, cycleDay);
+        var startDate = DateOnly.FromDateTime(start);
+        var endDate = DateOnly.FromDateTime(end);
+        return await _context.Transactions
+            .Where(t => t.Date >= startDate && t.Date <= endDate)
+            .ToListAsync();
+    }
 
     private async Task<FinancialSetting> GetOrCreateSettingAsync()
     {
@@ -155,6 +170,15 @@ public class FinancialController : ControllerBase
 
     private static (string month, int year) GetCycleMonthAndYearForDate(DateTime date, int cycleDay)
     {
+        var (year, monthIdx) = GetCycleYearAndMonthIndexForDate(DateOnly.FromDateTime(date), cycleDay);
+        return (Months[monthIdx - 1], year);
+    }
+
+    // Same cycle-membership rule as GetCycleMonthAndYearForDate, but returns the numeric month
+    // index directly instead of routing through the month-abbreviation array -- used by callers
+    // (CycleBalanceService, transaction mutation invalidation) that key cycles as (year, monthIndex).
+    public static (int year, int monthIndex) GetCycleYearAndMonthIndexForDate(DateOnly date, int cycleDay)
+    {
         int year = date.Year;
         int monthIdx = date.Month; // 1-indexed
 
@@ -168,7 +192,7 @@ public class FinancialController : ControllerBase
             }
         }
 
-        return (Months[monthIdx - 1], year);
+        return (year, monthIdx);
     }
 
     // GET: api/financial/dashboard
@@ -224,7 +248,6 @@ public class FinancialController : ControllerBase
             await _context.SaveChangesAsync();
         }
 
-        var allTransactions = await _context.Transactions.ToListAsync();
         var allRecurring = await _context.RecurringPayments.ToListAsync();
 
         var activeMonthIndex = Array.IndexOf(Months, activeMonth) + 1;
@@ -232,106 +255,42 @@ public class FinancialController : ControllerBase
 
         var year = activeYear;
 
-        // Initial starting balances at the start of the baseline year (January 2026 or selected startYear)
-        var essentialsBalance = 0.00m;
-        var growthBalance = 0.00m;
-        var stabilityBalance = 0.00m; // Default starting balance set to 0 as requested
-        var rewardsBalance = 0.00m;
-
-        var trendPoints = new List<(string month, decimal balance)>();
-        
-        // Category details for the selected active month
-        decimal selectedBudgetEssentials = 0;
-        decimal selectedBudgetGrowth = 0;
-        decimal selectedBudgetStability = 0;
-        decimal selectedBudgetRewards = 0;
-
-        decimal selectedNetEssentials = 0;
-        decimal selectedNetGrowth = 0;
-        decimal selectedNetStability = 0;
-        decimal selectedNetRewards = 0;
-
-        List<Transaction> activeCycleTxs = new();
-
-        decimal selectedRemEssentials = 0;
-        decimal selectedRemGrowth = 0;
-        decimal selectedRemStability = 0;
-        decimal selectedRemRewards = 0;
-
-        string selectedCycleLabel = string.Empty;
-
-        int startYear = Math.Min(2026, activeYear);
-
-        // Roll balances forward chronologically month-by-month and year-by-year cycles
-        for (int y = startYear; y <= activeYear; y++)
-        {
-            for (int m = 1; m <= 12; m++)
-            {
-                var (cycleStart, cycleEnd, cycleLabel) = GetCycleRange(y, m, cycleDay);
-
-                if (y == activeYear && m == activeMonthIndex)
-                {
-                    selectedCycleLabel = cycleLabel;
-                }
-
-                // 1. Starting Budgets for the cycle
-                var mBudgetEssentials = essentialsBalance;
-                var mBudgetGrowth = growthBalance;
-                var mBudgetStability = stabilityBalance;
-                var mBudgetRewards = rewardsBalance;
-
-                if (y == activeYear && m == activeMonthIndex)
-                {
-                    selectedBudgetEssentials = mBudgetEssentials;
-                    selectedBudgetGrowth = mBudgetGrowth;
-                    selectedBudgetStability = mBudgetStability;
-                    selectedBudgetRewards = mBudgetRewards;
-                }
-
-                // 2. Filter transactions strictly within the cycle [cycleStart, cycleEnd]
-                var cycleStartDate = DateOnly.FromDateTime(cycleStart);
-                var cycleEndDate = DateOnly.FromDateTime(cycleEnd);
-                var cycleTxs = allTransactions.Where(t => t.Date >= cycleStartDate && t.Date <= cycleEndDate).ToList();
-
-                // Calculate category Net Changes in this cycle using LedgerCategory
-                var netEssentials = cycleTxs.Sum(t => GetCategoryAmount(t, "Essentials"));
-                var netGrowth = cycleTxs.Sum(t => GetCategoryAmount(t, "Growth"));
-                var netStability = cycleTxs.Sum(t => GetCategoryAmount(t, "Stability"));
-                var netRewards = cycleTxs.Sum(t => GetCategoryAmount(t, "Rewards"));
-
-                if (y == activeYear && m == activeMonthIndex)
-                {
-                    selectedNetEssentials = netEssentials;
-                    selectedNetGrowth = netGrowth;
-                    selectedNetStability = netStability;
-                    selectedNetRewards = netRewards;
-                    activeCycleTxs = cycleTxs;
-                }
-
-                // 3. Ending Balances for the cycle
-                essentialsBalance = mBudgetEssentials + netEssentials;
-                growthBalance = mBudgetGrowth + netGrowth;
-                stabilityBalance = mBudgetStability + netStability;
-                rewardsBalance = mBudgetRewards + netRewards;
-
-                if (y == activeYear && m == activeMonthIndex)
-                {
-                    selectedRemEssentials = essentialsBalance;
-                    selectedRemGrowth = growthBalance;
-                    selectedRemStability = stabilityBalance;
-                    selectedRemRewards = rewardsBalance;
-                }
-
-                // Record trend point for the active year (Growth category only)
-                if (y == activeYear && m <= activeMonthIndex)
-                {
-                    trendPoints.Add((Months[m - 1], growthBalance));
-                }
-            }
-        }
-
-        // Active cycle range (the transactions for it were already captured during the roll-forward loop above)
+        // Active cycle range and its own transactions (bounded to one cycle, indexed by Date)
         var activeRange = GetCycleRange(year, activeMonthIndex, cycleDay);
+        var activeRangeStartDate = DateOnly.FromDateTime(activeRange.start);
+        var activeRangeEndDate = DateOnly.FromDateTime(activeRange.end);
+        var activeCycleTxs = await _context.Transactions
+            .Where(t => t.Date >= activeRangeStartDate && t.Date <= activeRangeEndDate)
+            .ToListAsync();
+
+        string selectedCycleLabel = activeRange.label;
+
+        // Opening balance = cached ending balance of the cycle immediately before this one
+        // (computed/cached on demand -- only the gap since the last cached cycle is replayed).
+        var (selectedBudgetEssentials, selectedBudgetGrowth, selectedBudgetStability, selectedBudgetRewards) =
+            await _cycleBalanceService.GetOpeningBalanceAsync(year, activeMonthIndex, cycleDay);
+
+        // Net changes for this cycle using LedgerCategory (same attribution rules the cached
+        // snapshots use, see FinancialController.GetCategoryAmount)
+        var selectedNetEssentials = activeCycleTxs.Sum(t => GetCategoryAmount(t, "Essentials"));
+        var selectedNetGrowth = activeCycleTxs.Sum(t => GetCategoryAmount(t, "Growth"));
+        var selectedNetStability = activeCycleTxs.Sum(t => GetCategoryAmount(t, "Stability"));
+        var selectedNetRewards = activeCycleTxs.Sum(t => GetCategoryAmount(t, "Rewards"));
+
+        var selectedRemEssentials = selectedBudgetEssentials + selectedNetEssentials;
+        var selectedRemGrowth = selectedBudgetGrowth + selectedNetGrowth;
+        var selectedRemStability = selectedBudgetStability + selectedNetStability;
+        var selectedRemRewards = selectedBudgetRewards + selectedNetRewards;
+
+        // Cache this cycle's own ending balance too, then read back every cycle from January of
+        // the active year through the active month for the Growth trend line -- all cache hits
+        // except for a genuinely new cycle, which the Ensure call above just backfilled.
+        await _cycleBalanceService.EnsureComputedThroughAsync(year, activeMonthIndex, cycleDay);
+        var trendRows = await _context.CycleBalances
+            .Where(b => b.Year == activeYear && b.MonthIndex <= activeMonthIndex)
+            .OrderBy(b => b.MonthIndex)
+            .ToListAsync();
+        var trendPoints = trendRows.Select(r => (Months[r.MonthIndex - 1], r.GrowthBalance)).ToList();
 
         // Target allocations and budgets (using actual cycle income)
         var selectedCycleIncome = activeCycleTxs
@@ -407,13 +366,10 @@ public class FinancialController : ControllerBase
                 // FirstOrDefault with no ordering isn't guaranteed stable if more than one
                 // transaction ends up matching (e.g. duplicate/manually-backfilled data) -- order
                 // deterministically and prefer a real payment over a discard marker so the
-                // result can't flip between requests.
-                var activeRangeStartDate = DateOnly.FromDateTime(activeRange.start);
-                var activeRangeEndDate = DateOnly.FromDateTime(activeRange.end);
-                var paidTx = allTransactions
-                    .Where(t =>
-                        t.RecurringPaymentId == rp.Id &&
-                        t.Date >= activeRangeStartDate && t.Date <= activeRangeEndDate)
+                // result can't flip between requests. activeCycleTxs is already scoped to
+                // exactly [activeRangeStartDate, activeRangeEndDate], so no extra query is needed.
+                var paidTx = activeCycleTxs
+                    .Where(t => t.RecurringPaymentId == rp.Id)
                     .OrderBy(t => string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
                     .ThenBy(t => t.Date)
                     .ThenBy(t => t.Id, StringComparer.Ordinal)
@@ -461,35 +417,28 @@ public class FinancialController : ControllerBase
         var yearlyTxs = new List<Transaction>();
         for (int m = 1; m <= 12; m++)
         {
-            var range = GetCycleRange(activeYear, m, cycleDay);
-            var rangeStartDate = DateOnly.FromDateTime(range.start);
-            var rangeEndDate = DateOnly.FromDateTime(range.end);
-            var cycleTxsForMonth = allTransactions.Where(t => t.Date >= rangeStartDate && t.Date <= rangeEndDate);
-            yearlyTxs.AddRange(cycleTxsForMonth);
+            yearlyTxs.AddRange(await GetTransactionsForCycleAsync(activeYear, m, cycleDay));
         }
 
         var yearlyCategoryBreakdown = BuildBreakdown(yearlyTxs);
 
         // Helper: collect outflow transactions over a span of N cycles ending at the active cycle
-        List<Transaction> GetTxsForLastNCycles(int n)
+        async Task<List<Transaction>> GetTxsForLastNCycles(int n)
         {
             var result = new List<Transaction>();
             int curMonth = activeMonthIndex;
             int curYear = activeYear;
             for (int i = 0; i < n; i++)
             {
-                var range = GetCycleRange(curYear, curMonth, cycleDay);
-                var rangeStartDate = DateOnly.FromDateTime(range.start);
-                var rangeEndDate = DateOnly.FromDateTime(range.end);
-                result.AddRange(allTransactions.Where(t => t.Date >= rangeStartDate && t.Date <= rangeEndDate));
+                result.AddRange(await GetTransactionsForCycleAsync(curYear, curMonth, cycleDay));
                 curMonth--;
                 if (curMonth < 1) { curMonth = 12; curYear--; }
             }
             return result;
         }
 
-        var last3CategoryBreakdown = BuildBreakdown(GetTxsForLastNCycles(3));
-        var last6CategoryBreakdown = BuildBreakdown(GetTxsForLastNCycles(6));
+        var last3CategoryBreakdown = BuildBreakdown(await GetTxsForLastNCycles(3));
+        var last6CategoryBreakdown = BuildBreakdown(await GetTxsForLastNCycles(6));
 
         // Slice last 3 / last 6 trend points from the accumulated trendPoints list
         var trendPointsList = trendPoints.ToList();
@@ -500,8 +449,8 @@ public class FinancialController : ControllerBase
             ? trendPointsList.GetRange(trendPointsList.Count - 3, 3)
             : trendPointsList.ToList();
 
-        var availableYears = allTransactions
-            .Select(t => t.Date.Year)
+        var transactionYears = await _context.Transactions.Select(t => t.Date.Year).Distinct().ToListAsync();
+        var availableYears = transactionYears
             .Append(DateTime.Now.Year)
             .Distinct()
             .OrderBy(y => y)
@@ -515,10 +464,7 @@ public class FinancialController : ControllerBase
 
         for (int i = 0; i < 3; i++)
         {
-            var range = GetCycleRange(tempYear, tempMonth, cycleDay);
-            var rangeStartDate = DateOnly.FromDateTime(range.start);
-            var rangeEndDate = DateOnly.FromDateTime(range.end);
-            var cycleTxsForMonth = allTransactions.Where(t => t.Date >= rangeStartDate && t.Date <= rangeEndDate).ToList();
+            var cycleTxsForMonth = await GetTransactionsForCycleAsync(tempYear, tempMonth, cycleDay);
 
             if (cycleTxsForMonth.Any())
             {
@@ -617,7 +563,9 @@ public class FinancialController : ControllerBase
         // CycleDay=0 (or negative) makes GetCycleRange's `new DateTime(year, month, cycleDay)`
         // throw ArgumentOutOfRangeException on every subsequent dashboard/transactions
         // request, with no self-recovery path via the API. Clamp to a valid day-of-month.
-        setting.CycleDay = Math.Clamp(updateDto.CycleDay, 1, 31);
+        var newCycleDay = Math.Clamp(updateDto.CycleDay, 1, 31);
+        var cycleDayChanged = newCycleDay != setting.CycleDay;
+        setting.CycleDay = newCycleDay;
         if (updateDto.DarkMode.HasValue)
         {
             setting.DarkMode = updateDto.DarkMode.Value;
@@ -636,7 +584,20 @@ public class FinancialController : ControllerBase
         }
         setting.Currency = updateDto.Currency;
 
+        // Persist the settings change and (if CycleDay changed) wipe the cache atomically -- this
+        // app can be signed in on multiple devices, and the cache is shared (not per-device), so
+        // without this a concurrent request from another device could land in the gap between
+        // "cache wiped" and "new CycleDay committed" and re-cache cycles under the OLD CycleDay,
+        // which nothing would later invalidate once the NEW CycleDay takes effect.
+        await using var dbTransaction = await _context.Database.BeginTransactionAsync();
+        if (cycleDayChanged)
+        {
+            // Every cycle's date boundaries shift retroactively when CycleDay changes, so the
+            // entire cached balance history is stale -- not just cycles from today forward.
+            await _cycleBalanceService.InvalidateAllAsync();
+        }
         await _context.SaveChangesAsync();
+        await dbTransaction.CommitAsync();
         return NoContent();
     }
 
@@ -686,7 +647,10 @@ public class FinancialController : ControllerBase
         return NoContent();
     }
 
-    private static decimal GetCategoryAmount(Transaction t, string categoryName)
+    // Internal (not private) so CycleBalanceService can reuse the exact same per-transaction
+    // bucket-attribution rules when rolling cycle balances forward -- keeps the two call sites
+    // (live dashboard math, cached-snapshot backfill) from drifting apart.
+    internal static decimal GetCategoryAmount(Transaction t, string categoryName)
     {
         if (string.Equals(t.LedgerCategory, categoryName, StringComparison.OrdinalIgnoreCase))
         {

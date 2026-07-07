@@ -18,6 +18,7 @@ if (!string.IsNullOrEmpty(port))
 builder.Services.AddControllers();
 builder.Services.AddScoped<ReceiptScanProcessor>();
 builder.Services.AddSingleton<ReceiptScanTaskDispatcher>();
+builder.Services.AddScoped<CycleBalanceService>();
 
 // Configure PostgreSQL database
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");

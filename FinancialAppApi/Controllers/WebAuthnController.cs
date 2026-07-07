@@ -228,6 +228,8 @@ public class WebAuthnController : ControllerBase
     {
         public string ChallengeId { get; set; } = string.Empty;
         public AuthenticatorAssertionRawResponse Credential { get; set; } = null!;
+        public string? DeviceId { get; set; }
+        public string? DeviceName { get; set; }
     }
 
     // POST api/auth/webauthn/login/verify
@@ -283,17 +285,38 @@ public class WebAuthnController : ControllerBase
             _context.UserSessions.RemoveRange(expiredSessions);
         }
 
-        // A WebAuthn credential is enrolled per-device, so it doubles as a
-        // device identifier: replace whatever session this same credential
-        // last issued instead of leaving it to linger (e.g. the device's
-        // local storage was cleared/reinstalled, so it still had a valid,
-        // now-unreachable session from before).
+        // Clean up previous sessions for this same credential
         var priorSessionsForCredential = await _context.UserSessions
             .Where(s => s.CredentialId != null && s.CredentialId == storedCred.CredentialId)
             .ToListAsync();
         if (priorSessionsForCredential.Count > 0)
         {
             _context.UserSessions.RemoveRange(priorSessionsForCredential);
+        }
+
+        // Clean up old sessions for THIS device if matched by DeviceId (fallback)
+        if (!string.IsNullOrEmpty(request.DeviceId))
+        {
+            var deviceSessions = await _context.UserSessions
+                .Where(s => s.Username == storedCred.Username && s.DeviceId == request.DeviceId)
+                .ToListAsync();
+            if (deviceSessions.Count > 0)
+            {
+                _context.UserSessions.RemoveRange(deviceSessions);
+            }
+        }
+
+        // Enforce maximum of 5 active sessions per user
+        var activeSessions = await _context.UserSessions
+            .Where(s => s.Username == storedCred.Username)
+            .OrderByDescending(s => s.CreatedAt)
+            .ToListAsync();
+            
+        // We want at most 5 total. Since we are adding 1, keep the 4 newest
+        if (activeSessions.Count >= 5)
+        {
+            var sessionsToDrop = activeSessions.Skip(4).ToList();
+            _context.UserSessions.RemoveRange(sessionsToDrop);
         }
 
         var token = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
@@ -303,7 +326,9 @@ public class WebAuthnController : ControllerBase
             Username = storedCred.Username,
             CreatedAt = DateTime.UtcNow,
             ExpiresAt = DateTime.UtcNow.AddDays(7),
-            CredentialId = storedCred.CredentialId
+            CredentialId = storedCred.CredentialId,
+            DeviceId = request.DeviceId,
+            DeviceName = request.DeviceName
         });
 
         await _context.SaveChangesAsync();

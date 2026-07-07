@@ -25,4 +25,8 @@ public class UserSession
     // replace whatever session it last issued instead of piling up a new
     // row every time local storage is cleared/reinstalled.
     public byte[]? CredentialId { get; set; }
+
+    public string? DeviceId { get; set; }
+    
+    public string? DeviceName { get; set; }
 }

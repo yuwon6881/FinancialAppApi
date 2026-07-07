@@ -33,6 +33,7 @@ public class AppDbContext : DbContext
     public DbSet<WebAuthnCredential> WebAuthnCredentials => Set<WebAuthnCredential>();
     public DbSet<WebAuthnChallenge> WebAuthnChallenges => Set<WebAuthnChallenge>();
     public DbSet<ReceiptScanJob> ReceiptScanJobs => Set<ReceiptScanJob>();
+    public DbSet<CycleBalance> CycleBalances => Set<CycleBalance>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -86,6 +87,15 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Status).HasDefaultValue("queued");
             entity.Property(e => e.MimeType).HasDefaultValue("image/jpeg");
             entity.HasIndex(e => new { e.Username, e.Status, e.CreatedAt });
+        });
+
+        modelBuilder.Entity<CycleBalance>(entity =>
+        {
+            entity.HasKey(e => new { e.Year, e.MonthIndex });
+            entity.Property(e => e.EssentialsBalance).HasColumnType("numeric");
+            entity.Property(e => e.GrowthBalance).HasColumnType("numeric");
+            entity.Property(e => e.StabilityBalance).HasColumnType("numeric");
+            entity.Property(e => e.RewardsBalance).HasColumnType("numeric");
         });
     }
 }

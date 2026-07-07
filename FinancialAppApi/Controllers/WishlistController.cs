@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
+using FinancialAppApi.Services;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -16,10 +17,12 @@ namespace FinancialAppApi.Controllers
     public class WishlistController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly CycleBalanceService _cycleBalanceService;
 
-        public WishlistController(AppDbContext context)
+        public WishlistController(AppDbContext context, CycleBalanceService cycleBalanceService)
         {
             _context = context;
+            _cycleBalanceService = cycleBalanceService;
         }
 
         // GET: api/wishlist
@@ -182,7 +185,24 @@ namespace FinancialAppApi.Controllers
             };
 
             _context.Transactions.Add(tx);
-            await _context.SaveChangesAsync();
+
+            // Persist the transaction and invalidate the affected cycle balance cache atomically
+            // -- this app can be signed in on multiple devices, and the cache is shared (not
+            // per-device), so without this a dashboard read from another device could land in
+            // the gap between "transaction saved" and "cache invalidated" and see stale figures.
+            await using (var dbTransaction = await _context.Database.BeginTransactionAsync())
+            {
+                await _context.SaveChangesAsync();
+
+                var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+                if (setting != null)
+                {
+                    var (cycleYear, cycleMonthIndex) = FinancialController.GetCycleYearAndMonthIndexForDate(tx.Date, setting.CycleDay);
+                    await _cycleBalanceService.InvalidateFromAsync(cycleYear, cycleMonthIndex);
+                }
+
+                await dbTransaction.CommitAsync();
+            }
 
             // Make another item active if possible
             var nextItem = await _context.WishlistItems

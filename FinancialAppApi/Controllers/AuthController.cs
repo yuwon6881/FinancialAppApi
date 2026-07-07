@@ -78,20 +78,49 @@ public class AuthController : ControllerBase
             return Unauthorized(new { message = "Invalid username or password" });
         }
 
-        // A password login has no per-device identity, so at most one such
-        // session should ever exist: supersede any prior password session
-        // (CredentialId == null) -- locked or not -- rather than stacking a
-        // new row on top of it. A session that was locked and then re-entered
-        // via a fresh login (instead of verify-password) used to linger here
-        // until its 7-day expiry, so each lock/re-login cycle leaked a row.
-        // Per-device WebAuthn sessions are left alone (they self-replace in
-        // WebAuthnController.LoginVerify); expired ones of any kind are swept.
-        var supersededSessions = await _context.UserSessions
-            .Where(s => s.CredentialId == null || s.ExpiresAt < DateTime.UtcNow)
+        // 1. Clean up expired sessions
+        var expiredSessions = await _context.UserSessions
+            .Where(s => s.ExpiresAt < DateTime.UtcNow)
             .ToListAsync();
-        if (supersededSessions.Count > 0)
+        if (expiredSessions.Count > 0)
         {
-            _context.UserSessions.RemoveRange(supersededSessions);
+            _context.UserSessions.RemoveRange(expiredSessions);
+        }
+
+        // 2. Clean up old sessions for THIS device
+        if (!string.IsNullOrEmpty(request.DeviceId))
+        {
+            var deviceSessions = await _context.UserSessions
+                .Where(s => s.Username == user.Username && s.DeviceId == request.DeviceId)
+                .ToListAsync();
+            if (deviceSessions.Count > 0)
+            {
+                _context.UserSessions.RemoveRange(deviceSessions);
+            }
+        }
+        else
+        {
+            // Fallback: If no DeviceId is provided, fallback to old behavior (wipe all password sessions for this user)
+            var oldPasswordSessions = await _context.UserSessions
+                .Where(s => s.Username == user.Username && s.CredentialId == null)
+                .ToListAsync();
+            if (oldPasswordSessions.Count > 0)
+            {
+                _context.UserSessions.RemoveRange(oldPasswordSessions);
+            }
+        }
+
+        // 3. Enforce maximum of 5 active sessions per user
+        var activeSessions = await _context.UserSessions
+            .Where(s => s.Username == user.Username)
+            .OrderByDescending(s => s.CreatedAt)
+            .ToListAsync();
+            
+        // We want at most 5 total. Since we are adding 1, we can only keep the 4 newest existing ones.
+        if (activeSessions.Count >= 5)
+        {
+            var sessionsToDrop = activeSessions.Skip(4).ToList();
+            _context.UserSessions.RemoveRange(sessionsToDrop);
         }
 
         // Create new session token
@@ -101,7 +130,9 @@ public class AuthController : ControllerBase
             Token = token,
             Username = user.Username,
             CreatedAt = DateTime.UtcNow,
-            ExpiresAt = DateTime.UtcNow.AddDays(7) // Token valid for 7 days
+            ExpiresAt = DateTime.UtcNow.AddDays(7), // Token valid for 7 days
+            DeviceId = request.DeviceId,
+            DeviceName = request.DeviceName
         };
 
         _context.UserSessions.Add(session);
@@ -190,6 +221,56 @@ public class AuthController : ControllerBase
 
         return Ok(new { verified = true });
     }
+
+    // GET: api/auth/sessions
+    [AuthorizeToken]
+    [HttpGet("sessions")]
+    public async Task<IActionResult> GetSessions()
+    {
+        var username = HttpContext.Items["Username"] as string;
+        if (string.IsNullOrEmpty(username))
+        {
+            return Unauthorized();
+        }
+
+        var sessions = await _context.UserSessions
+            .Where(s => s.Username == username)
+            .OrderByDescending(s => s.CreatedAt)
+            .Select(s => new
+            {
+                s.Token,
+                s.DeviceName,
+                s.CreatedAt,
+                s.ExpiresAt,
+                s.IsLocked
+            })
+            .ToListAsync();
+
+        return Ok(sessions);
+    }
+
+    // DELETE: api/auth/sessions/{token}
+    [AuthorizeToken]
+    [HttpDelete("sessions/{tokenToRevoke}")]
+    public async Task<IActionResult> RevokeSession(string tokenToRevoke)
+    {
+        var username = HttpContext.Items["Username"] as string;
+        if (string.IsNullOrEmpty(username))
+        {
+            return Unauthorized();
+        }
+
+        var session = await _context.UserSessions
+            .FirstOrDefaultAsync(s => s.Token == tokenToRevoke && s.Username == username);
+
+        if (session != null)
+        {
+            _context.UserSessions.Remove(session);
+            await _context.SaveChangesAsync();
+        }
+
+        return NoContent();
+    }
 }
 
 public class RegisterRequest
@@ -202,4 +283,6 @@ public class LoginRequest
 {
     public string Username { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
+    public string? DeviceId { get; set; }
+    public string? DeviceName { get; set; }
 }
