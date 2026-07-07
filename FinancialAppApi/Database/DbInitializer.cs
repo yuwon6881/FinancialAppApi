@@ -34,7 +34,10 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" DROP COLUMN IF EXISTS \"MonthlyIncome\";");
+                if (ColumnExists(context, "FinancialSettings", "MonthlyIncome", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" DROP COLUMN IF EXISTS \"MonthlyIncome\";");
+                }
             }
             else
             {
@@ -51,7 +54,10 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"DarkMode\" boolean NOT NULL DEFAULT FALSE;");
+                if (!ColumnExists(context, "FinancialSettings", "DarkMode", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"DarkMode\" boolean NOT NULL DEFAULT FALSE;");
+                }
             }
             else
             {
@@ -68,7 +74,10 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"Currency\" text NOT NULL DEFAULT 'USD';");
+                if (!ColumnExists(context, "FinancialSettings", "Currency", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"Currency\" text NOT NULL DEFAULT 'USD';");
+                }
             }
             else
             {
@@ -85,7 +94,10 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"HideSensitive\" boolean NOT NULL DEFAULT TRUE;");
+                if (!ColumnExists(context, "FinancialSettings", "HideSensitive", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"HideSensitive\" boolean NOT NULL DEFAULT TRUE;");
+                }
             }
             else
             {
@@ -102,7 +114,10 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"VibrationEnabled\" boolean NOT NULL DEFAULT TRUE;");
+                if (!ColumnExists(context, "FinancialSettings", "VibrationEnabled", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"VibrationEnabled\" boolean NOT NULL DEFAULT TRUE;");
+                }
             }
             else
             {
@@ -117,7 +132,10 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"StabilityOverflowRedirect\" text NOT NULL DEFAULT 'Split: Growth 50%, Rewards 50%';");
+                if (!ColumnExists(context, "FinancialSettings", "StabilityOverflowRedirect", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw("ALTER TABLE \"FinancialSettings\" ADD COLUMN \"StabilityOverflowRedirect\" text NOT NULL DEFAULT 'Split: Growth 50%, Rewards 50%';");
+                }
             }
             else
             {
@@ -134,7 +152,10 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw("ALTER TABLE \"Transactions\" ADD COLUMN \"RecurringPaymentId\" text;");
+                if (!ColumnExists(context, "Transactions", "RecurringPaymentId", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw("ALTER TABLE \"Transactions\" ADD COLUMN \"RecurringPaymentId\" text;");
+                }
             }
             else
             {
@@ -151,7 +172,10 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw("DROP TABLE IF EXISTS \"RecurringPaymentDismissals\";");
+                if (TableExists(context, "RecurringPaymentDismissals", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw("DROP TABLE IF EXISTS \"RecurringPaymentDismissals\";");
+                }
             }
             else
             {
@@ -168,17 +192,20 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw(@"
-                    CREATE TABLE IF NOT EXISTS ""WishlistItems"" (
-                        ""Id"" SERIAL PRIMARY KEY,
-                        ""Name"" TEXT NOT NULL,
-                        ""Price"" NUMERIC NOT NULL,
-                        ""Priority"" TEXT NOT NULL DEFAULT 'Medium',
-                        ""IsPurchased"" BOOLEAN NOT NULL DEFAULT FALSE,
-                        ""PurchasedAt"" TIMESTAMP,
-                        ""CreatedAt"" TIMESTAMP NOT NULL DEFAULT NOW(),
-                        ""IsActive"" BOOLEAN NOT NULL DEFAULT FALSE
-                    );");
+                if (!TableExists(context, "WishlistItems", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw(@"
+                        CREATE TABLE IF NOT EXISTS ""WishlistItems"" (
+                            ""Id"" SERIAL PRIMARY KEY,
+                            ""Name"" TEXT NOT NULL,
+                            ""Price"" NUMERIC NOT NULL,
+                            ""Priority"" TEXT NOT NULL DEFAULT 'Medium',
+                            ""IsPurchased"" BOOLEAN NOT NULL DEFAULT FALSE,
+                            ""PurchasedAt"" TIMESTAMP,
+                            ""CreatedAt"" TIMESTAMP NOT NULL DEFAULT NOW(),
+                            ""IsActive"" BOOLEAN NOT NULL DEFAULT FALSE
+                        );");
+                }
             }
             else
             {
@@ -206,7 +233,10 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw("DROP TABLE IF EXISTS \"BiometricCredentials\";");
+                if (TableExists(context, "BiometricCredentials", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw("DROP TABLE IF EXISTS \"BiometricCredentials\";");
+                }
             }
             else
             {
@@ -223,23 +253,29 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw(@"
-                    CREATE TABLE IF NOT EXISTS ""WebAuthnCredentials"" (
-                        ""CredentialId"" BYTEA PRIMARY KEY,
-                        ""Username"" TEXT NOT NULL,
-                        ""PublicKey"" BYTEA NOT NULL,
-                        ""SignCount"" BIGINT NOT NULL,
-                        ""DeviceLabel"" TEXT,
-                        ""CreatedAt"" TIMESTAMP NOT NULL
-                    );");
-                context.Database.ExecuteSqlRaw(@"
-                    CREATE TABLE IF NOT EXISTS ""WebAuthnChallenges"" (
-                        ""Id"" TEXT PRIMARY KEY,
-                        ""Purpose"" TEXT NOT NULL,
-                        ""Username"" TEXT NOT NULL,
-                        ""OptionsJson"" TEXT NOT NULL,
-                        ""ExpiresAt"" TIMESTAMP NOT NULL
-                    );");
+                if (!TableExists(context, "WebAuthnCredentials", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw(@"
+                        CREATE TABLE IF NOT EXISTS ""WebAuthnCredentials"" (
+                            ""CredentialId"" BYTEA PRIMARY KEY,
+                            ""Username"" TEXT NOT NULL,
+                            ""PublicKey"" BYTEA NOT NULL,
+                            ""SignCount"" BIGINT NOT NULL,
+                            ""DeviceLabel"" TEXT,
+                            ""CreatedAt"" TIMESTAMP NOT NULL
+                        );");
+                }
+                if (!TableExists(context, "WebAuthnChallenges", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw(@"
+                        CREATE TABLE IF NOT EXISTS ""WebAuthnChallenges"" (
+                            ""Id"" TEXT PRIMARY KEY,
+                            ""Purpose"" TEXT NOT NULL,
+                            ""Username"" TEXT NOT NULL,
+                            ""OptionsJson"" TEXT NOT NULL,
+                            ""ExpiresAt"" TIMESTAMP NOT NULL
+                        );");
+                }
             }
             else
             {
@@ -272,7 +308,10 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw("ALTER TABLE \"UserSessions\" ADD COLUMN \"IsLocked\" boolean NOT NULL DEFAULT FALSE;");
+                if (!ColumnExists(context, "UserSessions", "IsLocked", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw("ALTER TABLE \"UserSessions\" ADD COLUMN \"IsLocked\" boolean NOT NULL DEFAULT FALSE;");
+                }
             }
             else
             {
@@ -289,7 +328,10 @@ public static class DbInitializer
         {
             if (isPostgres)
             {
-                context.Database.ExecuteSqlRaw("ALTER TABLE \"UserSessions\" ADD COLUMN \"CredentialId\" BYTEA;");
+                if (!ColumnExists(context, "UserSessions", "CredentialId", isPostgres))
+                {
+                    context.Database.ExecuteSqlRaw("ALTER TABLE \"UserSessions\" ADD COLUMN \"CredentialId\" BYTEA;");
+                }
             }
             else
             {
@@ -374,6 +416,46 @@ public static class DbInitializer
 
             context.FinancialSettings.Add(settings);
             context.SaveChanges();
+        }
+    }
+
+    private static bool ColumnExists(AppDbContext context, string tableName, string columnName, bool isPostgres)
+    {
+        if (!isPostgres) return false;
+        try
+        {
+            using var command = context.Database.GetDbConnection().CreateCommand();
+            command.CommandText = $"SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = '{tableName}' AND column_name = '{columnName}');";
+            if (command.Connection.State != System.Data.ConnectionState.Open)
+            {
+                command.Connection.Open();
+            }
+            var result = command.ExecuteScalar();
+            return result != null && (bool)result;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TableExists(AppDbContext context, string tableName, bool isPostgres)
+    {
+        if (!isPostgres) return false;
+        try
+        {
+            using var command = context.Database.GetDbConnection().CreateCommand();
+            command.CommandText = $"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{tableName}');";
+            if (command.Connection.State != System.Data.ConnectionState.Open)
+            {
+                command.Connection.Open();
+            }
+            var result = command.ExecuteScalar();
+            return result != null && (bool)result;
+        }
+        catch
+        {
+            return false;
         }
     }
 }

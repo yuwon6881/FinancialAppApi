@@ -1,8 +1,16 @@
 using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
-using FinancialAppApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Cloud Run (and most container PaaS) tell the app which port to listen on
+// via the PORT env var. Bind to it when present; otherwise fall back to the
+// ASPNETCORE_URLS default used for local/Docker runs.
+var port = Environment.GetEnvironmentVariable("PORT");
+if (!string.IsNullOrEmpty(port))
+{
+    builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+}
 
 // Add services to the container.
 builder.Services.AddControllers();
@@ -21,20 +29,38 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     }
 });
 
-builder.Services.AddHostedService<SessionCleanupService>();
+// Expired sessions/challenges are pruned lazily on auth activity (login,
+// per-request token checks, and each WebAuthn options call), and live rows
+// are bounded per-device -- so no always-on background sweeper is needed.
+// This lets the service scale to zero on Cloud Run without leaking rows.
 
 // Configure Swagger/OpenAPI
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// Configure CORS
+// Configure CORS. Production is locked to the configured frontend origin(s)
+// (Cors:AllowedOrigins, falling back to the WebAuthn origins so there's a
+// single place to list the frontend). With none configured -- e.g. local dev
+// -- it stays permissive so a localhost frontend still works.
+var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+    ?? builder.Configuration.GetSection("WebAuthn:AllowedOrigins").Get<string[]>()
+    ?? Array.Empty<string>();
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.AllowAnyOrigin()
-              .AllowAnyHeader()
-              .AllowAnyMethod();
+        if (corsOrigins.Length > 0)
+        {
+            policy.WithOrigins(corsOrigins)
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        }
+        else
+        {
+            policy.AllowAnyOrigin()
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        }
     });
 });
 
@@ -66,6 +92,8 @@ using (var scope = app.Services.CreateScope())
     }
     catch (Exception ex)
     {
+        Console.WriteLine("CRITICAL DATABASE INITIALIZATION ERROR:");
+        Console.WriteLine(ex.ToString());
         var logger = services.GetRequiredService<ILogger<Program>>();
         logger.LogError(ex, "An error occurred while seeding the database.");
     }

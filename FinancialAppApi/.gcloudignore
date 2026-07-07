@@ -1,0 +1,17 @@
+# Keep the Cloud Build upload small and free of stale/local artifacts.
+# (This also honors .gitignore patterns by default, but we're explicit.)
+bin/
+obj/
+publish/
+*.user
+*.db
+*.db-shm
+*.db-wal
+
+# Local-only dev config; production config is supplied via env vars.
+appsettings.Development.json
+
+# VCS / IDE noise
+.git/
+.vs/
+.vscode/

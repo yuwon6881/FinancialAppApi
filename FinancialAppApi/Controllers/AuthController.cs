@@ -78,11 +78,20 @@ public class AuthController : ControllerBase
             return Unauthorized(new { message = "Invalid username or password" });
         }
 
-        // Clean up expired sessions first
-        var expiredSessions = await _context.UserSessions.Where(s => s.ExpiresAt < DateTime.UtcNow).ToListAsync();
-        if (expiredSessions.Any())
+        // A password login has no per-device identity, so at most one such
+        // session should ever exist: supersede any prior password session
+        // (CredentialId == null) -- locked or not -- rather than stacking a
+        // new row on top of it. A session that was locked and then re-entered
+        // via a fresh login (instead of verify-password) used to linger here
+        // until its 7-day expiry, so each lock/re-login cycle leaked a row.
+        // Per-device WebAuthn sessions are left alone (they self-replace in
+        // WebAuthnController.LoginVerify); expired ones of any kind are swept.
+        var supersededSessions = await _context.UserSessions
+            .Where(s => s.CredentialId == null || s.ExpiresAt < DateTime.UtcNow)
+            .ToListAsync();
+        if (supersededSessions.Count > 0)
         {
-            _context.UserSessions.RemoveRange(expiredSessions);
+            _context.UserSessions.RemoveRange(supersededSessions);
         }
 
         // Create new session token
