@@ -27,7 +27,7 @@ steps:
       - '--image=asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api:$COMMIT_SHA'
       - '--region=asia-southeast1'
       - '--platform=managed'
-      - '--update-env-vars=Database__MigrateOnStartup=false'
+      - '--update-env-vars=Database__MigrateOnStartup=true'
     id: Deploy
 
 images:
