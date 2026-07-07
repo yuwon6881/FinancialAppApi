@@ -9,25 +9,29 @@ public static class DbInitializer
 {
     public static void Initialize(AppDbContext context)
     {
-        // Ensure database is created and schema is updated
-        var databaseCreator = context.Database.GetService<IDatabaseCreator>() as IRelationalDatabaseCreator;
-        if (databaseCreator != null)
-        {
-            try
-            {
-                databaseCreator.CreateTables();
-            }
-            catch (Exception)
-            {
-                // Ignore if tables already exist (e.g. on subsequent runs)
-            }
-        }
-        else
-        {
-            context.Database.EnsureCreated();
-        }
-
         var isPostgres = context.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) ?? false;
+        var dbExists = TableExists(context, "AppUsers", isPostgres);
+
+        // Ensure database is created and schema is updated
+        if (!dbExists)
+        {
+            var databaseCreator = context.Database.GetService<IDatabaseCreator>() as IRelationalDatabaseCreator;
+            if (databaseCreator != null)
+            {
+                try
+                {
+                    databaseCreator.CreateTables();
+                }
+                catch (Exception)
+                {
+                    // Ignore if tables already exist (e.g. on subsequent runs)
+                }
+            }
+            else
+            {
+                context.Database.EnsureCreated();
+            }
+        }
 
         // Try to drop the MonthlyIncome column if it exists in SQLite/PostgreSQL database table
         try
