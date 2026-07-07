@@ -630,7 +630,7 @@ public class FinancialController : ControllerBase
         {
             setting.VibrationEnabled = updateDto.VibrationEnabled.Value;
         }
-        if (!string.IsNullOrEmpty(updateDto.StabilityOverflowRedirect))
+        if (updateDto.StabilityOverflowRedirect != null)
         {
             setting.StabilityOverflowRedirect = updateDto.StabilityOverflowRedirect;
         }
@@ -741,6 +741,7 @@ public class UpdateSettingsDto
     public bool? HideSensitive { get; set; }
     public bool? VibrationEnabled { get; set; }
     public string Currency { get; set; } = "USD";
+    [System.Text.Json.Serialization.JsonPropertyName("stabilityOverflowRedirect")]
     public string? StabilityOverflowRedirect { get; set; }
 }
 
