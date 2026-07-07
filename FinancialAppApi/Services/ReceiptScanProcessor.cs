@@ -171,47 +171,23 @@ Return only the JSON object.";
             }
         };
 
-        var model = _configuration["GeminiModel"];
-        if (string.IsNullOrWhiteSpace(model))
+        var primaryModel = _configuration["GeminiModel"];
+        if (string.IsNullOrWhiteSpace(primaryModel))
         {
-            model = "gemini-3.1-flash-lite";
+            primaryModel = "gemini-3.1-flash-lite";
         }
+        const string fallbackModel = "gemini-3.5-flash";
 
-        var geminiUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}";
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, geminiUrl);
-        httpRequest.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(requestBody));
-        httpRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-
-        var response = await HttpClient.SendAsync(httpRequest);
-
-        if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+        string text;
+        try
         {
-            var quotaBody = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("Gemini API 429 (model {Model}): {Body}", model, quotaBody);
-            throw new ReceiptScanUserException("AI service rate limit reached. Please wait a moment and try again.");
+            text = await CallGeminiAsync(primaryModel, requestBody, apiKey);
         }
-
-        if (!response.IsSuccessStatusCode)
+        catch (GeminiUnavailableException)
         {
-            var errorBody = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("Gemini API error {Status}: {Body}", response.StatusCode, errorBody);
-            throw new ReceiptScanUserException("AI service returned an error. Please try again.");
-        }
-
-        var responseBody = await response.Content.ReadAsStringAsync();
-        using var geminiDoc = JsonDocument.Parse(responseBody);
-        var candidate = geminiDoc.RootElement.GetProperty("candidates")[0];
-        var text = candidate
-            .GetProperty("content")
-            .GetProperty("parts")[0]
-            .GetProperty("text")
-            .GetString() ?? "";
-
-        if (candidate.TryGetProperty("finishReason", out var finishReasonProp) &&
-            finishReasonProp.GetString() == "MAX_TOKENS")
-        {
-            _logger.LogWarning("Gemini response truncated by MAX_TOKENS. Partial text: {RawText}", text);
-            throw new ReceiptScanUserException("AI response was too long and got cut off. Please try again.");
+            // Primary model unavailable — silently retry with the fallback
+            _logger.LogWarning("Primary model {PrimaryModel} unavailable, retrying with fallback {FallbackModel}.", primaryModel, fallbackModel);
+            text = await CallGeminiAsync(fallbackModel, requestBody, apiKey);
         }
 
         text = text.Trim();
@@ -252,6 +228,57 @@ Return only the JSON object.";
 
         return new ReceiptScanResult(description, amount, date, category, ledgerCategory, txType, confidence);
     }
+
+    private async Task<string> CallGeminiAsync(string model, object requestBody, string apiKey)
+    {
+        var geminiUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}";
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, geminiUrl);
+        httpRequest.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(requestBody));
+        httpRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        var response = await HttpClient.SendAsync(httpRequest);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
+        {
+            var unavailableBody = await response.Content.ReadAsStringAsync();
+            _logger.LogWarning("Gemini API 503 (model {Model}): {Body}", model, unavailableBody);
+            throw new GeminiUnavailableException();
+        }
+
+        if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+        {
+            var quotaBody = await response.Content.ReadAsStringAsync();
+            _logger.LogWarning("Gemini API 429 (model {Model}): {Body}", model, quotaBody);
+            throw new ReceiptScanUserException("AI service rate limit reached. Please wait a moment and try again.");
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync();
+            _logger.LogWarning("Gemini API error {Status} (model {Model}): {Body}", response.StatusCode, model, errorBody);
+            throw new ReceiptScanUserException("AI service returned an error. Please try again.");
+        }
+
+        var responseBody = await response.Content.ReadAsStringAsync();
+        using var geminiDoc = JsonDocument.Parse(responseBody);
+        var candidate = geminiDoc.RootElement.GetProperty("candidates")[0];
+        var text = candidate
+            .GetProperty("content")
+            .GetProperty("parts")[0]
+            .GetProperty("text")
+            .GetString() ?? "";
+
+        if (candidate.TryGetProperty("finishReason", out var finishReasonProp) &&
+            finishReasonProp.GetString() == "MAX_TOKENS")
+        {
+            _logger.LogWarning("Gemini response truncated by MAX_TOKENS (model {Model}). Partial text: {RawText}", model, text);
+            throw new ReceiptScanUserException("AI response was too long and got cut off. Please try again.");
+        }
+
+        return text;
+    }
+
+    private sealed class GeminiUnavailableException : Exception { }
 
     private sealed class ReceiptScanUserException : Exception
     {
