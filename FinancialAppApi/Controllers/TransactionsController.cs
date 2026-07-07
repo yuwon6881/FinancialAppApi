@@ -78,24 +78,16 @@ public class TransactionsController : ControllerBase
         if (activeMonthIndex == 0) activeMonthIndex = 6;
 
         var (cycleStart, cycleEnd, _) = FinancialController.GetCycleRange(activeYear, activeMonthIndex, setting.CycleDay);
+        var cycleStartDate = DateOnly.FromDateTime(cycleStart);
+        var cycleEndDate = DateOnly.FromDateTime(cycleEnd);
 
-        var allTransactions = await _context.Transactions.ToListAsync();
+        var filtered = await _context.Transactions
+            .Where(t => t.LedgerCategory.ToUpper() != "DISCARDED" && t.Date >= cycleStartDate && t.Date <= cycleEndDate)
+            .OrderByDescending(t => t.Date)
+            .ThenByDescending(t => t.Id)
+            .ToListAsync();
 
-        var filtered = allTransactions.Where(t =>
-        {
-            if (string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase)) return false;
-            if (DateTime.TryParse(t.Date, out var date))
-            {
-                return date >= cycleStart && date <= cycleEnd;
-            }
-            return false;
-        })
-        .OrderByDescending(t => t.Date)
-        .ThenByDescending(t => t.Id)
-        .Select(MapToDto)
-        .ToList();
-
-        return Ok(filtered);
+        return Ok(filtered.Select(MapToDto).ToList());
     }
 
     // GET: api/transactions/autocomplete
@@ -163,7 +155,7 @@ public class TransactionsController : ControllerBase
 
             sb.AppendLine(string.Join(",", new[]
             {
-                EscapeCsvField(t.Date),
+                EscapeCsvField(t.Date.ToString("yyyy-MM-dd")),
                 EscapeCsvField(t.Description),
                 EscapeCsvField(t.Category),
                 EscapeCsvField(DisplayLedgerCategory(t.LedgerCategory)),
@@ -195,10 +187,15 @@ public class TransactionsController : ControllerBase
             }
         }
 
+        if (!TryParseDate(dto.Date, out var postDate))
+        {
+            return BadRequest(new { message = "Date must be in yyyy-MM-dd format." });
+        }
+
         var transaction = new Transaction
         {
             Id = string.IsNullOrWhiteSpace(dto.Id) ? $"tx-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}" : dto.Id,
-            Date = dto.Date,
+            Date = postDate,
             Description = dto.Description,
             Category = dto.Category,
             LedgerCategory = dto.LedgerCategory,
@@ -226,13 +223,18 @@ public class TransactionsController : ControllerBase
             return NotFound();
         }
 
+        if (!TryParseDate(dto.Date, out var putDate))
+        {
+            return BadRequest(new { message = "Date must be in yyyy-MM-dd format." });
+        }
+
         // Delete existing splits first
         var existingSplits = await _context.Transactions
             .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
             .ToListAsync();
         _context.Transactions.RemoveRange(existingSplits);
 
-        transaction.Date = dto.Date;
+        transaction.Date = putDate;
         transaction.Description = dto.Description;
         transaction.Category = dto.Category;
         transaction.LedgerCategory = dto.LedgerCategory;
@@ -321,12 +323,17 @@ public class TransactionsController : ControllerBase
         }
     }
 
+    private static bool TryParseDate(string? value, out DateOnly date)
+    {
+        return DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
+    }
+
     private static TransactionDto MapToDto(Transaction t)
     {
         return new TransactionDto
         {
             Id = t.Id,
-            Date = t.Date,
+            Date = t.Date.ToString("yyyy-MM-dd"),
             Description = t.Description,
             Category = t.Category,
             LedgerCategory = t.LedgerCategory,
@@ -347,13 +354,13 @@ public class TransactionsController : ControllerBase
         // Exclude Discarded transactions from ledger listings
         query = query.Where(t => t.LedgerCategory != "Discarded");
 
-        if (!string.IsNullOrWhiteSpace(startDate))
+        if (TryParseDate(startDate, out var startDateOnly))
         {
-            query = query.Where(t => t.Date.CompareTo(startDate) >= 0);
+            query = query.Where(t => t.Date >= startDateOnly);
         }
-        if (!string.IsNullOrWhiteSpace(endDate))
+        if (TryParseDate(endDate, out var endDateOnly))
         {
-            query = query.Where(t => t.Date.CompareTo(endDate) <= 0);
+            query = query.Where(t => t.Date <= endDateOnly);
         }
 
         // Search: description, category, ledgerCategory

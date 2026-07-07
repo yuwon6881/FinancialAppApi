@@ -41,6 +41,8 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<Transaction>(entity =>
         {
             entity.Property(e => e.Amount).HasColumnType("numeric");
+            entity.Property(e => e.Date).HasColumnType("date");
+            entity.HasIndex(e => e.Date);
         });
 
         modelBuilder.Entity<RecurringPayment>(entity =>

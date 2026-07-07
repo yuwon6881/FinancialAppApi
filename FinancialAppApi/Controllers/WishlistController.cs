@@ -174,7 +174,7 @@ namespace FinancialAppApi.Controllers
             var tx = new Transaction
             {
                 Id = Guid.NewGuid().ToString("N"),
-                Date = DateTime.Now.ToString("yyyy-MM-dd"), // Local date format matches other postings
+                Date = DateOnly.FromDateTime(DateTime.Now), // Local date matches other postings
                 Description = $"Purchased: {item.Name} (Wish List)",
                 Category = "Other", // Main category matches ledger sub-categorizations
                 LedgerCategory = "Rewards", // The category that funds this purchase

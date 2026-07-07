@@ -82,8 +82,7 @@ public class FinancialController : ControllerBase
                         var instanceId = $"{rp.Id}-{y}-{m}";
                         var isPaid = recurringTransactionDates.Any(t =>
                             t.RecurringPaymentId == rp.Id &&
-                            DateTime.TryParse(t.Date, out var paidTxDate) &&
-                            paidTxDate >= cycleStart && paidTxDate <= cycleEnd);
+                            t.Date >= DateOnly.FromDateTime(cycleStart) && t.Date <= DateOnly.FromDateTime(cycleEnd));
                         if (!isPaid)
                         {
                             var item = new
@@ -290,14 +289,9 @@ public class FinancialController : ControllerBase
                 }
 
                 // 2. Filter transactions strictly within the cycle [cycleStart, cycleEnd]
-                var cycleTxs = allTransactions.Where(t =>
-                {
-                    if (DateTime.TryParse(t.Date, out var date))
-                    {
-                        return date >= cycleStart && date <= cycleEnd;
-                    }
-                    return false;
-                }).ToList();
+                var cycleStartDate = DateOnly.FromDateTime(cycleStart);
+                var cycleEndDate = DateOnly.FromDateTime(cycleEnd);
+                var cycleTxs = allTransactions.Where(t => t.Date >= cycleStartDate && t.Date <= cycleEndDate).ToList();
 
                 // Calculate category Net Changes in this cycle using LedgerCategory
                 var netEssentials = cycleTxs.Sum(t => GetCategoryAmount(t, "Essentials"));
@@ -385,7 +379,7 @@ public class FinancialController : ControllerBase
             .Select(t => new
             {
                 id = t.Id,
-                date = t.Date,
+                date = t.Date.ToString("yyyy-MM-dd"),
                 description = t.Description,
                 category = t.Category,
                 ledgerCategory = t.LedgerCategory,
@@ -414,13 +408,14 @@ public class FinancialController : ControllerBase
                 // transaction ends up matching (e.g. duplicate/manually-backfilled data) -- order
                 // deterministically and prefer a real payment over a discard marker so the
                 // result can't flip between requests.
+                var activeRangeStartDate = DateOnly.FromDateTime(activeRange.start);
+                var activeRangeEndDate = DateOnly.FromDateTime(activeRange.end);
                 var paidTx = allTransactions
                     .Where(t =>
                         t.RecurringPaymentId == rp.Id &&
-                        DateTime.TryParse(t.Date, out var paidTxDate) &&
-                        paidTxDate >= activeRange.start && paidTxDate <= activeRange.end)
+                        t.Date >= activeRangeStartDate && t.Date <= activeRangeEndDate)
                     .OrderBy(t => string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
-                    .ThenBy(t => t.Date, StringComparer.Ordinal)
+                    .ThenBy(t => t.Date)
                     .ThenBy(t => t.Id, StringComparer.Ordinal)
                     .FirstOrDefault();
                 var isDiscarded = paidTx != null && string.Equals(paidTx.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase);
@@ -441,7 +436,7 @@ public class FinancialController : ControllerBase
                     isPaid = isPaid,
                     isDiscarded = isDiscarded,
                     status = isDiscarded ? "Discarded" : (isPaid ? "Paid" : "Pending"),
-                    paidDate = isPaid && !isDiscarded ? paidTx.Date : null
+                    paidDate = isPaid && !isDiscarded ? paidTx!.Date.ToString("yyyy-MM-dd") : null
                 });
             }
         }
@@ -467,14 +462,9 @@ public class FinancialController : ControllerBase
         for (int m = 1; m <= 12; m++)
         {
             var range = GetCycleRange(activeYear, m, cycleDay);
-            var cycleTxsForMonth = allTransactions.Where(t =>
-            {
-                if (DateTime.TryParse(t.Date, out var date))
-                {
-                    return date >= range.start && date <= range.end;
-                }
-                return false;
-            });
+            var rangeStartDate = DateOnly.FromDateTime(range.start);
+            var rangeEndDate = DateOnly.FromDateTime(range.end);
+            var cycleTxsForMonth = allTransactions.Where(t => t.Date >= rangeStartDate && t.Date <= rangeEndDate);
             yearlyTxs.AddRange(cycleTxsForMonth);
         }
 
@@ -489,11 +479,9 @@ public class FinancialController : ControllerBase
             for (int i = 0; i < n; i++)
             {
                 var range = GetCycleRange(curYear, curMonth, cycleDay);
-                result.AddRange(allTransactions.Where(t =>
-                {
-                    if (DateTime.TryParse(t.Date, out var d)) return d >= range.start && d <= range.end;
-                    return false;
-                }));
+                var rangeStartDate = DateOnly.FromDateTime(range.start);
+                var rangeEndDate = DateOnly.FromDateTime(range.end);
+                result.AddRange(allTransactions.Where(t => t.Date >= rangeStartDate && t.Date <= rangeEndDate));
                 curMonth--;
                 if (curMonth < 1) { curMonth = 12; curYear--; }
             }
@@ -513,9 +501,7 @@ public class FinancialController : ControllerBase
             : trendPointsList.ToList();
 
         var availableYears = allTransactions
-            .Select(t => DateTime.TryParse(t.Date, out var d) ? d.Year : (int?)null)
-            .Where(y => y.HasValue)
-            .Select(y => y!.Value)
+            .Select(t => t.Date.Year)
             .Append(DateTime.Now.Year)
             .Distinct()
             .OrderBy(y => y)
@@ -530,14 +516,9 @@ public class FinancialController : ControllerBase
         for (int i = 0; i < 3; i++)
         {
             var range = GetCycleRange(tempYear, tempMonth, cycleDay);
-            var cycleTxsForMonth = allTransactions.Where(t =>
-            {
-                if (DateTime.TryParse(t.Date, out var date))
-                {
-                    return date >= range.start && date <= range.end;
-                }
-                return false;
-            }).ToList();
+            var rangeStartDate = DateOnly.FromDateTime(range.start);
+            var rangeEndDate = DateOnly.FromDateTime(range.end);
+            var cycleTxsForMonth = allTransactions.Where(t => t.Date >= rangeStartDate && t.Date <= rangeEndDate).ToList();
 
             if (cycleTxsForMonth.Any())
             {
