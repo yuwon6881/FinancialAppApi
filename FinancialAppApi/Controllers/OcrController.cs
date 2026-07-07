@@ -103,11 +103,11 @@ Return only the JSON object.";
             generationConfig = new
             {
                 temperature = 0.1,
-                maxOutputTokens = 512
+                maxOutputTokens = 1024
             }
         };
 
-        var requestJson = JsonSerializer.Serialize(requestBody);
+        var requestBytes = JsonSerializer.SerializeToUtf8Bytes(requestBody);
         // Model is configurable via "GeminiModel". Default to gemini-3.5-flash: it has a
         // generous free tier and is more than capable for receipt OCR. Avoid the flagship
         // gemini-3.x flash models here — they carry little/no free-tier quota, so a free
@@ -121,7 +121,8 @@ Return only the JSON object.";
         try
         {
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, geminiUrl);
-            httpRequest.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+            httpRequest.Content = new ByteArrayContent(requestBytes);
+            httpRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
             var response = await _httpClient.SendAsync(httpRequest);
 
@@ -144,14 +145,21 @@ Return only the JSON object.";
 
             // Parse Gemini response and extract the text content
             using var geminiDoc = JsonDocument.Parse(responseBody);
-            var text = geminiDoc.RootElement
-                .GetProperty("candidates")[0]
+            var candidate = geminiDoc.RootElement.GetProperty("candidates")[0];
+            var text = candidate
                 .GetProperty("content")
                 .GetProperty("parts")[0]
                 .GetProperty("text")
                 .GetString() ?? "";
 
             rawText = text;
+
+            if (candidate.TryGetProperty("finishReason", out var finishReasonProp) &&
+                finishReasonProp.GetString() == "MAX_TOKENS")
+            {
+                _logger.LogWarning("Gemini response truncated by MAX_TOKENS. Partial text: {RawText}", rawText);
+                return StatusCode(502, new { message = "AI response was too long and got cut off. Please try again." });
+            }
 
             // Strip markdown code fences if Gemini wrapped the JSON
             text = text.Trim();
