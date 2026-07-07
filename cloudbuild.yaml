@@ -30,6 +30,7 @@ steps:
         export ConnectionStrings__DefaultConnection="$$DB_CONNECTION"
         cd FinancialAppApi
         dotnet tool install --global dotnet-ef --version 10.0.8
+        dotnet restore
         dotnet ef database update
     id: Migrate
     waitFor:
