@@ -108,13 +108,13 @@ Return only the JSON object.";
         };
 
         var requestJson = JsonSerializer.Serialize(requestBody);
-        // Model is configurable via "GeminiModel". Default to gemini-2.5-flash: it has a
+        // Model is configurable via "GeminiModel". Default to gemini-3.5-flash: it has a
         // generous free tier and is more than capable for receipt OCR. Avoid the flagship
         // gemini-3.x flash models here — they carry little/no free-tier quota, so a free
         // API key gets a 429 RESOURCE_EXHAUSTED on the very first request.
         var model = _configuration["GeminiModel"];
         if (string.IsNullOrWhiteSpace(model))
-            model = "gemini-2.5-flash";
+            model = "gemini-3.5-flash";
         var geminiUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}";
 
         try
