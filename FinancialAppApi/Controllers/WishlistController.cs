@@ -190,8 +190,13 @@ namespace FinancialAppApi.Controllers
             // -- this app can be signed in on multiple devices, and the cache is shared (not
             // per-device), so without this a dashboard read from another device could land in
             // the gap between "transaction saved" and "cache invalidated" and see stale figures.
-            await using (var dbTransaction = await _context.Database.BeginTransactionAsync())
+            // Must go through CreateExecutionStrategy().ExecuteAsync(...) rather than a bare
+            // BeginTransactionAsync() -- Npgsql's EnableRetryOnFailure() retrying execution
+            // strategy (Program.cs) refuses to run a user-started transaction directly.
+            var strategy = _context.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
             {
+                await using var dbTransaction = await _context.Database.BeginTransactionAsync();
                 await _context.SaveChangesAsync();
 
                 var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
@@ -202,7 +207,7 @@ namespace FinancialAppApi.Controllers
                 }
 
                 await dbTransaction.CommitAsync();
-            }
+            });
 
             // Make another item active if possible
             var nextItem = await _context.WishlistItems

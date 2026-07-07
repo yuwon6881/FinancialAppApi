@@ -589,15 +589,22 @@ public class FinancialController : ControllerBase
         // without this a concurrent request from another device could land in the gap between
         // "cache wiped" and "new CycleDay committed" and re-cache cycles under the OLD CycleDay,
         // which nothing would later invalidate once the NEW CycleDay takes effect.
-        await using var dbTransaction = await _context.Database.BeginTransactionAsync();
-        if (cycleDayChanged)
+        // Must go through CreateExecutionStrategy().ExecuteAsync(...) rather than a bare
+        // BeginTransactionAsync() -- Npgsql's EnableRetryOnFailure() retrying execution strategy
+        // (Program.cs) refuses to run a user-started transaction directly.
+        var strategy = _context.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
-            // Every cycle's date boundaries shift retroactively when CycleDay changes, so the
-            // entire cached balance history is stale -- not just cycles from today forward.
-            await _cycleBalanceService.InvalidateAllAsync();
-        }
-        await _context.SaveChangesAsync();
-        await dbTransaction.CommitAsync();
+            await using var dbTransaction = await _context.Database.BeginTransactionAsync();
+            if (cycleDayChanged)
+            {
+                // Every cycle's date boundaries shift retroactively when CycleDay changes, so the
+                // entire cached balance history is stale -- not just cycles from today forward.
+                await _cycleBalanceService.InvalidateAllAsync();
+            }
+            await _context.SaveChangesAsync();
+            await dbTransaction.CommitAsync();
+        });
         return NoContent();
     }
 

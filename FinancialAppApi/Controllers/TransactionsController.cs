@@ -43,12 +43,21 @@ public class TransactionsController : ControllerBase
     // with a stale, not-yet-invalidated balance. Wrapping both in one transaction means any
     // reader under Postgres's default Read Committed isolation sees either the fully-old state
     // or the fully-new-and-invalidated state, never the in-between.
+    //
+    // Must go through CreateExecutionStrategy().ExecuteAsync(...) rather than a bare
+    // BeginTransactionAsync() -- Program.cs enables Npgsql's EnableRetryOnFailure(), and its
+    // retrying execution strategy refuses to run a user-started transaction directly (it needs
+    // to own the whole retry unit so it can safely replay it from scratch on a transient failure).
     private async Task SaveAndInvalidateCycleBalancesAsync(DateOnly earliestAffectedDate)
     {
-        await using var dbTransaction = await _context.Database.BeginTransactionAsync();
-        await _context.SaveChangesAsync();
-        await InvalidateCycleBalancesFromAsync(earliestAffectedDate);
-        await dbTransaction.CommitAsync();
+        var strategy = _context.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var dbTransaction = await _context.Database.BeginTransactionAsync();
+            await _context.SaveChangesAsync();
+            await InvalidateCycleBalancesFromAsync(earliestAffectedDate);
+            await dbTransaction.CommitAsync();
+        });
     }
 
     // GET: api/transactions
