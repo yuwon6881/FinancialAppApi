@@ -12,6 +12,9 @@ namespace FinancialAppApi.Controllers;
 [Route("api/ocr")]
 public class OcrController : ControllerBase
 {
+    // GetScanJob deletes a job as soon as it hands back a terminal result, so
+    // these TTLs only catch jobs whose result was never fetched (app closed
+    // before polling again) or whose delete-on-fetch itself failed.
     private static readonly TimeSpan CompletedJobTtl = TimeSpan.FromHours(24);
     private static readonly TimeSpan StaleInProgressJobTtl = TimeSpan.FromHours(2);
 
@@ -33,36 +36,6 @@ public class OcrController : ControllerBase
         _dispatcher = dispatcher;
         _configuration = configuration;
         _logger = logger;
-    }
-
-    [AuthorizeToken]
-    [HttpPost("scan-receipt")]
-    [RequestSizeLimit(10 * 1024 * 1024)]
-    public async Task<IActionResult> ScanReceipt(IFormFile? image)
-    {
-        var created = await CreateScanJob(image);
-        if (created.Result is not null)
-        {
-            return created.Result;
-        }
-
-        var jobId = created.Value!;
-        await _processor.ProcessAsync(jobId);
-        var job = await _context.ReceiptScanJobs.AsNoTracking().FirstOrDefaultAsync(j => j.Id == jobId);
-        if (job == null)
-        {
-            return StatusCode(500, new { message = "Receipt scan job was not found after processing." });
-        }
-
-        if (job.Status == "completed" && !string.IsNullOrWhiteSpace(job.ResultJson))
-        {
-            var result = JsonSerializer.Deserialize<JsonElement>(job.ResultJson);
-            _context.ReceiptScanJobs.Remove(new ReceiptScanJob { Id = jobId });
-            await _context.SaveChangesAsync();
-            return Ok(result);
-        }
-
-        return StatusCode(502, new { message = job.ErrorMessage ?? "Receipt scan failed. Please try again." });
     }
 
     [AuthorizeToken]
@@ -123,7 +96,7 @@ public class OcrController : ControllerBase
             result = JsonSerializer.Deserialize<JsonElement>(job.ResultJson);
         }
 
-        return Ok(new
+        var response = new
         {
             scanId = job.Id,
             status = job.Status,
@@ -132,7 +105,20 @@ public class OcrController : ControllerBase
             createdAt = job.CreatedAt,
             updatedAt = job.UpdatedAt,
             completedAt = job.CompletedAt
-        });
+        };
+
+        // The client now has the terminal result in hand, so the row no longer
+        // needs to exist -- delete it here instead of waiting on the client to
+        // acknowledge (that call can be skipped, e.g. the app is closed) or on
+        // the TTL sweep below. Best-effort: a failed delete must not fail this
+        // response, since the client already has what it asked for; PruneOldScanJobs
+        // remains as the fallback if this delete itself can't reach the database.
+        if (job.Status == "completed" || job.Status == "failed")
+        {
+            await DeleteJobBestEffort(jobId);
+        }
+
+        return Ok(response);
     }
 
     [AuthorizeToken]
@@ -240,6 +226,19 @@ public class OcrController : ControllerBase
 
         _context.ReceiptScanJobs.RemoveRange(oldJobs);
         await _context.SaveChangesAsync();
+    }
+
+    private async Task DeleteJobBestEffort(string jobId)
+    {
+        try
+        {
+            _context.ReceiptScanJobs.Remove(new ReceiptScanJob { Id = jobId });
+            await _context.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not delete receipt scan job {JobId} after delivering its result.", jobId);
+        }
     }
 
     private string? GetUsername()
