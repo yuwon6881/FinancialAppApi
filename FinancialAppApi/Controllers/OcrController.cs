@@ -108,7 +108,14 @@ Return only the JSON object.";
         };
 
         var requestJson = JsonSerializer.Serialize(requestBody);
-        var geminiUrl = $"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={apiKey}";
+        // Model is configurable via "GeminiModel". Default to gemini-2.5-flash: it has a
+        // generous free tier and is more than capable for receipt OCR. Avoid the flagship
+        // gemini-3.x flash models here — they carry little/no free-tier quota, so a free
+        // API key gets a 429 RESOURCE_EXHAUSTED on the very first request.
+        var model = _configuration["GeminiModel"];
+        if (string.IsNullOrWhiteSpace(model))
+            model = "gemini-2.5-flash";
+        var geminiUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}";
 
         try
         {
@@ -118,7 +125,11 @@ Return only the JSON object.";
             var response = await _httpClient.SendAsync(httpRequest);
 
             if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            {
+                var quotaBody = await response.Content.ReadAsStringAsync();
+                _logger.LogWarning("Gemini API 429 (model {Model}): {Body}", model, quotaBody);
                 return StatusCode(429, new { message = "AI service rate limit reached. Please wait a moment and try again." });
+            }
 
             if (!response.IsSuccessStatusCode)
             {
