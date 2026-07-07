@@ -1,41 +1,39 @@
 steps:
-  # Build the container image from the nested project directory
+  # Build the image from the nested project dir and push it -- one step, so the
+  # image is compiled and pushed without a separate push step or an end-of-build
+  # re-push from the images: block. $PROJECT_ID/$COMMIT_SHA are Cloud Build
+  # substitutions; $$IMAGE is escaped so bash (not Cloud Build) expands it.
   - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'build'
-      - '-t'
-      - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api:$COMMIT_SHA'
-      - '-f'
-      - 'FinancialAppApi/Dockerfile'   # Dockerfile path relative to repo root
-      - 'FinancialAppApi'              # Build context: the subfolder containing the .csproj
-    id: Build
-
-  # Push the image to Artifact Registry
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      - 'push'
-      - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api:$COMMIT_SHA'
-    id: Push
-
-  # Apply EF Core migrations before the new revision is deployed.
-  - name: 'mcr.microsoft.com/dotnet/sdk:10.0'
     entrypoint: bash
+    args:
+      - '-c'
+      - |
+        set -euo pipefail
+        IMAGE="asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api:$COMMIT_SHA"
+        docker build -t "$$IMAGE" -f FinancialAppApi/Dockerfile FinancialAppApi
+        docker push "$$IMAGE"
+    id: BuildPush
+
+  # Apply EF Core migrations + seed by running the ALREADY-BUILT image, so the
+  # project is compiled exactly once (in the Docker Build step above). The app
+  # applies pending migrations via Database.Migrate() when MigrateOnStartup is
+  # set, and --seed-database seeds idempotently then exits without serving.
+  - name: 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api:$COMMIT_SHA'
+    entrypoint: bash
+    env:
+      - 'Database__MigrateOnStartup=true'
     secretEnv:
       - 'DB_CONNECTION'
     args:
       - '-c'
       - |
         set -euo pipefail
-        export PATH="$$PATH:$$HOME/.dotnet/tools"
         export ConnectionStrings__DefaultConnection="$$DB_CONNECTION"
-        cd FinancialAppApi
-        dotnet tool install --global dotnet-ef --version 10.0.8
-        dotnet restore
-        dotnet ef database update
-        dotnet run --no-launch-profile --no-build -- --seed-database
+        cd /app
+        dotnet FinancialAppApi.dll --seed-database
     id: Migrate
     waitFor:
-      - Push
+      - BuildPush
 
   # Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -51,9 +49,6 @@ steps:
     id: Deploy
     waitFor:
       - Migrate
-
-images:
-  - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api:$COMMIT_SHA'
 
 options:
   logging: CLOUD_LOGGING_ONLY
