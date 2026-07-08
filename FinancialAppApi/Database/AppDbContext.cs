@@ -1,9 +1,10 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using FinancialAppApi.Models;
 
 namespace FinancialAppApi.Database;
 
-public class AppDbContext : DbContext
+public class AppDbContext : DbContext, IDataProtectionKeyContext
 {
     private static readonly TransactionCategory[] DefaultCategories =
     [
@@ -36,6 +37,7 @@ public class AppDbContext : DbContext
     public DbSet<CycleBalance> CycleBalances => Set<CycleBalance>();
     public DbSet<PendingTwoFactor> PendingTwoFactors => Set<PendingTwoFactor>();
     public DbSet<RecoveryCode> RecoveryCodes => Set<RecoveryCode>();
+    public DbSet<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey> DataProtectionKeys => Set<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

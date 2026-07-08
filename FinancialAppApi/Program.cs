@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.ResponseCompression;
 using System.IO.Compression;
 using System.Text.Json.Serialization;
@@ -56,7 +57,6 @@ builder.Services.AddSingleton<ReceiptScanTaskDispatcher>();
 builder.Services.AddSingleton<ReceiptScanQueue>();
 builder.Services.AddHostedService<ReceiptScanBackgroundService>();
 builder.Services.AddScoped<CycleBalanceService>();
-builder.Services.AddDataProtection();
 builder.Services.AddSingleton<TotpService>();
 builder.Services.AddSingleton<SecretProtector>();
 builder.Services.AddScoped<RecoveryCodeService>();
@@ -100,6 +100,18 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 {
     options.UseNpgsql(npgsqlConnectionString, npgsqlOptions => npgsqlOptions.EnableRetryOnFailure());
 });
+
+// Cloud Run instances are ephemeral and can run multiple replicas at once, so the
+// default Data Protection key ring (in-memory/local-disk) is per-instance and gets
+// lost on restart, redeploy, or when a request lands on a different replica than the
+// one that issued it -- this is what causes "key {guid} was not found in the key
+// ring" when unprotecting TOTP secrets. Persisting keys to Postgres makes the ring
+// durable and shared across every instance. SetApplicationName pins the key isolation
+// namespace so it survives redeploys (it would otherwise default to the content root
+// path, which can change between revisions).
+builder.Services.AddDataProtection()
+    .SetApplicationName("FinancialAppApi")
+    .PersistKeysToDbContext<AppDbContext>();
 
 // Expired sessions/challenges are pruned lazily on auth activity (login,
 // per-request token checks, and each WebAuthn options call), and live rows
