@@ -195,6 +195,34 @@ public class FinancialController : ControllerBase
         return (year, monthIdx);
     }
 
+    // GET: api/financial/wallet-balance
+    // Always reflects the real "now" cycle's combined Essentials+Stability+Rewards total
+    // (Growth/investment holdings excluded, matching the dashboard's own totalBalance formula),
+    // independent of whatever cycle the user has navigated the Dashboard/Ledger to -- the navbar
+    // wallet widget uses this instead of the navigated dashboard's totalBalance so it doesn't
+    // change while browsing past/future cycles.
+    [HttpGet("wallet-balance")]
+    public async Task<ActionResult<object>> GetWalletBalance()
+    {
+        var setting = await GetOrCreateSettingAsync();
+        var cycleDay = setting.CycleDay;
+
+        var (year, monthIndex) = GetCycleYearAndMonthIndexForDate(DateOnly.FromDateTime(DateTime.Now), cycleDay);
+
+        var currentCycleTxs = await GetTransactionsForCycleAsync(year, monthIndex, cycleDay);
+
+        var (budgetEssentials, _, budgetStability, budgetRewards) =
+            await _cycleBalanceService.GetOpeningBalanceAsync(year, monthIndex, cycleDay);
+
+        var netEssentials = currentCycleTxs.Sum(t => GetCategoryAmount(t, "Essentials"));
+        var netStability = currentCycleTxs.Sum(t => GetCategoryAmount(t, "Stability"));
+        var netRewards = currentCycleTxs.Sum(t => GetCategoryAmount(t, "Rewards"));
+
+        var totalBalance = (budgetEssentials + netEssentials) + (budgetStability + netStability) + (budgetRewards + netRewards);
+
+        return Ok(new { totalBalance = ObfuscationHelper.Obfuscate(totalBalance) });
+    }
+
     // GET: api/financial/dashboard
     [HttpGet("dashboard")]
     public async Task<ActionResult<object>> GetDashboardData(

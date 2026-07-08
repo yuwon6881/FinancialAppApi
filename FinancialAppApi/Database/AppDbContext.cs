@@ -36,7 +36,6 @@ public class AppDbContext : DbContext
     public DbSet<CycleBalance> CycleBalances => Set<CycleBalance>();
     public DbSet<PendingTwoFactor> PendingTwoFactors => Set<PendingTwoFactor>();
     public DbSet<RecoveryCode> RecoveryCodes => Set<RecoveryCode>();
-    public DbSet<EmailVerificationCode> EmailVerificationCodes => Set<EmailVerificationCode>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -78,11 +77,6 @@ public class AppDbContext : DbContext
         });
 
         modelBuilder.Entity<RecoveryCode>(entity =>
-        {
-            entity.HasIndex(e => e.Username);
-        });
-
-        modelBuilder.Entity<EmailVerificationCode>(entity =>
         {
             entity.HasIndex(e => e.Username);
         });

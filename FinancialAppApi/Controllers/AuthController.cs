@@ -19,11 +19,8 @@ public class AuthController : ControllerBase
     private readonly TotpService _totpService;
     private readonly SecretProtector _secretProtector;
     private readonly RecoveryCodeService _recoveryCodeService;
-    private readonly IEmailSender _emailSender;
 
     private const int PendingTwoFactorTtlMinutes = 5;
-    private const int EmailCodeTtlMinutes = 10;
-    private const int EmailResendCooldownSeconds = 60;
     private const int MaxCodeAttempts = 5;
 
     public AuthController(
@@ -31,8 +28,7 @@ public class AuthController : ControllerBase
         IConfiguration configuration,
         TotpService totpService,
         SecretProtector secretProtector,
-        RecoveryCodeService recoveryCodeService,
-        IEmailSender emailSender)
+        RecoveryCodeService recoveryCodeService)
     {
         _context = context;
         _passwordHasher = new PasswordHasher<string>();
@@ -40,7 +36,6 @@ public class AuthController : ControllerBase
         _totpService = totpService;
         _secretProtector = secretProtector;
         _recoveryCodeService = recoveryCodeService;
-        _emailSender = emailSender;
     }
 
     private int MaxFailedLoginAttempts => _configuration.GetValue("Auth:MaxFailedLoginAttempts", 5);
@@ -54,24 +49,6 @@ public class AuthController : ControllerBase
             return forwarded.Split(',')[0].Trim();
         }
         return context.Connection.RemoteIpAddress?.ToString();
-    }
-
-    private static string GenerateNumericCode()
-    {
-        return System.Security.Cryptography.RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
-    }
-
-    private static bool IsValidEmail(string email)
-    {
-        try
-        {
-            var addr = new System.Net.Mail.MailAddress(email);
-            return addr.Address == email;
-        }
-        catch
-        {
-            return false;
-        }
     }
 
     // Shared by direct password login and post-2FA login: cleans up expired/duplicate sessions,
@@ -527,169 +504,6 @@ public class AuthController : ControllerBase
         return Ok(new { message = "Password changed successfully.", revokedOtherSessions = otherSessions.Count });
     }
 
-    // POST: api/auth/email
-    [AuthorizeToken]
-    [HttpPost("email")]
-    public async Task<IActionResult> BindEmail([FromBody] BindEmailRequest request)
-    {
-        var email = request.Email?.Trim() ?? string.Empty;
-        if (!IsValidEmail(email))
-        {
-            return BadRequest(new { message = "A valid email address is required." });
-        }
-
-        var username = HttpContext.Items["Username"] as string;
-        if (string.IsNullOrEmpty(username))
-        {
-            return Unauthorized();
-        }
-
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
-        if (user == null)
-        {
-            return Unauthorized();
-        }
-
-        user.Email = email;
-        user.EmailVerified = false;
-
-        await IssueEmailCodeAsync(user);
-
-        return Ok(new { message = "Verification code sent." });
-    }
-
-    // POST: api/auth/email/resend
-    [AuthorizeToken]
-    [HttpPost("email/resend")]
-    public async Task<IActionResult> ResendEmailCode()
-    {
-        var username = HttpContext.Items["Username"] as string;
-        if (string.IsNullOrEmpty(username))
-        {
-            return Unauthorized();
-        }
-
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
-        if (user == null || string.IsNullOrEmpty(user.Email))
-        {
-            return BadRequest(new { message = "No email bound to this account yet." });
-        }
-
-        var lastCode = await _context.EmailVerificationCodes
-            .Where(c => c.Username == username)
-            .OrderByDescending(c => c.CreatedAt)
-            .FirstOrDefaultAsync();
-        if (lastCode != null && (DateTime.UtcNow - lastCode.CreatedAt).TotalSeconds < EmailResendCooldownSeconds)
-        {
-            return StatusCode(429, new { message = "Please wait before requesting another code." });
-        }
-
-        await IssueEmailCodeAsync(user);
-
-        return Ok(new { message = "Verification code sent." });
-    }
-
-    private async Task IssueEmailCodeAsync(AppUser user)
-    {
-        var existing = await _context.EmailVerificationCodes.Where(c => c.Username == user.Username).ToListAsync();
-        _context.EmailVerificationCodes.RemoveRange(existing);
-
-        var code = GenerateNumericCode();
-        _context.EmailVerificationCodes.Add(new EmailVerificationCode
-        {
-            Username = user.Username,
-            Email = user.Email!,
-            CodeHash = _passwordHasher.HashPassword(user.Username, code),
-            ExpiresAt = DateTime.UtcNow.AddMinutes(EmailCodeTtlMinutes),
-            CreatedAt = DateTime.UtcNow
-        });
-
-        await _context.SaveChangesAsync();
-
-        await _emailSender.SendAsync(
-            user.Email!,
-            "Your FinancialApp verification code",
-            $"Your verification code is: {code}\n\nIt expires in {EmailCodeTtlMinutes} minutes. If you didn't request this, you can ignore this email.");
-    }
-
-    // POST: api/auth/email/verify
-    [AuthorizeToken]
-    [HttpPost("email/verify")]
-    public async Task<IActionResult> VerifyEmail([FromBody] VerifyCodeRequest request)
-    {
-        var username = HttpContext.Items["Username"] as string;
-        if (string.IsNullOrEmpty(username))
-        {
-            return Unauthorized();
-        }
-
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
-        if (user == null || string.IsNullOrEmpty(user.Email))
-        {
-            return BadRequest(new { message = "No email bound to this account yet." });
-        }
-
-        var pending = await _context.EmailVerificationCodes
-            .Where(c => c.Username == username)
-            .OrderByDescending(c => c.CreatedAt)
-            .FirstOrDefaultAsync();
-
-        if (pending == null || pending.ExpiresAt < DateTime.UtcNow)
-        {
-            return BadRequest(new { message = "No pending verification code. Request a new one." });
-        }
-
-        if (pending.Attempts >= MaxCodeAttempts)
-        {
-            _context.EmailVerificationCodes.Remove(pending);
-            await _context.SaveChangesAsync();
-            return BadRequest(new { message = "Too many attempts. Request a new code." });
-        }
-
-        var result = _passwordHasher.VerifyHashedPassword(username, pending.CodeHash, request.Code ?? string.Empty);
-        if (result == PasswordVerificationResult.Failed)
-        {
-            pending.Attempts += 1;
-            await _context.SaveChangesAsync();
-            return Ok(new { verified = false, message = "Incorrect code." });
-        }
-
-        user.EmailVerified = true;
-        var allCodes = await _context.EmailVerificationCodes.Where(c => c.Username == username).ToListAsync();
-        _context.EmailVerificationCodes.RemoveRange(allCodes);
-        await _context.SaveChangesAsync();
-
-        return Ok(new { verified = true });
-    }
-
-    // DELETE: api/auth/email
-    [AuthorizeToken]
-    [HttpDelete("email")]
-    public async Task<IActionResult> UnbindEmail()
-    {
-        var username = HttpContext.Items["Username"] as string;
-        if (string.IsNullOrEmpty(username))
-        {
-            return Unauthorized();
-        }
-
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
-        if (user == null)
-        {
-            return Unauthorized();
-        }
-
-        user.Email = null;
-        user.EmailVerified = false;
-
-        var codes = await _context.EmailVerificationCodes.Where(c => c.Username == username).ToListAsync();
-        _context.EmailVerificationCodes.RemoveRange(codes);
-
-        await _context.SaveChangesAsync();
-
-        return Ok(new { message = "Email removed." });
-    }
-
     // GET: api/auth/2fa/status
     [AuthorizeToken]
     [HttpGet("2fa/status")]
@@ -707,12 +521,7 @@ public class AuthController : ControllerBase
             return Unauthorized();
         }
 
-        return Ok(new
-        {
-            enabled = user.TotpEnabled,
-            email = user.Email,
-            emailVerified = user.EmailVerified
-        });
+        return Ok(new { enabled = user.TotpEnabled });
     }
 
     // POST: api/auth/2fa/totp/setup
@@ -876,11 +685,6 @@ public class ChangePasswordRequest
 {
     public string CurrentPassword { get; set; } = string.Empty;
     public string NewPassword { get; set; } = string.Empty;
-}
-
-public class BindEmailRequest
-{
-    public string Email { get; set; } = string.Empty;
 }
 
 public class VerifyCodeRequest

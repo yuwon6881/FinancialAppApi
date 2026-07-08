@@ -8,17 +8,6 @@ using Microsoft.Extensions.Configuration;
 
 namespace FinancialAppApi.Tests;
 
-public class NoOpEmailSender : IEmailSender
-{
-    public List<(string To, string Subject, string Body)> Sent { get; } = new();
-
-    public Task SendAsync(string toAddress, string subject, string body)
-    {
-        Sent.Add((toAddress, subject, body));
-        return Task.CompletedTask;
-    }
-}
-
 public static class TestHelpers
 {
     public static AppDbContext NewInMemoryContext()
@@ -45,8 +34,7 @@ public static class TestHelpers
 
     public static Controllers.AuthController NewAuthController(
         AppDbContext context,
-        IConfiguration? configuration = null,
-        NoOpEmailSender? emailSender = null)
+        IConfiguration? configuration = null)
     {
         var protector = new SecretProtector(new EphemeralDataProtectionProvider());
         var controller = new Controllers.AuthController(
@@ -54,8 +42,7 @@ public static class TestHelpers
             configuration ?? NewConfiguration(),
             new TotpService(),
             protector,
-            new RecoveryCodeService(context),
-            emailSender ?? new NoOpEmailSender());
+            new RecoveryCodeService(context));
 
         controller.ControllerContext = new ControllerContext
         {

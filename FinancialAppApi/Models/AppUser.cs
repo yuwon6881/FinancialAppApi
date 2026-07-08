@@ -13,10 +13,6 @@ public class AppUser
     [Required]
     public string PasswordHash { get; set; } = string.Empty;
 
-    public string? Email { get; set; }
-
-    public bool EmailVerified { get; set; } = false;
-
     public bool TotpEnabled { get; set; } = false;
 
     // DataProtection-encrypted TOTP secret, only set once TotpEnabled is confirmed.

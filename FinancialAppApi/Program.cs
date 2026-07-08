@@ -23,7 +23,6 @@ builder.Services.AddDataProtection();
 builder.Services.AddSingleton<TotpService>();
 builder.Services.AddSingleton<SecretProtector>();
 builder.Services.AddScoped<RecoveryCodeService>();
-builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
 
 // Configure PostgreSQL database
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
