@@ -15,9 +15,10 @@ RUN dotnet publish "FinancialAppApi.csproj" \
     -p:UseAppHost=false \
     -o /app/publish
 
-# Runtime stage -- chiseled image: smaller and faster to pull/provision than the full
-# aspnet:10.0 image, which shortens the time before a scaled-from-zero instance is ready.
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS final
+# Runtime stage. NOTE: keep a shell-capable image (not *-chiseled/distroless): the
+# cloudbuild.yaml migrate step runs this image with `entrypoint: bash` to derive the
+# session-mode connection string, which fails on a chiseled image ("bash: not found").
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
 COPY --from=build /app/publish .
 EXPOSE 8080
