@@ -43,14 +43,20 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<Transaction>(entity =>
         {
-            entity.Property(e => e.Amount).HasColumnType("numeric");
+            // Bounded numeric(12,2) instead of unbounded numeric: exact for money, but
+            // fixed/smaller on-disk, which matters against the 500MB free storage ceiling.
+            entity.Property(e => e.Amount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.Date).HasColumnType("date");
-            entity.HasIndex(e => e.Date);
+            // Composite (Date DESC, LedgerCategory): ledger listings order by Date desc and
+            // filter by ledger bucket, so this covers both without a second index. Date leads,
+            // so it stays append-friendly for the insert-heavy workload.
+            entity.HasIndex(e => new { e.Date, e.LedgerCategory })
+                .IsDescending(true, false);
         });
 
         modelBuilder.Entity<RecurringPayment>(entity =>
         {
-            entity.Property(e => e.Amount).HasColumnType("numeric");
+            entity.Property(e => e.Amount).HasColumnType("numeric(12,2)");
         });
 
         modelBuilder.Entity<FinancialSetting>(entity =>

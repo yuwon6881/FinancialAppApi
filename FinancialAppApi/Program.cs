@@ -1,4 +1,8 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.ResponseCompression;
+using System.IO.Compression;
+using System.Text.Json.Serialization;
+using Npgsql;
 using FinancialAppApi.Database;
 using FinancialAppApi.Services;
 
@@ -15,9 +19,42 @@ if (!string.IsNullOrEmpty(port))
 }
 
 // Add services to the container.
-builder.Services.AddControllers();
+//
+// DefaultIgnoreCondition drops null-valued properties from every response body
+// (e.g. an unset RecurringPaymentId), which trims bytes off every transaction row
+// sent over the wire -- meaningful for Vercel's free bandwidth budget.
+builder.Services.AddControllers()
+    .AddJsonOptions(o =>
+    {
+        o.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+    });
+
+// In-process cache for reference/aggregate data that changes rarely relative to
+// how often it is read (transaction categories, cycle balance snapshots). Avoids
+// a distributed cache we can't afford on the free tier; safe because it only ever
+// holds data that is also authoritatively persisted in Postgres.
+builder.Services.AddMemoryCache();
+
+// Response compression (Brotli + gzip). Cloud Run does not compress responses for
+// you, so without this every JSON payload goes out uncompressed. Enabled for HTTPS
+// since our API is only served over TLS.
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[] { "application/json" });
+});
+builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+
 builder.Services.AddScoped<ReceiptScanProcessor>();
 builder.Services.AddSingleton<ReceiptScanTaskDispatcher>();
+// Bounded in-process work queue + single consumer for the OCR fallback path, so a
+// burst of receipt uploads can't spawn unbounded concurrent Gemini calls on a
+// 1-vCPU free-tier container. Cloud Tasks remains the preferred path when configured.
+builder.Services.AddSingleton<ReceiptScanQueue>();
+builder.Services.AddHostedService<ReceiptScanBackgroundService>();
 builder.Services.AddScoped<CycleBalanceService>();
 builder.Services.AddDataProtection();
 builder.Services.AddSingleton<TotpService>();
@@ -31,9 +68,37 @@ if (string.IsNullOrWhiteSpace(connectionString))
     throw new InvalidOperationException("ConnectionStrings:DefaultConnection must be configured.");
 }
 
+// Free-tier Postgres (Supabase) has a very low concurrent-connection ceiling, and
+// Cloud Run can run several container instances at once -- so each instance must
+// keep its physical connection count tiny. The runtime connection string points at
+// Supabase's Supavisor transaction-mode pooler (port 6543), which shares a handful of
+// real Postgres connections across many clients; migrations use session mode (5432),
+// wired in cloudbuild.yaml.
+//
+// Transaction-mode pooling constraints (see Supabase/Npgsql docs):
+//   * MaxAutoPrepare = 0 and NoResetOnClose = true -- server-side prepared statements
+//     and DISCARD ALL don't survive the pooler handing each transaction a different
+//     backend connection, so they must be disabled.
+//   * NO client-side Multiplexing -- combining Npgsql multiplexing with Supavisor's
+//     transaction-mode multiplexing is precisely what breaks prepared statements. The
+//     pooler already does the connection-sharing job.
+// MinPoolSize = 0 lets an idle, scaled-to-zero instance hold no connections at all.
+var npgsqlConnectionString = new NpgsqlConnectionStringBuilder(connectionString)
+{
+    Pooling = true,
+    MinPoolSize = 0,
+    MaxPoolSize = builder.Configuration.GetValue("Database:MaxPoolSize", 8),
+    ConnectionIdleLifetime = 30,
+    ConnectionPruningInterval = 5,
+    MaxAutoPrepare = 0,
+    NoResetOnClose = true,
+    Timeout = 5,
+    CommandTimeout = 15,
+}.ConnectionString;
+
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
-    options.UseNpgsql(connectionString, npgsqlOptions => npgsqlOptions.EnableRetryOnFailure());
+    options.UseNpgsql(npgsqlConnectionString, npgsqlOptions => npgsqlOptions.EnableRetryOnFailure());
 });
 
 // Expired sessions/challenges are pruned lazily on auth activity (login,
@@ -72,6 +137,9 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+
+// Compress responses before anything else writes to the body.
+app.UseResponseCompression();
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())

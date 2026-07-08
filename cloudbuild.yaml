@@ -28,7 +28,10 @@ steps:
       - '-c'
       - |
         set -euo pipefail
-        export ConnectionStrings__DefaultConnection="$$DB_CONNECTION"
+        # The runtime secret targets the transaction pooler (port 6543), but EF Core
+        # migrations take a session-scoped advisory lock that transaction pooling drops
+        # between statements -- so run migrations against session mode (port 5432).
+        export ConnectionStrings__DefaultConnection="$${DB_CONNECTION/Port=6543/Port=5432}"
         cd /app
         dotnet FinancialAppApi.dll --seed-database
     id: Migrate

@@ -82,7 +82,7 @@ public class TransactionsController : ControllerBase
 
         if (all)
         {
-            var query = ApplyAllFilters(_context.Transactions.AsQueryable(), search, ledgerCategory, category, txType, startDate, endDate);
+            var query = ApplyAllFilters(_context.Transactions.AsNoTracking(), search, ledgerCategory, category, txType, startDate, endDate);
             var total = await query.CountAsync();
 
             var txs = await query
@@ -105,6 +105,7 @@ public class TransactionsController : ControllerBase
         if (setting == null)
         {
             var txs = await _context.Transactions
+                .AsNoTracking()
                 .OrderByDescending(t => t.Date)
                 .ThenByDescending(t => t.Id)
                 .ToListAsync();
@@ -122,6 +123,7 @@ public class TransactionsController : ControllerBase
         var cycleEndDate = DateOnly.FromDateTime(cycleEnd);
 
         var filtered = await _context.Transactions
+            .AsNoTracking()
             .Where(t => t.LedgerCategory.ToUpper() != "DISCARDED" && t.Date >= cycleStartDate && t.Date <= cycleEndDate)
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.Id)

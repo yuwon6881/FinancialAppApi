@@ -12,16 +12,16 @@ public class ReceiptScanTaskDispatcher
     };
 
     private readonly IConfiguration _configuration;
-    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ReceiptScanQueue _queue;
     private readonly ILogger<ReceiptScanTaskDispatcher> _logger;
 
     public ReceiptScanTaskDispatcher(
         IConfiguration configuration,
-        IServiceScopeFactory scopeFactory,
+        ReceiptScanQueue queue,
         ILogger<ReceiptScanTaskDispatcher> logger)
     {
         _configuration = configuration;
-        _scopeFactory = scopeFactory;
+        _queue = queue;
         _logger = logger;
     }
 
@@ -33,19 +33,10 @@ public class ReceiptScanTaskDispatcher
             return;
         }
 
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                using var scope = _scopeFactory.CreateScope();
-                var processor = scope.ServiceProvider.GetRequiredService<ReceiptScanProcessor>();
-                await processor.ProcessAsync(jobId);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Fallback receipt scan processor failed for job {JobId}.", jobId);
-            }
-        });
+        // Fallback path: hand the job to the bounded in-process queue, drained by
+        // ReceiptScanBackgroundService one at a time. This provides backpressure
+        // instead of the unbounded concurrency a per-request Task.Run would allow.
+        await _queue.EnqueueAsync(jobId);
     }
 
     private bool HasCloudTasksConfig()

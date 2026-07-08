@@ -77,6 +77,7 @@ public class CycleBalanceService
                 var cycleEndDate = DateOnly.FromDateTime(cycleEnd);
 
                 var cycleTxs = await _context.Transactions
+                    .AsNoTracking()
                     .Where(t => t.Date >= cycleStartDate && t.Date <= cycleEndDate)
                     .ToListAsync();
 
