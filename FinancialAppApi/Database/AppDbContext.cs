@@ -34,6 +34,9 @@ public class AppDbContext : DbContext
     public DbSet<WebAuthnChallenge> WebAuthnChallenges => Set<WebAuthnChallenge>();
     public DbSet<ReceiptScanJob> ReceiptScanJobs => Set<ReceiptScanJob>();
     public DbSet<CycleBalance> CycleBalances => Set<CycleBalance>();
+    public DbSet<PendingTwoFactor> PendingTwoFactors => Set<PendingTwoFactor>();
+    public DbSet<RecoveryCode> RecoveryCodes => Set<RecoveryCode>();
+    public DbSet<EmailVerificationCode> EmailVerificationCodes => Set<EmailVerificationCode>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -71,6 +74,17 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<UserSession>(entity =>
         {
             entity.Property(e => e.IsLocked).HasDefaultValue(false);
+            entity.HasIndex(e => e.Id).IsUnique();
+        });
+
+        modelBuilder.Entity<RecoveryCode>(entity =>
+        {
+            entity.HasIndex(e => e.Username);
+        });
+
+        modelBuilder.Entity<EmailVerificationCode>(entity =>
+        {
+            entity.HasIndex(e => e.Username);
         });
 
         modelBuilder.Entity<WishlistItem>(entity =>

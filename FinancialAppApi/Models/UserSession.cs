@@ -8,6 +8,10 @@ public class UserSession
     [Key]
     public string Token { get; set; } = string.Empty;
 
+    // Public identifier used by the sessions list/revoke API so the raw bearer token
+    // (the live credential) never has to leave the server in a response body.
+    public Guid Id { get; set; } = Guid.NewGuid();
+
     [Required]
     public string Username { get; set; } = string.Empty;
 
@@ -27,6 +31,12 @@ public class UserSession
     public byte[]? CredentialId { get; set; }
 
     public string? DeviceId { get; set; }
-    
+
     public string? DeviceName { get; set; }
+
+    public DateTime? LastActiveAt { get; set; }
+
+    public string? IpAddress { get; set; }
+
+    public string? UserAgent { get; set; }
 }
