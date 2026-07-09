@@ -13,9 +13,11 @@ public class Transaction
     public string Description { get; set; } = string.Empty;
 
     [Required]
+    [StringLength(100)]
     public string Category { get; set; } = string.Empty;
 
     [Required]
+    [StringLength(200)]
     public string LedgerCategory { get; set; } = string.Empty;
 
     [Required]

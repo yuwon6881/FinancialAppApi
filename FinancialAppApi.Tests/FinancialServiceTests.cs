@@ -1,0 +1,76 @@
+using FinancialAppApi.Database;
+using FinancialAppApi.Models;
+using FinancialAppApi.Services;
+
+namespace FinancialAppApi.Tests;
+
+public class FinancialServiceTests
+{
+    [Fact]
+    public async Task GetWalletBalanceAsync_ReturnsCurrentCycleWalletBalance()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-1",
+            Date = DateTime.UtcNow,
+            Description = "Reward",
+            Category = "Other",
+            LedgerCategory = "Rewards",
+            Amount = 50m
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var response = await service.GetWalletBalanceAsync();
+
+        var totalBalance = response.GetType().GetProperty("totalBalance")!.GetValue(response) as string;
+        Assert.Equal(50m, ObfuscationHelper.Deobfuscate(totalBalance!));
+    }
+
+    [Fact]
+    public async Task UpdateSettingsAsync_ClampsCycleDayAndInvalidatesCycleBalanceCache()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 28 });
+        context.CycleBalances.Add(new CycleBalance
+        {
+            Year = 2026,
+            MonthIndex = 7,
+            EssentialsBalance = 1m,
+            GrowthBalance = 2m,
+            StabilityBalance = 3m,
+            RewardsBalance = 4m
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        await service.UpdateSettingsAsync(new FinancialSettingsUpdate(
+            ObfuscationHelper.Obfuscate(1234.56m),
+            0.50m,
+            0.25m,
+            0.15m,
+            0.10m,
+            0,
+            true,
+            false,
+            true,
+            "USD",
+            "Rewards"));
+
+        var setting = context.FinancialSettings.Single();
+        Assert.Equal(1, setting.CycleDay);
+        Assert.True(setting.DarkMode);
+        Assert.False(setting.HideSensitive);
+        Assert.Empty(context.CycleBalances);
+    }
+
+    private static FinancialService NewService(AppDbContext context)
+    {
+        return new FinancialService(
+            context,
+            new CycleBalanceService(context),
+            new RecurringPaymentAlertService(context));
+    }
+}

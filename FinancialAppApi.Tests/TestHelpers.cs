@@ -39,12 +39,16 @@ public static class TestHelpers
         IConfiguration? configuration = null)
     {
         var protector = new SecretProtector(new EphemeralDataProtectionProvider());
+        var authSessionService = new AuthSessionService(context);
         var controller = new Controllers.AuthController(
-            context,
-            configuration ?? NewConfiguration(),
-            new TotpService(),
-            protector,
-            new RecoveryCodeService(context));
+            new AuthAccountService(
+                context,
+                configuration ?? NewConfiguration(),
+                new TotpService(),
+                protector,
+                new RecoveryCodeService(context),
+                authSessionService),
+            authSessionService);
 
         controller.ControllerContext = new ControllerContext
         {

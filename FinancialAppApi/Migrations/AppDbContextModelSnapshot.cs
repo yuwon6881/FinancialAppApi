@@ -258,7 +258,8 @@ namespace FinancialAppApi.Migrations
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
                     b.Property<int>("DueDate")
                         .HasColumnType("integer");
@@ -272,7 +273,8 @@ namespace FinancialAppApi.Migrations
 
                     b.Property<string>("LedgerCategory")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -288,7 +290,10 @@ namespace FinancialAppApi.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("RecurringPayments");
+                    b.ToTable("RecurringPayments", t =>
+                        {
+                            t.HasCheckConstraint("ck_recurringpayments_amount_nonzero", "\"Amount\" <> 0");
+                        });
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.Transaction", b =>
@@ -301,7 +306,8 @@ namespace FinancialAppApi.Migrations
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
                     b.Property<DateTime>("Date")
                         .HasColumnType("timestamp with time zone");
@@ -312,7 +318,8 @@ namespace FinancialAppApi.Migrations
 
                     b.Property<string>("LedgerCategory")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
 
                     b.Property<string>("RecurringPaymentId")
                         .HasColumnType("text");
@@ -322,10 +329,10 @@ namespace FinancialAppApi.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("WishlistItemId");
+
                     b.HasIndex("Date", "LedgerCategory")
                         .IsDescending(true, false);
-
-                    b.HasIndex("WishlistItemId");
 
                     b.ToTable("Transactions");
                 });
@@ -532,19 +539,20 @@ namespace FinancialAppApi.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
 
                     b.Property<decimal>("Price")
                         .HasColumnType("numeric(12,2)");
-
-                    b.Property<string>("PurchaseTransactionId")
-                        .HasColumnType("text");
 
                     b.Property<string>("Priority")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasColumnType("text")
                         .HasDefaultValue("Medium");
+
+                    b.Property<string>("PurchaseTransactionId")
+                        .HasColumnType("text");
 
                     b.Property<DateTime?>("PurchasedAt")
                         .HasColumnType("timestamp with time zone");

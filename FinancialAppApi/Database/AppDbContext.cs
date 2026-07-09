@@ -60,6 +60,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<RecurringPayment>(entity =>
         {
             entity.Property(e => e.Amount).HasColumnType("numeric(12,2)");
+            entity.ToTable(t => t.HasCheckConstraint("ck_recurringpayments_amount_nonzero", "\"Amount\" <> 0"));
         });
 
         modelBuilder.Entity<FinancialSetting>(entity =>

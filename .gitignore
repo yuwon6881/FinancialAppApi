@@ -5,3 +5,5 @@ FinancialAppApi/publish/
 *.db
 *.db-shm
 *.db-wal
+FinancialAppApi/appsettings.Local.json
+FinancialAppApi/appsettings.*.Local.json
