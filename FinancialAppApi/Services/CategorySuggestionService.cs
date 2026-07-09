@@ -232,7 +232,7 @@ Rules:
             .ToList();
 
         var prompt = $@"You review custom transaction categories for a personal finance app.
-Suggest safe cleanup actions. Return ONLY valid JSON, no markdown, no explanation.
+Suggest safe cleanup actions at the CATEGORY level only. Return ONLY valid JSON, no markdown, no explanation.
 
 Existing categories JSON array: {JsonSerializer.Serialize(visibleCategories)}
 Recent usage JSON array: {JsonSerializer.Serialize(usage)}
@@ -241,7 +241,7 @@ JSON schema:
 {{
   ""suggestions"": [
     {{
-      ""type"": ""delete"" | ""merge"" | ""add"",
+      ""type"": ""delete"" | ""merge"" | ""add"" | ""consolidate"",
       ""title"": ""<short title>"",
       ""summary"": ""<one-sentence reason>"",
       ""categories"": [""<existing category names involved>""],
@@ -253,12 +253,14 @@ JSON schema:
 }}
 
 Rules:
-- Return at most 5 suggestions.
+- Return at most 5 suggestions. An empty suggestions array is a completely valid and often correct answer when the existing categories already look healthy -- never invent a suggestion just to have something to say.
+- Never suggest moving, recategorizing, or swapping an individual transaction. Every suggestion must act on a whole category, not a single entry -- that kind of change is out of scope here.
 - For delete, only choose existing categories with zero recent transactions.
-- For merge, categories must be existing category names, and targetCategory must also exist.
+- For merge, only propose it when the two categories are genuinely duplicative in overall purpose across most of their usage (e.g. two categories that mean the same thing, like ""Subscriptions"" and ""Software""). Do not propose a merge just because one transaction in a category could also fit under another category -- a single overlapping entry is never sufficient reason to fold an entire category into another one.
+- For consolidate, use this instead of merge when a category has very few recent transactions (roughly 1-3) so it's a candidate for cleanup, but you are not confident every transaction in it belongs in one specific other category. Always leave targetCategory null for consolidate -- never guess a destination category; the app will ask the user to manually pick where those few transactions should go.
 - For add, newCategoryName must not already exist and should be broadly useful.
 - Never suggest Transfer or Adjustment.
-- Prefer conservative cleanup. If unsure, return fewer suggestions.";
+- Prefer conservative cleanup. If unsure, return fewer suggestions or none at all.";
 
         var text = await GenerateGeminiTextAsync(prompt, 0.1, 1024);
         return ParseCategoryCleanupReview(text, visibleCategories, recentTransactions);
@@ -644,7 +646,7 @@ Rules:
             var type = item.TryGetProperty("type", out var typeProp)
                 ? typeProp.GetString()?.Trim().ToLowerInvariant()
                 : null;
-            if (type is not ("delete" or "merge" or "add")) continue;
+            if (type is not ("delete" or "merge" or "add" or "consolidate")) continue;
 
             var categories = new List<string>();
             if (item.TryGetProperty("categories", out var categoriesProp) && categoriesProp.ValueKind == JsonValueKind.Array)
@@ -678,13 +680,26 @@ Rules:
                 ? CleanCategoryName(newProp.GetString())
                 : null;
 
+            // The user picks the destination manually for a low-usage cleanup, so the AI is
+            // never trusted to name a target here even if it tried to include one.
+            if (type == "consolidate")
+            {
+                targetCategory = null;
+            }
+
             if (type == "delete" && categories.Count == 0) continue;
             if (type == "merge" && (categories.Count == 0 || targetCategory == null)) continue;
+            if (type == "consolidate" && categories.Count != 1) continue;
             if (type == "add" && (newCategoryName == null || existingLower.Contains(newCategoryName.ToLowerInvariant()))) continue;
 
             var affectedCount = type == "add"
                 ? 0
                 : recentTransactions.Count(t => categories.Contains((string)t.Category, StringComparer.OrdinalIgnoreCase));
+
+            // A merge folds a whole category's history into another one, so it must be backed by
+            // more than a single coincidentally-overlapping transaction -- that case belongs to
+            // "consolidate" instead, where the user picks the destination themselves.
+            if (type == "merge" && affectedCount <= 1) continue;
 
             var confidence = 0.5;
             if (item.TryGetProperty("confidence", out var confidenceProp) && confidenceProp.ValueKind == JsonValueKind.Number)
@@ -721,6 +736,7 @@ Rules:
         {
             "delete" => $"Remove {string.Join(", ", categories)}",
             "merge" => $"Merge into {targetCategory}",
+            "consolidate" => $"Consolidate {string.Join(", ", categories)} (low usage)",
             "add" => $"Add {newCategoryName}",
             _ => "Review category"
         };
