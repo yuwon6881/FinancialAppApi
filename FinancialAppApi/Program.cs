@@ -50,6 +50,7 @@ builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = Comp
 builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 
 builder.Services.AddHttpClient<ReceiptScanProcessor>(c => c.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddHttpClient<CategorySuggestionService>(c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddHttpClient<ReceiptScanTaskDispatcher>(c => c.Timeout = TimeSpan.FromSeconds(15));
 // Bounded in-process work queue + single consumer for the OCR fallback path, so a
 // burst of receipt uploads can't spawn unbounded concurrent Gemini calls on a
