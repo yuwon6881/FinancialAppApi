@@ -63,6 +63,9 @@ public class FinancialServiceDashboardTests
         var average = ObfuscationHelper.Deobfuscate(averageRaw!);
         Assert.Equal(13.33m, average);
         Assert.True((bool)response.GetType().GetProperty("hasRewardsHistory")!.GetValue(response)!);
+
+        var availableYears = (System.Collections.IEnumerable)response.GetType().GetProperty("availableYears")!.GetValue(response)!;
+        Assert.Equal(new[] { 2026 }, availableYears.Cast<int>().ToArray());
     }
 
     [Fact]
@@ -95,10 +98,13 @@ public class FinancialServiceDashboardTests
         Assert.Null(responseType.GetProperty("last3CategoryBreakdown"));
         Assert.Null(responseType.GetProperty("last6CategoryBreakdown"));
         Assert.Null(responseType.GetProperty("yearlyCategoryBreakdown"));
+        Assert.Null(responseType.GetProperty("recentTransactions"));
+        Assert.Null(responseType.GetProperty("availableYears"));
 
         var stats = responseType.GetProperty("stats")!.GetValue(response)!;
         Assert.Null(stats.GetType().GetProperty("pastThreeMonthsRewardsAverage"));
         Assert.Null(stats.GetType().GetProperty("hasRewardsHistory"));
+        Assert.Null(stats.GetType().GetProperty("essentialsPercentRemaining"));
 
         var monthlyBreakdown = GetBreakdown(response, "monthlyCategoryBreakdown");
         Assert.Equal(new[] { ("Food", 100m) }, monthlyBreakdown);

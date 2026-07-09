@@ -114,26 +114,7 @@ public class FinancialService
         var monthlyOutflow = Math.Abs(activeCycleTxs.Where(t => t.Amount < 0).Sum(t => t.Amount));
         var activeRecurringTotal = Math.Abs(allRecurring.Where(r => r.Active).Sum(r => r.Amount));
         var growthPercentAchieved = selectedNetGrowth / (targetGrowth > 0 ? targetGrowth : 1m);
-        var essentialsPercentRemaining = targetEssentials > 0
-            ? Math.Max(0m, selectedRemEssentials / targetEssentials)
-            : 0m;
         var stabilityPercentReached = selectedRemStability / (setting.TargetStabilityFund > 0 ? setting.TargetStabilityFund : 1m);
-
-        var recentTransactions = activeCycleTxs
-            .OrderByDescending(t => t.Date)
-            .ThenByDescending(t => t.Id)
-            .Take(5)
-            .Select(t => new
-            {
-                id = t.Id,
-                date = TransactionDate.ToDateOnly(t.Date).ToString("yyyy-MM-dd"),
-                postedAt = t.Date.ToUniversalTime().ToString("O"),
-                description = t.Description,
-                category = t.Category,
-                ledgerCategory = t.LedgerCategory,
-                amount = t.Amount
-            })
-            .ToList();
 
         var activeRecurringList = BuildActiveRecurringList(allRecurring, activeCycleTxs, activeRange.start, activeRange.end, cycleDay, activeYear, activeMonthIndex);
         var selectedMonthRecurring = activeRecurringList
@@ -152,13 +133,6 @@ public class FinancialService
         var last3TrendPoints = trendPointsList.Count >= 3
             ? trendPointsList.GetRange(trendPointsList.Count - 3, 3)
             : trendPointsList.ToList();
-
-        var transactionYears = await _context.Transactions.Select(t => t.Date.Year).Distinct().ToListAsync();
-        var availableYears = transactionYears
-            .Append(DateTime.Now.Year)
-            .Distinct()
-            .OrderBy(y => y)
-            .ToList();
 
         return new
         {
@@ -187,26 +161,14 @@ public class FinancialService
                 monthlyExpenses = ObfuscationHelper.Obfuscate(monthlyOutflow),
                 activeRecurringTotal = ObfuscationHelper.Obfuscate(activeRecurringTotal),
                 growthPercentAchieved = (double)Math.Max(0, growthPercentAchieved),
-                essentialsPercentRemaining = (double)essentialsPercentRemaining,
                 stabilityPercentReached = (double)Math.Max(0, stabilityPercentReached)
             },
-            recentTransactions = recentTransactions.Select(t => new
-            {
-                id = t.id,
-                date = t.date,
-                postedAt = t.postedAt,
-                description = t.description,
-                category = t.category,
-                ledgerCategory = t.ledgerCategory,
-                amount = ObfuscationHelper.Obfuscate(t.amount)
-            }).ToList(),
             activeRecurringPayments = selectedMonthRecurring,
             trendPoints = ObfuscateTrendPoints(trendPoints),
             last3TrendPoints = ObfuscateTrendPoints(last3TrendPoints),
             last6TrendPoints = ObfuscateTrendPoints(last6TrendPoints),
             pendingNotifications,
-            monthlyCategoryBreakdown = ObfuscateBreakdown(monthlyCategoryBreakdown),
-            availableYears
+            monthlyCategoryBreakdown = ObfuscateBreakdown(monthlyCategoryBreakdown)
         };
     }
 
@@ -247,6 +209,7 @@ public class FinancialService
         // Reuses last3Txs (already fetched above) instead of re-querying the same 3 cycles again.
         var (pastThreeMonthsRewardsAverage, hasRewardsHistory) =
             CalculatePastRewardsAverageFromTxs(last3Txs, activeYear, activeMonthIndex, cycleDay);
+        var availableYears = await GetAvailableYearsAsync();
 
         return new
         {
@@ -254,7 +217,8 @@ public class FinancialService
             last6CategoryBreakdown = ObfuscateBreakdown(last6CategoryBreakdown),
             yearlyCategoryBreakdown = ObfuscateBreakdown(yearlyCategoryBreakdown),
             pastThreeMonthsRewardsAverage = ObfuscationHelper.Obfuscate(pastThreeMonthsRewardsAverage),
-            hasRewardsHistory
+            hasRewardsHistory,
+            availableYears
         };
     }
 
@@ -523,6 +487,29 @@ public class FinancialService
 
         var average = totalPastRewards / activeMonthsCount;
         return (average, average > 0);
+    }
+
+    private async Task<List<int>> GetAvailableYearsAsync()
+    {
+        var minYear = await _context.Transactions
+            .OrderBy(t => t.Date)
+            .Select(t => t.Date.Year)
+            .FirstOrDefaultAsync();
+        var maxYear = await _context.Transactions
+            .OrderByDescending(t => t.Date)
+            .Select(t => t.Date.Year)
+            .FirstOrDefaultAsync();
+        var currentYear = DateTime.Now.Year;
+
+        if (minYear == 0 || maxYear == 0)
+        {
+            return [currentYear];
+        }
+
+        minYear = Math.Min(minYear, currentYear);
+        maxYear = Math.Max(maxYear, currentYear);
+
+        return Enumerable.Range(minYear, maxYear - minYear + 1).ToList();
     }
 
     private static List<(string category, decimal amount)> BuildBreakdown(List<Transaction> txs) => txs
