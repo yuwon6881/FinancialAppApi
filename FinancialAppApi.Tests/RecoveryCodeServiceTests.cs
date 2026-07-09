@@ -1,5 +1,4 @@
 using FinancialAppApi.Services;
-using Xunit;
 
 namespace FinancialAppApi.Tests;
 

@@ -1,5 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using FinancialAppApi.Controllers;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 
@@ -9,7 +8,7 @@ namespace FinancialAppApi.Services;
 // only has to replay forward from the last cached cycle instead of the app's entire transaction
 // history on every request. Balances carry forward cycle-to-cycle (never reset), matching
 // FinancialController's original in-memory roll-forward loop exactly -- this class computes the
-// same per-cycle net changes (via FinancialController.GetCategoryAmount) and caches the running
+// same per-cycle net changes (via CategoryAttributionService.GetCategoryAmount) and caches the running
 // total instead of recomputing it from year 2026 on every dashboard load.
 //
 // Invalidation: because any past transaction can be edited/deleted, a change dated in cycle X
@@ -72,7 +71,7 @@ public class CycleBalanceService
 
             for (int m = monthFrom; m <= monthTo; m++)
             {
-                var (cycleStart, cycleEnd, _) = FinancialController.GetCycleRange(y, m, cycleDay);
+                var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(y, m, cycleDay);
                 var cycleStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart));
                 var cycleEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleEnd));
 
@@ -81,10 +80,10 @@ public class CycleBalanceService
                     .Where(t => t.Date >= cycleStartDate && t.Date < cycleEndExclusive)
                     .ToListAsync();
 
-                essentials += cycleTxs.Sum(t => FinancialController.GetCategoryAmount(t, "Essentials"));
-                growth += cycleTxs.Sum(t => FinancialController.GetCategoryAmount(t, "Growth"));
-                stability += cycleTxs.Sum(t => FinancialController.GetCategoryAmount(t, "Stability"));
-                rewards += cycleTxs.Sum(t => FinancialController.GetCategoryAmount(t, "Rewards"));
+                essentials += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Essentials"));
+                growth += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Growth"));
+                stability += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Stability"));
+                rewards += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Rewards"));
 
                 current = new CycleBalance
                 {
@@ -151,15 +150,30 @@ public class CycleBalanceService
     // balance for every cycle downstream of it is now stale.
     public async Task InvalidateFromAsync(int year, int monthIndex)
     {
-        await _context.CycleBalances
-            .Where(b => b.Year > year || (b.Year == year && b.MonthIndex >= monthIndex))
-            .ExecuteDeleteAsync();
+        var query = _context.CycleBalances
+            .Where(b => b.Year > year || (b.Year == year && b.MonthIndex >= monthIndex));
+
+        if (_context.Database.IsRelational())
+        {
+            await query.ExecuteDeleteAsync();
+            return;
+        }
+
+        _context.CycleBalances.RemoveRange(await query.ToListAsync());
+        await _context.SaveChangesAsync();
     }
 
     // Deletes every cached snapshot outright -- call when the CycleDay setting changes, since
     // that shifts every cycle's date boundaries retroactively and invalidates the whole history.
     public async Task InvalidateAllAsync()
     {
-        await _context.CycleBalances.ExecuteDeleteAsync();
+        if (_context.Database.IsRelational())
+        {
+            await _context.CycleBalances.ExecuteDeleteAsync();
+            return;
+        }
+
+        _context.CycleBalances.RemoveRange(await _context.CycleBalances.ToListAsync());
+        await _context.SaveChangesAsync();
     }
 }

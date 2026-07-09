@@ -1,5 +1,4 @@
 using System.Net.Http.Headers;
-using System.Text;
 using System.Text.Json;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
@@ -18,17 +17,18 @@ public record ReceiptScanResult(
 
 public class ReceiptScanProcessor
 {
-    private static readonly HttpClient HttpClient = new()
-    {
-        Timeout = TimeSpan.FromSeconds(30)
-    };
-
+    private readonly HttpClient _httpClient;
     private readonly AppDbContext _context;
     private readonly IConfiguration _configuration;
     private readonly ILogger<ReceiptScanProcessor> _logger;
 
-    public ReceiptScanProcessor(AppDbContext context, IConfiguration configuration, ILogger<ReceiptScanProcessor> logger)
+    public ReceiptScanProcessor(
+        HttpClient httpClient,
+        AppDbContext context,
+        IConfiguration configuration,
+        ILogger<ReceiptScanProcessor> logger)
     {
+        _httpClient = httpClient;
         _context = context;
         _configuration = configuration;
         _logger = logger;
@@ -236,7 +236,7 @@ Return only the JSON object.";
         httpRequest.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(requestBody));
         httpRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
-        var response = await HttpClient.SendAsync(httpRequest);
+        var response = await _httpClient.SendAsync(httpRequest);
 
         if (response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
         {

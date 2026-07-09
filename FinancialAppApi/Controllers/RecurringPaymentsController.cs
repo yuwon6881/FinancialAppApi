@@ -1,8 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
+using FinancialAppApi.Services;
 
 namespace FinancialAppApi.Controllers;
 
@@ -11,18 +11,18 @@ namespace FinancialAppApi.Controllers;
 [AuthorizeToken]
 public class RecurringPaymentsController : ControllerBase
 {
-    private readonly AppDbContext _context;
+    private readonly RecurringPaymentService _recurringPaymentService;
 
-    public RecurringPaymentsController(AppDbContext context)
+    public RecurringPaymentsController(RecurringPaymentService recurringPaymentService)
     {
-        _context = context;
+        _recurringPaymentService = recurringPaymentService;
     }
 
     // GET: api/recurring-payments
     [HttpGet]
     public async Task<ActionResult<IEnumerable<RecurringPaymentDto>>> GetRecurringPayments()
     {
-        var list = await _context.RecurringPayments.ToListAsync();
+        var list = await _recurringPaymentService.GetRecurringPaymentsAsync();
         return Ok(list.Select(MapToDto).ToList());
     }
 
@@ -45,8 +45,7 @@ public class RecurringPaymentsController : ControllerBase
             EndDate = dto.EndDate
         };
 
-        _context.RecurringPayments.Add(payment);
-        await _context.SaveChangesAsync();
+        await _recurringPaymentService.CreateRecurringPaymentAsync(payment);
 
         return CreatedAtAction(nameof(GetRecurringPayments), new { id = payment.Id }, MapToDto(payment));
     }
@@ -55,14 +54,11 @@ public class RecurringPaymentsController : ControllerBase
     [HttpPut("{id}/toggle")]
     public async Task<IActionResult> ToggleActive(string id)
     {
-        var payment = await _context.RecurringPayments.FindAsync(id);
+        var payment = await _recurringPaymentService.ToggleActiveAsync(id);
         if (payment == null)
         {
             return NotFound();
         }
-
-        payment.Active = !payment.Active;
-        await _context.SaveChangesAsync();
 
         return Ok(MapToDto(payment));
     }
@@ -76,54 +72,39 @@ public class RecurringPaymentsController : ControllerBase
             return BadRequest("ID mismatch");
         }
 
-        var existing = await _context.RecurringPayments.FindAsync(id);
-        if (existing == null)
+        var updated = new RecurringPayment
+        {
+            Id = dto.Id,
+            Name = dto.Name,
+            Amount = Math.Round(ObfuscationHelper.Deobfuscate(dto.Amount), 2, MidpointRounding.AwayFromZero),
+            Frequency = dto.Frequency,
+            Category = dto.Category,
+            LedgerCategory = dto.LedgerCategory,
+            NextDueDate = dto.NextDueDate,
+            DueDate = dto.DueDate,
+            StartDate = dto.StartDate,
+            EndDate = dto.EndDate,
+            Active = dto.Active
+        };
+
+        var result = await _recurringPaymentService.UpdateRecurringPaymentAsync(id, updated);
+        if (result.Status == UpdateRecurringPaymentStatus.NotFound)
         {
             return NotFound();
         }
 
-        existing.Name = dto.Name;
-        existing.Amount = Math.Round(ObfuscationHelper.Deobfuscate(dto.Amount), 2, MidpointRounding.AwayFromZero);
-        existing.Frequency = dto.Frequency;
-        existing.Category = dto.Category;
-        existing.LedgerCategory = dto.LedgerCategory;
-        existing.NextDueDate = dto.NextDueDate;
-        existing.DueDate = dto.DueDate;
-        existing.StartDate = dto.StartDate;
-        existing.EndDate = dto.EndDate;
-        existing.Active = dto.Active;
-
-        try
-        {
-            await _context.SaveChangesAsync();
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            if (!await _context.RecurringPayments.AnyAsync(e => e.Id == id))
-            {
-                return NotFound();
-            }
-            else
-            {
-                throw;
-            }
-        }
-
-        return Ok(MapToDto(existing));
+        return Ok(MapToDto(result.Payment!));
     }
 
     // DELETE: api/recurring-payments/{id}
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteRecurringPayment(string id)
     {
-        var payment = await _context.RecurringPayments.FindAsync(id);
-        if (payment == null)
+        var deleted = await _recurringPaymentService.DeleteRecurringPaymentAsync(id);
+        if (!deleted)
         {
             return NotFound();
         }
-
-        _context.RecurringPayments.Remove(payment);
-        await _context.SaveChangesAsync();
 
         return NoContent();
     }

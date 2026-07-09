@@ -439,8 +439,14 @@ namespace FinancialAppApi.Migrations
 
                     b.HasKey("Token");
 
+                    b.HasIndex("CredentialId");
+
+                    b.HasIndex("ExpiresAt");
+
                     b.HasIndex("Id")
                         .IsUnique();
+
+                    b.HasIndex("Username", "DeviceId");
 
                     b.ToTable("UserSessions");
                 });
@@ -466,6 +472,8 @@ namespace FinancialAppApi.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt");
 
                     b.ToTable("WebAuthnChallenges");
                 });
@@ -493,6 +501,8 @@ namespace FinancialAppApi.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("CredentialId");
+
+                    b.HasIndex("Username");
 
                     b.ToTable("WebAuthnCredentials");
                 });

@@ -2,7 +2,6 @@ using FinancialAppApi.Controllers;
 using FinancialAppApi.Models;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
-using Xunit;
 
 namespace FinancialAppApi.Tests;
 

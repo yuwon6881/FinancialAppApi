@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace FinancialAppApi.Database;
 
 public static class TransactionDate
@@ -20,6 +22,9 @@ public static class TransactionDate
     }
 
     public static DateOnly ToDateOnly(DateTime timestamp) => DateOnly.FromDateTime(timestamp);
+
+    public static bool TryParseInputDate(string? value, out DateOnly date) =>
+        DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
 
     public static DateTime StartOfDate(DateOnly date) =>
         DateTime.SpecifyKind(date.ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc);

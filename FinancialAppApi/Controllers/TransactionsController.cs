@@ -15,55 +15,20 @@ namespace FinancialAppApi.Controllers;
 public class TransactionsController : ControllerBase
 {
     private readonly AppDbContext _context;
-    private readonly CycleBalanceService _cycleBalanceService;
+    private readonly TransactionPersistenceService _transactionPersistenceService;
 
-    public TransactionsController(AppDbContext context, CycleBalanceService cycleBalanceService)
+    public TransactionsController(
+        AppDbContext context,
+        TransactionPersistenceService transactionPersistenceService)
     {
         _context = context;
-        _cycleBalanceService = cycleBalanceService;
-    }
-
-    // Invalidates every cached cycle balance snapshot at or after the cycle a given transaction
-    // date falls in -- a no-op if settings (and therefore CycleDay) don't exist yet, since in
-    // that case no snapshots have ever been computed either.
-    private async Task InvalidateCycleBalancesFromAsync(DateTime date)
-    {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
-        if (setting == null) return;
-
-        var (year, monthIndex) = FinancialController.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(date), setting.CycleDay);
-        await _cycleBalanceService.InvalidateFromAsync(year, monthIndex);
-    }
-
-    // Persists the pending transaction change and invalidates the affected cycle balance cache
-    // as one atomic database transaction. This app can be signed in on multiple devices at once,
-    // and the cache lives in the shared database (not per-device) -- without this, a dashboard
-    // read from another device landing in the gap between "transaction saved" and "cache
-    // invalidated" (two otherwise-separate commits) could see the new transaction data paired
-    // with a stale, not-yet-invalidated balance. Wrapping both in one transaction means any
-    // reader under Postgres's default Read Committed isolation sees either the fully-old state
-    // or the fully-new-and-invalidated state, never the in-between.
-    //
-    // Must go through CreateExecutionStrategy().ExecuteAsync(...) rather than a bare
-    // BeginTransactionAsync() -- Program.cs enables Npgsql's EnableRetryOnFailure(), and its
-    // retrying execution strategy refuses to run a user-started transaction directly (it needs
-    // to own the whole retry unit so it can safely replay it from scratch on a transient failure).
-    private async Task SaveAndInvalidateCycleBalancesAsync(DateTime earliestAffectedDate)
-    {
-        var strategy = _context.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(async () =>
-        {
-            await using var dbTransaction = await _context.Database.BeginTransactionAsync();
-            await _context.SaveChangesAsync();
-            await InvalidateCycleBalancesFromAsync(earliestAffectedDate);
-            await dbTransaction.CommitAsync();
-        });
+        _transactionPersistenceService = transactionPersistenceService;
     }
 
     // GET: api/transactions
     [HttpGet]
     public async Task<IActionResult> GetTransactions(
-        [FromQuery(Name = "month")] string? queryMonth = null, 
+        [FromQuery(Name = "month")] string? queryMonth = null,
         [FromQuery(Name = "year")] int? queryYear = null,
         [FromQuery(Name = "all")] bool all = false,
         [FromQuery(Name = "page")] int page = 1,
@@ -118,7 +83,7 @@ public class TransactionsController : ControllerBase
         var activeMonthIndex = Array.IndexOf(FinancialConstants.MonthAbbreviations, activeMonth) + 1;
         if (activeMonthIndex == 0) activeMonthIndex = 6;
 
-        var (cycleStart, cycleEnd, _) = FinancialController.GetCycleRange(activeYear, activeMonthIndex, setting.CycleDay);
+        var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(activeYear, activeMonthIndex, setting.CycleDay);
         var cycleStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart));
         var cycleEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleEnd));
 
@@ -151,7 +116,7 @@ public class TransactionsController : ControllerBase
         {
             var txType = tx.Amount >= 0 ? "inflow" : "outflow";
             var key = $"{txType}:{tx.Description.Trim()}";
-            
+
             if (!seen.Contains(key))
             {
                 seen.Add(key);
@@ -220,85 +185,33 @@ public class TransactionsController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<TransactionDto>> PostTransaction(TransactionDto dto)
     {
-        if (!string.IsNullOrWhiteSpace(dto.Id))
+        var result = await _transactionPersistenceService.CreateTransactionAsync(ToMutationRequest(dto));
+        if (result.Status == TransactionMutationStatus.InvalidDate)
         {
-            var existingTx = await _context.Transactions.FirstOrDefaultAsync(t => t.Id == dto.Id);
-            if (existingTx != null)
-            {
-                return Ok(MapToDto(existingTx));
-            }
+            return BadRequest(new { message = result.Message });
+        }
+        if (result.Status == TransactionMutationStatus.Existing)
+        {
+            return Ok(MapToDto(result.Transaction!));
         }
 
-        if (!TryParseDate(dto.Date, out var postDate))
-        {
-            return BadRequest(new { message = "Date must be in yyyy-MM-dd format." });
-        }
-
-        var transaction = new Transaction
-        {
-            Id = string.IsNullOrWhiteSpace(dto.Id) ? $"tx-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}" : dto.Id,
-            Date = TransactionDate.FromInputDate(postDate),
-            Description = dto.Description,
-            Category = dto.Category,
-            LedgerCategory = dto.LedgerCategory,
-            Amount = Math.Round(ObfuscationHelper.Deobfuscate(dto.Amount), 2, MidpointRounding.AwayFromZero),
-            RecurringPaymentId = dto.RecurringPaymentId,
-            WishlistItemId = dto.WishlistItemId
-        };
-
-        var splitSpec = await ResolveIncomeSplitSpecAsync(transaction);
-
-        _context.Transactions.Add(transaction);
-        AddIncomeSplitTransactions(transaction, splitSpec);
-        await ApplyWishlistPurchaseLinkAsync(transaction);
-
-        await SaveAndInvalidateCycleBalancesAsync(transaction.Date);
-
-        return CreatedAtAction(nameof(GetTransactions), new { id = transaction.Id }, MapToDto(transaction));
+        return CreatedAtAction(nameof(GetTransactions), new { id = result.Transaction!.Id }, MapToDto(result.Transaction));
     }
 
     // PUT: api/transactions/{id}
     [HttpPut("{id}")]
     public async Task<IActionResult> PutTransaction(string id, TransactionDto dto)
     {
-        var transaction = await _context.Transactions.FindAsync(id);
-        if (transaction == null)
+        var result = await _transactionPersistenceService.UpdateTransactionAsync(id, ToMutationRequest(dto));
+        if (result.Status == TransactionMutationStatus.NotFound)
         {
             return NotFound();
         }
-
-        if (!TryParseDate(dto.Date, out var putDate))
+        if (result.Status == TransactionMutationStatus.InvalidDate)
         {
-            return BadRequest(new { message = "Date must be in yyyy-MM-dd format." });
+            return BadRequest(new { message = result.Message });
         }
 
-        // A backdated edit (date moved earlier) or a forward-dated correction (date moved later)
-        // both invalidate every cached cycle balance from whichever date is earlier -- the old
-        // cycle's running total no longer includes this transaction, and the new cycle's does.
-        var originalDate = transaction.Date;
-
-        // Delete existing splits first
-        var existingSplits = await _context.Transactions
-            .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
-            .ToListAsync();
-        _context.Transactions.RemoveRange(existingSplits);
-
-        transaction.Date = TransactionDate.PreserveTimeWhenSameDate(transaction.Date, putDate);
-        transaction.Description = dto.Description;
-        transaction.Category = dto.Category;
-        transaction.LedgerCategory = dto.LedgerCategory;
-        transaction.Amount = Math.Round(ObfuscationHelper.Deobfuscate(dto.Amount), 2, MidpointRounding.AwayFromZero);
-        // Ledger edits (e.g. LedgerView) don't round-trip this field, so only overwrite it
-        // when the caller explicitly sends one -- otherwise a manual edit would silently
-        // sever the transaction's link back to its originating recurring payment.
-        transaction.RecurringPaymentId = dto.RecurringPaymentId ?? transaction.RecurringPaymentId;
-        transaction.WishlistItemId = dto.WishlistItemId ?? transaction.WishlistItemId;
-
-        var splitSpec = await ResolveIncomeSplitSpecAsync(transaction);
-        AddIncomeSplitTransactions(transaction, splitSpec);
-        await ApplyWishlistPurchaseLinkAsync(transaction);
-
-        await SaveAndInvalidateCycleBalancesAsync(originalDate < transaction.Date ? originalDate : transaction.Date);
         return NoContent();
     }
 
@@ -306,118 +219,31 @@ public class TransactionsController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteTransaction(string id)
     {
-        var transaction = await _context.Transactions.FindAsync(id);
-        if (transaction == null)
+        var result = await _transactionPersistenceService.DeleteTransactionAsync(id);
+        if (result.Status == TransactionMutationStatus.NotFound)
         {
             return NotFound();
         }
 
-        await ClearWishlistPurchaseLinkAsync(transaction);
-
-        var splits = await _context.Transactions
-            .Where(t => t.Id.StartsWith(id + "-split-"))
-            .ToListAsync();
-        _context.Transactions.RemoveRange(splits);
-
-        _context.Transactions.Remove(transaction);
-        await SaveAndInvalidateCycleBalancesAsync(transaction.Date);
-
         return NoContent();
-    }
-
-    // Resolves the Essentials/Growth/Stability/Rewards split percentages for an income
-    // transaction, using the current allocation settings for a fresh "Income" entry or the
-    // embedded spec for an "IncomeSplit:" entry (which also normalizes the category back to "Income").
-    private async Task<string> ResolveIncomeSplitSpecAsync(Transaction transaction)
-    {
-        if (string.Equals(transaction.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
-        {
-            var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
-            if (setting != null)
-            {
-                return $"{setting.EssentialsAlloc * 100:0.##},{setting.GrowthAlloc * 100:0.##},{setting.StabilityAlloc * 100:0.##},{setting.RewardsAlloc * 100:0.##}";
-            }
-            return "";
-        }
-
-        if (!string.IsNullOrEmpty(transaction.LedgerCategory) && transaction.LedgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase))
-        {
-            var spec = transaction.LedgerCategory.Substring("IncomeSplit:".Length);
-            transaction.LedgerCategory = "Income";
-            return spec;
-        }
-
-        return "";
-    }
-
-    private void AddIncomeSplitTransactions(Transaction transaction, string splitSpec)
-    {
-        if (string.IsNullOrEmpty(splitSpec)) return;
-
-        var parts = splitSpec.Split(',');
-        if (parts.Length != 4) return;
-
-        var categories = FinancialConstants.BudgetCategories;
-        for (int i = 0; i < 4; i++)
-        {
-            if (decimal.TryParse(parts[i], out var pct) && pct > 0)
-            {
-                var splitAmount = Math.Round(transaction.Amount * (pct / 100m), 2, MidpointRounding.AwayFromZero);
-                _context.Transactions.Add(new Transaction
-                {
-                    Id = $"{transaction.Id}-split-{categories[i]}",
-                    Date = transaction.Date,
-                    Description = $"[Split: {categories[i]}] {transaction.Description}",
-                    Category = "Transfer",
-                    LedgerCategory = $"Transfer:Income->{categories[i]}",
-                    Amount = splitAmount
-                });
-            }
-        }
-    }
-
-    private async Task ApplyWishlistPurchaseLinkAsync(Transaction transaction)
-    {
-        if (!transaction.WishlistItemId.HasValue) return;
-
-        var item = await _context.WishlistItems.FindAsync(transaction.WishlistItemId.Value);
-        if (item == null) return;
-
-        item.IsPurchased = true;
-        item.PurchasedAt ??= transaction.Date;
-        item.PurchaseTransactionId = transaction.Id;
-        item.IsActive = false;
-    }
-
-    private async Task ClearWishlistPurchaseLinkAsync(Transaction transaction)
-    {
-        WishlistItem? item = null;
-
-        if (transaction.WishlistItemId.HasValue)
-        {
-            item = await _context.WishlistItems.FindAsync(transaction.WishlistItemId.Value);
-        }
-
-        item ??= await _context.WishlistItems
-            .FirstOrDefaultAsync(w => w.PurchaseTransactionId == transaction.Id);
-
-        if (item == null) return;
-
-        item.IsPurchased = false;
-        item.PurchasedAt = null;
-        item.PurchaseTransactionId = null;
-
-        var hasActiveUnpurchased = await _context.WishlistItems
-            .AnyAsync(w => w.Id != item.Id && !w.IsPurchased && w.IsActive);
-        if (!hasActiveUnpurchased)
-        {
-            item.IsActive = true;
-        }
     }
 
     private static bool TryParseDate(string? value, out DateOnly date)
     {
-        return DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
+        return TransactionDate.TryParseInputDate(value, out date);
+    }
+
+    private static TransactionMutationRequest ToMutationRequest(TransactionDto dto)
+    {
+        return new TransactionMutationRequest(
+            dto.Id,
+            dto.Date,
+            dto.Description,
+            dto.Category,
+            dto.LedgerCategory,
+            dto.Amount,
+            dto.RecurringPaymentId,
+            dto.WishlistItemId);
     }
 
     private static TransactionDto MapToDto(Transaction t)

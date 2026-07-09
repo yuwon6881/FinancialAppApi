@@ -311,7 +311,7 @@ public class WebAuthnController : ControllerBase
             .Where(s => s.Username == storedCred.Username)
             .OrderByDescending(s => s.CreatedAt)
             .ToListAsync();
-            
+
         // We want at most 5 total. Since we are adding 1, keep the 4 newest
         if (activeSessions.Count >= 5)
         {

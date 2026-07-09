@@ -1,7 +1,7 @@
 namespace FinancialAppApi.Models;
 
 // Persisted ending balance of each of the 4 budget buckets for one closed cycle, keyed by the
-// calendar (Year, MonthIndex) pair used by FinancialController.GetCycleRange -- NOT the shifted
+// calendar (Year, MonthIndex) pair used by CategoryAttributionService.GetCycleRange -- NOT the shifted
 // cycle label. Balances are cumulative/carry-forward across cycles (see FinancialController),
 // so a row's values already include every prior cycle's net change back to the app baseline.
 // Rows are only ever appended or deleted in bulk (CycleBalanceService); never updated in place.

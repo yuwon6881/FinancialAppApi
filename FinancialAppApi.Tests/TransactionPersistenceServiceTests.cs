@@ -1,0 +1,132 @@
+using FinancialAppApi.Database;
+using FinancialAppApi.Models;
+using FinancialAppApi.Services;
+using Microsoft.EntityFrameworkCore;
+
+namespace FinancialAppApi.Tests;
+
+public class TransactionPersistenceServiceTests
+{
+    [Fact]
+    public async Task CreateTransactionAsync_CreatesIncomeSplitsFromSettings()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            EssentialsAlloc = 0.50m,
+            GrowthAlloc = 0.25m,
+            StabilityAlloc = 0.15m,
+            RewardsAlloc = 0.10m,
+            CycleDay = 1
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.CreateTransactionAsync(NewRequest("tx-1", ledgerCategory: "Income", amount: 1000m));
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal(5, await context.Transactions.CountAsync());
+        Assert.True(await context.Transactions.AnyAsync(t => t.Id == "tx-1-split-Essentials" && t.Amount == 500m));
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_ReturnsExistingForIdempotentPost()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.Add(NewTransaction("tx-1"));
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.CreateTransactionAsync(NewRequest("tx-1"));
+
+        Assert.Equal(TransactionMutationStatus.Existing, result.Status);
+        Assert.Equal("tx-1", result.Transaction!.Id);
+    }
+
+    [Fact]
+    public async Task UpdateTransactionAsync_ReplacesExistingSplits()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("tx-1", ledgerCategory: "IncomeSplit:50,25,15,10", amount: 1000m),
+            NewTransaction("tx-1-split-Essentials", ledgerCategory: "Transfer:Income->Essentials", amount: 500m));
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.UpdateTransactionAsync(
+            "tx-1",
+            NewRequest("tx-1", ledgerCategory: "IncomeSplit:25,25,25,25", amount: 800m));
+
+        Assert.Equal(TransactionMutationStatus.Updated, result.Status);
+        Assert.Equal(5, await context.Transactions.CountAsync());
+        Assert.True(await context.Transactions.AnyAsync(t => t.Id == "tx-1-split-Rewards" && t.Amount == 200m));
+    }
+
+    [Fact]
+    public async Task DeleteTransactionAsync_ClearsWishlistPurchaseLinkAndDeletesSplits()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.WishlistItems.Add(new WishlistItem
+        {
+            Id = 1,
+            Name = "Camera",
+            Price = 100m,
+            Priority = "Medium",
+            IsPurchased = true,
+            PurchaseTransactionId = "tx-1"
+        });
+        context.Transactions.AddRange(
+            NewTransaction("tx-1", wishlistItemId: 1),
+            NewTransaction("tx-1-split-Rewards", ledgerCategory: "Transfer:Income->Rewards", amount: 10m));
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.DeleteTransactionAsync("tx-1");
+
+        Assert.Equal(TransactionMutationStatus.Deleted, result.Status);
+        Assert.Empty(await context.Transactions.ToListAsync());
+        var item = (await context.WishlistItems.FindAsync(1))!;
+        Assert.False(item.IsPurchased);
+        Assert.True(item.IsActive);
+        Assert.Null(item.PurchaseTransactionId);
+    }
+
+    private static TransactionPersistenceService NewService(AppDbContext context)
+    {
+        return new TransactionPersistenceService(context, new CycleBalanceService(context));
+    }
+
+    private static TransactionMutationRequest NewRequest(
+        string id,
+        string ledgerCategory = "Rewards",
+        decimal amount = -25m)
+    {
+        return new TransactionMutationRequest(
+            id,
+            "2026-07-09",
+            "Test transaction",
+            "Other",
+            ledgerCategory,
+            ObfuscationHelper.Obfuscate(amount),
+            null,
+            null);
+    }
+
+    private static Transaction NewTransaction(
+        string id,
+        string ledgerCategory = "Rewards",
+        decimal amount = -25m,
+        int? wishlistItemId = null)
+    {
+        return new Transaction
+        {
+            Id = id,
+            Date = DateTime.SpecifyKind(new DateTime(2026, 7, 9), DateTimeKind.Utc),
+            Description = "Test transaction",
+            Category = "Other",
+            LedgerCategory = ledgerCategory,
+            Amount = amount,
+            WishlistItemId = wishlistItemId
+        };
+    }
+}

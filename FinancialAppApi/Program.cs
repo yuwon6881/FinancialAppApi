@@ -49,14 +49,19 @@ builder.Services.AddResponseCompression(options =>
 builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 
-builder.Services.AddScoped<ReceiptScanProcessor>();
-builder.Services.AddSingleton<ReceiptScanTaskDispatcher>();
+builder.Services.AddHttpClient<ReceiptScanProcessor>(c => c.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddHttpClient<ReceiptScanTaskDispatcher>(c => c.Timeout = TimeSpan.FromSeconds(15));
 // Bounded in-process work queue + single consumer for the OCR fallback path, so a
 // burst of receipt uploads can't spawn unbounded concurrent Gemini calls on a
 // 1-vCPU free-tier container. Cloud Tasks remains the preferred path when configured.
 builder.Services.AddSingleton<ReceiptScanQueue>();
 builder.Services.AddHostedService<ReceiptScanBackgroundService>();
 builder.Services.AddScoped<CycleBalanceService>();
+builder.Services.AddScoped<RecurringPaymentAlertService>();
+builder.Services.AddScoped<RecurringPaymentService>();
+builder.Services.AddScoped<TransactionCategoryService>();
+builder.Services.AddScoped<WishlistService>();
+builder.Services.AddScoped<TransactionPersistenceService>();
 builder.Services.AddSingleton<TotpService>();
 builder.Services.AddSingleton<SecretProtector>();
 builder.Services.AddScoped<RecoveryCodeService>();

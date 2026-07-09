@@ -14,13 +14,18 @@ public class FinancialController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly CycleBalanceService _cycleBalanceService;
+    private readonly RecurringPaymentAlertService _recurringPaymentAlertService;
 
     private static readonly string[] Months = FinancialConstants.MonthAbbreviations;
 
-    public FinancialController(AppDbContext context, CycleBalanceService cycleBalanceService)
+    public FinancialController(
+        AppDbContext context,
+        CycleBalanceService cycleBalanceService,
+        RecurringPaymentAlertService recurringPaymentAlertService)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
+        _recurringPaymentAlertService = recurringPaymentAlertService;
     }
 
     private static List<object> ObfuscateTrendPoints(List<(string month, decimal balance)> points) =>
@@ -33,7 +38,7 @@ public class FinancialController : ControllerBase
     // count regardless of total transaction history.
     private async Task<List<Transaction>> GetTransactionsForCycleAsync(int year, int monthIndex, int cycleDay)
     {
-        var (start, end, _) = GetCycleRange(year, monthIndex, cycleDay);
+        var (start, end, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
         var startDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(start));
         var endExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(end));
         return await _context.Transactions
@@ -52,150 +57,6 @@ public class FinancialController : ControllerBase
         return setting;
     }
 
-    public static async Task<List<object>> GetSubscriptionAlertsAsync(AppDbContext context)
-    {
-        var setting = await context.FinancialSettings.FirstOrDefaultAsync();
-        if (setting == null) return new List<object>();
-        var cycleDay = setting.CycleDay;
-
-        var activeRecurring = await context.RecurringPayments.Where(r => r.Active).ToListAsync();
-        // Confirmed bills are persisted with a freshly generated transaction id (not the
-        // "{rp.Id}-{y}-{m}" convention below), so paid-detection has to go through the
-        // RecurringPaymentId link rather than an id match.
-        var recurringTransactionDates = await context.Transactions
-            .Where(t => t.RecurringPaymentId != null)
-            .Select(t => new { t.RecurringPaymentId, t.Date })
-            .ToListAsync();
-        var today = DateTime.Today;
-        var (todayMonth, todayYear) = GetCycleMonthAndYearForDate(today, cycleDay);
-        var todayMonthIdx = Array.IndexOf(Months, todayMonth) + 1;
-
-        var pending = new List<object>();
-
-        foreach (var rp in activeRecurring)
-        {
-            if (!DateTime.TryParse(rp.StartDate, out var startDate)) continue;
-            DateTime? endDate = null;
-            if (!string.IsNullOrEmpty(rp.EndDate) && DateTime.TryParse(rp.EndDate, out var parsedEndDate))
-            {
-                endDate = parsedEndDate;
-            }
-
-            int startYear = Math.Min(2026, startDate.Year);
-            for (int y = startYear; y <= todayYear; y++)
-            {
-                int endMonthIdx = (y == todayYear) ? todayMonthIdx : 12;
-                for (int m = 1; m <= endMonthIdx; m++)
-                {
-                    var (cycleStart, cycleEnd, cycleLabel) = GetCycleRange(y, m, cycleDay);
-
-                    // Find the payment date that falls inside this cycle
-                    var billingDate = GetBillingDateForCycle(cycleStart, cycleEnd, cycleDay, rp.DueDate);
-
-                    if (billingDate <= today && billingDate >= startDate && (endDate == null || billingDate <= endDate.Value))
-                    {
-                        var instanceId = $"{rp.Id}-{y}-{m}";
-                        var isPaid = recurringTransactionDates.Any(t =>
-                            t.RecurringPaymentId == rp.Id &&
-                            t.Date >= TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart)) &&
-                            t.Date < TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleEnd)));
-                        if (!isPaid)
-                        {
-                            var item = new
-                            {
-                                id = instanceId,
-                                recurringPaymentId = rp.Id,
-                                name = rp.Name,
-                                amount = ObfuscationHelper.Obfuscate(rp.Amount),
-                                category = rp.Category,
-                                ledgerCategory = rp.LedgerCategory,
-                                billingDate = billingDate.ToString("yyyy-MM-dd"),
-                                year = y,
-                                month = m,
-                                cycleLabel = cycleLabel
-                            };
-
-                            pending.Add(item);
-                        }
-                    }
-                }
-            }
-        }
-
-        return pending;
-    }
-
-    private static string GetDayWithSuffix(int day)
-    {
-        if (day >= 11 && day <= 13) return $"{day}th";
-        return (day % 10) switch
-        {
-            1 => $"{day}st",
-            2 => $"{day}nd",
-            3 => $"{day}rd",
-            _ => $"{day}th"
-        };
-    }
-
-    public static (DateTime start, DateTime end, string label) GetCycleRange(int year, int monthIndex, int cycleDay)
-    {
-        if (cycleDay == 1)
-        {
-            var start = new DateTime(year, monthIndex, 1);
-            var end = start.AddMonths(1).AddDays(-1);
-            var lbl = $"{start:MMM dd} ~ {end:MMM dd, yyyy}";
-            return (start, end, lbl);
-        }
-        else
-        {
-            var startDayActual = Math.Min(cycleDay, DateTime.DaysInMonth(year, monthIndex));
-            var startDate = new DateTime(year, monthIndex, startDayActual);
-            var endDate = startDate.AddMonths(1).AddDays(-1);
-            var lbl = $"{startDate.ToString("MMM")} {GetDayWithSuffix(startDate.Day)} ~ {endDate.ToString("MMM")} {GetDayWithSuffix(endDate.Day)}, {startDate.Year}";
-            return (startDate, endDate, lbl);
-        }
-    }
-
-    // Resolves which calendar date a recurring payment's day-of-month due date falls on within
-    // a given cycle. Compares against cycleStart.Day (already clamped to the month's length by
-    // GetCycleRange) rather than the raw cycleDay setting, so this agrees with GetCycleRange's
-    // own month-length clamping for cycle days near the end of a month (29-31).
-    private static DateTime GetBillingDateForCycle(DateTime cycleStart, DateTime cycleEnd, int cycleDay, int dueDate)
-    {
-        if (cycleDay == 1 || dueDate >= cycleStart.Day)
-        {
-            return new DateTime(cycleStart.Year, cycleStart.Month, Math.Min(dueDate, DateTime.DaysInMonth(cycleStart.Year, cycleStart.Month)));
-        }
-        return new DateTime(cycleEnd.Year, cycleEnd.Month, Math.Min(dueDate, DateTime.DaysInMonth(cycleEnd.Year, cycleEnd.Month)));
-    }
-
-    private static (string month, int year) GetCycleMonthAndYearForDate(DateTime date, int cycleDay)
-    {
-        var (year, monthIdx) = GetCycleYearAndMonthIndexForDate(DateOnly.FromDateTime(date), cycleDay);
-        return (Months[monthIdx - 1], year);
-    }
-
-    // Same cycle-membership rule as GetCycleMonthAndYearForDate, but returns the numeric month
-    // index directly instead of routing through the month-abbreviation array -- used by callers
-    // (CycleBalanceService, transaction mutation invalidation) that key cycles as (year, monthIndex).
-    public static (int year, int monthIndex) GetCycleYearAndMonthIndexForDate(DateOnly date, int cycleDay)
-    {
-        int year = date.Year;
-        int monthIdx = date.Month; // 1-indexed
-
-        if (cycleDay > 1 && date.Day < cycleDay)
-        {
-            monthIdx--;
-            if (monthIdx < 1)
-            {
-                monthIdx = 12;
-                year--;
-            }
-        }
-
-        return (year, monthIdx);
-    }
-
     // GET: api/financial/wallet-balance
     // Always reflects the real "now" cycle's combined Essentials+Stability+Rewards total
     // (Growth/investment holdings excluded, matching the dashboard's own totalBalance formula),
@@ -208,16 +69,16 @@ public class FinancialController : ControllerBase
         var setting = await GetOrCreateSettingAsync();
         var cycleDay = setting.CycleDay;
 
-        var (year, monthIndex) = GetCycleYearAndMonthIndexForDate(DateOnly.FromDateTime(DateTime.Now), cycleDay);
+        var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(DateOnly.FromDateTime(DateTime.Now), cycleDay);
 
         var currentCycleTxs = await GetTransactionsForCycleAsync(year, monthIndex, cycleDay);
 
         var (budgetEssentials, _, budgetStability, budgetRewards) =
             await _cycleBalanceService.GetOpeningBalanceAsync(year, monthIndex, cycleDay);
 
-        var netEssentials = currentCycleTxs.Sum(t => GetCategoryAmount(t, "Essentials"));
-        var netStability = currentCycleTxs.Sum(t => GetCategoryAmount(t, "Stability"));
-        var netRewards = currentCycleTxs.Sum(t => GetCategoryAmount(t, "Rewards"));
+        var netEssentials = currentCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Essentials"));
+        var netStability = currentCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Stability"));
+        var netRewards = currentCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Rewards"));
 
         var totalBalance = (budgetEssentials + netEssentials) + (budgetStability + netStability) + (budgetRewards + netRewards);
 
@@ -227,7 +88,7 @@ public class FinancialController : ControllerBase
     // GET: api/financial/dashboard
     [HttpGet("dashboard")]
     public async Task<ActionResult<object>> GetDashboardData(
-        [FromQuery(Name = "month")] string? queryMonth = null, 
+        [FromQuery(Name = "month")] string? queryMonth = null,
         [FromQuery(Name = "year")] int? queryYear = null)
     {
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
@@ -257,7 +118,7 @@ public class FinancialController : ControllerBase
 
         if (string.IsNullOrEmpty(queryMonth) || queryYear == null)
         {
-            var detected = GetCycleMonthAndYearForDate(DateTime.Now, cycleDay);
+            var detected = CategoryAttributionService.GetCycleMonthAndYearForDate(DateTime.Now, cycleDay);
             activeMonth = detected.month;
             activeYear = detected.year;
 
@@ -285,7 +146,7 @@ public class FinancialController : ControllerBase
         var year = activeYear;
 
         // Active cycle range and its own transactions (bounded to one cycle, indexed by Date)
-        var activeRange = GetCycleRange(year, activeMonthIndex, cycleDay);
+        var activeRange = CategoryAttributionService.GetCycleRange(year, activeMonthIndex, cycleDay);
         var activeRangeStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(activeRange.start));
         var activeRangeEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(activeRange.end));
         var activeCycleTxs = await _context.Transactions
@@ -299,12 +160,12 @@ public class FinancialController : ControllerBase
         var (selectedBudgetEssentials, selectedBudgetGrowth, selectedBudgetStability, selectedBudgetRewards) =
             await _cycleBalanceService.GetOpeningBalanceAsync(year, activeMonthIndex, cycleDay);
 
-        // Net changes for this cycle using LedgerCategory (same attribution rules the cached
-        // snapshots use, see FinancialController.GetCategoryAmount)
-        var selectedNetEssentials = activeCycleTxs.Sum(t => GetCategoryAmount(t, "Essentials"));
-        var selectedNetGrowth = activeCycleTxs.Sum(t => GetCategoryAmount(t, "Growth"));
-        var selectedNetStability = activeCycleTxs.Sum(t => GetCategoryAmount(t, "Stability"));
-        var selectedNetRewards = activeCycleTxs.Sum(t => GetCategoryAmount(t, "Rewards"));
+        // Net changes for this cycle using LedgerCategory, with the same attribution rules the
+        // cached snapshots use.
+        var selectedNetEssentials = activeCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Essentials"));
+        var selectedNetGrowth = activeCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Growth"));
+        var selectedNetStability = activeCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Stability"));
+        var selectedNetRewards = activeCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Rewards"));
 
         var selectedRemEssentials = selectedBudgetEssentials + selectedNetEssentials;
         var selectedRemGrowth = selectedBudgetGrowth + selectedNetGrowth;
@@ -351,12 +212,12 @@ public class FinancialController : ControllerBase
 
         // Metric ratios from Excel formulas
         var growthPercentAchieved = selectedNetGrowth / (targetGrowth > 0 ? targetGrowth : 1m);
-        
+
         // Essentials remaining: calculated based on the actual remaining balance in the Essentials category
-        var essentialsPercentRemaining = targetEssentials > 0 
-            ? Math.Max(0m, selectedRemEssentials / targetEssentials) 
+        var essentialsPercentRemaining = targetEssentials > 0
+            ? Math.Max(0m, selectedRemEssentials / targetEssentials)
             : 0m;
-            
+
         var stabilityPercentReached = selectedRemStability / (setting.TargetStabilityFund > 0 ? setting.TargetStabilityFund : 1m);
 
         // Fetch recent manual transactions for the cycle (max 5)
@@ -388,7 +249,7 @@ public class FinancialController : ControllerBase
                 rpEndDate = parsedEndDate;
             }
 
-            var billingDate = GetBillingDateForCycle(activeRange.start, activeRange.end, cycleDay, rp.DueDate);
+            var billingDate = CategoryAttributionService.GetBillingDateForCycle(activeRange.start, activeRange.end, cycleDay, rp.DueDate);
 
             if (billingDate >= activeRange.start && billingDate <= activeRange.end && billingDate >= rpStartDate && (rpEndDate == null || billingDate <= rpEndDate.Value))
             {
@@ -432,7 +293,7 @@ public class FinancialController : ControllerBase
             .ThenBy(r => ((dynamic)r).dueDate)
             .ToList();
 
-        var pendingNotifications = await GetSubscriptionAlertsAsync(_context);
+        var pendingNotifications = await _recurringPaymentAlertService.GetSubscriptionAlertsAsync();
 
         // Groups outflow transactions by category (falling back to "Other"), summing absolute amounts.
         List<(string category, decimal amount)> BuildBreakdown(List<Transaction> txs) => txs
@@ -500,7 +361,7 @@ public class FinancialController : ControllerBase
             {
                 // Only count positive allocations/inflows to the Rewards category (savings rate capacity)
                 var positiveRewards = cycleTxsForMonth
-                    .Select(t => GetCategoryAmount(t, "Rewards"))
+                    .Select(t => CategoryAttributionService.GetCategoryAmount(t, "Rewards"))
                     .Where(amt => amt > 0)
                     .Sum();
 
@@ -591,7 +452,8 @@ public class FinancialController : ControllerBase
         setting.GrowthAlloc = updateDto.GrowthAlloc;
         setting.StabilityAlloc = updateDto.StabilityAlloc;
         setting.RewardsAlloc = updateDto.RewardsAlloc;
-        // CycleDay=0 (or negative) makes GetCycleRange's `new DateTime(year, month, cycleDay)`
+        // CycleDay=0 (or negative) makes CategoryAttributionService.GetCycleRange's
+        // `new DateTime(year, month, cycleDay)`
         // throw ArgumentOutOfRangeException on every subsequent dashboard/transactions
         // request, with no self-recovery path via the API. Clamp to a valid day-of-month.
         var newCycleDay = Math.Clamp(updateDto.CycleDay, 1, 31);
@@ -685,49 +547,6 @@ public class FinancialController : ControllerBase
         return NoContent();
     }
 
-    // Internal (not private) so CycleBalanceService can reuse the exact same per-transaction
-    // bucket-attribution rules when rolling cycle balances forward -- keeps the two call sites
-    // (live dashboard math, cached-snapshot backfill) from drifting apart.
-    internal static decimal GetCategoryAmount(Transaction t, string categoryName)
-    {
-        if (string.Equals(t.LedgerCategory, categoryName, StringComparison.OrdinalIgnoreCase))
-        {
-            return t.Amount;
-        }
-        if (!string.IsNullOrEmpty(t.LedgerCategory) && t.LedgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase))
-        {
-            var parts = t.LedgerCategory.Substring("IncomeSplit:".Length).Split(',');
-            if (parts.Length == 4)
-            {
-                decimal pct = 0;
-                if (categoryName.Equals("Essentials", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[0], out pct);
-                else if (categoryName.Equals("Growth", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[1], out pct);
-                else if (categoryName.Equals("Stability", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[2], out pct);
-                else if (categoryName.Equals("Rewards", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[3], out pct);
-
-                return t.Amount * (pct / 100m);
-            }
-        }
-        if (!string.IsNullOrEmpty(t.LedgerCategory) && t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
-        {
-            var parts = t.LedgerCategory.Substring("Transfer:".Length).Split(new[] { "->" }, System.StringSplitOptions.None);
-            if (parts.Length == 2)
-            {
-                var source = parts[0].Trim();
-                var target = parts[1].Trim();
-
-                if (string.Equals(categoryName, source, StringComparison.OrdinalIgnoreCase))
-                {
-                    return -Math.Abs(t.Amount);
-                }
-                if (string.Equals(categoryName, target, StringComparison.OrdinalIgnoreCase))
-                {
-                    return Math.Abs(t.Amount);
-                }
-            }
-        }
-        return 0;
-    }
 }
 
 public class UpdateSettingsDto

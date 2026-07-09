@@ -1,6 +1,5 @@
 using FinancialAppApi.Services;
 using OtpNet;
-using Xunit;
 
 namespace FinancialAppApi.Tests;
 

@@ -6,20 +6,18 @@ namespace FinancialAppApi.Services;
 
 public class ReceiptScanTaskDispatcher
 {
-    private static readonly HttpClient HttpClient = new()
-    {
-        Timeout = TimeSpan.FromSeconds(15)
-    };
-
+    private readonly HttpClient _httpClient;
     private readonly IConfiguration _configuration;
     private readonly ReceiptScanQueue _queue;
     private readonly ILogger<ReceiptScanTaskDispatcher> _logger;
 
     public ReceiptScanTaskDispatcher(
+        HttpClient httpClient,
         IConfiguration configuration,
         ReceiptScanQueue queue,
         ILogger<ReceiptScanTaskDispatcher> logger)
     {
+        _httpClient = httpClient;
         _configuration = configuration;
         _queue = queue;
         _logger = logger;
@@ -82,7 +80,7 @@ public class ReceiptScanTaskDispatcher
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
 
-        using var response = await HttpClient.SendAsync(request);
+        using var response = await _httpClient.SendAsync(request);
         if (!response.IsSuccessStatusCode)
         {
             var responseBody = await response.Content.ReadAsStringAsync();
@@ -91,14 +89,14 @@ public class ReceiptScanTaskDispatcher
         }
     }
 
-    private static async Task<string> GetMetadataAccessTokenAsync()
+    private async Task<string> GetMetadataAccessTokenAsync()
     {
         using var request = new HttpRequestMessage(
             HttpMethod.Get,
             "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token");
         request.Headers.Add("Metadata-Flavor", "Google");
 
-        using var response = await HttpClient.SendAsync(request);
+        using var response = await _httpClient.SendAsync(request);
         response.EnsureSuccessStatusCode();
 
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());

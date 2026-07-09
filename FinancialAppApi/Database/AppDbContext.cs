@@ -64,7 +64,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<FinancialSetting>(entity =>
         {
-            entity.Property(e => e.TargetStabilityFund).HasColumnType("numeric");
+            entity.Property(e => e.TargetStabilityFund).HasColumnType("numeric(12,2)");
             entity.Property(e => e.EssentialsAlloc).HasColumnType("numeric");
             entity.Property(e => e.GrowthAlloc).HasColumnType("numeric");
             entity.Property(e => e.StabilityAlloc).HasColumnType("numeric");
@@ -83,6 +83,19 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.Property(e => e.IsLocked).HasDefaultValue(false);
             entity.HasIndex(e => e.Id).IsUnique();
+            entity.HasIndex(e => e.ExpiresAt);
+            entity.HasIndex(e => e.CredentialId);
+            entity.HasIndex(e => new { e.Username, e.DeviceId });
+        });
+
+        modelBuilder.Entity<WebAuthnChallenge>(entity =>
+        {
+            entity.HasIndex(e => e.ExpiresAt);
+        });
+
+        modelBuilder.Entity<WebAuthnCredential>(entity =>
+        {
+            entity.HasIndex(e => e.Username);
         });
 
         modelBuilder.Entity<RecoveryCode>(entity =>
@@ -92,7 +105,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<WishlistItem>(entity =>
         {
-            entity.Property(e => e.Price).HasColumnType("numeric");
+            entity.Property(e => e.Price).HasColumnType("numeric(12,2)");
             entity.Property(e => e.Priority).HasDefaultValue("Medium");
             entity.Property(e => e.IsPurchased).HasDefaultValue(false);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
@@ -110,10 +123,10 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<CycleBalance>(entity =>
         {
             entity.HasKey(e => new { e.Year, e.MonthIndex });
-            entity.Property(e => e.EssentialsBalance).HasColumnType("numeric");
-            entity.Property(e => e.GrowthBalance).HasColumnType("numeric");
-            entity.Property(e => e.StabilityBalance).HasColumnType("numeric");
-            entity.Property(e => e.RewardsBalance).HasColumnType("numeric");
+            entity.Property(e => e.EssentialsBalance).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.GrowthBalance).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.StabilityBalance).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.RewardsBalance).HasColumnType("numeric(12,2)");
         });
     }
 }
