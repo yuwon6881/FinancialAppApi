@@ -1,3 +1,5 @@
+using FinancialAppApi.Database;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -5,6 +7,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace FinancialAppApi.Migrations
 {
     /// <inheritdoc />
+    [DbContext(typeof(AppDbContext))]
     [Migration("20260709000000_LinkWishlistPurchasesToTransactions")]
     public partial class LinkWishlistPurchasesToTransactions : Migration
     {
