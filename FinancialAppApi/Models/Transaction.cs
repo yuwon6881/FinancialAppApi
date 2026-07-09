@@ -25,6 +25,11 @@ public class Transaction
     // Intentionally not a real FK: it must survive the parent RecurringPayment being deleted so
     // historical cycles can still be identified as subscription payments.
     public string? RecurringPaymentId { get; set; }
+
+    // Denormalized reference to the WishlistItem this transaction purchased, if any.
+    // Intentionally not a real FK: the transaction can be deleted independently, and the
+    // delete path clears the wishlist purchase state instead of blocking the ledger delete.
+    public int? WishlistItemId { get; set; }
 }
 
 public class AutocompleteSuggestion

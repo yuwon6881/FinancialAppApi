@@ -51,6 +51,7 @@ namespace FinancialAppApi.Controllers
             item.CreatedAt = DateTime.UtcNow;
             item.IsPurchased = false;
             item.PurchasedAt = null;
+            item.PurchaseTransactionId = null;
 
             // If we mark it active, deactivate other items
             if (item.IsActive)
@@ -181,9 +182,11 @@ namespace FinancialAppApi.Controllers
                 Description = $"Purchased: {item.Name} (Wish List)",
                 Category = "Other", // Main category matches ledger sub-categorizations
                 LedgerCategory = "Rewards", // The category that funds this purchase
-                Amount = -item.Price // Debit amount
+                Amount = -item.Price, // Debit amount
+                WishlistItemId = item.Id
             };
 
+            item.PurchaseTransactionId = tx.Id;
             _context.Transactions.Add(tx);
 
             // Persist the transaction and invalidate the affected cycle balance cache atomically
@@ -221,6 +224,65 @@ namespace FinancialAppApi.Controllers
             }
 
             return Ok(new { item, transaction = tx });
+        }
+
+        // DELETE: api/wishlist/{id}/purchase
+        [HttpDelete("{id}/purchase")]
+        public async Task<IActionResult> UnpurchaseWishlistItem(int id)
+        {
+            var item = await _context.WishlistItems.FindAsync(id);
+            if (item == null)
+            {
+                return NotFound();
+            }
+
+            var purchaseTransactionId = item.PurchaseTransactionId;
+            var transaction = !string.IsNullOrWhiteSpace(purchaseTransactionId)
+                ? await _context.Transactions.FindAsync(purchaseTransactionId)
+                : null;
+
+            DateOnly? affectedDate = transaction?.Date;
+
+            item.IsPurchased = false;
+            item.PurchasedAt = null;
+            item.PurchaseTransactionId = null;
+
+            var hasActiveUnpurchased = await _context.WishlistItems
+                .AnyAsync(w => w.Id != item.Id && !w.IsPurchased && w.IsActive);
+            if (!hasActiveUnpurchased)
+            {
+                item.IsActive = true;
+            }
+
+            if (transaction != null)
+            {
+                var splits = await _context.Transactions
+                    .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
+                    .ToListAsync();
+                _context.Transactions.RemoveRange(splits);
+                _context.Transactions.Remove(transaction);
+            }
+
+            var strategy = _context.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var dbTransaction = await _context.Database.BeginTransactionAsync();
+                await _context.SaveChangesAsync();
+
+                if (affectedDate.HasValue)
+                {
+                    var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+                    if (setting != null)
+                    {
+                        var (cycleYear, cycleMonthIndex) = FinancialController.GetCycleYearAndMonthIndexForDate(affectedDate.Value, setting.CycleDay);
+                        await _cycleBalanceService.InvalidateFromAsync(cycleYear, cycleMonthIndex);
+                    }
+                }
+
+                await dbTransaction.CommitAsync();
+            });
+
+            return Ok(item);
         }
     }
 }

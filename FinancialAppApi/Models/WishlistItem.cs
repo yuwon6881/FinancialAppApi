@@ -23,6 +23,8 @@ namespace FinancialAppApi.Models
 
         public DateTime? PurchasedAt { get; set; }
 
+        public string? PurchaseTransactionId { get; set; }
+
         [Required]
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

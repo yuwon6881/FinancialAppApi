@@ -317,10 +317,15 @@ namespace FinancialAppApi.Migrations
                     b.Property<string>("RecurringPaymentId")
                         .HasColumnType("text");
 
+                    b.Property<int?>("WishlistItemId")
+                        .HasColumnType("integer");
+
                     b.HasKey("Id");
 
                     b.HasIndex("Date", "LedgerCategory")
                         .IsDescending(true, false);
+
+                    b.HasIndex("WishlistItemId");
 
                     b.ToTable("Transactions");
                 });
@@ -522,6 +527,9 @@ namespace FinancialAppApi.Migrations
                     b.Property<decimal>("Price")
                         .HasColumnType("numeric");
 
+                    b.Property<string>("PurchaseTransactionId")
+                        .HasColumnType("text");
+
                     b.Property<string>("Priority")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -532,6 +540,8 @@ namespace FinancialAppApi.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("PurchaseTransactionId");
 
                     b.ToTable("WishlistItems");
                 });

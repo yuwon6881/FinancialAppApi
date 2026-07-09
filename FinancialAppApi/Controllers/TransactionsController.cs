@@ -242,13 +242,15 @@ public class TransactionsController : ControllerBase
             Category = dto.Category,
             LedgerCategory = dto.LedgerCategory,
             Amount = Math.Round(ObfuscationHelper.Deobfuscate(dto.Amount), 2, MidpointRounding.AwayFromZero),
-            RecurringPaymentId = dto.RecurringPaymentId
+            RecurringPaymentId = dto.RecurringPaymentId,
+            WishlistItemId = dto.WishlistItemId
         };
 
         var splitSpec = await ResolveIncomeSplitSpecAsync(transaction);
 
         _context.Transactions.Add(transaction);
         AddIncomeSplitTransactions(transaction, splitSpec);
+        await ApplyWishlistPurchaseLinkAsync(transaction);
 
         await SaveAndInvalidateCycleBalancesAsync(transaction.Date);
 
@@ -290,9 +292,11 @@ public class TransactionsController : ControllerBase
         // when the caller explicitly sends one -- otherwise a manual edit would silently
         // sever the transaction's link back to its originating recurring payment.
         transaction.RecurringPaymentId = dto.RecurringPaymentId ?? transaction.RecurringPaymentId;
+        transaction.WishlistItemId = dto.WishlistItemId ?? transaction.WishlistItemId;
 
         var splitSpec = await ResolveIncomeSplitSpecAsync(transaction);
         AddIncomeSplitTransactions(transaction, splitSpec);
+        await ApplyWishlistPurchaseLinkAsync(transaction);
 
         await SaveAndInvalidateCycleBalancesAsync(originalDate < putDate ? originalDate : putDate);
         return NoContent();
@@ -307,6 +311,8 @@ public class TransactionsController : ControllerBase
         {
             return NotFound();
         }
+
+        await ClearWishlistPurchaseLinkAsync(transaction);
 
         var splits = await _context.Transactions
             .Where(t => t.Id.StartsWith(id + "-split-"))
@@ -370,6 +376,45 @@ public class TransactionsController : ControllerBase
         }
     }
 
+    private async Task ApplyWishlistPurchaseLinkAsync(Transaction transaction)
+    {
+        if (!transaction.WishlistItemId.HasValue) return;
+
+        var item = await _context.WishlistItems.FindAsync(transaction.WishlistItemId.Value);
+        if (item == null) return;
+
+        item.IsPurchased = true;
+        item.PurchasedAt ??= transaction.Date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        item.PurchaseTransactionId = transaction.Id;
+        item.IsActive = false;
+    }
+
+    private async Task ClearWishlistPurchaseLinkAsync(Transaction transaction)
+    {
+        WishlistItem? item = null;
+
+        if (transaction.WishlistItemId.HasValue)
+        {
+            item = await _context.WishlistItems.FindAsync(transaction.WishlistItemId.Value);
+        }
+
+        item ??= await _context.WishlistItems
+            .FirstOrDefaultAsync(w => w.PurchaseTransactionId == transaction.Id);
+
+        if (item == null) return;
+
+        item.IsPurchased = false;
+        item.PurchasedAt = null;
+        item.PurchaseTransactionId = null;
+
+        var hasActiveUnpurchased = await _context.WishlistItems
+            .AnyAsync(w => w.Id != item.Id && !w.IsPurchased && w.IsActive);
+        if (!hasActiveUnpurchased)
+        {
+            item.IsActive = true;
+        }
+    }
+
     private static bool TryParseDate(string? value, out DateOnly date)
     {
         return DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
@@ -385,7 +430,8 @@ public class TransactionsController : ControllerBase
             Category = t.Category,
             LedgerCategory = t.LedgerCategory,
             Amount = ObfuscationHelper.Obfuscate(t.Amount),
-            RecurringPaymentId = t.RecurringPaymentId
+            RecurringPaymentId = t.RecurringPaymentId,
+            WishlistItemId = t.WishlistItemId
         };
     }
 
@@ -489,4 +535,5 @@ public class TransactionDto
     public string LedgerCategory { get; set; } = string.Empty;
     public string Amount { get; set; } = string.Empty;
     public string? RecurringPaymentId { get; set; }
+    public int? WishlistItemId { get; set; }
 }

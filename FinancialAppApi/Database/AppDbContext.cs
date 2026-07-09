@@ -54,6 +54,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             // so it stays append-friendly for the insert-heavy workload.
             entity.HasIndex(e => new { e.Date, e.LedgerCategory })
                 .IsDescending(true, false);
+            entity.HasIndex(e => e.WishlistItemId);
         });
 
         modelBuilder.Entity<RecurringPayment>(entity =>
@@ -96,6 +97,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.IsPurchased).HasDefaultValue(false);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
             entity.Property(e => e.IsActive).HasDefaultValue(false);
+            entity.HasIndex(e => e.PurchaseTransactionId);
         });
 
         modelBuilder.Entity<ReceiptScanJob>(entity =>
