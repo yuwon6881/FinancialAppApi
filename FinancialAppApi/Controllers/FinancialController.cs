@@ -33,6 +33,15 @@ public class FinancialController : ControllerBase
         return Ok(await _financialService.GetDashboardDataAsync(queryMonth, queryYear));
     }
 
+    // GET: api/financial/dashboard/insights
+    [HttpGet("dashboard/insights")]
+    public async Task<ActionResult<object>> GetDashboardInsights(
+        [FromQuery(Name = "month")] string? queryMonth = null,
+        [FromQuery(Name = "year")] int? queryYear = null)
+    {
+        return Ok(await _financialService.GetDashboardInsightsAsync(queryMonth, queryYear));
+    }
+
     // PUT: api/financial/settings
     [HttpPut("settings")]
     public async Task<IActionResult> UpdateSettings([FromBody] UpdateSettingsDto updateDto)

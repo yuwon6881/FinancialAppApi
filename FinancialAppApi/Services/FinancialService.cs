@@ -56,55 +56,10 @@ public class FinancialService
 
     public async Task<object> GetDashboardDataAsync(string? queryMonth = null, int? queryYear = null)
     {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
-        if (setting == null)
-        {
-            var now = DateTime.Now;
-            setting = new FinancialSetting
-            {
-                TargetStabilityFund = 10000.00m,
-                SelectedMonth = now.ToString("MMM"),
-                SelectedYear = now.Year,
-                EssentialsAlloc = 0.50m,
-                GrowthAlloc = 0.25m,
-                StabilityAlloc = 0.15m,
-                RewardsAlloc = 0.10m,
-                CycleDay = 28,
-                HideSensitive = true
-            };
-            _context.FinancialSettings.Add(setting);
-            await _context.SaveChangesAsync();
-        }
-
-        var cycleDay = setting.CycleDay;
-
-        string activeMonth;
-        int activeYear;
-
-        if (string.IsNullOrEmpty(queryMonth) || queryYear == null)
-        {
-            var detected = CategoryAttributionService.GetCycleMonthAndYearForDate(DateTime.Now, cycleDay);
-            activeMonth = detected.month;
-            activeYear = detected.year;
-
-            setting.SelectedMonth = activeMonth;
-            setting.SelectedYear = activeYear;
-            await _context.SaveChangesAsync();
-        }
-        else
-        {
-            activeMonth = queryMonth;
-            activeYear = queryYear.Value;
-
-            setting.SelectedMonth = activeMonth;
-            setting.SelectedYear = activeYear;
-            await _context.SaveChangesAsync();
-        }
+        var (setting, cycleDay, _, activeYear, activeMonthIndex) =
+            await ResolveCycleContextAsync(queryMonth, queryYear, persist: true);
 
         var allRecurring = await _context.RecurringPayments.ToListAsync();
-
-        var activeMonthIndex = Array.IndexOf(Months, activeMonth) + 1;
-        if (activeMonthIndex == 0) activeMonthIndex = 6;
 
         var year = activeYear;
 
@@ -190,16 +145,6 @@ public class FinancialService
 
         var monthlyCategoryBreakdown = BuildBreakdown(activeCycleTxs);
 
-        var yearlyTxs = new List<Transaction>();
-        for (int m = 1; m <= 12; m++)
-        {
-            yearlyTxs.AddRange(await GetTransactionsForCycleAsync(activeYear, m, cycleDay));
-        }
-
-        var yearlyCategoryBreakdown = BuildBreakdown(yearlyTxs);
-        var last3CategoryBreakdown = BuildBreakdown(await GetTxsForLastNCyclesAsync(activeYear, activeMonthIndex, cycleDay, 3));
-        var last6CategoryBreakdown = BuildBreakdown(await GetTxsForLastNCyclesAsync(activeYear, activeMonthIndex, cycleDay, 6));
-
         var trendPointsList = trendPoints.ToList();
         var last6TrendPoints = trendPointsList.Count >= 6
             ? trendPointsList.GetRange(trendPointsList.Count - 6, 6)
@@ -214,9 +159,6 @@ public class FinancialService
             .Distinct()
             .OrderBy(y => y)
             .ToList();
-
-        var (pastThreeMonthsRewardsAverage, hasRewardsHistory) =
-            await CalculatePastRewardsAverageAsync(activeYear, activeMonthIndex, cycleDay);
 
         return new
         {
@@ -246,9 +188,7 @@ public class FinancialService
                 activeRecurringTotal = ObfuscationHelper.Obfuscate(activeRecurringTotal),
                 growthPercentAchieved = (double)Math.Max(0, growthPercentAchieved),
                 essentialsPercentRemaining = (double)essentialsPercentRemaining,
-                stabilityPercentReached = (double)Math.Max(0, stabilityPercentReached),
-                pastThreeMonthsRewardsAverage = ObfuscationHelper.Obfuscate(pastThreeMonthsRewardsAverage),
-                hasRewardsHistory = hasRewardsHistory
+                stabilityPercentReached = (double)Math.Max(0, stabilityPercentReached)
             },
             recentTransactions = recentTransactions.Select(t => new
             {
@@ -266,10 +206,55 @@ public class FinancialService
             last6TrendPoints = ObfuscateTrendPoints(last6TrendPoints),
             pendingNotifications,
             monthlyCategoryBreakdown = ObfuscateBreakdown(monthlyCategoryBreakdown),
+            availableYears
+        };
+    }
+
+    // Historical aggregates (yearly/last-3/last-6 category breakdowns, past-rewards average) split
+    // out of GetDashboardDataAsync: they used to cost ~24 sequential per-month DB queries, so they
+    // ran serialized behind the cheap current-cycle data on every dashboard load even though most
+    // of the UI only needs them for the secondary trend/insights widgets. Fetched by the frontend
+    // in parallel with the (now much cheaper) dashboard call instead.
+    public async Task<object> GetDashboardInsightsAsync(string? queryMonth = null, int? queryYear = null)
+    {
+        var (_, cycleDay, _, activeYear, activeMonthIndex) =
+            await ResolveCycleContextAsync(queryMonth, queryYear, persist: false);
+
+        var activeRange = CategoryAttributionService.GetCycleRange(activeYear, activeMonthIndex, cycleDay);
+        var activeCycleEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(activeRange.end));
+
+        // Yearly breakdown only ever aggregated by category across the whole range -- one query
+        // spanning all 12 months replaces what used to be 12 separate per-month queries.
+        var yearStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(CategoryAttributionService.GetCycleRange(activeYear, 1, cycleDay).start));
+        var yearEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(CategoryAttributionService.GetCycleRange(activeYear, 12, cycleDay).end));
+        var yearlyTxs = await _context.Transactions
+            .Where(t => t.Date >= yearStartDate && t.Date < yearEndExclusive)
+            .ToListAsync();
+        var yearlyCategoryBreakdown = BuildBreakdown(yearlyTxs);
+
+        // Last-6 is one range query; last-3 is a strict subset of that same range, sliced in
+        // memory instead of querying again.
+        var last6StartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(GetCycleStartNCyclesBack(activeYear, activeMonthIndex, cycleDay, 6)));
+        var last3StartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(GetCycleStartNCyclesBack(activeYear, activeMonthIndex, cycleDay, 3)));
+        var last6Txs = await _context.Transactions
+            .Where(t => t.Date >= last6StartDate && t.Date < activeCycleEndExclusive)
+            .ToListAsync();
+        var last6CategoryBreakdown = BuildBreakdown(last6Txs);
+
+        var last3Txs = last6Txs.Where(t => t.Date >= last3StartDate).ToList();
+        var last3CategoryBreakdown = BuildBreakdown(last3Txs);
+
+        // Reuses last3Txs (already fetched above) instead of re-querying the same 3 cycles again.
+        var (pastThreeMonthsRewardsAverage, hasRewardsHistory) =
+            CalculatePastRewardsAverageFromTxs(last3Txs, activeYear, activeMonthIndex, cycleDay);
+
+        return new
+        {
             last3CategoryBreakdown = ObfuscateBreakdown(last3CategoryBreakdown),
             last6CategoryBreakdown = ObfuscateBreakdown(last6CategoryBreakdown),
             yearlyCategoryBreakdown = ObfuscateBreakdown(yearlyCategoryBreakdown),
-            availableYears
+            pastThreeMonthsRewardsAverage = ObfuscationHelper.Obfuscate(pastThreeMonthsRewardsAverage),
+            hasRewardsHistory
         };
     }
 
@@ -356,6 +341,67 @@ public class FinancialService
         return setting;
     }
 
+    // Shared by GetDashboardDataAsync and GetDashboardInsightsAsync: loads (or creates) the
+    // settings row and resolves which cycle is "active" -- either the caller's explicit
+    // month/year, or today's detected cycle when omitted. `persist` controls whether the
+    // resolution is written back as the new SelectedMonth/SelectedYear: the dashboard endpoint
+    // stays the writer of record (persist: true, preserving its existing behavior exactly),
+    // while insights is a pure reader (persist: false) so the two endpoints -- fetched in
+    // parallel by the frontend with the same explicit month/year -- don't both redundantly
+    // re-save the identical values.
+    private async Task<(FinancialSetting setting, int cycleDay, string activeMonth, int activeYear, int activeMonthIndex)>
+        ResolveCycleContextAsync(string? queryMonth, int? queryYear, bool persist)
+    {
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+        if (setting == null)
+        {
+            var now = DateTime.Now;
+            setting = new FinancialSetting
+            {
+                TargetStabilityFund = 10000.00m,
+                SelectedMonth = now.ToString("MMM"),
+                SelectedYear = now.Year,
+                EssentialsAlloc = 0.50m,
+                GrowthAlloc = 0.25m,
+                StabilityAlloc = 0.15m,
+                RewardsAlloc = 0.10m,
+                CycleDay = 28,
+                HideSensitive = true
+            };
+            _context.FinancialSettings.Add(setting);
+            await _context.SaveChangesAsync();
+        }
+
+        var cycleDay = setting.CycleDay;
+
+        string activeMonth;
+        int activeYear;
+
+        if (string.IsNullOrEmpty(queryMonth) || queryYear == null)
+        {
+            var detected = CategoryAttributionService.GetCycleMonthAndYearForDate(DateTime.Now, cycleDay);
+            activeMonth = detected.month;
+            activeYear = detected.year;
+        }
+        else
+        {
+            activeMonth = queryMonth;
+            activeYear = queryYear.Value;
+        }
+
+        if (persist)
+        {
+            setting.SelectedMonth = activeMonth;
+            setting.SelectedYear = activeYear;
+            await _context.SaveChangesAsync();
+        }
+
+        var activeMonthIndex = Array.IndexOf(Months, activeMonth) + 1;
+        if (activeMonthIndex == 0) activeMonthIndex = 6;
+
+        return (setting, cycleDay, activeMonth, activeYear, activeMonthIndex);
+    }
+
     private async Task<List<Transaction>> GetTransactionsForCycleAsync(int year, int monthIndex, int cycleDay)
     {
         var (start, end, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
@@ -420,21 +466,24 @@ public class FinancialService
         return activeRecurringList;
     }
 
-    private async Task<List<Transaction>> GetTxsForLastNCyclesAsync(int activeYear, int activeMonthIndex, int cycleDay, int n)
+    // Walks cycle boundaries backward n-1 times (pure date math, no DB access) to find the start
+    // of the cycle n positions back from (year, monthIndex) inclusive -- e.g. n=1 returns that
+    // same cycle's own start, n=3 returns the start of the cycle 2 before it.
+    private static DateTime GetCycleStartNCyclesBack(int year, int monthIndex, int cycleDay, int n)
     {
-        var result = new List<Transaction>();
-        int curMonth = activeMonthIndex;
-        int curYear = activeYear;
-        for (int i = 0; i < n; i++)
+        int y = year, m = monthIndex;
+        for (int i = 1; i < n; i++)
         {
-            result.AddRange(await GetTransactionsForCycleAsync(curYear, curMonth, cycleDay));
-            curMonth--;
-            if (curMonth < 1) { curMonth = 12; curYear--; }
+            m--;
+            if (m < 1) { m = 12; y--; }
         }
-        return result;
+        return CategoryAttributionService.GetCycleRange(y, m, cycleDay).start;
     }
 
-    private async Task<(decimal average, bool hasHistory)> CalculatePastRewardsAverageAsync(int activeYear, int activeMonthIndex, int cycleDay)
+    // Same averaging semantics as the old per-cycle-query version, but buckets an already-fetched
+    // transaction list (covering the same 3 cycles) instead of issuing 3 more queries for them.
+    private static (decimal average, bool hasHistory) CalculatePastRewardsAverageFromTxs(
+        List<Transaction> last3Txs, int activeYear, int activeMonthIndex, int cycleDay)
     {
         decimal totalPastRewards = 0;
         int activeMonthsCount = 0;
@@ -443,9 +492,12 @@ public class FinancialService
 
         for (int i = 0; i < 3; i++)
         {
-            var cycleTxsForMonth = await GetTransactionsForCycleAsync(tempYear, tempMonth, cycleDay);
+            var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(tempYear, tempMonth, cycleDay);
+            var cycleStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart));
+            var cycleEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleEnd));
+            var cycleTxsForMonth = last3Txs.Where(t => t.Date >= cycleStartDate && t.Date < cycleEndExclusive).ToList();
 
-            if (cycleTxsForMonth.Any())
+            if (cycleTxsForMonth.Count > 0)
             {
                 var positiveRewards = cycleTxsForMonth
                     .Select(t => CategoryAttributionService.GetCategoryAmount(t, "Rewards"))
