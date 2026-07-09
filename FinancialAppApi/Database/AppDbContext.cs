@@ -48,7 +48,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             // Bounded numeric(12,2) instead of unbounded numeric: exact for money, but
             // fixed/smaller on-disk, which matters against the 500MB free storage ceiling.
             entity.Property(e => e.Amount).HasColumnType("numeric(12,2)");
-            entity.Property(e => e.Date).HasColumnType("date");
+            entity.Property(e => e.Date).HasColumnType("timestamp with time zone");
             // Composite (Date DESC, LedgerCategory): ledger listings order by Date desc and
             // filter by ledger bucket, so this covers both without a second index. Date leads,
             // so it stays append-friendly for the insert-heavy workload.

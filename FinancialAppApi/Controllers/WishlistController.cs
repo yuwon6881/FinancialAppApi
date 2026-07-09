@@ -178,7 +178,7 @@ namespace FinancialAppApi.Controllers
             var tx = new Transaction
             {
                 Id = Guid.NewGuid().ToString("N"),
-                Date = DateOnly.FromDateTime(DateTime.Now), // Local date matches other postings
+                Date = DateTime.UtcNow,
                 Description = $"Purchased: {item.Name} (Wish List)",
                 Category = "Other", // Main category matches ledger sub-categorizations
                 LedgerCategory = "Rewards", // The category that funds this purchase
@@ -205,7 +205,7 @@ namespace FinancialAppApi.Controllers
                 var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
                 if (setting != null)
                 {
-                    var (cycleYear, cycleMonthIndex) = FinancialController.GetCycleYearAndMonthIndexForDate(tx.Date, setting.CycleDay);
+                    var (cycleYear, cycleMonthIndex) = FinancialController.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(tx.Date), setting.CycleDay);
                     await _cycleBalanceService.InvalidateFromAsync(cycleYear, cycleMonthIndex);
                 }
 
@@ -241,7 +241,7 @@ namespace FinancialAppApi.Controllers
                 ? await _context.Transactions.FindAsync(purchaseTransactionId)
                 : null;
 
-            DateOnly? affectedDate = transaction?.Date;
+            DateTime? affectedDate = transaction?.Date;
 
             item.IsPurchased = false;
             item.PurchasedAt = null;
@@ -274,7 +274,7 @@ namespace FinancialAppApi.Controllers
                     var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
                     if (setting != null)
                     {
-                        var (cycleYear, cycleMonthIndex) = FinancialController.GetCycleYearAndMonthIndexForDate(affectedDate.Value, setting.CycleDay);
+                        var (cycleYear, cycleMonthIndex) = FinancialController.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(affectedDate.Value), setting.CycleDay);
                         await _cycleBalanceService.InvalidateFromAsync(cycleYear, cycleMonthIndex);
                     }
                 }

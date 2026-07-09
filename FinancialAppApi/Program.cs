@@ -186,6 +186,10 @@ if (migrateOnStartup || seedOnStartup || seedDatabase)
                 context.Database.Migrate();
                 context.Database.ExecuteSqlRaw("""
                     ALTER TABLE "Transactions"
+                    ALTER COLUMN "Date" TYPE timestamp with time zone
+                    USING ("Date"::timestamp AT TIME ZONE 'UTC');
+
+                    ALTER TABLE "Transactions"
                     ADD COLUMN IF NOT EXISTS "WishlistItemId" integer;
 
                     ALTER TABLE "WishlistItems"

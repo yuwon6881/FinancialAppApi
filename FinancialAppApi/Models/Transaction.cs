@@ -7,7 +7,7 @@ public class Transaction
     [Key]
     public string Id { get; set; } = string.Empty;
 
-    public DateOnly Date { get; set; }
+    public DateTime Date { get; set; }
 
     [Required]
     public string Description { get; set; } = string.Empty;

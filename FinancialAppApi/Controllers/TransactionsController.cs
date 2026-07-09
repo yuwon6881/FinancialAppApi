@@ -26,12 +26,12 @@ public class TransactionsController : ControllerBase
     // Invalidates every cached cycle balance snapshot at or after the cycle a given transaction
     // date falls in -- a no-op if settings (and therefore CycleDay) don't exist yet, since in
     // that case no snapshots have ever been computed either.
-    private async Task InvalidateCycleBalancesFromAsync(DateOnly date)
+    private async Task InvalidateCycleBalancesFromAsync(DateTime date)
     {
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
         if (setting == null) return;
 
-        var (year, monthIndex) = FinancialController.GetCycleYearAndMonthIndexForDate(date, setting.CycleDay);
+        var (year, monthIndex) = FinancialController.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(date), setting.CycleDay);
         await _cycleBalanceService.InvalidateFromAsync(year, monthIndex);
     }
 
@@ -48,7 +48,7 @@ public class TransactionsController : ControllerBase
     // BeginTransactionAsync() -- Program.cs enables Npgsql's EnableRetryOnFailure(), and its
     // retrying execution strategy refuses to run a user-started transaction directly (it needs
     // to own the whole retry unit so it can safely replay it from scratch on a transient failure).
-    private async Task SaveAndInvalidateCycleBalancesAsync(DateOnly earliestAffectedDate)
+    private async Task SaveAndInvalidateCycleBalancesAsync(DateTime earliestAffectedDate)
     {
         var strategy = _context.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
@@ -119,12 +119,12 @@ public class TransactionsController : ControllerBase
         if (activeMonthIndex == 0) activeMonthIndex = 6;
 
         var (cycleStart, cycleEnd, _) = FinancialController.GetCycleRange(activeYear, activeMonthIndex, setting.CycleDay);
-        var cycleStartDate = DateOnly.FromDateTime(cycleStart);
-        var cycleEndDate = DateOnly.FromDateTime(cycleEnd);
+        var cycleStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart));
+        var cycleEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleEnd));
 
         var filtered = await _context.Transactions
             .AsNoTracking()
-            .Where(t => t.LedgerCategory.ToUpper() != "DISCARDED" && t.Date >= cycleStartDate && t.Date <= cycleEndDate)
+            .Where(t => t.LedgerCategory.ToUpper() != "DISCARDED" && t.Date >= cycleStartDate && t.Date < cycleEndExclusive)
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.Id)
             .ToListAsync();
@@ -197,7 +197,7 @@ public class TransactionsController : ControllerBase
 
             sb.AppendLine(string.Join(",", new[]
             {
-                EscapeCsvField(t.Date.ToString("yyyy-MM-dd")),
+                EscapeCsvField(TransactionDate.ToDateOnly(t.Date).ToString("yyyy-MM-dd")),
                 EscapeCsvField(t.Description),
                 EscapeCsvField(t.Category),
                 EscapeCsvField(DisplayLedgerCategory(t.LedgerCategory)),
@@ -237,7 +237,7 @@ public class TransactionsController : ControllerBase
         var transaction = new Transaction
         {
             Id = string.IsNullOrWhiteSpace(dto.Id) ? $"tx-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}" : dto.Id,
-            Date = postDate,
+            Date = TransactionDate.FromInputDate(postDate),
             Description = dto.Description,
             Category = dto.Category,
             LedgerCategory = dto.LedgerCategory,
@@ -283,7 +283,7 @@ public class TransactionsController : ControllerBase
             .ToListAsync();
         _context.Transactions.RemoveRange(existingSplits);
 
-        transaction.Date = putDate;
+        transaction.Date = TransactionDate.PreserveTimeWhenSameDate(transaction.Date, putDate);
         transaction.Description = dto.Description;
         transaction.Category = dto.Category;
         transaction.LedgerCategory = dto.LedgerCategory;
@@ -298,7 +298,7 @@ public class TransactionsController : ControllerBase
         AddIncomeSplitTransactions(transaction, splitSpec);
         await ApplyWishlistPurchaseLinkAsync(transaction);
 
-        await SaveAndInvalidateCycleBalancesAsync(originalDate < putDate ? originalDate : putDate);
+        await SaveAndInvalidateCycleBalancesAsync(originalDate < transaction.Date ? originalDate : transaction.Date);
         return NoContent();
     }
 
@@ -384,7 +384,7 @@ public class TransactionsController : ControllerBase
         if (item == null) return;
 
         item.IsPurchased = true;
-        item.PurchasedAt ??= transaction.Date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        item.PurchasedAt ??= transaction.Date;
         item.PurchaseTransactionId = transaction.Id;
         item.IsActive = false;
     }
@@ -425,7 +425,8 @@ public class TransactionsController : ControllerBase
         return new TransactionDto
         {
             Id = t.Id,
-            Date = t.Date.ToString("yyyy-MM-dd"),
+            Date = TransactionDate.ToDateOnly(t.Date).ToString("yyyy-MM-dd"),
+            PostedAt = t.Date.ToUniversalTime().ToString("O"),
             Description = t.Description,
             Category = t.Category,
             LedgerCategory = t.LedgerCategory,
@@ -449,11 +450,11 @@ public class TransactionsController : ControllerBase
 
         if (TryParseDate(startDate, out var startDateOnly))
         {
-            query = query.Where(t => t.Date >= startDateOnly);
+            query = query.Where(t => t.Date >= TransactionDate.StartOfDate(startDateOnly));
         }
         if (TryParseDate(endDate, out var endDateOnly))
         {
-            query = query.Where(t => t.Date <= endDateOnly);
+            query = query.Where(t => t.Date < TransactionDate.ExclusiveEndOfDate(endDateOnly));
         }
 
         // Search: description, category, ledgerCategory
@@ -530,6 +531,7 @@ public class TransactionDto
 {
     public string? Id { get; set; }
     public string Date { get; set; } = string.Empty;
+    public string? PostedAt { get; set; }
     public string Description { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
     public string LedgerCategory { get; set; } = string.Empty;

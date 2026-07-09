@@ -73,12 +73,12 @@ public class CycleBalanceService
             for (int m = monthFrom; m <= monthTo; m++)
             {
                 var (cycleStart, cycleEnd, _) = FinancialController.GetCycleRange(y, m, cycleDay);
-                var cycleStartDate = DateOnly.FromDateTime(cycleStart);
-                var cycleEndDate = DateOnly.FromDateTime(cycleEnd);
+                var cycleStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart));
+                var cycleEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleEnd));
 
                 var cycleTxs = await _context.Transactions
                     .AsNoTracking()
-                    .Where(t => t.Date >= cycleStartDate && t.Date <= cycleEndDate)
+                    .Where(t => t.Date >= cycleStartDate && t.Date < cycleEndExclusive)
                     .ToListAsync();
 
                 essentials += cycleTxs.Sum(t => FinancialController.GetCategoryAmount(t, "Essentials"));

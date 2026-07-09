@@ -34,10 +34,10 @@ public class FinancialController : ControllerBase
     private async Task<List<Transaction>> GetTransactionsForCycleAsync(int year, int monthIndex, int cycleDay)
     {
         var (start, end, _) = GetCycleRange(year, monthIndex, cycleDay);
-        var startDate = DateOnly.FromDateTime(start);
-        var endDate = DateOnly.FromDateTime(end);
+        var startDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(start));
+        var endExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(end));
         return await _context.Transactions
-            .Where(t => t.Date >= startDate && t.Date <= endDate)
+            .Where(t => t.Date >= startDate && t.Date < endExclusive)
             .ToListAsync();
     }
 
@@ -97,7 +97,8 @@ public class FinancialController : ControllerBase
                         var instanceId = $"{rp.Id}-{y}-{m}";
                         var isPaid = recurringTransactionDates.Any(t =>
                             t.RecurringPaymentId == rp.Id &&
-                            t.Date >= DateOnly.FromDateTime(cycleStart) && t.Date <= DateOnly.FromDateTime(cycleEnd));
+                            t.Date >= TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart)) &&
+                            t.Date < TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleEnd)));
                         if (!isPaid)
                         {
                             var item = new
@@ -285,10 +286,10 @@ public class FinancialController : ControllerBase
 
         // Active cycle range and its own transactions (bounded to one cycle, indexed by Date)
         var activeRange = GetCycleRange(year, activeMonthIndex, cycleDay);
-        var activeRangeStartDate = DateOnly.FromDateTime(activeRange.start);
-        var activeRangeEndDate = DateOnly.FromDateTime(activeRange.end);
+        var activeRangeStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(activeRange.start));
+        var activeRangeEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(activeRange.end));
         var activeCycleTxs = await _context.Transactions
-            .Where(t => t.Date >= activeRangeStartDate && t.Date <= activeRangeEndDate)
+            .Where(t => t.Date >= activeRangeStartDate && t.Date < activeRangeEndExclusive)
             .ToListAsync();
 
         string selectedCycleLabel = activeRange.label;
@@ -366,7 +367,8 @@ public class FinancialController : ControllerBase
             .Select(t => new
             {
                 id = t.Id,
-                date = t.Date.ToString("yyyy-MM-dd"),
+                date = TransactionDate.ToDateOnly(t.Date).ToString("yyyy-MM-dd"),
+                postedAt = t.Date.ToUniversalTime().ToString("O"),
                 description = t.Description,
                 category = t.Category,
                 ledgerCategory = t.LedgerCategory,
@@ -420,7 +422,7 @@ public class FinancialController : ControllerBase
                     isPaid = isPaid,
                     isDiscarded = isDiscarded,
                     status = isDiscarded ? "Discarded" : (isPaid ? "Paid" : "Pending"),
-                    paidDate = isPaid && !isDiscarded ? paidTx!.Date.ToString("yyyy-MM-dd") : null
+                    paidDate = isPaid && !isDiscarded ? TransactionDate.ToDateOnly(paidTx!.Date).ToString("yyyy-MM-dd") : null
                 });
             }
         }
@@ -559,6 +561,7 @@ public class FinancialController : ControllerBase
             {
                 id = t.id,
                 date = t.date,
+                postedAt = t.postedAt,
                 description = t.description,
                 category = t.category,
                 ledgerCategory = t.ledgerCategory,
