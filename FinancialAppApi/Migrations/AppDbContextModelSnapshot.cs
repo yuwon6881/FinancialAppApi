@@ -64,16 +64,16 @@ namespace FinancialAppApi.Migrations
                         .HasColumnType("integer");
 
                     b.Property<decimal>("EssentialsBalance")
-                        .HasColumnType("numeric");
+                        .HasColumnType("numeric(12,2)");
 
                     b.Property<decimal>("GrowthBalance")
-                        .HasColumnType("numeric");
+                        .HasColumnType("numeric(12,2)");
 
                     b.Property<decimal>("RewardsBalance")
-                        .HasColumnType("numeric");
+                        .HasColumnType("numeric(12,2)");
 
                     b.Property<decimal>("StabilityBalance")
-                        .HasColumnType("numeric");
+                        .HasColumnType("numeric(12,2)");
 
                     b.HasKey("Year", "MonthIndex");
 
@@ -133,7 +133,7 @@ namespace FinancialAppApi.Migrations
                         .HasDefaultValue("Split: Growth 50%, Rewards 50%");
 
                     b.Property<decimal>("TargetStabilityFund")
-                        .HasColumnType("numeric");
+                        .HasColumnType("numeric(12,2)");
 
                     b.Property<bool>("VibrationEnabled")
                         .ValueGeneratedOnAdd()
@@ -535,7 +535,7 @@ namespace FinancialAppApi.Migrations
                         .HasColumnType("text");
 
                     b.Property<decimal>("Price")
-                        .HasColumnType("numeric");
+                        .HasColumnType("numeric(12,2)");
 
                     b.Property<string>("PurchaseTransactionId")
                         .HasColumnType("text");
