@@ -184,6 +184,19 @@ if (migrateOnStartup || seedOnStartup || seedDatabase)
             if (migrateOnStartup)
             {
                 context.Database.Migrate();
+                context.Database.ExecuteSqlRaw("""
+                    ALTER TABLE "Transactions"
+                    ADD COLUMN IF NOT EXISTS "WishlistItemId" integer;
+
+                    ALTER TABLE "WishlistItems"
+                    ADD COLUMN IF NOT EXISTS "PurchaseTransactionId" text;
+
+                    CREATE INDEX IF NOT EXISTS "IX_Transactions_WishlistItemId"
+                    ON "Transactions" ("WishlistItemId");
+
+                    CREATE INDEX IF NOT EXISTS "IX_WishlistItems_PurchaseTransactionId"
+                    ON "WishlistItems" ("PurchaseTransactionId");
+                    """);
             }
 
             if (seedOnStartup || seedDatabase)
