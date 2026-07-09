@@ -11,6 +11,7 @@ public class TransactionPersistenceServiceTests
     public async Task CreateTransactionAsync_CreatesIncomeSplitsFromSettings()
     {
         await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
         context.FinancialSettings.Add(new FinancialSetting
         {
             EssentialsAlloc = 0.50m,
@@ -33,6 +34,7 @@ public class TransactionPersistenceServiceTests
     public async Task CreateTransactionAsync_ReturnsExistingForIdempotentPost()
     {
         await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
         context.Transactions.Add(NewTransaction("tx-1"));
         await context.SaveChangesAsync();
         var service = NewService(context);
@@ -47,6 +49,7 @@ public class TransactionPersistenceServiceTests
     public async Task UpdateTransactionAsync_ReplacesExistingSplits()
     {
         await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
         context.Transactions.AddRange(
             NewTransaction("tx-1", ledgerCategory: "IncomeSplit:50,25,15,10", amount: 1000m),
             NewTransaction("tx-1-split-Essentials", ledgerCategory: "Transfer:Income->Essentials", amount: 500m));
@@ -94,6 +97,13 @@ public class TransactionPersistenceServiceTests
     private static TransactionPersistenceService NewService(AppDbContext context)
     {
         return new TransactionPersistenceService(context, new CycleBalanceService(context));
+    }
+
+    private static void SeedCategories(AppDbContext context)
+    {
+        context.TransactionCategories.AddRange(
+            new TransactionCategory { Id = "cat-other", Name = "Other" },
+            new TransactionCategory { Id = "cat-transfer", Name = "Transfer" });
     }
 
     private static TransactionMutationRequest NewRequest(

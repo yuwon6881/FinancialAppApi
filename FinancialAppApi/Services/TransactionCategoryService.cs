@@ -17,7 +17,9 @@ public enum DeleteTransactionCategoryStatus
 {
     Deleted,
     NotFound,
-    ReservedName
+    ReservedName,
+    InUse,
+    InvalidReplacement
 }
 
 public sealed record CreateTransactionCategoryResult(
@@ -27,7 +29,9 @@ public sealed record CreateTransactionCategoryResult(
 
 public sealed record DeleteTransactionCategoryResult(
     DeleteTransactionCategoryStatus Status,
-    string? Message = null);
+    string? Message = null,
+    int TransactionCount = 0,
+    int RecurringPaymentCount = 0);
 
 public class TransactionCategoryService
 {
@@ -97,7 +101,7 @@ public class TransactionCategoryService
         return new CreateTransactionCategoryResult(CreateTransactionCategoryStatus.Created, category);
     }
 
-    public async Task<DeleteTransactionCategoryResult> DeleteCategoryAsync(string id)
+    public async Task<DeleteTransactionCategoryResult> DeleteCategoryAsync(string id, string? replacementCategoryId = null)
     {
         var category = await _context.TransactionCategories.FindAsync(id);
         if (category == null)
@@ -112,6 +116,48 @@ public class TransactionCategoryService
                 "Cannot delete system-reserved categories.");
         }
 
+        var transactionMatches = await _context.Transactions
+            .Where(t => t.Category.ToLower() == category.Name.ToLower())
+            .ToListAsync();
+        var recurringPaymentMatches = await _context.RecurringPayments
+            .Where(rp => rp.Category.ToLower() == category.Name.ToLower())
+            .ToListAsync();
+        var isInUse = transactionMatches.Count > 0 || recurringPaymentMatches.Count > 0;
+
+        if (isInUse)
+        {
+            if (string.IsNullOrWhiteSpace(replacementCategoryId))
+            {
+                return new DeleteTransactionCategoryResult(
+                    DeleteTransactionCategoryStatus.InUse,
+                    "Category is in use. Choose a replacement category before deleting it.",
+                    transactionMatches.Count,
+                    recurringPaymentMatches.Count);
+            }
+
+            var replacement = await _context.TransactionCategories.FindAsync(replacementCategoryId);
+            if (replacement == null ||
+                string.Equals(replacement.Id, category.Id, StringComparison.OrdinalIgnoreCase) ||
+                IsReservedName(replacement.Name))
+            {
+                return new DeleteTransactionCategoryResult(
+                    DeleteTransactionCategoryStatus.InvalidReplacement,
+                    "Choose an existing non-reserved replacement category.",
+                    transactionMatches.Count,
+                    recurringPaymentMatches.Count);
+            }
+
+            foreach (var transaction in transactionMatches)
+            {
+                transaction.Category = replacement.Name;
+            }
+
+            foreach (var recurringPayment in recurringPaymentMatches)
+            {
+                recurringPayment.Category = replacement.Name;
+            }
+        }
+
         _context.TransactionCategories.Remove(category);
         await _context.SaveChangesAsync();
         _cache.Remove(CacheKey);
@@ -119,7 +165,23 @@ public class TransactionCategoryService
         return new DeleteTransactionCategoryResult(DeleteTransactionCategoryStatus.Deleted);
     }
 
-    private static bool IsReservedName(string name)
+    public async Task<bool> CategoryNameExistsAsync(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        return await _context.TransactionCategories
+            .AnyAsync(c => c.Name.ToLower() == name.Trim().ToLower());
+    }
+
+    public void InvalidateCache()
+    {
+        _cache.Remove(CacheKey);
+    }
+
+    public static bool IsReservedName(string name)
     {
         return string.Equals(name, "Transfer", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(name, "Adjustment", StringComparison.OrdinalIgnoreCase);

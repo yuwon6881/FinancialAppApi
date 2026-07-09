@@ -11,7 +11,8 @@ public enum TransactionMutationStatus
     Updated,
     Deleted,
     NotFound,
-    InvalidDate
+    InvalidDate,
+    InvalidCategory
 }
 
 public sealed record TransactionMutationRequest(
@@ -51,6 +52,11 @@ public class TransactionPersistenceService
             }
         }
 
+        if (!await TransactionCategoryExistsAsync(request.Category))
+        {
+            return InvalidCategory(request.Category);
+        }
+
         if (!TransactionDate.TryParseInputDate(request.Date, out var postDate))
         {
             return InvalidDate();
@@ -85,6 +91,11 @@ public class TransactionPersistenceService
         if (transaction == null)
         {
             return new TransactionMutationResult(TransactionMutationStatus.NotFound);
+        }
+
+        if (!await TransactionCategoryExistsAsync(request.Category))
+        {
+            return InvalidCategory(request.Category);
         }
 
         if (!TransactionDate.TryParseInputDate(request.Date, out var putDate))
@@ -249,5 +260,23 @@ public class TransactionPersistenceService
         return new TransactionMutationResult(
             TransactionMutationStatus.InvalidDate,
             Message: "Date must be in yyyy-MM-dd format.");
+    }
+
+    private async Task<bool> TransactionCategoryExistsAsync(string category)
+    {
+        if (string.IsNullOrWhiteSpace(category))
+        {
+            return false;
+        }
+
+        return await _context.TransactionCategories.AnyAsync(c => c.Name.ToLower() == category.Trim().ToLower());
+    }
+
+    private static TransactionMutationResult InvalidCategory(string category)
+    {
+        var name = string.IsNullOrWhiteSpace(category) ? "Category" : $"Category '{category}'";
+        return new TransactionMutationResult(
+            TransactionMutationStatus.InvalidCategory,
+            Message: $"{name} does not exist.");
     }
 }

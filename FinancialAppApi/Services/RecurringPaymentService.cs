@@ -7,12 +7,25 @@ namespace FinancialAppApi.Services;
 public enum UpdateRecurringPaymentStatus
 {
     Updated,
-    NotFound
+    NotFound,
+    InvalidCategory
 }
 
 public sealed record UpdateRecurringPaymentResult(
     UpdateRecurringPaymentStatus Status,
-    RecurringPayment? Payment = null);
+    RecurringPayment? Payment = null,
+    string? Message = null);
+
+public enum CreateRecurringPaymentStatus
+{
+    Created,
+    InvalidCategory
+}
+
+public sealed record CreateRecurringPaymentResult(
+    CreateRecurringPaymentStatus Status,
+    RecurringPayment? Payment = null,
+    string? Message = null);
 
 public class RecurringPaymentService
 {
@@ -28,11 +41,18 @@ public class RecurringPaymentService
         return await _context.RecurringPayments.ToListAsync();
     }
 
-    public async Task<RecurringPayment> CreateRecurringPaymentAsync(RecurringPayment payment)
+    public async Task<CreateRecurringPaymentResult> CreateRecurringPaymentAsync(RecurringPayment payment)
     {
+        if (!await CategoryExistsAsync(payment.Category))
+        {
+            return new CreateRecurringPaymentResult(
+                CreateRecurringPaymentStatus.InvalidCategory,
+                Message: $"Category '{payment.Category}' does not exist.");
+        }
+
         _context.RecurringPayments.Add(payment);
         await _context.SaveChangesAsync();
-        return payment;
+        return new CreateRecurringPaymentResult(CreateRecurringPaymentStatus.Created, payment);
     }
 
     public async Task<RecurringPayment?> ToggleActiveAsync(string id)
@@ -55,6 +75,13 @@ public class RecurringPaymentService
         if (existing == null)
         {
             return new UpdateRecurringPaymentResult(UpdateRecurringPaymentStatus.NotFound);
+        }
+
+        if (!await CategoryExistsAsync(updated.Category))
+        {
+            return new UpdateRecurringPaymentResult(
+                UpdateRecurringPaymentStatus.InvalidCategory,
+                Message: $"Category '{updated.Category}' does not exist.");
         }
 
         existing.Name = updated.Name;
@@ -97,5 +124,15 @@ public class RecurringPaymentService
         await _context.SaveChangesAsync();
 
         return true;
+    }
+
+    private async Task<bool> CategoryExistsAsync(string category)
+    {
+        if (string.IsNullOrWhiteSpace(category))
+        {
+            return false;
+        }
+
+        return await _context.TransactionCategories.AnyAsync(c => c.Name.ToLower() == category.Trim().ToLower());
     }
 }

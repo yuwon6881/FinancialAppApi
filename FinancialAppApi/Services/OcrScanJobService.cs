@@ -1,4 +1,4 @@
-using System.Text.Json;
+using System.Text.Json.Nodes;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
@@ -93,7 +93,7 @@ public class OcrScanJobService
         object? result = null;
         if (!string.IsNullOrWhiteSpace(job.ResultJson))
         {
-            result = JsonSerializer.Deserialize<JsonElement>(job.ResultJson);
+            result = ObfuscateReceiptScanAmount(job.ResultJson);
         }
 
         var response = new ScanJobResponse(
@@ -188,5 +188,19 @@ public class OcrScanJobService
             "image/gif" => "image/gif",
             _ => "image/jpeg"
         };
+    }
+
+    private static object? ObfuscateReceiptScanAmount(string resultJson)
+    {
+        var node = JsonNode.Parse(resultJson);
+        if (node is JsonObject obj &&
+            obj.TryGetPropertyValue("amount", out var amountNode) &&
+            amountNode is JsonValue amountValue &&
+            amountValue.TryGetValue<decimal>(out var amount))
+        {
+            obj["amount"] = ObfuscationHelper.Obfuscate(amount);
+        }
+
+        return node;
     }
 }

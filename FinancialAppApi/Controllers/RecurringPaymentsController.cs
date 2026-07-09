@@ -45,7 +45,11 @@ public class RecurringPaymentsController : ControllerBase
             EndDate = dto.EndDate
         };
 
-        await _recurringPaymentService.CreateRecurringPaymentAsync(payment);
+        var result = await _recurringPaymentService.CreateRecurringPaymentAsync(payment);
+        if (result.Status == CreateRecurringPaymentStatus.InvalidCategory)
+        {
+            return BadRequest(new { message = result.Message });
+        }
 
         return CreatedAtAction(nameof(GetRecurringPayments), new { id = payment.Id }, MapToDto(payment));
     }
@@ -91,6 +95,10 @@ public class RecurringPaymentsController : ControllerBase
         if (result.Status == UpdateRecurringPaymentStatus.NotFound)
         {
             return NotFound();
+        }
+        if (result.Status == UpdateRecurringPaymentStatus.InvalidCategory)
+        {
+            return BadRequest(new { message = result.Message });
         }
 
         return Ok(MapToDto(result.Payment!));

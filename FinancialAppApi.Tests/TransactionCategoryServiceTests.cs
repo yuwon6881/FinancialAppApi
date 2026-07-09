@@ -65,8 +65,71 @@ public class TransactionCategoryServiceTests
         Assert.False(await context.TransactionCategories.AnyAsync(c => c.Id == "cat-food"));
     }
 
+    [Fact]
+    public async Task DeleteCategoryAsync_RequiresReplacementWhenCategoryIsInUse()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.TransactionCategories.AddRange(
+            new TransactionCategory { Id = "cat-food", Name = "Food" },
+            new TransactionCategory { Id = "cat-other", Name = "Other" });
+        context.Transactions.Add(NewTransaction("tx-1", "Food"));
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.DeleteCategoryAsync("cat-food");
+
+        Assert.Equal(DeleteTransactionCategoryStatus.InUse, result.Status);
+        Assert.Equal(1, result.TransactionCount);
+        Assert.True(await context.TransactionCategories.AnyAsync(c => c.Id == "cat-food"));
+    }
+
+    [Fact]
+    public async Task DeleteCategoryAsync_TransfersTransactionsAndRecurringPaymentsBeforeDelete()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.TransactionCategories.AddRange(
+            new TransactionCategory { Id = "cat-food", Name = "Food" },
+            new TransactionCategory { Id = "cat-other", Name = "Other" });
+        context.Transactions.Add(NewTransaction("tx-1", "Food"));
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "rec-1",
+            Name = "Lunch plan",
+            Amount = 50m,
+            Frequency = "Monthly",
+            Category = "Food",
+            LedgerCategory = "Essentials",
+            NextDueDate = "2026-07-15",
+            DueDate = 15,
+            StartDate = "2026-01-01",
+            Active = true
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.DeleteCategoryAsync("cat-food", "cat-other");
+
+        Assert.Equal(DeleteTransactionCategoryStatus.Deleted, result.Status);
+        Assert.False(await context.TransactionCategories.AnyAsync(c => c.Id == "cat-food"));
+        Assert.Equal("Other", (await context.Transactions.SingleAsync()).Category);
+        Assert.Equal("Other", (await context.RecurringPayments.SingleAsync()).Category);
+    }
+
     private static TransactionCategoryService NewService(Database.AppDbContext context)
     {
         return new TransactionCategoryService(context, new MemoryCache(new MemoryCacheOptions()));
+    }
+
+    private static Transaction NewTransaction(string id, string category)
+    {
+        return new Transaction
+        {
+            Id = id,
+            Date = DateTime.UtcNow,
+            Description = "Test transaction",
+            Category = category,
+            LedgerCategory = "Essentials",
+            Amount = -10m
+        };
     }
 }

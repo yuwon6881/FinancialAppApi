@@ -94,6 +94,10 @@ public class TransactionsController : ControllerBase
         {
             return BadRequest(new { message = result.Message });
         }
+        if (result.Status == TransactionMutationStatus.InvalidCategory)
+        {
+            return BadRequest(new { message = result.Message });
+        }
         if (result.Status == TransactionMutationStatus.Existing)
         {
             return Ok(MapToDto(result.Transaction!));
@@ -112,6 +116,10 @@ public class TransactionsController : ControllerBase
             return NotFound();
         }
         if (result.Status == TransactionMutationStatus.InvalidDate)
+        {
+            return BadRequest(new { message = result.Message });
+        }
+        if (result.Status == TransactionMutationStatus.InvalidCategory)
         {
             return BadRequest(new { message = result.Message });
         }
@@ -145,7 +153,7 @@ public class TransactionsController : ControllerBase
             dto.WishlistItemId);
     }
 
-    private static TransactionDto MapToDto(Transaction t)
+    public static TransactionDto MapToDto(Transaction t)
     {
         return new TransactionDto
         {

@@ -24,10 +24,13 @@ public class RecurringPaymentServiceTests
     public async Task CreateRecurringPaymentAsync_PersistsPayment()
     {
         await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        await context.SaveChangesAsync();
         var service = new RecurringPaymentService(context);
 
-        await service.CreateRecurringPaymentAsync(NewPayment("rec-1", "Internet"));
+        var result = await service.CreateRecurringPaymentAsync(NewPayment("rec-1", "Internet"));
 
+        Assert.Equal(CreateRecurringPaymentStatus.Created, result.Status);
         Assert.True(await context.RecurringPayments.AnyAsync(p => p.Id == "rec-1"));
     }
 
@@ -49,6 +52,7 @@ public class RecurringPaymentServiceTests
     public async Task UpdateRecurringPaymentAsync_UpdatesExistingPayment()
     {
         await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
         context.RecurringPayments.Add(NewPayment("rec-1", "Internet"));
         await context.SaveChangesAsync();
         var service = new RecurringPaymentService(context);
@@ -93,5 +97,10 @@ public class RecurringPaymentServiceTests
             StartDate = "2026-01-01",
             Active = active
         };
+    }
+
+    private static void SeedCategories(Database.AppDbContext context)
+    {
+        context.TransactionCategories.Add(new TransactionCategory { Id = "cat-bills", Name = "Bills" });
     }
 }

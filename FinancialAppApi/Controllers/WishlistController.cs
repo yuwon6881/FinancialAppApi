@@ -1,3 +1,5 @@
+using System.Text.Json;
+using FinancialAppApi.Database;
 using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
@@ -19,15 +21,17 @@ public class WishlistController : ControllerBase
 
     // GET: api/wishlist
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<WishlistItem>>> GetWishlist()
+    public async Task<ActionResult<IEnumerable<WishlistItemDto>>> GetWishlist()
     {
-        return await _wishlistService.GetWishlistAsync();
+        var items = await _wishlistService.GetWishlistAsync();
+        return Ok(items.Select(MapToDto).ToList());
     }
 
     // POST: api/wishlist
     [HttpPost]
-    public async Task<ActionResult<WishlistItem>> PostWishlistItem(WishlistItem item)
+    public async Task<ActionResult<WishlistItemDto>> PostWishlistItem(WishlistItemMutationDto dto)
     {
+        var item = ToWishlistItem(dto);
         var result = await _wishlistService.CreateWishlistItemAsync(item);
         if (result.Status == WishlistMutationStatus.NameRequired ||
             result.Status == WishlistMutationStatus.PriceInvalid)
@@ -35,13 +39,14 @@ public class WishlistController : ControllerBase
             return BadRequest(new { message = result.Message });
         }
 
-        return CreatedAtAction(nameof(GetWishlist), new { id = result.Item!.Id }, result.Item);
+        return CreatedAtAction(nameof(GetWishlist), new { id = result.Item!.Id }, MapToDto(result.Item));
     }
 
     // PUT: api/wishlist/{id}
     [HttpPut("{id}")]
-    public async Task<IActionResult> PutWishlistItem(int id, WishlistItem updatedItem)
+    public async Task<IActionResult> PutWishlistItem(int id, WishlistItemMutationDto dto)
     {
+        var updatedItem = ToWishlistItem(dto);
         var result = await _wishlistService.UpdateWishlistItemAsync(id, updatedItem);
         return result.Status switch
         {
@@ -74,7 +79,7 @@ public class WishlistController : ControllerBase
         {
             WishlistMutationStatus.NotFound => NotFound(),
             WishlistMutationStatus.AlreadyPurchased => BadRequest(new { message = result.Message }),
-            _ => Ok(new { item = result.Item, transaction = result.Transaction })
+            _ => Ok(new { item = MapToDto(result.Item!), transaction = TransactionsController.MapToDto(result.Transaction!) })
         };
     }
 
@@ -88,6 +93,74 @@ public class WishlistController : ControllerBase
             return NotFound();
         }
 
-        return Ok(result.Item);
+        return Ok(MapToDto(result.Item!));
     }
+
+    private static WishlistItem ToWishlistItem(WishlistItemMutationDto dto)
+    {
+        return new WishlistItem
+        {
+            Id = dto.Id,
+            Name = dto.Name,
+            Price = Math.Round(ReadWireAmount(dto.Price), 2, MidpointRounding.AwayFromZero),
+            Priority = dto.Priority,
+            IsPurchased = dto.IsPurchased,
+            PurchasedAt = dto.PurchasedAt,
+            PurchaseTransactionId = dto.PurchaseTransactionId,
+            CreatedAt = dto.CreatedAt == default ? DateTime.UtcNow : dto.CreatedAt,
+            IsActive = dto.IsActive
+        };
+    }
+
+    private static WishlistItemDto MapToDto(WishlistItem item)
+    {
+        return new WishlistItemDto
+        {
+            Id = item.Id,
+            Name = item.Name,
+            Price = ObfuscationHelper.Obfuscate(item.Price),
+            Priority = item.Priority,
+            IsPurchased = item.IsPurchased,
+            PurchasedAt = item.PurchasedAt,
+            PurchaseTransactionId = item.PurchaseTransactionId,
+            CreatedAt = item.CreatedAt,
+            IsActive = item.IsActive
+        };
+    }
+
+    private static decimal ReadWireAmount(JsonElement price)
+    {
+        return price.ValueKind switch
+        {
+            JsonValueKind.String => ObfuscationHelper.Deobfuscate(price.GetString() ?? string.Empty),
+            JsonValueKind.Number when price.TryGetDecimal(out var value) => value,
+            _ => 0m
+        };
+    }
+}
+
+public class WishlistItemMutationDto
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public JsonElement Price { get; set; }
+    public string Priority { get; set; } = "Medium";
+    public bool IsPurchased { get; set; }
+    public DateTime? PurchasedAt { get; set; }
+    public string? PurchaseTransactionId { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public bool IsActive { get; set; }
+}
+
+public class WishlistItemDto
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Price { get; set; } = string.Empty;
+    public string Priority { get; set; } = "Medium";
+    public bool IsPurchased { get; set; }
+    public DateTime? PurchasedAt { get; set; }
+    public string? PurchaseTransactionId { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public bool IsActive { get; set; }
 }

@@ -78,18 +78,112 @@ public class TransactionCategoriesController : ControllerBase
         }
     }
 
+    [HttpPost("suggest-notes")]
+    public async Task<IActionResult> SuggestNotes(TransactionNoteSuggestionRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Description))
+        {
+            return BadRequest(new { message = "Description is required." });
+        }
+
+        try
+        {
+            var suggestions = await _categorySuggestionService.SuggestNotesAsync(
+                request.Description.Trim(),
+                request.Category,
+                request.LedgerCategory,
+                request.TxType,
+                request.HistoryDescriptions);
+            return Ok(new { suggestions });
+        }
+        catch (CategorySuggestionUserException ex)
+        {
+            return StatusCode(503, new { message = ex.Message });
+        }
+        catch (TaskCanceledException ex)
+        {
+            _logger.LogWarning(ex, "Transaction note suggestion request timed out.");
+            return StatusCode(503, new { message = "AI service timed out. Please try again." });
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Transaction note suggestion response was invalid JSON.");
+            return StatusCode(503, new { message = "AI service returned an unreadable response. Please try again." });
+        }
+    }
+
+    [HttpPost("cleanup/review")]
+    public async Task<IActionResult> ReviewCleanup()
+    {
+        try
+        {
+            return Ok(await _categorySuggestionService.ReviewCategoryCleanupAsync());
+        }
+        catch (CategorySuggestionUserException ex)
+        {
+            return StatusCode(503, new { message = ex.Message });
+        }
+        catch (TaskCanceledException ex)
+        {
+            _logger.LogWarning(ex, "Category cleanup review request timed out.");
+            return StatusCode(503, new { message = "AI service timed out. Please try again." });
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Category cleanup review response was invalid JSON.");
+            return StatusCode(503, new { message = "AI service returned an unreadable response. Please try again." });
+        }
+    }
+
+    [HttpPost("cleanup/apply")]
+    public async Task<IActionResult> ApplyCleanup(CategoryCleanupApplyRequest request)
+    {
+        try
+        {
+            var result = await _categorySuggestionService.ApplyCategoryCleanupAsync(request.Actions ?? []);
+            return Ok(result);
+        }
+        catch (CategorySuggestionUserException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Category cleanup apply failed.");
+            return StatusCode(503, new { message = "Could not apply category cleanup. Please try again." });
+        }
+    }
+
     // DELETE: api/categories/{id}
     [HttpDelete("{id}")]
-    public async Task<IActionResult> DeleteCategory(string id)
+    public async Task<IActionResult> DeleteCategory(string id, [FromQuery] string? replacementCategoryId = null)
     {
-        var result = await _categoryService.DeleteCategoryAsync(id);
+        var result = await _categoryService.DeleteCategoryAsync(id, replacementCategoryId);
         if (result.Status == DeleteTransactionCategoryStatus.NotFound)
         {
             return NotFound();
         }
         if (result.Status == DeleteTransactionCategoryStatus.ReservedName)
         {
-            return BadRequest(result.Message);
+            return BadRequest(new { message = result.Message });
+        }
+        if (result.Status == DeleteTransactionCategoryStatus.InUse)
+        {
+            return Conflict(new
+            {
+                message = result.Message,
+                transactionCount = result.TransactionCount,
+                recurringPaymentCount = result.RecurringPaymentCount
+            });
+        }
+        if (result.Status == DeleteTransactionCategoryStatus.InvalidReplacement)
+        {
+            return BadRequest(new
+            {
+                message = result.Message,
+                transactionCount = result.TransactionCount,
+                recurringPaymentCount = result.RecurringPaymentCount
+            });
         }
 
         return NoContent();
@@ -99,4 +193,14 @@ public class TransactionCategoriesController : ControllerBase
         string Description,
         string? TxType,
         IReadOnlyList<string>? Categories);
+
+    public sealed record TransactionNoteSuggestionRequest(
+        string Description,
+        string? Category,
+        string? LedgerCategory,
+        string? TxType,
+        IReadOnlyList<string>? HistoryDescriptions);
+
+    public sealed record CategoryCleanupApplyRequest(IReadOnlyList<CategoryCleanupAction>? Actions);
+
 }
