@@ -163,8 +163,7 @@ Available categories JSON array: {categoriesJson}";
                     SystemInstruction: SuggestSystemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.CategorySuggestions(categoryNames),
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "AiModels:CategorySuggestion",
-                    FallbackModelConfigurationKey: "AiFallbackModels:CategorySuggestion"),
+                    ModelConfigurationKey: "AiModels:CategorySuggestion"),
                 cancellationToken);
         }
         catch (AiClientException ex)
@@ -223,8 +222,7 @@ Recent description examples JSON array: {JsonSerializer.Serialize(history)}";
                     SystemInstruction: SuggestNotesSystemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.NoteSuggestions,
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "AiModels:NoteSuggestion",
-                    FallbackModelConfigurationKey: "AiFallbackModels:NoteSuggestion"),
+                    ModelConfigurationKey: "AiModels:NoteSuggestion"),
                 cancellationToken);
         }
         catch (AiClientException ex)
@@ -347,8 +345,7 @@ Recent usage JSON array: {JsonSerializer.Serialize(usage)}";
                     SystemInstruction: ReviewCleanupSystemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.CategoryCleanup,
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "AiModels:CategoryCleanup",
-                    FallbackModelConfigurationKey: "AiFallbackModels:CategoryCleanup"),
+                    ModelConfigurationKey: "AiModels:CategoryCleanup"),
                 cancellationToken);
         }
         catch (AiClientException ex)

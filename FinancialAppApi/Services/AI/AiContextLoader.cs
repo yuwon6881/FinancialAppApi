@@ -13,9 +13,10 @@ public partial class AiAssistantService
     private async Task<Models.FinancialSetting?> LoadFinancialSettingAsync(CancellationToken cancellationToken) =>
         await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
 
-    private sealed record AiRecurringRow(
+    internal sealed record AiRecurringRow(
         string Id, string Name, decimal Amount, string Category, string LedgerCategory,
-        string StartDate, string? EndDate, int DueDate, bool Active);
+        string StartDate, string? EndDate, int DueDate, bool Active,
+        string Frequency, string NextDueDate);
 
     private sealed record AiLedgerEditMatch(string Id, string Description, DateTime Date);
 
@@ -54,9 +55,65 @@ public partial class AiAssistantService
             .OrderBy(r => r.Name)
             .Select(r => new AiRecurringRow(
                 r.Id, r.Name, r.Amount, r.Category, r.LedgerCategory,
-                r.StartDate, r.EndDate, r.DueDate, r.Active))
+                r.StartDate, r.EndDate, r.DueDate, r.Active,
+                r.Frequency, r.NextDueDate))
             .Take(100)
             .ToListAsync(cancellationToken);
+
+    private sealed record AiRecurringStatusRow(
+        string Name, string Category, string LedgerCategory, string DueDate, string Status, decimal Amount);
+
+    // Per-cycle bill status (Paid / Pending / Discarded) for each active recurring payment whose
+    // billing date lands in the requested cycle(s). Mirrors FinancialService.BuildActiveRecurringList
+    // exactly -- crucially it queries transactions INCLUDING LedgerCategory=="Discarded" (which every
+    // other AI loader deliberately excludes), because a discarded bill is precisely a recurring
+    // payment whose generated transaction was marked Discarded. Without this the assistant could
+    // never answer "which subscription was discarded this cycle".
+    private async Task<List<AiRecurringStatusRow>> LoadRecurringBillStatusesAsync(
+        IReadOnlyList<CycleKey> cycles,
+        int cycleDay,
+        CancellationToken cancellationToken)
+    {
+        var recurring = await _context.RecurringPayments.AsNoTracking().ToListAsync(cancellationToken);
+        var results = new List<AiRecurringStatusRow>();
+        foreach (var cycle in cycles.Distinct())
+        {
+            var range = CategoryAttributionService.GetCycleRange(cycle.Year, cycle.MonthIndex, cycleDay);
+            var startDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(range.start));
+            var endExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(range.end));
+            var cycleTxs = await _context.Transactions
+                .AsNoTracking()
+                .Where(t => t.Date >= startDate && t.Date < endExclusive && t.RecurringPaymentId != null)
+                .ToListAsync(cancellationToken);
+            foreach (var rp in recurring)
+            {
+                if (!rp.Active) continue;
+                if (!DateTime.TryParse(rp.StartDate, out var rpStartDate)) continue;
+                DateTime? rpEndDate = null;
+                if (!string.IsNullOrEmpty(rp.EndDate) && DateTime.TryParse(rp.EndDate, out var parsedEndDate)) rpEndDate = parsedEndDate;
+
+                var billingDate = CategoryAttributionService.GetBillingDateForCycle(range.start, range.end, cycleDay, rp.DueDate);
+                if (billingDate >= range.start && billingDate <= range.end && billingDate >= rpStartDate &&
+                    (rpEndDate == null || billingDate <= rpEndDate.Value))
+                {
+                    var paidTx = cycleTxs
+                        .Where(t => t.RecurringPaymentId == rp.Id)
+                        .OrderBy(t => string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                        .ThenBy(t => t.Date)
+                        .ThenBy(t => t.Id, StringComparer.Ordinal)
+                        .FirstOrDefault();
+                    var isDiscarded = paidTx != null && string.Equals(paidTx.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase);
+                    var isPaid = paidTx != null && !isDiscarded;
+                    results.Add(new AiRecurringStatusRow(
+                        rp.Name, rp.Category, rp.LedgerCategory,
+                        billingDate.ToString("yyyy-MM-dd"),
+                        isDiscarded ? "Discarded" : isPaid ? "Paid" : "Pending",
+                        Math.Abs(rp.Amount)));
+                }
+            }
+        }
+        return results;
+    }
 
     private async Task<List<AiWishlistRow>> LoadWishlistRowsAsync(
         int? itemId,
@@ -70,9 +127,31 @@ public partial class AiAssistantService
             .AsQueryable();
         if (itemId is > 0) query = query.Where(w => w.Id == itemId);
         return await query
-            .Select(w => new AiWishlistRow(w.Id, w.Name, w.Price, w.Priority, w.IsActive, w.IsPurchased, w.CreatedAt))
+            .Select(w => new AiWishlistRow(w.Id, w.Name, w.Price, w.Priority, w.IsActive, w.IsPurchased, w.CreatedAt, w.PurchasedAt))
             .Take(100)
             .ToListAsync(cancellationToken);
+    }
+
+    // Unfiltered (no search text) transactions across the given cycles, used for ledger-balance
+    // and forecast math. The primary load may be narrowed to a merchant/activity search, which
+    // must never restrict a balance/savings-rate computation -- those need every row in the cycle.
+    private async Task<List<AiTransactionRow>> LoadUnfilteredCycleTransactionsAsync(
+        IReadOnlyList<CycleKey> cycles,
+        int cycleDay,
+        CancellationToken cancellationToken)
+    {
+        var result = new List<AiTransactionRow>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var range in MergeCycleRanges(cycles, cycleDay))
+        {
+            var rows = await QueryTransactionsAsync(range.Start, range.End, null, null, cancellationToken);
+            if (rows.Count > MaxTransactionsPerRange) rows = rows.Take(MaxTransactionsPerRange).ToList();
+            foreach (var row in rows)
+            {
+                if (seen.Add(row.Id)) result.Add(row);
+            }
+        }
+        return result;
     }
 
     private async Task<List<AiTransactionRow>> LoadRecentFallbackTransactionsAsync(

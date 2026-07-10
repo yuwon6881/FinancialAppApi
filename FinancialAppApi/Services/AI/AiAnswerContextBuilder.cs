@@ -29,11 +29,20 @@ public partial class AiAssistantService
             }
         };
 
-        if (has("ledger.activity_count", "ledger.merchant_search", "ledger.spending_total", "ledger.comparison",
-                "ledger.transaction_list", "ledger.anomaly", "ledger.duplicates", "allocation.balance", "allocation.performance"))
+        var needsLedgerAggregates = has("ledger.activity_count", "ledger.merchant_search", "ledger.spending_total",
+            "ledger.comparison", "ledger.transaction_list", "ledger.anomaly", "ledger.duplicates",
+            "allocation.balance", "allocation.performance");
+        if (needsLedgerAggregates)
         {
             result["dataScope"] = context.DataScope;
             result["cycleSummaries"] = context.CycleSummaries;
+        }
+        // derivedMetrics also carries recurring bill status / upcoming bills (recurring intents)
+        // and the affordable-wishlist count (wishlist intents), so include it for those too --
+        // otherwise those server-computed answers were stripped before the model ever saw them.
+        if (needsLedgerAggregates ||
+            has("recurring.list", "recurring.upcoming", "wishlist.list", "wishlist.forecast"))
+        {
             result["derivedMetrics"] = context.DerivedMetrics;
         }
         if (has("ledger.transaction_list", "ledger.merchant_search", "ledger.anomaly", "ledger.duplicates", "ledger.edit"))

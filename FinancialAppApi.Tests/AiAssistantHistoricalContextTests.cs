@@ -404,10 +404,12 @@ public class AiAssistantHistoricalContextTests
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
         context.WishlistItems.Add(new WishlistItem { Id = 7, Name = "Badminton racket", Price = 100, IsActive = true, IsPurchased = false });
+        // Savings toward a wishlist goal are positive Rewards-ledger attribution (the forecaster
+        // mirrors the app's past-Rewards-average, not total net cash flow).
         context.Transactions.AddRange(
-            Transaction("saving-apr", new DateTime(2026, 4, 10, 12, 0, 0, DateTimeKind.Utc), "Salary", 200),
-            Transaction("saving-may", new DateTime(2026, 5, 10, 12, 0, 0, DateTimeKind.Utc), "Salary", 200),
-            Transaction("saving-jun", new DateTime(2026, 6, 10, 12, 0, 0, DateTimeKind.Utc), "Salary", 200));
+            RewardsSaving("saving-apr", new DateTime(2026, 4, 10, 12, 0, 0, DateTimeKind.Utc), 200),
+            RewardsSaving("saving-may", new DateTime(2026, 5, 10, 12, 0, 0, DateTimeKind.Utc), 200),
+            RewardsSaving("saving-jun", new DateTime(2026, 6, 10, 12, 0, 0, DateTimeKind.Utc), 200));
         await context.SaveChangesAsync();
 
         var handler = new CapturingHandler();
@@ -499,6 +501,261 @@ public class AiAssistantHistoricalContextTests
         Assert.Contains("cycleSummaries", handler.UserContent);
     }
 
+    [Fact]
+    public async Task ChatAsync_AllCyclesScopeSearchesFullHistoryNotJustActiveCycle()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.TransactionCategories.Add(new TransactionCategory { Id = "sport", Name = "Sports" });
+        context.Transactions.AddRange(
+            Transaction("bad-old", new DateTime(2025, 1, 12, 12, 0, 0, DateTimeKind.Utc), "Badminton Old", -20),
+            Transaction("bad-now", new DateTime(2026, 7, 3, 12, 0, 0, DateTimeKind.Utc), "Badminton Court", -20));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("show badminton transactions for all cycles", []));
+
+        // Both the historical and the current-cycle record are found, and the exact match count
+        // spans the whole history -- not just the active cycle (the old bug returned only current).
+        Assert.Contains("Badminton Old", handler.UserContent);
+        Assert.Contains("Badminton Court", handler.UserContent);
+        Assert.Contains("\"searchText\":\"badminton\"", handler.UserContent);
+        Assert.Contains("\"count\":2", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_ExistenceAcrossLastThreeCyclesCountsRecordDatedInLaterCalendarMonth()
+    {
+        // CycleDay 28: the "May" cycle runs May 28 -> Jun 27, so a record dated Jun 24 belongs to
+        // it. Active cycle is Jun (Jun 28 -> Jul 27); "last 3 cycles" therefore includes the May
+        // cycle, and the Jun-dated record must be counted despite its calendar month.
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 28, SelectedMonth = "Jun", SelectedYear = 2026, HideSensitive = false });
+        context.TransactionCategories.Add(new TransactionCategory { Id = "sport", Name = "Sports" });
+        context.Transactions.Add(Transaction("bad-may-cycle", new DateTime(2026, 6, 24, 12, 0, 0, DateTimeKind.Utc), "Badminton", -20));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("any badminton transactions in last 3 cycles?", []));
+
+        Assert.Contains("\"searchText\":\"badminton\"", handler.UserContent);
+        Assert.Contains("\"count\":1", handler.UserContent);
+        Assert.Contains("\"month\":\"May\"", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_LedgerNetIncludesTransfersIntoStability()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "xfer",
+            Date = new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc),
+            Description = "Move to Stability",
+            Category = "Transfer",
+            LedgerCategory = "Transfer:Essentials->Stability",
+            Amount = 100
+        });
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("deeply analyse this cycle", []));
+
+        // The transfer feeds Stability (+100) and drains Essentials (-100); the old bug summed
+        // ledgerNet over non-transfer rows only, so Stability wrongly showed 0.
+        Assert.Contains("\"ledgerCategory\":\"Stability\",\"net\":100", handler.UserContent);
+        Assert.Contains("\"ledgerCategory\":\"Essentials\",\"net\":-100", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_DiscardedBillSurfacesBillStatusMetric()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "netflix",
+            Name = "Netflix",
+            Amount = 15,
+            Category = "Entertainment",
+            LedgerCategory = "Rewards",
+            StartDate = "2026-01-01",
+            DueDate = 15,
+            Active = true
+        });
+        // The bill's charge this cycle was discarded (LedgerCategory "Discarded", linked by id).
+        context.Transactions.Add(new Transaction
+        {
+            Id = "netflix-jul",
+            Date = new DateTime(2026, 7, 15, 12, 0, 0, DateTimeKind.Utc),
+            Description = "Netflix",
+            Category = "Entertainment",
+            LedgerCategory = "Discarded",
+            Amount = -15,
+            RecurringPaymentId = "netflix"
+        });
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("which subscription was discarded this cycle?", []));
+
+        Assert.Contains("recurringBillStatus", handler.UserContent);
+        Assert.Contains("\"name\":\"Netflix\"", handler.UserContent);
+        Assert.Contains("\"status\":\"Discarded\"", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_GoalWordingTriggersWishlistForecast()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.WishlistItems.Add(new WishlistItem { Id = 9, Name = "Thai Trip", Price = 1000, IsActive = true, IsPurchased = false });
+        context.Transactions.AddRange(
+            RewardsSaving("r-apr", new DateTime(2026, 4, 10, 12, 0, 0, DateTimeKind.Utc), 200),
+            RewardsSaving("r-may", new DateTime(2026, 5, 10, 12, 0, 0, DateTimeKind.Utc), 200));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        // "goal" + "achieve" now routes to the forecast intent (previously matched neither signal).
+        await service.ChatAsync(new AiChatRequest("is my active goal hard to achieve?", []));
+
+        Assert.Contains("wishlistForecast", handler.UserContent);
+        Assert.Contains("Thai Trip", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_EditMultiMatchClarificationCarriesCandidateStateForFollowUp()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.TransactionCategories.Add(new TransactionCategory { Id = "sport", Name = "Sports" });
+        context.Transactions.AddRange(
+            Transaction("bad-1", new DateTime(2026, 6, 24, 12, 0, 0, DateTimeKind.Utc), "Badminton", -20),
+            Transaction("bad-2", new DateTime(2026, 6, 25, 12, 0, 0, DateTimeKind.Utc), "Badminton Shuttlecock", -8));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        var outcome = await service.ChatAsync(new AiChatRequest("edit badminton in the previous cycle", []));
+
+        // Deterministic clarification (no model call) that now carries the candidate ids so a
+        // follow-up like "the one named Badminton" can be resolved against them.
+        Assert.Equal(0, handler.CallCount);
+        Assert.Contains("multiple matches", outcome.Response.Reply);
+        Assert.NotNull(outcome.Response.State);
+        Assert.NotNull(outcome.Response.State!.LastMatchedTransactionIds);
+        Assert.Equal(2, outcome.Response.State!.LastMatchedTransactionIds!.Count);
+    }
+
+    [Fact]
+    public async Task ChatAsync_UpcomingBillsMetricAndFrequencySurfaced()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.RecurringPayments.AddRange(
+            new RecurringPayment { Id = "spotify", Name = "Spotify", Amount = 15, Frequency = "Monthly", Category = "Entertainment", LedgerCategory = "Rewards", NextDueDate = "2026-07-20", DueDate = 20, StartDate = "2026-01-01", Active = true },
+            new RecurringPayment { Id = "domain", Name = "Domain Renewal", Amount = 40, Frequency = "Annually", Category = "Software", LedgerCategory = "Essentials", NextDueDate = "2026-11-01", DueDate = 1, StartDate = "2026-01-01", Active = true });
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("when is my next bill due?", []));
+
+        Assert.Contains("upcomingBills", handler.UserContent);
+        Assert.Contains("\"nextDueDate\":\"2026-07-20\"", handler.UserContent);
+        Assert.Contains("\"frequency\":\"Monthly\"", handler.UserContent);
+        // Soonest first: Spotify (Jul 20) before Domain (Nov 1).
+        Assert.True(handler.UserContent.IndexOf("Spotify", StringComparison.Ordinal) < handler.UserContent.IndexOf("Domain Renewal", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ChatAsync_StabilityFundProgressMetricSurfaced()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false, TargetStabilityFund = 1000 });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "to-stability",
+            Date = new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc),
+            Description = "Top up",
+            Category = "Transfer",
+            LedgerCategory = "Transfer:Essentials->Stability",
+            Amount = 300
+        });
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("how close am I to my stability fund goal?", []));
+
+        Assert.Contains("stabilityProgress", handler.UserContent);
+        Assert.Contains("\"currentStabilityBalance\":300", handler.UserContent);
+        Assert.Contains("\"targetStabilityFund\":1000", handler.UserContent);
+        Assert.Contains("\"percentReached\":30", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_AffordableWishlistCountSurfaced()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.WishlistItems.AddRange(
+            new WishlistItem { Id = 1, Name = "Cheap Mouse", Price = 50, IsActive = true, IsPurchased = false },
+            new WishlistItem { Id = 2, Name = "Expensive Trip", Price = 500, IsActive = false, IsPurchased = false });
+        // Rewards balance this cycle = 200, covers only the 50 item.
+        context.Transactions.Add(RewardsSaving("r", new DateTime(2026, 7, 5, 12, 0, 0, DateTimeKind.Utc), 200));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("how many wishlist items can I afford right now?", []));
+
+        Assert.Contains("\"affordableWishlistCount\":1", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_WishlistPurchasedAtSurfaced()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.WishlistItems.Add(new WishlistItem { Id = 3, Name = "Headphones", Price = 200, IsActive = false, IsPurchased = true, PurchasedAt = new DateTime(2026, 5, 4, 9, 0, 0, DateTimeKind.Utc) });
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("when did I buy the headphones from my wishlist?", []));
+
+        Assert.Contains("Headphones", handler.UserContent);
+        Assert.Contains("purchasedAt", handler.UserContent);
+        Assert.Contains("2026-05-04", handler.UserContent);
+    }
+
     private static Transaction Transaction(string id, DateTime date, string description, decimal amount) => new()
     {
         Id = id,
@@ -506,6 +763,16 @@ public class AiAssistantHistoricalContextTests
         Description = description,
         Category = "Food",
         LedgerCategory = "Essentials",
+        Amount = amount
+    };
+
+    private static Transaction RewardsSaving(string id, DateTime date, decimal amount) => new()
+    {
+        Id = id,
+        Date = date,
+        Description = "Rewards saving",
+        Category = "Salary",
+        LedgerCategory = "Rewards",
         Amount = amount
     };
 

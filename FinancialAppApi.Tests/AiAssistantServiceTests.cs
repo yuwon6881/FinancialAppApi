@@ -793,6 +793,75 @@ public class AiAssistantServiceTests
         Assert.True(outcome.IsProviderError);
     }
 
+    // ---------- Layer: gap-filling derived metrics ----------
+
+    [Fact]
+    public async Task ChatAsync_AmountThresholdQuestion_IncludesThresholdMatches()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        context.Transactions.AddRange(
+            Txn("tv", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "New TV", -300),
+            Txn("coffee", new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc), "Coffee", -8));
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("Your TV exceeded 250."));
+        var service = NewService(context, handler);
+
+        await service.ChatAsync(new AiChatRequest("which transaction exceeded 250 this month?", []));
+
+        Assert.Contains("thresholdMatches", handler.LastUserContent);
+        Assert.Contains("New TV", handler.LastUserContent);
+        Assert.Contains("\"count\":1", handler.LastUserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_LedgerBalanceForecastQuestion_IncludesForecast()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        context.Transactions.AddRange(
+            Txn("g1", new DateTime(2026, 6, 10, 12, 0, 0, DateTimeKind.Utc), "Growth deposit", 1000),
+            Txn("g2", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "Growth deposit", 1000));
+        // Route the Growth transactions into the Growth ledger.
+        foreach (var t in context.Transactions) t.LedgerCategory = "Growth";
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("At your current pace..."));
+        var service = NewService(context, handler);
+
+        await service.ChatAsync(new AiChatRequest("how long until my growth reaches 5000?", []));
+
+        Assert.Contains("ledgerBalanceForecast", handler.LastUserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_RecurringCostQuestion_IncludesCostSummary()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        context.RecurringPayments.AddRange(
+            new RecurringPayment { Id = "rp-1", Name = "Netflix", Amount = 12m, Category = "Entertainment", LedgerCategory = "Rewards", Active = true, Frequency = "Monthly" },
+            new RecurringPayment { Id = "rp-2", Name = "Domain", Amount = 120m, Category = "Software", LedgerCategory = "Essentials", Active = true, Frequency = "Annually" });
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("Your subscriptions cost ..."));
+        var service = NewService(context, handler);
+
+        await service.ChatAsync(new AiChatRequest("how much do my subscriptions cost me a month?", []));
+
+        Assert.Contains("recurringCostSummary", handler.LastUserContent);
+        Assert.Contains("monthlyTotal", handler.LastUserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_SensitiveMode_OmitsThresholdMatches()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: true);
+        context.Transactions.Add(Txn("tv", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "New TV", -300));
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("Amounts are hidden."));
+        var service = NewService(context, handler);
+
+        await service.ChatAsync(new AiChatRequest("which transaction exceeded 250 this month?", []));
+
+        Assert.DoesNotContain("thresholdMatches", handler.LastUserContent);
+    }
+
     // ---------- helpers ----------
 
     private static AppDbContext NewContextWithSettings(bool hideSensitive = false)

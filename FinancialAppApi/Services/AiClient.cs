@@ -23,14 +23,12 @@ public sealed record AiGenerationOptions(
     string? SystemInstruction = null,
     object? ResponseJsonSchema = null,
     string? ThinkingLevel = "low",
-    string ModelConfigurationKey = "AiModel",
-    string FallbackModelConfigurationKey = "AiFallbackModel");
+    string ModelConfigurationKey = "AiModel");
 
 // Single point of contact with the AI provider. Feature services supply a schema and a small,
 // explicit compute budget; transport, retries, usage telemetry and provider parsing stay here.
 public class AiClient
 {
-    private const string DefaultFallbackModel = "gemini-3.5-flash";
     private const string DefaultPrimaryModel = "gemini-3.1-flash-lite";
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(250);
 
@@ -69,27 +67,9 @@ public class AiClient
         }
         catch (AiProviderUnavailableException) when (!cancellationToken.IsCancellationRequested)
         {
-            var fallbackModel = _configuration[options.FallbackModelConfigurationKey];
-            if (string.IsNullOrWhiteSpace(fallbackModel)) fallbackModel = _configuration["AiFallbackModel"];
-            if (string.IsNullOrWhiteSpace(fallbackModel)) fallbackModel = DefaultFallbackModel;
-            if (string.Equals(primaryModel, fallbackModel, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new AiClientException("AI service is temporarily unavailable. Please try again.");
-            }
-
-            _logger.LogWarning(
-                "AI feature {Feature} primary model {PrimaryModel} unavailable; trying fallback {FallbackModel}.",
-                options.Feature,
-                primaryModel,
-                fallbackModel);
-            try
-            {
-                return await CallAsync(fallbackModel, requestBody, apiKey, options.Feature, cancellationToken);
-            }
-            catch (AiProviderUnavailableException)
-            {
-                throw new AiClientException("AI service is temporarily unavailable. Please try again.");
-            }
+            // No fallback model: gemini-3.1-flash-lite is the only model. A transient provider
+            // failure (already retried once by CallWithRetryAsync) surfaces as a clean error.
+            throw new AiClientException("AI service is temporarily unavailable. Please try again.");
         }
     }
 

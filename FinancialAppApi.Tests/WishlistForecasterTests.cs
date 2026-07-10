@@ -3,18 +3,21 @@ using FinancialAppApi.Services;
 namespace FinancialAppApi.Tests;
 
 // Phase 6: typed forecast behavior asserted directly on ComputeWishlistForecast, not on
-// serialized prompt strings. Cycles are supplied as already-completed cycles (the service
-// excludes the active cycle before calling in), so these tests fix the median/anchor math.
+// serialized prompt strings. The forecaster mirrors the app's Wishlist page: the savings rate
+// is the AVERAGE POSITIVE Rewards-ledger attribution over the cycles that had activity, the
+// remaining amount is the price minus the current Rewards balance (AvailableFunds), and the
+// target date is Today + ceil(months * 30) days. These tests fix that math.
 public class WishlistForecasterTests
 {
     private const int CycleDay = 1; // cycle == calendar month
     private static readonly DateTime ActiveCycleStart = new(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime Today = new(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc);
 
     private static readonly AiAssistantService.CycleKey Apr = new(2026, 4);
     private static readonly AiAssistantService.CycleKey May = new(2026, 5);
     private static readonly AiAssistantService.CycleKey Jun = new(2026, 6);
 
-    private static AiAssistantService.AiTransactionRow Row(int year, int month, decimal amount, string ledger = "Essentials", string category = "Food")
+    private static AiAssistantService.AiTransactionRow Row(int year, int month, decimal amount, string ledger = "Rewards", string category = "Food")
         => new(
             Id: $"{year}-{month}-{amount}-{Guid.NewGuid():N}",
             Timestamp: new DateTime(year, month, 15, 12, 0, 0, DateTimeKind.Utc),
@@ -32,11 +35,13 @@ public class WishlistForecasterTests
         IReadOnlyList<AiAssistantService.AiTransactionRow> transactions,
         string? reference = null,
         decimal availableFunds = 0m)
-        => new(wishlist, transactions, [Apr, May, Jun], CycleDay, ActiveCycleStart, reference, availableFunds);
+        => new(wishlist, transactions, [Apr, May, Jun], CycleDay, ActiveCycleStart, Today, reference, availableFunds);
 
     [Fact]
-    public void PositiveMedian_EstimatesCyclesAndAnchoredDate()
+    public void PositiveRewardsRate_EstimatesCyclesAndTodayProjectedDate()
     {
+        // Rewards saved 200 in each of the 3 cycles -> rate 200. price 100 -> remaining 100.
+        // months = 0.5 -> ceil(0.5*30) = 15 days from Today (2026-07-01) = 2026-07-16.
         var result = AiAssistantService.ComputeWishlistForecast(Policy(
             [Item(1, "Racket", 100)],
             [Row(2026, 4, 200), Row(2026, 5, 200), Row(2026, 6, 200)]));
@@ -46,71 +51,67 @@ public class WishlistForecasterTests
         Assert.Equal(200m, forecast.TypicalSavingsPerCycle);
         Assert.Equal(100m, forecast.RemainingAmount);
         Assert.Equal(1, forecast.EstimatedCycles);
-        // Anchored to the START OF THE ACTIVE CYCLE (2026-07-01) + 1 cycle, not off cycles[^1].
-        Assert.Equal("2026-08-01", forecast.EstimatedDate);
+        Assert.Equal("2026-07-16", forecast.EstimatedDate);
     }
 
     [Fact]
-    public void MixedCycles_MedianIncludesNegativeAndZeroCycles()
+    public void OnlyPositiveRewardsCount_NegativeRewardsIgnored()
     {
-        // Net cycle values -50, 0, 100 -> median 0 would be wrong to skip; here median = 0.
+        // A Rewards outflow (-50) does not reduce the rate; only positive Rewards are summed.
         var result = AiAssistantService.ComputeWishlistForecast(Policy(
-            [Item(1, "Racket", 300)],
-            [Row(2026, 4, -50), /* May: nothing -> 0 */ Row(2026, 6, 100)]));
+            [Item(1, "Racket", 100)],
+            [Row(2026, 4, 200), Row(2026, 4, -50), Row(2026, 5, 200), Row(2026, 6, 200)]));
 
         var forecast = Assert.Single(result);
-        // Median of {-50, 0, 100} = 0 -> not currently reachable (old code discarded the bad cycles).
+        Assert.Equal(200m, forecast.TypicalSavingsPerCycle);
+    }
+
+    [Fact]
+    public void EmptyCyclesAreSkipped_NotAveragedAsZero()
+    {
+        // Apr 200, May no activity, Jun 400 -> averaged over the 2 ACTIVE cycles = 300.
+        var result = AiAssistantService.ComputeWishlistForecast(Policy(
+            [Item(1, "Racket", 600)],
+            [Row(2026, 4, 200), Row(2026, 6, 400)]));
+
+        var forecast = Assert.Single(result);
+        Assert.Equal(300m, forecast.TypicalSavingsPerCycle);
+    }
+
+    [Fact]
+    public void TransferIntoRewardsCountsAsSaving()
+    {
+        // A Transfer:...->Rewards row is routed by GetCategoryAmount into +Rewards, so it saves.
+        var result = AiAssistantService.ComputeWishlistForecast(Policy(
+            [Item(1, "Racket", 100)],
+            [
+                Row(2026, 4, 100, ledger: "Transfer:Stability->Rewards"),
+                Row(2026, 5, 100, ledger: "Transfer:Stability->Rewards"),
+                Row(2026, 6, 100, ledger: "Transfer:Stability->Rewards")
+            ]));
+
+        var forecast = Assert.Single(result);
+        Assert.Equal(100m, forecast.TypicalSavingsPerCycle);
+        Assert.Equal(AiAssistantService.WishlistForecastStatus.Estimated, forecast.Status);
+    }
+
+    [Fact]
+    public void NonRewardsSpendingDoesNotCount_RateZeroIsNotReachable()
+    {
+        // Cycles have activity but no positive Rewards -> rate 0 -> not reachable.
+        var result = AiAssistantService.ComputeWishlistForecast(Policy(
+            [Item(1, "Racket", 100)],
+            [Row(2026, 4, 200, ledger: "Essentials"), Row(2026, 5, 200, ledger: "Essentials"), Row(2026, 6, 200, ledger: "Essentials")]));
+
+        var forecast = Assert.Single(result);
         Assert.Equal(0m, forecast.TypicalSavingsPerCycle);
-        Assert.Equal(AiAssistantService.WishlistForecastStatus.NotReachable, forecast.Status);
-        Assert.Null(forecast.EstimatedCycles);
-    }
-
-    [Fact]
-    public void FourCycles_MedianOfMixedValuesMatchesPlanExample()
-    {
-        // Plan example: net values -50, 0, 100, 200 -> median 50.
-        var result = AiAssistantService.ComputeWishlistForecast(new AiAssistantService.WishlistForecastPolicy(
-            [Item(1, "Racket", 100)],
-            [Row(2026, 3, -50), /* Apr: 0 */ Row(2026, 5, 100), Row(2026, 6, 200)],
-            [new AiAssistantService.CycleKey(2026, 3), Apr, May, Jun],
-            CycleDay,
-            ActiveCycleStart,
-            null));
-
-        var forecast = Assert.Single(result);
-        Assert.Equal(50m, forecast.TypicalSavingsPerCycle);
-        Assert.Equal(2, forecast.EstimatedCycles); // ceil(100/50)
-    }
-
-    [Fact]
-    public void NegativeMedian_IsNotReachable()
-    {
-        var result = AiAssistantService.ComputeWishlistForecast(Policy(
-            [Item(1, "Racket", 100)],
-            [Row(2026, 4, -100), Row(2026, 5, -50), Row(2026, 6, -10)]));
-
-        var forecast = Assert.Single(result);
         Assert.Equal(AiAssistantService.WishlistForecastStatus.NotReachable, forecast.Status);
         Assert.Null(forecast.EstimatedCycles);
         Assert.Null(forecast.EstimatedDate);
     }
 
     [Fact]
-    public void TransfersExcludedFromSavings()
-    {
-        var result = AiAssistantService.ComputeWishlistForecast(Policy(
-            [Item(1, "Racket", 100)],
-            [
-                Row(2026, 4, 200), Row(2026, 4, 1000, ledger: "Transfer:Stability"),
-                Row(2026, 5, 200), Row(2026, 6, 200)
-            ]));
-
-        var forecast = Assert.Single(result);
-        Assert.Equal(200m, forecast.TypicalSavingsPerCycle); // transfer ignored
-    }
-
-    [Fact]
-    public void AvailableFunds_ReduceRemaining()
+    public void RewardsBalanceReducesRemaining()
     {
         var result = AiAssistantService.ComputeWishlistForecast(Policy(
             [Item(1, "Racket", 100)],
@@ -159,7 +160,7 @@ public class WishlistForecasterTests
     }
 
     [Fact]
-    public void NoCompletedCycles_ReportsInsufficientData()
+    public void NoCyclesWithActivity_ReportsInsufficientData()
     {
         var result = AiAssistantService.ComputeWishlistForecast(new AiAssistantService.WishlistForecastPolicy(
             [Item(1, "Racket", 100)],
@@ -167,6 +168,7 @@ public class WishlistForecasterTests
             [],
             CycleDay,
             ActiveCycleStart,
+            Today,
             null));
 
         var forecast = Assert.Single(result);

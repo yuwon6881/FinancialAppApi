@@ -149,8 +149,7 @@ Rules:
                     SystemInstruction: ScanSystemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.Receipt(categories),
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "AiModels:ReceiptOcr",
-                    FallbackModelConfigurationKey: "AiFallbackModels:ReceiptOcr"));
+                    ModelConfigurationKey: "AiModels:ReceiptOcr"));
         }
         catch (AiClientException ex)
         {

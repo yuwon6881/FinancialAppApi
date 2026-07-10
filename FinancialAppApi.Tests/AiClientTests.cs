@@ -54,7 +54,7 @@ public class AiClientTests
         });
         var client = new AiClient(
             new HttpClient(handler),
-            TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "same-model"), ("AiFallbackModel", "same-model")),
+            TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "same-model")),
             NullLogger<AiClient>.Instance);
 
         var result = await client.GenerateTextAsync(

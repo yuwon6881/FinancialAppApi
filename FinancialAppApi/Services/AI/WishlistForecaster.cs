@@ -5,11 +5,14 @@ namespace FinancialAppApi.Services;
 
 // Phase 6: server-side wishlist forecasting. The math is deliberately deterministic and
 // lives here (not in the model) so a "how long until I can afford X" answer is numerically
-// verifiable. Key correctness rules over the old implementation:
-//   * the per-cycle "savings" median includes negative and zero cycles -- discarding bad
-//     cycles before taking the median systematically overstates how fast the user saves;
-//   * the target date is anchored to the START OF THE CURRENT ACTIVE CYCLE, not cycles[^1]
-//     (whose ordering was never guaranteed);
+// verifiable AND identical to what the app's own Wishlist page shows the user -- an assistant
+// that quotes a different timeline than the screen is a bug. It therefore mirrors
+// WishlistView.getTimelineString + FinancialService.CalculatePastRewardsAverageFromTxs exactly:
+//   * the savings rate is the AVERAGE POSITIVE Rewards-ledger attribution across the last
+//     cycles that had any activity (empty cycles are skipped, not averaged in as zero);
+//   * "remaining" is the item price minus the current Rewards balance (AvailableFunds), because
+//     wishlist goals are funded from the Rewards ledger, not from total net cash flow;
+//   * the target date is today + ceil(months * 30) days, exactly like the page;
 //   * a wishlist reference that matches more than one active item returns a clarification
 //     marker instead of silently forecasting every item.
 public partial class AiAssistantService
@@ -23,15 +26,16 @@ public partial class AiAssistantService
         MultipleMatches
     }
 
-    // Transfers are always excluded from savings. AvailableFunds is an explicit policy input
-    // -- until the app has a dedicated wishlist-savings balance, it stays 0 so "remaining"
-    // equals the full price rather than borrowing an unrelated ledger balance.
+    // AvailableFunds is the current Rewards-ledger balance (opening balance + active-cycle
+    // Rewards net), matching the app's rewardsBalance. Today is the reference date the target
+    // date is projected from. Cycles are the trailing cycles used to compute the savings rate.
     internal sealed record WishlistForecastPolicy(
         IReadOnlyList<AiWishlistRow> Wishlist,
         IReadOnlyList<AiTransactionRow> Transactions,
         IReadOnlyList<CycleKey> Cycles,
         int CycleDay,
         DateTime ActiveCycleStart,
+        DateTime Today,
         string? WishlistReference,
         decimal AvailableFunds = 0m);
 
@@ -106,21 +110,25 @@ public partial class AiAssistantService
             if (matched.Count == 1) candidates = matched;
         }
 
-        // Per-cycle net savings across the requested COMPLETED cycles, including negative and
-        // zero cycles. Sorted only to take the median.
-        var cycleSavings = policy.Cycles
-            .Select(cycle => CycleNetSavings(policy.Transactions, cycle, policy.CycleDay))
+        // Positive Rewards-ledger attribution per cycle, but ONLY over cycles that actually had
+        // transactions -- exactly like FinancialService.CalculatePastRewardsAverageFromTxs, which
+        // divides total past Rewards by the count of active months (not the full window). A cycle
+        // with no activity is skipped, never averaged in as a zero.
+        var perCycleRewards = policy.Cycles
+            .Select(cycle => CyclePositiveRewards(policy.Transactions, cycle, policy.CycleDay))
+            .Where(v => v.HasActivity)
+            .Select(v => v.Rewards)
             .ToList();
-        if (cycleSavings.Count == 0)
+        if (perCycleRewards.Count == 0)
         {
             return candidates.Select(w => new WishlistForecastResult(
                 w.Id, w.Name, w.Price, policy.AvailableFunds, Math.Max(0m, w.Price - policy.AvailableFunds),
                 null, null, null, WishlistForecastStatus.InsufficientData, [],
-                "No completed cycles were available to estimate savings.")).ToList();
+                "No cycles with activity were available to estimate a Rewards savings rate.")).ToList();
         }
 
-        var median = Median(cycleSavings);
-        var sortedForDisplay = cycleSavings.OrderBy(x => x).ToList();
+        var rate = perCycleRewards.Sum() / perCycleRewards.Count;
+        var perCycleForDisplay = perCycleRewards.ToList();
 
         return candidates.Select(w =>
         {
@@ -128,46 +136,52 @@ public partial class AiAssistantService
             if (remaining <= 0m)
             {
                 return new WishlistForecastResult(
-                    w.Id, w.Name, w.Price, policy.AvailableFunds, 0m, median, 0, null,
-                    WishlistForecastStatus.AlreadyReached, sortedForDisplay,
-                    "Available funds already cover this item.");
+                    w.Id, w.Name, w.Price, policy.AvailableFunds, 0m, rate, 0, null,
+                    WishlistForecastStatus.AlreadyReached, perCycleForDisplay,
+                    "Your current Rewards balance already covers this item.");
             }
-            if (median <= 0m)
+            if (rate <= 0m)
             {
                 return new WishlistForecastResult(
-                    w.Id, w.Name, w.Price, policy.AvailableFunds, remaining, median, null, null,
-                    WishlistForecastStatus.NotReachable, sortedForDisplay,
-                    $"Median net savings across {cycleSavings.Count} completed cycles is {median} (<= 0); not currently on track. Transfers excluded.");
+                    w.Id, w.Name, w.Price, policy.AvailableFunds, remaining, rate, null, null,
+                    WishlistForecastStatus.NotReachable, perCycleForDisplay,
+                    $"Average Rewards saved across {perCycleRewards.Count} active cycle(s) is {rate} (<= 0); not currently on track.");
             }
 
-            var estimatedCycles = Math.Max(1, (int)Math.Ceiling(remaining / median));
-            var targetDate = policy.ActiveCycleStart
-                .AddMonths(estimatedCycles)
+            // Mirror the app: months = remaining / rate, target date = today + ceil(months*30)
+            // days. estimatedCycles is the whole-cycle ceiling of the same ratio.
+            var months = remaining / rate;
+            var estimatedCycles = Math.Max(1, (int)Math.Ceiling(months));
+            var days = (int)Math.Ceiling(months * 30m);
+            var targetDate = policy.Today
+                .AddDays(days)
                 .ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             return new WishlistForecastResult(
-                w.Id, w.Name, w.Price, policy.AvailableFunds, remaining, median, estimatedCycles, targetDate,
-                WishlistForecastStatus.Estimated, sortedForDisplay,
-                $"Median net savings across {cycleSavings.Count} completed cycles (incl. negative/zero); transfers excluded; anchored to the current cycle start.");
+                w.Id, w.Name, w.Price, policy.AvailableFunds, remaining, rate, estimatedCycles, targetDate,
+                WishlistForecastStatus.Estimated, perCycleForDisplay,
+                $"Average positive Rewards saved across {perCycleRewards.Count} active cycle(s); remaining = price minus current Rewards balance; projected as today + {days} days, matching the Wishlist page.");
         }).ToList();
     }
 
-    private static decimal CycleNetSavings(IReadOnlyList<AiTransactionRow> transactions, CycleKey cycle, int cycleDay)
+    // Sum of positive Rewards-ledger attribution in a cycle, and whether the cycle had any
+    // transactions at all (drives the "active months" divisor). GetCategoryAmount routes
+    // IncomeSplit/Transfer rows into their Rewards share, so this counts every way Rewards is fed.
+    private static (decimal Rewards, bool HasActivity) CyclePositiveRewards(
+        IReadOnlyList<AiTransactionRow> transactions, CycleKey cycle, int cycleDay)
     {
         var range = CategoryAttributionService.GetCycleRange(cycle.Year, cycle.MonthIndex, cycleDay);
         var start = TransactionDate.StartOfDate(DateOnly.FromDateTime(range.start));
         var end = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(range.end));
-        return transactions
-            .Where(t => t.Timestamp >= start && t.Timestamp < end && !IsTransfer(t))
-            .Sum(t => t.Amount);
-    }
-
-    private static decimal Median(IReadOnlyList<decimal> values)
-    {
-        var sorted = values.OrderBy(x => x).ToList();
-        var count = sorted.Count;
-        if (count == 0) return 0m;
-        return count % 2 == 1
-            ? sorted[count / 2]
-            : (sorted[(count / 2) - 1] + sorted[count / 2]) / 2m;
+        var inCycle = transactions.Where(t => t.Timestamp >= start && t.Timestamp < end).ToList();
+        if (inCycle.Count == 0) return (0m, false);
+        var positiveRewards = inCycle
+            .Select(t => CategoryAttributionService.GetCategoryAmount(new Models.Transaction
+            {
+                Amount = t.Amount,
+                LedgerCategory = t.LedgerCategory
+            }, "Rewards"))
+            .Where(amount => amount > 0)
+            .Sum();
+        return (positiveRewards, true);
     }
 }

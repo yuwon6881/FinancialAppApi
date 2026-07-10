@@ -137,7 +137,10 @@ public partial class AiAssistantService
                 cancellationToken);
             if (resolvedEdit != null)
             {
-                return Ok(resolvedEdit);
+                // Carry the structured references (matched ids, resolved cycle, search text) even
+                // on a "which one?" clarification, so a follow-up like "the one named Badminton"
+                // or "that one" can be narrowed against the same candidate set next turn.
+                return Ok(resolvedEdit with { State = resolvedEdit.State ?? contextResult.OutgoingState });
             }
         }
 
@@ -161,8 +164,7 @@ public partial class AiAssistantService
                     SystemInstruction: systemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.Chat,
                     ThinkingLevel: intentPlan.QueryPlan.NeedsCycleComparison ? "medium" : "low",
-                    ModelConfigurationKey: "AiModels:Chat",
-                    FallbackModelConfigurationKey: "AiFallbackModels:Chat"),
+                    ModelConfigurationKey: "AiModels:Chat"),
                 cancellationToken);
         }
         catch (AiClientException ex)
@@ -265,8 +267,7 @@ public partial class AiAssistantService
                     MaxOutputTokens: 220,
                     ResponseJsonSchema: AiResponseSchemas.IntentClassification,
                     ThinkingLevel: "none",
-                    ModelConfigurationKey: "AiModels:IntentClassifier",
-                    FallbackModelConfigurationKey: "AiFallbackModels:IntentClassifier"),
+                    ModelConfigurationKey: "AiModels:IntentClassifier"),
                 cancellationToken);
             using var document = JsonDocument.Parse(text);
             var root = document.RootElement;
@@ -383,7 +384,7 @@ public partial class AiAssistantService
         var previousUserText = history.LastOrDefault(m => m.Role == "user")?.Content;
         var carriesTransactionState = Regex.IsMatch(
             previousUserText ?? string.Empty,
-            @"\b(those|these|them|that one|the highest one|the previous one|all of those|which of those)\b",
+            @"\b(those|these|them|that one|this one|the one|the highest one|the previous one|the (?:first|second|third|last|pure|only) one|all of those|which of those)\b",
             RegexOptions.IgnoreCase);
         return new AiConversationState(
             intents.FirstOrDefault(i => !i.Equals("general", StringComparison.OrdinalIgnoreCase)) ?? priorState?.LastIntent,
@@ -515,7 +516,7 @@ public partial class AiAssistantService
         RegexOptions.Compiled);
 
     private static readonly Regex WishlistSignal = new(
-        @"\b(wishlist|wish list|want to buy|saving for|priority item|afford)\b",
+        @"\b(wishlist|wish list|want to buy|saving for|priority item|afford|goal|goals|savings? goal|savings? target)\b",
         RegexOptions.Compiled);
 
     private static readonly Regex WishlistForecastSignal = new(
@@ -657,7 +658,7 @@ public partial class AiAssistantService
         string Category,
         string LedgerCategory,
         decimal Amount);
-    internal sealed record AiWishlistRow(int Id, string Name, decimal Price, string Priority, bool IsActive, bool IsPurchased, DateTime CreatedAt);
+    internal sealed record AiWishlistRow(int Id, string Name, decimal Price, string Priority, bool IsActive, bool IsPurchased, DateTime CreatedAt, DateTime? PurchasedAt = null);
     private sealed record TransactionDateRange(DateTime Start, DateTime End);
 
     private sealed record ContextSufficiency(bool Complete, bool Approximate, IReadOnlyList<AiDatasetKey> Missing);
@@ -687,16 +688,21 @@ public partial class AiAssistantService
             .ToList();
 
         var sensitiveMode = setting?.HideSensitive ?? true;
+        // "how long until my Growth reaches 50000" -- a target-balance forecast for any ledger.
+        var ledgerForecastRequest = sensitiveMode ? null : TryParseLedgerBalanceForecast(queryPlan.QueryText);
         var targetSelection = ResolveTargetCycles(
             queryPlan.QueryText,
             selectedYear,
             selectedMonthIndex,
             queryPlan.NeedsCycleSummary,
             queryPlan.NeedsCycleComparison);
-        if (queryPlan.NeedsWishlistForecast && !targetSelection.ExplicitlyRequested)
+        if ((queryPlan.NeedsWishlistForecast || ledgerForecastRequest != null) && !targetSelection.ExplicitlyRequested)
         {
+            // The active cycle plus the two before it -- matches the app's past-3 Rewards average
+            // window (FinancialService.CalculatePastRewardsAverageFromTxs starts at the active
+            // cycle), so the assistant's forecast lines up with the Wishlist page.
             targetSelection = new TargetCycleSelection(
-                Enumerable.Range(1, 3)
+                Enumerable.Range(0, 3)
                     .Select(offset => AddMonths(selectedYear, selectedMonthIndex, -offset))
                     .Select(value => new CycleKey(value.Year, value.MonthIndex))
                     .ToList(),
@@ -704,16 +710,17 @@ public partial class AiAssistantService
         }
 
         object recurringContext = Array.Empty<object>();
+        var recurringRows = new List<AiRecurringRow>();
         if (queryPlan.NeedsRecurring)
         {
-            var recurring = await LoadRecurringRowsAsync(cancellationToken);
+            recurringRows = await LoadRecurringRowsAsync(cancellationToken);
             recurringContext = sensitiveMode
-                ? recurring.Select(r => new
+                ? recurringRows.Select(r => new
                 {
                     r.Id, r.Name, r.Category, r.LedgerCategory,
-                    r.StartDate, r.EndDate, r.DueDate, r.Active
+                    r.StartDate, r.EndDate, r.DueDate, r.Active, r.Frequency, r.NextDueDate
                 }).ToList()
-                : recurring;
+                : recurringRows;
         }
 
         object wishlistContext = Array.Empty<object>();
@@ -725,7 +732,7 @@ public partial class AiAssistantService
             wishlistContext = sensitiveMode
                 ? wishlist.Select(w => new
                 {
-                    w.Id, w.Name, w.Priority, w.IsActive, w.IsPurchased, w.CreatedAt
+                    w.Id, w.Name, w.Priority, w.IsActive, w.IsPurchased, w.CreatedAt, w.PurchasedAt
                 }).ToList()
                 : wishlist;
         }
@@ -837,14 +844,86 @@ public partial class AiAssistantService
         var activeCycleStart = CategoryAttributionService.GetCycleRange(selectedYear, selectedMonthIndex, cycleDay).start;
         var wishlistReference = intentPlan.QueryPlan.SearchText
             ?? intentPlan.ConversationState.LastWishlistReference;
+        // Ledger balances derived from the opening balance at the active cycle start plus this
+        // cycle's per-ledger net -- mirrors the dashboard/Wishlist page. Computed once and reused
+        // for: the wishlist forecast's "remaining" (Rewards balance), the affordable-item count,
+        // and stability-fund progress. Only when a question actually needs it, and never in
+        // sensitive mode (all three are amount-based, which sensitive mode refuses anyway).
+        var wantsAffordableCount = queryPlan.NeedsWishlist &&
+            Regex.IsMatch(queryPlan.QueryText, @"\b(how many|afford|can i (?:buy|afford|get))\b", RegexOptions.IgnoreCase);
+        var wantsStabilityProgress = Regex.IsMatch(queryPlan.QueryText,
+            @"\bstability\b.{0,40}\b(fund|goal|target|on track|progress|reach(?:ed)?|close|there yet|percent)\b|\b(goal|target|on track|progress|reach(?:ed)?|percent)\b.{0,40}\bstability\b",
+            RegexOptions.IgnoreCase);
+        decimal rewardsBalance = 0m;
+        object? stabilityProgress = null;
+        int? affordableWishlistCount = null;
+        object? ledgerBalanceForecast = null;
+        // Balance/forecast math must run over UNFILTERED cycle transactions. The primary load may
+        // be narrowed to a merchant/activity search (e.g. "how many wishlist items can I afford"
+        // leaks a bogus searchText), which would zero out every ledger balance. When the load was
+        // filtered, re-fetch the needed cycles unfiltered; otherwise reuse allTransactions as-is.
+        var needsLedgerTxs = !sensitiveMode && (queryPlan.NeedsWishlistForecast || wantsAffordableCount || wantsStabilityProgress || ledgerForecastRequest != null);
+        var transactionsWereFiltered = queryPlan.TransactionData == TransactionDataLevel.MatchingRows &&
+            !string.IsNullOrWhiteSpace(queryPlan.SearchText);
+        var ledgerTransactions = allTransactions;
+        if (needsLedgerTxs && transactionsWereFiltered && targetSelection.Cycles.Count > 0)
+        {
+            ledgerTransactions = await LoadUnfilteredCycleTransactionsAsync(targetSelection.Cycles, cycleDay, cancellationToken);
+        }
+        if (needsLedgerTxs)
+        {
+            var opening = await new CycleBalanceService(_context).GetOpeningBalanceAsync(selectedYear, selectedMonthIndex, cycleDay);
+            var activeCycleTxs = ledgerTransactions
+                .Where(t => IsInCycle(t, new CycleKey(selectedYear, selectedMonthIndex), cycleDay))
+                .ToList();
+            decimal LedgerNet(string ledgerCategory) => activeCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(new Models.Transaction
+            {
+                Amount = t.Amount,
+                LedgerCategory = t.LedgerCategory
+            }, ledgerCategory));
+            rewardsBalance = opening.rewards + LedgerNet("Rewards");
+            if (wantsStabilityProgress)
+            {
+                var stabilityBalance = opening.stability + LedgerNet("Stability");
+                var target = setting?.TargetStabilityFund ?? 0m;
+                stabilityProgress = new
+                {
+                    currentStabilityBalance = stabilityBalance,
+                    targetStabilityFund = target,
+                    percentReached = target > 0 ? Math.Round(stabilityBalance / target * 100m, 1) : (decimal?)null,
+                    remaining = target > 0 ? Math.Max(0m, target - stabilityBalance) : (decimal?)null
+                };
+            }
+            if (wantsAffordableCount)
+            {
+                affordableWishlistCount = wishlistRows.Count(w => !w.IsPurchased && rewardsBalance >= w.Price);
+            }
+            if (ledgerForecastRequest is { } forecast)
+            {
+                var openingFor = forecast.Ledger switch
+                {
+                    "Essentials" => opening.essentials,
+                    "Growth" => opening.growth,
+                    "Stability" => opening.stability,
+                    "Rewards" => opening.rewards,
+                    _ => 0m
+                };
+                var currentBalance = openingFor + LedgerNet(forecast.Ledger);
+                ledgerBalanceForecast = BuildLedgerBalanceForecast(ComputeLedgerBalanceForecast(
+                    forecast.Ledger, forecast.Target, currentBalance,
+                    ledgerTransactions, targetSelection.Cycles, cycleDay, DateTime.Now));
+            }
+        }
         var wishlistForecast = queryPlan.NeedsWishlistForecast && !sensitiveMode
             ? BuildWishlistForecast(new WishlistForecastPolicy(
                     wishlistRows,
-                    allTransactions,
+                    ledgerTransactions,
                     targetSelection.Cycles,
                     cycleDay,
                     activeCycleStart,
-                    wishlistReference))
+                    DateTime.Now,
+                    wishlistReference,
+                    rewardsBalance))
             : null;
 
         // The user's allocation goals: fractions of income per ledger category plus the
@@ -999,7 +1078,57 @@ public partial class AiAssistantService
                 highestLedgerBalance = balances.OrderByDescending(b => b.balance).First()
             };
         }
-        var derivedMetrics = BuildDerivedMetrics(queryPlan, allTransactions, targetSelection.Cycles, cycleDay, sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, balanceSnapshot);
+        // Per-cycle bill status (Paid/Pending/Discarded) -- the only path that sees discarded
+        // recurring charges, which every other loader excludes. Triggered when a recurring
+        // question also mentions a status word ("discarded", "skipped", "unpaid", "paid",
+        // "pending"). Scoped to the requested cycles, defaulting to the active cycle.
+        object? recurringBillStatus = null;
+        if (queryPlan.NeedsRecurring &&
+            Regex.IsMatch(queryPlan.QueryText, @"\b(discard|discarded|skip|skipped|unpaid|not paid|missed|paid|pending|overdue|due|status)\b", RegexOptions.IgnoreCase))
+        {
+            var statusCycles = targetSelection.Cycles.Count > 0
+                ? targetSelection.Cycles
+                : [new CycleKey(selectedYear, selectedMonthIndex)];
+            var statuses = await LoadRecurringBillStatusesAsync(statusCycles, cycleDay, cancellationToken);
+            recurringBillStatus = statuses
+                .Select(s => sensitiveMode
+                    ? (object)new { s.Name, s.Category, s.LedgerCategory, s.DueDate, s.Status }
+                    : new { s.Name, s.Category, s.LedgerCategory, s.DueDate, s.Status, s.Amount })
+                .ToList();
+        }
+
+        // Upcoming bills: the recurring.upcoming intent declared this metric but nothing produced
+        // it. Active payments sorted by their stored NextDueDate so "when is my next bill / what's
+        // coming up" is answerable, including each bill's frequency.
+        object? recurringUpcoming = null;
+        if (queryPlan.Metrics.Contains(DerivedMetric.RecurringUpcoming) && recurringRows.Count > 0)
+        {
+            recurringUpcoming = recurringRows
+                .Where(r => r.Active)
+                .OrderBy(r => DateTime.TryParse(r.NextDueDate, out var due) ? due : DateTime.MaxValue)
+                .Take(10)
+                .Select(r => sensitiveMode
+                    ? (object)new { r.Name, r.Category, r.LedgerCategory, r.Frequency, nextDueDate = r.NextDueDate }
+                    : new { r.Name, r.Category, r.LedgerCategory, r.Frequency, nextDueDate = r.NextDueDate, amount = Math.Abs(r.Amount) })
+                .ToList();
+        }
+
+        // Frequency-normalized recurring cost ("how much do subscriptions cost me a month/year").
+        // Amount-based, so only outside sensitive mode.
+        object? recurringCostSummary = null;
+        if (queryPlan.NeedsRecurring && !sensitiveMode && recurringRows.Count > 0 && WantsRecurringCostSummary(queryPlan.QueryText))
+        {
+            recurringCostSummary = BuildRecurringCostSummary(recurringRows);
+        }
+
+        var extraMetrics = new Dictionary<string, object?>();
+        if (recurringUpcoming != null) extraMetrics["upcomingBills"] = recurringUpcoming;
+        if (stabilityProgress != null) extraMetrics["stabilityProgress"] = stabilityProgress;
+        if (affordableWishlistCount != null) extraMetrics["affordableWishlistCount"] = affordableWishlistCount;
+        if (ledgerBalanceForecast != null) extraMetrics["ledgerBalanceForecast"] = ledgerBalanceForecast;
+        if (recurringCostSummary != null) extraMetrics["recurringCostSummary"] = recurringCostSummary;
+
+        var derivedMetrics = BuildDerivedMetrics(queryPlan, allTransactions, targetSelection.Cycles, cycleDay, sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, balanceSnapshot, recurringBillStatus, extraMetrics);
 
         var context = new AiContext(
             Currency: setting?.Currency ?? "USD",
@@ -1086,9 +1215,16 @@ public partial class AiAssistantService
         bool sensitiveMode,
         int? exactMatchCount,
         IReadOnlyDictionary<CycleKey, decimal>? perCycleRecoveredOutflow,
-        object? balanceSnapshot = null)
+        object? balanceSnapshot = null,
+        object? recurringBillStatus = null,
+        IReadOnlyDictionary<string, object?>? extraMetrics = null)
     {
         var metrics = new Dictionary<string, object?>();
+        if (recurringBillStatus != null) metrics["recurringBillStatus"] = recurringBillStatus;
+        if (extraMetrics != null)
+        {
+            foreach (var kv in extraMetrics) metrics[kv.Key] = kv.Value;
+        }
         if (queryPlan.Metrics.Contains(DerivedMetric.ActivityCount) || queryPlan.Metrics.Contains(DerivedMetric.MerchantMatches))
         {
             metrics["transactionMatches"] = new
@@ -1103,6 +1239,15 @@ public partial class AiAssistantService
             };
         }
         if (balanceSnapshot != null) metrics["balanceSnapshot"] = balanceSnapshot;
+        // Amount-threshold filter ("which transaction exceeded 250", "purchases over 100",
+        // "anything between 50 and 200"). Amount-based, so suppressed in sensitive mode like the
+        // other magnitude metrics.
+        var threshold = TryParseAmountThreshold(queryPlan.QueryText);
+        if (!sensitiveMode && threshold != null)
+        {
+            metrics["thresholdMatches"] = BuildThresholdMatches(
+                transactions, threshold, sampleWasComplete: transactions.Count < MaxTransactionsPerRange);
+        }
         if (Regex.IsMatch(queryPlan.QueryText, @"\b(which|what) day\b.*\b(most|highest|largest)\b|\bmost\b.*\b(day|daily)\b", RegexOptions.IgnoreCase))
         {
             var daily = transactions.Where(t => !IsTransfer(t))
@@ -1255,12 +1400,17 @@ public partial class AiAssistantService
                 .Take(8)
                 .ToList();
 
+            // Ledger net must be summed over ALL cycle transactions (transfers included), exactly
+            // like the authoritative FinancialService/CycleBalanceService: GetCategoryAmount is
+            // what routes a Transfer:Source->Target row into the -source/+target ledgers. Summing
+            // over nonTransferTxs instead dropped every transfer, so ledgers funded by transfers
+            // (typically Growth and Stability) wrongly showed a net of 0 / understated balances.
             var ledgerNet = LedgerCategories
                 .Where(c => c != "Income")
                 .Select(c => new
                 {
                     ledgerCategory = c,
-                        net = nonTransferTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(new Models.Transaction
+                        net = txs.Sum(t => CategoryAttributionService.GetCategoryAmount(new Models.Transaction
                     {
                         Amount = t.Amount,
                         LedgerCategory = t.LedgerCategory
@@ -1374,6 +1524,22 @@ public partial class AiAssistantService
                 explicitCycles = ExpandCycleRange(explicitCycles[0], explicitCycles[1], 24);
             }
             return new TargetCycleSelection(explicitCycles, true);
+        }
+
+        // "all cycles" / "every month" / "across all cycles" / "all-time": a search or
+        // superlative that spans the user's whole history. Without this the query fell through
+        // to the single active-cycle default, so "show badminton for all cycle" or "the most I
+        // deposited into stability across all cycles" only ever looked at the current cycle.
+        // Bounded to the trailing 24 cycles (they merge into one contiguous range) to stay
+        // within the per-range row cap.
+        if (Regex.IsMatch(queryText, @"\b(all|every|each)\s+(cycles?|months?)\b|\b(across|over|through(?:out)?|in)\s+all\b|\ball[- ]?time\b", RegexOptions.IgnoreCase))
+        {
+            return new TargetCycleSelection(
+                Enumerable.Range(0, 24)
+                    .Select(offset => AddMonths(selectedYear, selectedMonthIndex, -offset))
+                    .Select(value => new CycleKey(value.Year, value.MonthIndex))
+                    .ToList(),
+                true);
         }
 
         var wholeYear = Regex.Match(
@@ -1498,7 +1664,7 @@ public partial class AiAssistantService
         CancellationToken cancellationToken)
     {
         var selectionFollowUp = referencedTransactionIds is { Count: > 0 } &&
-            Regex.IsMatch(message, @"\b(alone|only|just|that one|this one)\b", RegexOptions.IgnoreCase);
+            Regex.IsMatch(message, @"\b(alone|only|just|that one|this one|the one|the (?:first|second|third|last|pure|only) one)\b", RegexOptions.IgnoreCase);
         if (!LooksLikeLedgerEditCommand(message) && !selectionFollowUp)
         {
             return null;
@@ -1563,6 +1729,20 @@ public partial class AiAssistantService
             scopeEnd,
             cancellationToken);
 
+        // A selection follow-up ("the one named X", "that one") narrows a prior candidate set.
+        // Free-form descriptors rarely substring-match a record's description, so if the text
+        // filter eliminated everything, fall back to the referenced candidates themselves and let
+        // the user pick, rather than falsely reporting "no matching record".
+        if (matches.Count == 0 && selectionFollowUp && hasReferencedIds)
+        {
+            matches = await FindLedgerEditMatchesAsync(
+                null,
+                referencedTransactionIds!,
+                scopeStart,
+                scopeEnd,
+                cancellationToken);
+        }
+
         if (matches.Count == 0)
         {
             var targetDescription = string.IsNullOrWhiteSpace(searchText) ? "a ledger record" : $"a ledger record matching \"{searchText}\"";
@@ -1573,7 +1753,22 @@ public partial class AiAssistantService
         {
             var choices = string.Join(", ", matches.Select(match =>
                 $"\"{match.Description}\" on {TransactionDate.ToDateOnly(match.Date):yyyy-MM-dd}"));
-            return new AiChatResponse($"I found multiple matches {scopeLabel}: {choices}. Please specify which one to edit.", []);
+            // Carry the exact candidate ids so a follow-up ("the one named X", "that one", "the
+            // second one") narrows against this same set. The query-plan path does not populate
+            // matched ids for an edit intent, so the clarification attaches them explicitly.
+            var clarificationState = new AiConversationState(
+                LastIntent: "ledger.edit",
+                LastSearchText: searchText,
+                LastCycleHint: null,
+                LastWishlistReference: null,
+                LastResolvedCycle: null,
+                LastMatchedTransactionIds: matches.Select(m => m.Id).ToList(),
+                LastWishlistItemId: null,
+                LastCategory: null);
+            return new AiChatResponse(
+                $"I found multiple matches {scopeLabel}: {choices}. Please specify which one to edit.",
+                [],
+                State: clarificationState);
         }
 
         var changes = ExtractRequestedLedgerChanges(message, context.Categories, context.LedgerCategories, defaultYear);
@@ -1805,8 +2000,9 @@ Rules:
 - conversationState contains structured references from the prior turn. Use it to resolve short follow-ups such as ""those"", ""the previous cycle"", or ""it"" before asking for clarification.
 - Every transaction object has a txType field (""inflow"", ""outflow"", or ""transfer""). Positive amounts are inflows (income), negative amounts are outflows (expenses). When asked about expenses or finding the most expensive transactions, look only at transactions where txType is ""outflow"". Never treat inflows or transfers as expenses.
 - If dataScope.aggregatesTruncated is true, the cycle aggregates cover only part of that cycle; say the totals are approximate rather than presenting them as complete.
-- For count/frequency questions about an activity or description (for example, badminton), use derivedMetrics.transactionMatches.count and state the matching date range.
-- wishlistForecast is a server-calculated estimate. Use its cycles, target date, savings rate, and status; do not invent a different arithmetic method. If sensitiveMode is true, explain that exact wishlist forecasting is hidden by privacy mode.
+- For count, frequency, or existence questions about an activity or description (for example ""badminton"", ""any TNG transactions"", ""show X across all cycles""), use derivedMetrics.transactionMatches.count and state the matching date range. A non-zero count means the records exist within the requested cycles; never answer ""none found"" when transactionMatches.count is greater than 0.
+- A transaction's own date does NOT by itself identify its cycle. A cycle can span two calendar months (it runs from the cycle-start day of its labeled month to the day before the cycle-start day of the next month), so a transaction dated in June may belong to the cycle labeled May. The server has already assigned every transaction to the correct cycle in requestedCycles, cycleSummaries, and derivedMetrics. Never re-derive a transaction's cycle from its calendar month, and never relabel a requested cycle as ""current"" because its rows are dated in a later month.
+- wishlistForecast is a server-calculated estimate that matches the app's Wishlist page. Its savingsPerCycle is the average positive Rewards saved per active cycle, remaining is the price minus the current Rewards balance, and estimatedTargetDate is already projected forward. Use its cycles, target date, savings rate, and status verbatim; do not invent a different arithmetic method or use total net savings. If sensitiveMode is true, explain that exact wishlist forecasting is hidden by privacy mode.
 - budgetTargets holds the user's ledger allocation goals (fractions of income per ledger category) plus their stability-fund target. When analyzing spending or giving improvement advice, compare cycleSummaries.ledgerNet and categorySpend against budgetTargets and be specific about which ledger categories are over or under goal. If budgetTargets is absent (sensitiveMode or a non-analysis question), give general guidance without inventing target numbers.
 - A requested cycle with hasTransactions=false is verified empty. An empty recentTransactions array alone does not prove there is no data unless dataScope says the target was explicit and the requested cycle is empty.
 - If the user refers to an old or relative cycle, use requestedCycles rather than the active cycle. Never silently substitute the active or newest cycle.
@@ -1823,6 +2019,15 @@ Rules:
 - balanceSnapshot is authoritative for wallet balance and current ledger balances. A cycle's netChange or ledgerNet is activity, not a balance.
 - dailyExtremes is authoritative for the highest-inflow and highest-outflow day.
 - For requests to sort, compare, recommend category combinations, or identify inactive/discarded subscriptions, answer the question only. Do not navigate unless explicitly asked to open or show a screen.
+- derivedMetrics.recurringBillStatus is authoritative for per-cycle bill status. Each entry has status ""Paid"", ""Pending"", or ""Discarded"" for that cycle. A ""discarded"" or ""skipped"" bill is one with status ""Discarded"" -- this is distinct from a recurring payment being inactive (active=false). When asked which subscriptions were discarded/skipped/paid/pending/unpaid this cycle, use recurringBillStatus, not the active flag on recurringPayments.
+- Each recurringPayments entry has a frequency (""Weekly"", ""Monthly"", or ""Annually"") and a nextDueDate. Use these to answer questions about billing cadence (""which subscriptions are billed annually"") or the next charge date of a specific bill.
+- derivedMetrics.upcomingBills lists active recurring payments sorted by nextDueDate (soonest first), each with its frequency. Use it for ""when is my next bill"", ""what's coming up"", or ""what do I pay next"".
+- derivedMetrics.stabilityProgress is authoritative for stability-fund progress: currentStabilityBalance, targetStabilityFund, percentReached, and remaining. Use it for ""am I on track for my stability fund"" / ""how close am I to my stability goal"". If targetStabilityFund is 0 the user has not set a target; say so rather than inventing a percentage.
+- derivedMetrics.affordableWishlistCount is how many wishlist items your current Rewards balance can already cover. Use it for ""how many things on my wishlist can I afford now"".
+- derivedMetrics.thresholdMatches is authoritative for amount-comparison questions (""which transaction exceeded 250"", ""purchases over 100"", ""anything between 50 and 200""). It already filtered outflows (transfers excluded) by the comparison: use its count, totalOutflow, and rows verbatim; never re-scan recentTransactions. If complete is false the sample was capped, so hedge. When it is absent (e.g. sensitiveMode), do not invent amounts.
+- derivedMetrics.ledgerBalanceForecast answers ""how long until my <ledger> reaches <amount>"" for any ledger category. currentBalance is the ledger's balance now, remaining is target minus current, savingsPerCycle is the average positive per-cycle amount added to that ledger, and estimatedCycles/estimatedTargetDate are the projection. Use its status verbatim: already-reached, not-currently-reachable (savings rate <= 0), insufficient-cycle-data, or estimated-from-completed-cycles. Do not invent a different arithmetic method.
+- derivedMetrics.recurringCostSummary is authoritative for total recurring/subscription cost. monthlyTotal and annualTotal are active recurring charges normalized to a common basis (weekly x52/12, annually /12), with perLedgerMonthly breaking it down by ledger category. Use it for ""how much do my subscriptions cost me a month/year""; do not sum recurringPayments yourself, since their cadences differ.
+- Each wishlistItems entry that is purchased has a purchasedAt date. Use it to answer when a wishlist item was bought.
 
 Allowed actions:
 - openDashboard payload: { }

@@ -53,7 +53,7 @@ public partial class AiAssistantService
     }
 
     private static readonly Regex TransactionStateReferenceSignal = new(
-        @"\b(those|these|them|that one|the highest one|the previous one|all of those|which of those|those ones|it|that|alone|only that|just that)\b",
+        @"\b(those|these|them|that one|this one|the one|the highest one|the previous one|the (?:first|second|third|last|pure|only) one|all of those|which of those|those ones|it|that|alone|only that|just that)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static bool UsesPriorTransactionState(string message) =>
@@ -79,8 +79,12 @@ public partial class AiAssistantService
         // answered from cycle aggregates instead (unless a count, which still needs matches).
         var aggregateOnly = AggregateQuestionSignal.IsMatch(lower) && !ExplicitRecordSignal.IsMatch(lower);
         var asksDailyExtreme = Regex.IsMatch(lower, @"\b(which|what) day\b.*\b(most|highest|largest)\b|\bmost\b.*\b(day|daily)\b");
-        var needsTransactionDetail = (TransactionDetailSignal.IsMatch(lower) || needsCount || asksDailyExtreme) &&
-            (!aggregateOnly || needsCount);
+        // An amount comparison ("over 250", "under 50", "between 100 and 200") is a request for the
+        // matching individual records, so it needs the detail sample even when the phrasing itself
+        // read as aggregate ("how much did I spend over 100").
+        var hasAmountThreshold = TryParseAmountThreshold(lower) != null;
+        var needsTransactionDetail = (TransactionDetailSignal.IsMatch(lower) || needsCount || asksDailyExtreme || hasAmountThreshold) &&
+            (!aggregateOnly || needsCount || hasAmountThreshold);
 
         var needsCycleSummary = needsCycleAnalysis || needsCycleComparison || needsImprovement || needsCount || needsWishlistForecast || asksDailyExtreme;
         var needsBudgetTargets = needsCycleAnalysis || needsImprovement;
