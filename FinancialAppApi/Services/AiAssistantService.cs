@@ -7,7 +7,7 @@ namespace FinancialAppApi.Services;
 
 public sealed record AiChatMessage(string Role, string Content);
 public sealed record AiChatRequest(string Message, IReadOnlyList<AiChatMessage>? History);
-public sealed record AiChatResponse(string Reply, IReadOnlyList<AiUiAction> Actions);
+public sealed record AiChatResponse(string Reply, IReadOnlyList<AiUiAction> Actions, bool CloseChat = false);
 public sealed record AiUiAction(string Type, Dictionary<string, object?> Payload);
 
 public class AiAssistantService
@@ -264,10 +264,11 @@ Rules:
 - Never modify settings. Never create/update/delete ledger, wishlist, or recurring records. Draft/open modal only.
 - Transaction creation means openAddLedgerDraft only; never save/send a transaction.
 - Recurring active toggle may be direct only when exactly one matching recurring payment is clear.
-- If ambiguous, ask one concise clarification with at most 3 questions and return no actions.
+- If ambiguous about target record, category, cycle, action type, amount, or whether the user wants ledger vs recurring vs wishlist, ask one concise clarification with at most 3 questions, return no actions, and set closeChat false.
 - Use only categories, ledger categories, cycles, and record ids from App context.
 - If sensitiveMode is true, do not reveal exact financial amounts in reply. You may still navigate or open drafts.
 - Use at most one action unless the user clearly asked for more.
+- Set closeChat true only when the request is fully handled by returned actions and your reply contains no follow-up question. For Q&A, analysis, rejected, or clarification replies, set closeChat false.
 
 Allowed actions:
 - openLedger payload: {{ month, year, allCycles, category, ledgerCategory, txType, search }}
@@ -282,6 +283,7 @@ Allowed actions:
 Output schema:
 {{
   ""reply"": ""short user-facing reply"",
+  ""closeChat"": false,
   ""actions"": [
     {{ ""type"": ""one allowed action type"", ""payload"": {{ }} }}
   ]
@@ -312,7 +314,31 @@ Output schema:
             }
         }
 
-        return new AiChatResponse(reply, actions);
+        var closeChat = false;
+        if (actions.Count > 0 &&
+            root.TryGetProperty("closeChat", out var closeChatProp) &&
+            closeChatProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            closeChat = closeChatProp.GetBoolean() && !LooksLikeFollowUp(reply);
+        }
+
+        return new AiChatResponse(reply, actions, closeChat);
+    }
+
+    private static bool LooksLikeFollowUp(string reply)
+    {
+        if (string.IsNullOrWhiteSpace(reply)) return false;
+        if (reply.Contains('?')) return true;
+
+        var lower = reply.ToLowerInvariant();
+        return lower.Contains("clarify") ||
+            lower.Contains("which ") ||
+            lower.Contains("what ") ||
+            lower.Contains("please choose") ||
+            lower.Contains("please specify") ||
+            lower.Contains("do you want") ||
+            lower.Contains("not sure") ||
+            lower.Contains("unclear");
     }
 
     private static bool IsActionSafe(string type, Dictionary<string, object?> payload, AiContext context)
