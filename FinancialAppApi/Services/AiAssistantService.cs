@@ -21,8 +21,7 @@ public class AiAssistantService
         "openAddWishlistDraft",
         "openEditLedgerDraft",
         "openEditRecurringDraft",
-        "openEditWishlistDraft",
-        "setRecurringActive"
+        "openEditWishlistDraft"
     };
 
     private readonly HttpClient _httpClient;
@@ -259,16 +258,16 @@ Recent chat JSON: {historyJson}
 App context JSON: {contextJson}
 
 Rules:
-- Only fulfill these capabilities: cycle analysis, ledger navigation/filtering, opening add/edit drafts for ledger/recurring/wishlist, wishlist/recurring Q&A, and direct recurring active toggle.
+- Only fulfill these capabilities: cycle analysis, ledger navigation/filtering, opening add/edit drafts for ledger/recurring/wishlist, and wishlist/recurring Q&A.
 - If outside scope, reply exactly or similarly: ""I'm unable to perform that action.""
 - Never modify settings. Never create/update/delete ledger, wishlist, or recurring records. Draft/open modal only.
 - Transaction creation means openAddLedgerDraft only; never save/send a transaction.
-- Recurring active toggle may be direct only when exactly one matching recurring payment is clear.
+- Never directly toggle recurring active state. If the user asks to turn a recurring payment on or off, explain that AI cannot perform that direct toggle.
 - If ambiguous about target record, category, cycle, action type, amount, or whether the user wants ledger vs recurring vs wishlist, ask one concise clarification with at most 3 questions, return no actions, and set closeChat false.
 - Use only categories, ledger categories, cycles, and record ids from App context.
 - If sensitiveMode is true, do not reveal exact financial amounts in reply. You may still navigate or open drafts.
 - Use at most one action unless the user clearly asked for more.
-- Set closeChat true only when the request is fully handled by returned actions and your reply contains no follow-up question. For Q&A, analysis, rejected, or clarification replies, set closeChat false.
+- Set closeChat true only when the request is fully handled by a non-edit returned action and your reply contains no follow-up question. For edit actions, Q&A, analysis, rejected, or clarification replies, set closeChat false.
 
 Allowed actions:
 - openLedger payload: {{ month, year, allCycles, category, ledgerCategory, txType, search }}
@@ -278,7 +277,6 @@ Allowed actions:
 - openEditLedgerDraft payload: {{ id, changes }}
 - openEditRecurringDraft payload: {{ id, changes }}
 - openEditWishlistDraft payload: {{ id, changes }}
-- setRecurringActive payload: {{ id, active }}
 
 Output schema:
 {{
@@ -319,7 +317,9 @@ Output schema:
             root.TryGetProperty("closeChat", out var closeChatProp) &&
             closeChatProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
         {
-            closeChat = closeChatProp.GetBoolean() && !LooksLikeFollowUp(reply);
+            closeChat = closeChatProp.GetBoolean() &&
+                actions.All(action => !action.Type.StartsWith("openEdit", StringComparison.OrdinalIgnoreCase)) &&
+                !LooksLikeFollowUp(reply);
         }
 
         return new AiChatResponse(reply, actions, closeChat);
@@ -343,8 +343,7 @@ Output schema:
 
     private static bool IsActionSafe(string type, Dictionary<string, object?> payload, AiContext context)
     {
-        if (type.Equals("setRecurringActive", StringComparison.OrdinalIgnoreCase) ||
-            type.Equals("openEditRecurringDraft", StringComparison.OrdinalIgnoreCase))
+        if (type.Equals("openEditRecurringDraft", StringComparison.OrdinalIgnoreCase))
         {
             return HasKnownId(payload, "id", context.RecurringPayments);
         }
