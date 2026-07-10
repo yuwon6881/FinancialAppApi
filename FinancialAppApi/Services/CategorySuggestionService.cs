@@ -192,7 +192,10 @@ Rules:
 
     public async Task<CategoryCleanupReview> ReviewCategoryCleanupAsync()
     {
-        var categories = await _categoryService.GetCategoriesAsync();
+        var categories = await _context.TransactionCategories
+            .AsNoTracking()
+            .OrderBy(c => c.Name)
+            .ToListAsync();
         var visibleCategories = categories
             .Where(c => !TransactionCategoryService.IsReservedName(c.Name))
             .Select(c => c.Name.Trim())
@@ -256,7 +259,7 @@ Rules:
 - Return at most 5 suggestions. An empty suggestions array is a completely valid and often correct answer when the existing categories already look healthy -- never invent a suggestion just to have something to say.
 - Never suggest moving, recategorizing, or swapping an individual transaction. Every suggestion must act on a whole category, not a single entry -- that kind of change is out of scope here.
 - For delete, only choose existing categories with zero recent transactions.
-- For merge, only propose it when the two categories are genuinely duplicative in overall purpose across most of their usage (e.g. two categories that mean the same thing, like ""Subscriptions"" and ""Software""). Do not propose a merge just because one transaction in a category could also fit under another category -- a single overlapping entry is never sufficient reason to fold an entire category into another one.
+- For merge, only propose it when the two categories are genuinely duplicative in overall purpose across most of their usage (e.g. two categories that mean the same thing, like ""Streaming"" and ""Subscriptions""). Do not propose a merge just because one transaction in a category could also fit under another category -- a single overlapping entry is never sufficient reason to fold an entire category into another one.
 - For consolidate, use this instead of merge when a category has very few recent transactions (roughly 1-3) so it's a candidate for cleanup, but you are not confident every transaction in it belongs in one specific other category. Always leave targetCategory null for consolidate -- never guess a destination category; the app will ask the user to manually pick where those few transactions should go.
 - For add, newCategoryName must not already exist and should be broadly useful.
 - Never suggest Transfer or Adjustment.

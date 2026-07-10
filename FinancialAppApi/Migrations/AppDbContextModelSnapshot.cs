@@ -349,58 +349,6 @@ namespace FinancialAppApi.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("TransactionCategories");
-
-                    b.HasData(
-                        new
-                        {
-                            Id = "cat-1",
-                            Name = "Salary"
-                        },
-                        new
-                        {
-                            Id = "cat-2",
-                            Name = "Social"
-                        },
-                        new
-                        {
-                            Id = "cat-3",
-                            Name = "Food"
-                        },
-                        new
-                        {
-                            Id = "cat-4",
-                            Name = "Hobbies"
-                        },
-                        new
-                        {
-                            Id = "cat-5",
-                            Name = "Software"
-                        },
-                        new
-                        {
-                            Id = "cat-6",
-                            Name = "Investment"
-                        },
-                        new
-                        {
-                            Id = "cat-7",
-                            Name = "Entertainment"
-                        },
-                        new
-                        {
-                            Id = "cat-8",
-                            Name = "Transport"
-                        },
-                        new
-                        {
-                            Id = "cat-9",
-                            Name = "Other"
-                        },
-                        new
-                        {
-                            Id = "cat-10",
-                            Name = "Transfer"
-                        });
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.UserSession", b =>

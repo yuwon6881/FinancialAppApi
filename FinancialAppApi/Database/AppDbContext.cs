@@ -6,20 +6,6 @@ namespace FinancialAppApi.Database;
 
 public class AppDbContext : DbContext, IDataProtectionKeyContext
 {
-    private static readonly TransactionCategory[] DefaultCategories =
-    [
-        new() { Id = "cat-1", Name = "Salary" },
-        new() { Id = "cat-2", Name = "Social" },
-        new() { Id = "cat-3", Name = "Food" },
-        new() { Id = "cat-4", Name = "Hobbies" },
-        new() { Id = "cat-5", Name = "Software" },
-        new() { Id = "cat-6", Name = "Investment" },
-        new() { Id = "cat-7", Name = "Entertainment" },
-        new() { Id = "cat-8", Name = "Transport" },
-        new() { Id = "cat-9", Name = "Other" },
-        new() { Id = "cat-10", Name = "Transfer" }
-    ];
-
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options)
     {
     }
@@ -77,8 +63,6 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.Currency).HasDefaultValue("USD");
             entity.Property(e => e.VibrationEnabled).HasDefaultValue(true);
         });
-
-        modelBuilder.Entity<TransactionCategory>().HasData(DefaultCategories);
 
         modelBuilder.Entity<UserSession>(entity =>
         {
