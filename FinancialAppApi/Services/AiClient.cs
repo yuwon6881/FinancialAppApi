@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace FinancialAppApi.Services;
@@ -15,15 +16,23 @@ public sealed record AiPart
     public static AiPart FromImage(string mimeType, string base64Data) => new() { InlineData = new AiInlineData(mimeType, base64Data) };
 }
 
-// Single point of contact with the AI provider (currently Gemini, called over its REST API).
-// Every AI feature (Ask AI, category suggestions/cleanup, receipt OCR) used to hand-roll its
-// own HTTP call, model-fallback retry, and response parsing -- this centralizes that so a fix
-// (e.g. handling a safety-blocked response) applies everywhere at once instead of needing
-// three edits, and so swapping providers later only means changing this one file.
+public sealed record AiGenerationOptions(
+    string Feature,
+    double Temperature,
+    int MaxOutputTokens,
+    string? SystemInstruction = null,
+    object? ResponseJsonSchema = null,
+    string? ThinkingLevel = "low",
+    string ModelConfigurationKey = "AiModel",
+    string FallbackModelConfigurationKey = "AiFallbackModel");
+
+// Single point of contact with the AI provider. Feature services supply a schema and a small,
+// explicit compute budget; transport, retries, usage telemetry and provider parsing stay here.
 public class AiClient
 {
-    private const string FallbackModel = "gemini-3.5-flash";
+    private const string DefaultFallbackModel = "gemini-3.5-flash";
     private const string DefaultPrimaryModel = "gemini-3.1-flash-lite";
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(250);
 
     private readonly HttpClient _httpClient;
     private readonly IConfiguration _configuration;
@@ -38,15 +47,10 @@ public class AiClient
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_configuration["AiApiKey"]);
 
-    // systemInstruction should hold the stable, request-independent portion of a prompt
-    // (rules, output schema, allowed actions) so it forms an identical prefix across calls --
-    // that is what makes it eligible for the provider's automatic prefix caching. Put only the
-    // per-request data (user message, live app context, image bytes) in `parts`.
     public async Task<string> GenerateTextAsync(
         IReadOnlyList<AiPart> parts,
-        double temperature,
-        int maxOutputTokens,
-        string? systemInstruction = null)
+        AiGenerationOptions options,
+        CancellationToken cancellationToken = default)
     {
         var apiKey = _configuration["AiApiKey"];
         if (string.IsNullOrWhiteSpace(apiKey))
@@ -54,45 +58,68 @@ public class AiClient
             throw new AiClientException("AI service is not configured on the server.");
         }
 
-        var requestBody = BuildRequestBody(parts, temperature, maxOutputTokens, systemInstruction);
-
-        var primaryModel = _configuration["AiModel"];
-        if (string.IsNullOrWhiteSpace(primaryModel))
-        {
-            primaryModel = DefaultPrimaryModel;
-        }
+        var requestBody = BuildRequestBody(parts, options);
+        var primaryModel = _configuration[options.ModelConfigurationKey];
+        if (string.IsNullOrWhiteSpace(primaryModel)) primaryModel = _configuration["AiModel"];
+        if (string.IsNullOrWhiteSpace(primaryModel)) primaryModel = DefaultPrimaryModel;
 
         try
         {
-            return await CallAsync(primaryModel, requestBody, apiKey);
+            return await CallWithRetryAsync(primaryModel, requestBody, apiKey, options.Feature, cancellationToken);
         }
-        catch (AiProviderUnavailableException)
+        catch (AiProviderUnavailableException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning("Primary model {PrimaryModel} unavailable, retrying with fallback {FallbackModel}.", primaryModel, FallbackModel);
-            return await CallAsync(FallbackModel, requestBody, apiKey);
+            var fallbackModel = _configuration[options.FallbackModelConfigurationKey];
+            if (string.IsNullOrWhiteSpace(fallbackModel)) fallbackModel = _configuration["AiFallbackModel"];
+            if (string.IsNullOrWhiteSpace(fallbackModel)) fallbackModel = DefaultFallbackModel;
+            if (string.Equals(primaryModel, fallbackModel, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new AiClientException("AI service is temporarily unavailable. Please try again.");
+            }
+
+            _logger.LogWarning(
+                "AI feature {Feature} primary model {PrimaryModel} unavailable; trying fallback {FallbackModel}.",
+                options.Feature,
+                primaryModel,
+                fallbackModel);
+            try
+            {
+                return await CallAsync(fallbackModel, requestBody, apiKey, options.Feature, cancellationToken);
+            }
+            catch (AiProviderUnavailableException)
+            {
+                throw new AiClientException("AI service is temporarily unavailable. Please try again.");
+            }
         }
     }
 
-    private static object BuildRequestBody(IReadOnlyList<AiPart> parts, double temperature, int maxOutputTokens, string? systemInstruction)
+    internal static object BuildRequestBody(IReadOnlyList<AiPart> parts, AiGenerationOptions options)
     {
-        var contentParts = parts.Select(ToWirePart).ToArray();
-        var generationConfig = new { temperature, maxOutputTokens };
-
-        if (string.IsNullOrEmpty(systemInstruction))
+        var generationConfig = new Dictionary<string, object?>
         {
-            return new
-            {
-                contents = new[] { new { parts = contentParts } },
-                generationConfig
-            };
+            ["temperature"] = options.Temperature,
+            ["maxOutputTokens"] = options.MaxOutputTokens
+        };
+        if (!string.IsNullOrWhiteSpace(options.ThinkingLevel))
+        {
+            generationConfig["thinkingConfig"] = new { thinkingLevel = options.ThinkingLevel };
+        }
+        if (options.ResponseJsonSchema != null)
+        {
+            generationConfig["responseMimeType"] = "application/json";
+            generationConfig["responseJsonSchema"] = options.ResponseJsonSchema;
         }
 
-        return new
+        var body = new Dictionary<string, object?>
         {
-            systemInstruction = new { parts = new[] { new { text = systemInstruction } } },
-            contents = new[] { new { parts = contentParts } },
-            generationConfig
+            ["contents"] = new[] { new { parts = parts.Select(ToWirePart).ToArray() } },
+            ["generationConfig"] = generationConfig
         };
+        if (!string.IsNullOrWhiteSpace(options.SystemInstruction))
+        {
+            body["systemInstruction"] = new { parts = new[] { new { text = options.SystemInstruction } } };
+        }
+        return body;
     }
 
     private static object ToWirePart(AiPart part)
@@ -104,116 +131,178 @@ public class AiClient
         return new { text = part.Text ?? "" };
     }
 
-    private async Task<string> CallAsync(string model, object requestBody, string apiKey)
+    private async Task<string> CallWithRetryAsync(
+        string model,
+        object requestBody,
+        string apiKey,
+        string feature,
+        CancellationToken cancellationToken)
     {
-        var requestUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}";
+        try
+        {
+            return await CallAsync(model, requestBody, apiKey, feature, cancellationToken);
+        }
+        catch (AiProviderUnavailableException) when (!cancellationToken.IsCancellationRequested)
+        {
+            await Task.Delay(RetryDelay, cancellationToken);
+            return await CallAsync(model, requestBody, apiKey, feature, cancellationToken);
+        }
+    }
+
+    private async Task<string> CallAsync(
+        string model,
+        object requestBody,
+        string apiKey,
+        string feature,
+        CancellationToken cancellationToken)
+    {
+        var startedAt = Stopwatch.GetTimestamp();
+        var requestUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(model)}:generateContent";
         using var httpRequest = new HttpRequestMessage(HttpMethod.Post, requestUrl);
+        httpRequest.Headers.Add("x-goog-api-key", apiKey);
         httpRequest.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(requestBody));
         httpRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
         HttpResponseMessage response;
         try
         {
-            response = await _httpClient.SendAsync(httpRequest);
+            response = await _httpClient.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogWarning(ex, "AI provider request failed (model {Model}).", model);
+            _logger.LogWarning(ex, "AI provider request failed for {Feature} using {Model}.", feature, model);
             throw new AiClientException("AI service is unreachable. Please try again.");
         }
 
-        if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
+        using (response)
         {
-            var unavailableBody = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("AI provider returned 503 (model {Model}): {Body}", model, unavailableBody);
-            throw new AiProviderUnavailableException();
+            if (IsTransientProviderFailure(response.StatusCode))
+            {
+                _logger.LogWarning(
+                    "AI provider returned transient status {Status} for {Feature} using {Model}.",
+                    (int)response.StatusCode,
+                    feature,
+                    model);
+                throw new AiProviderUnavailableException();
+            }
+
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                _logger.LogWarning("AI provider rate limit reached for {Feature} using {Model}.", feature, model);
+                throw new AiClientException("AI service rate limit reached. Please wait a moment and try again.");
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning(
+                    "AI provider returned status {Status} for {Feature} using {Model}.",
+                    (int)response.StatusCode,
+                    feature,
+                    model);
+                throw new AiClientException("AI service returned an error. Please try again.");
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var responseDoc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            var text = ParseResponse(responseDoc.RootElement, model, feature);
+            _logger.LogInformation(
+                "AI request {Feature}/{Model} completed in {ElapsedMs:F0} ms.",
+                feature,
+                model,
+                Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
+            return text;
         }
+    }
 
-        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+    private string ParseResponse(JsonElement root, string model, string feature)
+    {
+        LogUsage(root, model, feature);
+
+        if (!root.TryGetProperty("candidates", out var candidates) ||
+            candidates.ValueKind != JsonValueKind.Array ||
+            candidates.GetArrayLength() == 0)
         {
-            var quotaBody = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("AI provider returned 429 (model {Model}): {Body}", model, quotaBody);
-            throw new AiClientException("AI service rate limit reached. Please wait a moment and try again.");
-        }
-
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("AI provider returned error {Status} (model {Model}): {Body}", response.StatusCode, model, errorBody);
-            throw new AiClientException("AI service returned an error. Please try again.");
-        }
-
-        var responseBody = await response.Content.ReadAsStringAsync();
-        using var responseDoc = JsonDocument.Parse(responseBody);
-        var root = responseDoc.RootElement;
-
-        if (!root.TryGetProperty("candidates", out var candidatesProp) ||
-            candidatesProp.ValueKind != JsonValueKind.Array ||
-            candidatesProp.GetArrayLength() == 0)
-        {
-            // The provider can return 200 OK with no candidates when the prompt itself is
-            // blocked (promptFeedback.blockReason) -- previously this fell through to an
-            // unhandled exception (GetProperty("candidates")[0]) instead of a friendly message.
-            var blockReason = root.TryGetProperty("promptFeedback", out var feedbackProp) &&
-                feedbackProp.TryGetProperty("blockReason", out var blockReasonProp)
-                    ? blockReasonProp.GetString()
+            var blockReason = root.TryGetProperty("promptFeedback", out var feedback) &&
+                feedback.TryGetProperty("blockReason", out var blockReasonProperty)
+                    ? blockReasonProperty.GetString()
                     : null;
-            _logger.LogWarning("AI provider returned no candidates (model {Model}). BlockReason: {BlockReason}. Body: {Body}", model, blockReason, responseBody);
+            _logger.LogWarning(
+                "AI provider returned no candidates for {Feature} using {Model}. Block reason: {BlockReason}.",
+                feature,
+                model,
+                blockReason);
             throw new AiClientException("AI could not process this request. Please rephrase and try again.");
         }
 
-        var candidate = candidatesProp[0];
-        var finishReason = candidate.TryGetProperty("finishReason", out var finishReasonProp) ? finishReasonProp.GetString() : null;
-
-        if (!candidate.TryGetProperty("content", out var contentProp) ||
-            !contentProp.TryGetProperty("parts", out var candidatePartsProp) ||
-            candidatePartsProp.ValueKind != JsonValueKind.Array ||
-            candidatePartsProp.GetArrayLength() == 0)
+        var candidate = candidates[0];
+        var finishReason = candidate.TryGetProperty("finishReason", out var finishReasonProperty)
+            ? finishReasonProperty.GetString()
+            : null;
+        if (!candidate.TryGetProperty("content", out var content) ||
+            !content.TryGetProperty("parts", out var candidateParts) ||
+            candidateParts.ValueKind != JsonValueKind.Array ||
+            candidateParts.GetArrayLength() == 0)
         {
-            // A candidate can be returned with an empty content body when the *response*
-            // (not the prompt) trips a safety filter -- same missing-data shape as above.
-            _logger.LogWarning("AI provider returned a candidate with no content (model {Model}). FinishReason: {FinishReason}. Body: {Body}", model, finishReason, responseBody);
+            _logger.LogWarning(
+                "AI provider returned empty content for {Feature} using {Model}. Finish reason: {FinishReason}.",
+                feature,
+                model,
+                finishReason);
             throw new AiClientException(finishReason is "SAFETY" or "PROHIBITED_CONTENT"
                 ? "AI declined to respond to this request. Please rephrase and try again."
                 : "AI could not process this request. Please try again.");
         }
 
-        var text = candidatePartsProp[0].TryGetProperty("text", out var textProp) ? textProp.GetString() ?? "" : "";
-
+        var text = string.Concat(candidateParts.EnumerateArray()
+            .Where(part => part.TryGetProperty("text", out _))
+            .Select(part => part.GetProperty("text").GetString()));
         if (finishReason == "MAX_TOKENS")
         {
-            _logger.LogWarning("AI provider response truncated by MAX_TOKENS (model {Model}). Partial text: {RawText}", model, text);
+            _logger.LogWarning("AI response reached its output limit for {Feature} using {Model}.", feature, model);
             throw new AiClientException("AI response was too long and got cut off. Please try again.");
+        }
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            throw new AiClientException("AI returned an empty response. Please try again.");
         }
 
         return StripMarkdownFence(text.Trim());
     }
 
-    private static string StripMarkdownFence(string text)
+    private void LogUsage(JsonElement root, string model, string feature)
     {
-        if (!text.StartsWith("```", StringComparison.Ordinal))
-        {
-            return text;
-        }
-
-        var firstNewline = text.IndexOf('\n');
-        var lastFence = text.LastIndexOf("```", StringComparison.Ordinal);
-        if (firstNewline > 0 && lastFence > firstNewline)
-        {
-            return text.Substring(firstNewline + 1, lastFence - firstNewline - 1).Trim();
-        }
-
-        return text;
+        if (!root.TryGetProperty("usageMetadata", out var usage)) return;
+        _logger.LogInformation(
+            "AI usage {Feature}/{Model}: prompt={PromptTokens}, output={OutputTokens}, thoughts={ThoughtTokens}, cached={CachedTokens}.",
+            feature,
+            model,
+            ReadTokenCount(usage, "promptTokenCount"),
+            ReadTokenCount(usage, "candidatesTokenCount"),
+            ReadTokenCount(usage, "thoughtsTokenCount"),
+            ReadTokenCount(usage, "cachedContentTokenCount"));
     }
 
-    // Internal-only signal used to trigger the same-request fallback-model retry; never
-    // surfaced to callers.
-    private sealed class AiProviderUnavailableException : Exception { }
+    private static int ReadTokenCount(JsonElement usage, string propertyName) =>
+        usage.TryGetProperty(propertyName, out var value) && value.TryGetInt32(out var count) ? count : 0;
+
+    private static bool IsTransientProviderFailure(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway or
+            HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout;
+
+    private static string StripMarkdownFence(string text)
+    {
+        if (!text.StartsWith("```", StringComparison.Ordinal)) return text;
+        var firstNewline = text.IndexOf('\n');
+        var lastFence = text.LastIndexOf("```", StringComparison.Ordinal);
+        return firstNewline > 0 && lastFence > firstNewline
+            ? text.Substring(firstNewline + 1, lastFence - firstNewline - 1).Trim()
+            : text;
+    }
+
+    private sealed class AiProviderUnavailableException : Exception;
 }
 
 public sealed class AiClientException : Exception
 {
-    public AiClientException(string message) : base(message)
-    {
-    }
+    public AiClientException(string message) : base(message) { }
 }

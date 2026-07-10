@@ -48,7 +48,7 @@ public class AiAssistantService
         _categoryService = categoryService;
     }
 
-    public async Task<AiChatOutcome> ChatAsync(AiChatRequest request)
+    public async Task<AiChatOutcome> ChatAsync(AiChatRequest request, CancellationToken cancellationToken = default)
     {
         var message = (request.Message ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(message))
@@ -63,6 +63,10 @@ public class AiAssistantService
         {
             return Ok(new AiChatResponse("I'm unable to delete records. You can delete it manually from the app if sensitive mode is off.", []));
         }
+        if (TryHandleSmallTalk(message, out var smallTalkResponse))
+        {
+            return Ok(smallTalkResponse!);
+        }
 
         if (!_aiClient.IsConfigured)
         {
@@ -71,20 +75,36 @@ public class AiAssistantService
 
         var history = SanitizeHistory(request.History);
         var needs = DetermineContextNeeds(message, history);
-        var context = await BuildContextAsync(needs);
-        var resolvedEdit = await TryResolveLedgerEditAsync(message, context.SensitiveMode);
+        var context = await BuildContextAsync(needs, cancellationToken);
+        var resolvedEdit = await TryResolveLedgerEditAsync(message, context.SensitiveMode, cancellationToken);
         if (resolvedEdit != null)
         {
             return Ok(resolvedEdit);
         }
 
+        // Prior turns are still folded into DetermineContextNeeds above regardless (so a
+        // multi-message conversation about the same topic keeps fetching the right data) --
+        // this only controls whether the model literally sees the past dialogue text, which
+        // it rarely needs for a long, self-contained question.
+        var promptHistory = NeedsHistoryContext(message) ? history : [];
         var systemInstruction = BuildSystemInstruction();
-        var userContent = BuildUserContent(message, history, context);
+        var userContent = BuildUserContent(message, promptHistory, context);
 
         string text;
         try
         {
-            text = await _aiClient.GenerateTextAsync([AiPart.FromText(userContent)], 0.15, 1400, systemInstruction);
+            text = await _aiClient.GenerateTextAsync(
+                [AiPart.FromText(userContent)],
+                new AiGenerationOptions(
+                    Feature: "chat",
+                    Temperature: 0.15,
+                    MaxOutputTokens: needs.NeedsCycleComparison ? 800 : 550,
+                    SystemInstruction: systemInstruction,
+                    ResponseJsonSchema: AiResponseSchemas.Chat,
+                    ThinkingLevel: needs.NeedsCycleComparison ? "medium" : "low",
+                    ModelConfigurationKey: "AiModels:Chat",
+                    FallbackModelConfigurationKey: "AiFallbackModels:Chat"),
+                cancellationToken);
         }
         catch (AiClientException ex)
         {
@@ -98,6 +118,68 @@ public class AiAssistantService
     }
 
     private static AiChatOutcome Ok(AiChatResponse response) => new(response, IsProviderError: false);
+
+    private static readonly HashSet<string> FarewellPhrases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "bye", "goodbye", "bye bye", "see you", "see ya", "later", "cya"
+    };
+
+    private static readonly HashSet<string> GreetingPhrases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "hi", "hello", "hey", "hiya", "yo", "sup", "good morning", "good afternoon", "good evening"
+    };
+
+    private static readonly HashSet<string> AcknowledgmentPhrases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "thanks", "thank you", "ty", "thx", "cheers",
+        "ok", "okay", "k", "kk", "cool", "great", "nice", "awesome", "perfect",
+        "got it", "sounds good", "alright", "sure", "yep", "yeah"
+    };
+
+    // Greetings/thanks/acks carry zero financial intent -- answering them never needed the
+    // model at all, so this skips the AI call (and its context-building work) entirely rather
+    // than just trimming what gets sent. Deliberately an exact-match closed list (after
+    // stripping trailing punctuation), not a `Contains` check, so it never fires on a real
+    // question that merely starts or ends with "thanks" or "ok".
+    private static bool TryHandleSmallTalk(string message, out AiChatResponse? response)
+    {
+        var normalized = Regex.Replace(message.Trim(), @"[!.?,]+$", "").Trim().ToLowerInvariant();
+
+        if (FarewellPhrases.Contains(normalized))
+        {
+            response = new AiChatResponse("Bye! I'm here whenever you need me.", [], CloseChat: true);
+            return true;
+        }
+        if (GreetingPhrases.Contains(normalized))
+        {
+            response = new AiChatResponse("Hi! Ask me a financial question or tell me what you'd like to open.", []);
+            return true;
+        }
+        if (AcknowledgmentPhrases.Contains(normalized))
+        {
+            response = new AiChatResponse("Anytime! Let me know if you need anything else.", []);
+            return true;
+        }
+
+        response = null;
+        return false;
+    }
+
+    private static readonly Regex FollowUpSignal = new(
+        @"^(and|also|what about|how about|what if)\b|\b(that|this|those|these|it|them|the other|other one|same)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Biased toward keeping history: only a longer message with no continuation marker is
+    // treated as a fresh, self-contained question. Short replies ("just food", "March") and
+    // anything referencing "it"/"that"/"the other one" almost always depend on the prior
+    // turn, so those still get history -- this only trims it for the messages least likely
+    // to need it.
+    private static bool NeedsHistoryContext(string message)
+    {
+        var trimmed = message.Trim();
+        var wordCount = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+        return wordCount <= 5 || FollowUpSignal.IsMatch(trimmed);
+    }
 
     // The `history` array is client-supplied on every request (this endpoint is stateless),
     // so it must not be trusted as-is: an unbounded role string or message length would let a
@@ -130,14 +212,27 @@ public class AiAssistantService
         RegexOptions.Compiled);
 
     private static readonly Regex CycleAnalysisSignal = new(
-        @"\b(spend|spent|spending|budget|income|outflow|inflow|balance|total|average|net|save|saved|savings|essentials|growth|stability|rewards|cycle|this month|last month|how much)\b",
+        @"\b(spend|spent|spending|budget|income|outflow|inflow|balance|total|average|net|save|saved|savings|essentials|growth|stability|rewards|cycle|this month|last month|how much|money going|doing better|doing worse|afford|financial health|performance)\b",
         RegexOptions.Compiled);
 
     private static readonly Regex TransactionDetailSignal = new(
-        @"\b(transaction|transactions|ledger|purchase|purchased|bought|paid|payment|receipt|charge|charged|expense|expenses|find|search|when did|did i|edit|update|change|modify|record|entry)\b",
+        @"\b(transaction|transactions|ledger|purchase|purchased|bought|paid|payment|receipt|charge|charged|expense|expenses|find|search|when did|did i|edit|update|change|modify|record|entry|merchant|cost me|how often|frequency)\b",
         RegexOptions.Compiled);
 
-    private sealed record ContextNeeds(bool NeedsTransactionDetail, bool NeedsCycleSummary, bool NeedsCycleComparison);
+    private static readonly Regex RecurringSignal = new(
+        @"\b(recurring|subscription|subscriptions|bill|bills|monthly payment|autopay|auto-pay)\b",
+        RegexOptions.Compiled);
+
+    private static readonly Regex WishlistSignal = new(
+        @"\b(wishlist|wish list|want to buy|saving for|priority item|afford)\b",
+        RegexOptions.Compiled);
+
+    private sealed record ContextNeeds(
+        bool NeedsTransactionDetail,
+        bool NeedsCycleSummary,
+        bool NeedsCycleComparison,
+        bool NeedsRecurring,
+        bool NeedsWishlist);
 
     // Keyword heuristic, not a model call -- zero added latency/cost, in the same style as
     // the delete/ledger-edit detectors below. A missed signal degrades gracefully: the system
@@ -159,12 +254,14 @@ public class AiAssistantService
         return new ContextNeeds(
             NeedsTransactionDetail: needsTransactionDetail,
             NeedsCycleSummary: needsCycleAnalysis || needsCycleComparison,
-            NeedsCycleComparison: needsCycleComparison);
+            NeedsCycleComparison: needsCycleComparison,
+            NeedsRecurring: RecurringSignal.IsMatch(lower),
+            NeedsWishlist: WishlistSignal.IsMatch(lower));
     }
 
-    private async Task<AiContext> BuildContextAsync(ContextNeeds needs)
+    private async Task<AiContext> BuildContextAsync(ContextNeeds needs, CancellationToken cancellationToken)
     {
-        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
+        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
         var cycleDay = setting?.CycleDay ?? 28;
         var selectedMonth = setting?.SelectedMonth ?? DateTime.Now.ToString("MMM");
         var selectedYear = setting?.SelectedYear ?? DateTime.Now.Year;
@@ -178,80 +275,68 @@ public class AiAssistantService
 
         var sensitiveMode = setting?.HideSensitive ?? true;
 
-        var recurring = await _context.RecurringPayments
-            .AsNoTracking()
-            .OrderBy(r => r.Name)
-            .Select(r => new
-            {
-                r.Id,
-                r.Name,
-                Amount = r.Amount,
-                r.Category,
-                r.LedgerCategory,
-                r.StartDate,
-                r.EndDate,
-                r.DueDate,
-                r.Active
-            })
-            .ToListAsync();
-        var recurringContext = sensitiveMode
-            ? recurring.Select(r => new
-            {
-                r.Id,
-                r.Name,
-                r.Category,
-                r.LedgerCategory,
-                r.StartDate,
-                r.EndDate,
-                r.DueDate,
-                r.Active
-            }).ToList()
-            : (object)recurring;
+        object recurringContext = Array.Empty<object>();
+        if (needs.NeedsRecurring)
+        {
+            var recurring = await _context.RecurringPayments
+                .AsNoTracking()
+                .OrderBy(r => r.Name)
+                .Select(r => new
+                {
+                    r.Id, r.Name, r.Amount, r.Category, r.LedgerCategory,
+                    r.StartDate, r.EndDate, r.DueDate, r.Active
+                })
+                .Take(100)
+                .ToListAsync(cancellationToken);
+            recurringContext = sensitiveMode
+                ? recurring.Select(r => new
+                {
+                    r.Id, r.Name, r.Category, r.LedgerCategory,
+                    r.StartDate, r.EndDate, r.DueDate, r.Active
+                }).ToList()
+                : recurring;
+        }
 
-        var wishlist = await _context.WishlistItems
-            .AsNoTracking()
-            .OrderBy(w => w.IsPurchased)
-            .ThenByDescending(w => w.IsActive)
-            .ThenByDescending(w => w.CreatedAt)
-            .Select(w => new
-            {
-                w.Id,
-                w.Name,
-                Price = w.Price,
-                w.Priority,
-                w.IsActive,
-                w.IsPurchased,
-                w.CreatedAt
-            })
-            .ToListAsync();
-        var wishlistContext = sensitiveMode
-            ? wishlist.Select(w => new
-            {
-                w.Id,
-                w.Name,
-                w.Priority,
-                w.IsActive,
-                w.IsPurchased,
-                w.CreatedAt
-            }).ToList()
-            : (object)wishlist;
+        object wishlistContext = Array.Empty<object>();
+        if (needs.NeedsWishlist)
+        {
+            var wishlist = await _context.WishlistItems
+                .AsNoTracking()
+                .OrderBy(w => w.IsPurchased)
+                .ThenByDescending(w => w.IsActive)
+                .ThenByDescending(w => w.CreatedAt)
+                .Select(w => new
+                {
+                    w.Id, w.Name, w.Price, w.Priority, w.IsActive, w.IsPurchased, w.CreatedAt
+                })
+                .Take(100)
+                .ToListAsync(cancellationToken);
+            wishlistContext = sensitiveMode
+                ? wishlist.Select(w => new
+                {
+                    w.Id, w.Name, w.Priority, w.IsActive, w.IsPurchased, w.CreatedAt
+                }).ToList()
+                : wishlist;
+        }
 
-        var allTransactions = await _context.Transactions
-            .AsNoTracking()
-            .Where(t => t.LedgerCategory != "Discarded")
-            .OrderByDescending(t => t.Date)
-            .ThenByDescending(t => t.Id)
-            .Take(500)
-            .Select(t => new
-            {
-                t.Id,
-                Date = TransactionDate.ToDateOnly(t.Date).ToString("yyyy-MM-dd"),
-                t.Description,
-                t.Category,
-                t.LedgerCategory,
-                t.Amount
-            })
-            .ToListAsync();
+        var allTransactions = needs.NeedsTransactionDetail || needs.NeedsCycleSummary
+            ? await _context.Transactions
+                .AsNoTracking()
+                .Where(t => t.LedgerCategory != "Discarded")
+                .OrderByDescending(t => t.Date)
+                .ThenByDescending(t => t.Id)
+                .Take(500)
+                .Select(t => new
+                {
+                    t.Id,
+                    Date = TransactionDate.ToDateOnly(t.Date).ToString("yyyy-MM-dd"),
+                    t.Description,
+                    t.Category,
+                    t.LedgerCategory,
+                    t.Amount
+                })
+                .ToListAsync(cancellationToken)
+            : [];
 
         object recentTransactions;
         if (!needs.NeedsTransactionDetail)
@@ -432,14 +517,14 @@ public class AiAssistantService
         return (year, month);
     }
 
-    private async Task<AiChatResponse?> TryResolveLedgerEditAsync(string message, bool sensitiveMode)
+    private async Task<AiChatResponse?> TryResolveLedgerEditAsync(string message, bool sensitiveMode, CancellationToken cancellationToken)
     {
         if (!LooksLikeLedgerEditCommand(message))
         {
             return null;
         }
 
-        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
+        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
         var defaultYear = setting?.SelectedYear ?? DateTime.Now.Year;
         if (!TryExtractDate(message, defaultYear, out var targetDate, out var matchedDateText))
         {
@@ -477,7 +562,7 @@ public class AiAssistantService
                 t.Description
             })
             .Take(4)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         var formattedDate = FormatDateForReply(targetDate);
         if (matches.Count == 0)
@@ -631,7 +716,7 @@ public class AiAssistantService
     // Per-request data (message/history/live app context) goes in BuildUserContent instead.
     private static string BuildSystemInstruction()
     {
-        return @"You are FinancialApp AI. Return ONLY valid JSON, no markdown.
+        return @"You are FinancialApp AI for a personal finance application.
 
 Rules:
 - Only fulfill these capabilities: cycle analysis, ledger navigation/filtering, opening add/edit drafts for ledger/recurring/wishlist, and wishlist/recurring Q&A.
@@ -657,16 +742,7 @@ Allowed actions:
 - openAddWishlistDraft payload: { name, price, priority, isActive }
 - openEditLedgerDraft payload: { id, changes }
 - openEditRecurringDraft payload: { id, changes }
-- openEditWishlistDraft payload: { id, changes }
-
-Output schema:
-{
-  ""reply"": ""short user-facing reply"",
-  ""closeChat"": false,
-  ""actions"": [
-    { ""type"": ""one allowed action type"", ""payload"": { } }
-  ]
-}";
+- openEditWishlistDraft payload: { id, changes }";
     }
 
     private static string BuildUserContent(string message, IReadOnlyList<AiChatMessage> history, AiContext context)
@@ -807,6 +883,37 @@ App context JSON: {contextJson}";
 
     private static bool IsActionSafe(string type, Dictionary<string, object?> payload, AiContext context)
     {
+        if (!HasKnownOptionalString(payload, "category", context.Categories) ||
+            !HasKnownOptionalString(payload, "ledgerCategory", context.LedgerCategories) ||
+            !HasKnownOptionalString(payload, "txType", ["inflow", "outflow", "transfer"]) ||
+            !HasValidOptionalNonNegativeNumber(payload, "amount") ||
+            !HasValidOptionalNonNegativeNumber(payload, "price") ||
+            !HasValidOptionalIsoDate(payload, "date") ||
+            !HasValidOptionalIsoDate(payload, "startDate") ||
+            !HasValidOptionalIsoDate(payload, "endDate"))
+        {
+            return false;
+        }
+
+        if (payload.TryGetValue("changes", out var changesValue) && changesValue != null)
+        {
+            var changes = changesValue is JsonElement element && element.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Deserialize<Dictionary<string, object?>>(element.GetRawText())
+                : changesValue as Dictionary<string, object?>;
+            if (changes == null ||
+                !HasKnownOptionalString(changes, "category", context.Categories) ||
+                !HasKnownOptionalString(changes, "ledgerCategory", context.LedgerCategories) ||
+                !HasKnownOptionalString(changes, "txType", ["inflow", "outflow", "transfer"]) ||
+                !HasValidOptionalNonNegativeNumber(changes, "amount") ||
+                !HasValidOptionalNonNegativeNumber(changes, "price") ||
+                !HasValidOptionalIsoDate(changes, "date") ||
+                !HasValidOptionalIsoDate(changes, "startDate") ||
+                !HasValidOptionalIsoDate(changes, "endDate"))
+            {
+                return false;
+            }
+        }
+
         if (type.Equals("openEditRecurringDraft", StringComparison.OrdinalIgnoreCase))
         {
             return HasKnownId(payload, "id", context.RecurringPayments);
@@ -820,6 +927,42 @@ App context JSON: {contextJson}";
             return HasKnownId(payload, "id", context.RecentTransactions);
         }
         return true;
+    }
+
+    private static bool HasKnownOptionalString(
+        IReadOnlyDictionary<string, object?> payload,
+        string key,
+        IReadOnlyCollection<string> allowed)
+    {
+        if (!payload.TryGetValue(key, out var value) || value == null) return true;
+        var text = value is JsonElement element && element.ValueKind == JsonValueKind.String
+            ? element.GetString()
+            : value as string;
+        return !string.IsNullOrWhiteSpace(text) && allowed.Contains(text, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool HasValidOptionalNonNegativeNumber(IReadOnlyDictionary<string, object?> payload, string key)
+    {
+        if (!payload.TryGetValue(key, out var value) || value == null) return true;
+        double number;
+        if (value is JsonElement element && element.ValueKind == JsonValueKind.Number)
+        {
+            if (!element.TryGetDouble(out number)) return false;
+        }
+        else if (!double.TryParse(value.ToString(), NumberStyles.Number, CultureInfo.InvariantCulture, out number))
+        {
+            return false;
+        }
+        return double.IsFinite(number) && number >= 0;
+    }
+
+    private static bool HasValidOptionalIsoDate(IReadOnlyDictionary<string, object?> payload, string key)
+    {
+        if (!payload.TryGetValue(key, out var value) || value == null) return true;
+        var text = value is JsonElement element && element.ValueKind == JsonValueKind.String
+            ? element.GetString()
+            : value as string;
+        return DateOnly.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _);
     }
 
     private static bool HasKnownId(Dictionary<string, object?> payload, string key, object records)

@@ -47,11 +47,16 @@ public class TransactionCategoriesController : ControllerBase
     }
 
     [HttpPost("suggest")]
-    public async Task<IActionResult> SuggestCategories(CategorySuggestionRequest request)
+    public async Task<IActionResult> SuggestCategories(CategorySuggestionRequest request, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Description))
         {
             return BadRequest(new { message = "Description is required." });
+        }
+        if (request.Description.Length > 300 || request.Categories?.Count > 50 ||
+            request.Categories?.Any(category => string.IsNullOrWhiteSpace(category) || category.Length > 60) == true)
+        {
+            return BadRequest(new { message = "Suggestion input is too long." });
         }
 
         try
@@ -59,7 +64,8 @@ public class TransactionCategoriesController : ControllerBase
             var result = await _categorySuggestionService.SuggestAsync(
                 request.Description.Trim(),
                 request.TxType,
-                request.Categories);
+                request.Categories,
+                cancellationToken);
             return result.Status == AiOperationStatus.Ok
                 ? Ok(new { suggestions = result.Data })
                 : StatusCode(503, new { message = result.Message });
@@ -77,11 +83,18 @@ public class TransactionCategoriesController : ControllerBase
     }
 
     [HttpPost("suggest-notes")]
-    public async Task<IActionResult> SuggestNotes(TransactionNoteSuggestionRequest request)
+    public async Task<IActionResult> SuggestNotes(TransactionNoteSuggestionRequest request, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Description))
         {
             return BadRequest(new { message = "Description is required." });
+        }
+        if (request.Description.Length > 300 || request.Category?.Length > 100 ||
+            request.LedgerCategory?.Length > 50 || request.TxType?.Length > 20 ||
+            request.HistoryDescriptions?.Count > 10 ||
+            request.HistoryDescriptions?.Any(description => string.IsNullOrWhiteSpace(description) || description.Length > 150) == true)
+        {
+            return BadRequest(new { message = "Suggestion input is too long." });
         }
 
         try
@@ -91,7 +104,8 @@ public class TransactionCategoriesController : ControllerBase
                 request.Category,
                 request.LedgerCategory,
                 request.TxType,
-                request.HistoryDescriptions);
+                request.HistoryDescriptions,
+                cancellationToken);
             return result.Status == AiOperationStatus.Ok
                 ? Ok(new { suggestions = result.Data })
                 : StatusCode(503, new { message = result.Message });
@@ -109,11 +123,11 @@ public class TransactionCategoriesController : ControllerBase
     }
 
     [HttpPost("cleanup/review")]
-    public async Task<IActionResult> ReviewCleanup()
+    public async Task<IActionResult> ReviewCleanup(CancellationToken cancellationToken)
     {
         try
         {
-            var result = await _categorySuggestionService.ReviewCategoryCleanupAsync();
+            var result = await _categorySuggestionService.ReviewCategoryCleanupAsync(cancellationToken);
             return result.Status == AiOperationStatus.Ok
                 ? Ok(result.Data)
                 : StatusCode(503, new { message = result.Message });
@@ -135,12 +149,10 @@ public class TransactionCategoriesController : ControllerBase
     {
         try
         {
-            var result = await _categorySuggestionService.ApplyCategoryCleanupAsync(request.Actions ?? []);
-            return Ok(result);
-        }
-        catch (CategorySuggestionUserException ex)
-        {
-            return Conflict(new { message = ex.Message });
+            var outcome = await _categorySuggestionService.ApplyCategoryCleanupAsync(request.Actions ?? []);
+            return outcome.ConflictMessage != null
+                ? Conflict(new { message = outcome.ConflictMessage })
+                : Ok(outcome.Result);
         }
         catch (Exception ex)
         {

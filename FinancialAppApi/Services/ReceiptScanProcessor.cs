@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
@@ -59,9 +60,16 @@ public class ReceiptScanProcessor
 
         try
         {
-            var result = await ScanImageAsync(job.ImageBase64, job.MimeType);
+            var outcome = await ScanImageAsync(job.ImageBase64, job.MimeType);
+            if (outcome.ErrorMessage != null)
+            {
+                _logger.LogWarning("Receipt scan job {JobId} failed with user-facing error: {Message}", jobId, outcome.ErrorMessage);
+                await MarkFailed(job, outcome.ErrorMessage);
+                return;
+            }
+
             job.Status = "completed";
-            job.ResultJson = JsonSerializer.Serialize(result, new JsonSerializerOptions
+            job.ResultJson = JsonSerializer.Serialize(outcome.Result, new JsonSerializerOptions
             {
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             });
@@ -70,11 +78,6 @@ public class ReceiptScanProcessor
             job.CompletedAt = DateTime.UtcNow;
             job.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
-        }
-        catch (ReceiptScanUserException ex)
-        {
-            _logger.LogWarning(ex, "Receipt scan job {JobId} failed with user-facing error.", jobId);
-            await MarkFailed(job, ex.Message);
         }
         catch (TaskCanceledException ex)
         {
@@ -105,42 +108,32 @@ public class ReceiptScanProcessor
 
     private static readonly string[] ValidLedgerCategories = ["Essentials", "Growth", "Stability", "Rewards", "Income"];
 
-    private const string ScanSystemInstruction = @"You are a receipt/invoice OCR assistant for a personal finance app.
-Analyze the receipt image and extract the following fields. Return ONLY valid JSON, no markdown, no explanation.
-
-JSON schema:
-{
-  ""description"": ""<merchant name or brief description of purchase, e.g. 'McDonald's', 'Grab Ride', 'Electricity Bill'>"",
-  ""amount"": <numeric value, positive number, e.g. 24.50 - extract the TOTAL amount paid>,
-  ""date"": ""<ISO date string YYYY-MM-DD if visible on receipt, otherwise null>"",
-  ""category"": ""<best-fit category, MUST be one of the Available categories listed below (fallback to 'Other')>"",
-  ""ledgerCategory"": ""<best-fit ledger category - MUST be one of: Essentials, Growth, Stability, Rewards, Income>"",
-  ""txType"": ""outflow"",
-  ""confidence"": <0.0 to 1.0 indicating how confident you are in the extracted data>
-}
-
+    private const string ScanSystemInstruction = @"Extract one receipt or invoice for a personal finance app.
 Rules:
 - description: use the merchant/store name if visible; otherwise describe the purchase type
 - amount: extract the final TOTAL amount (after tax/tip if applicable); return as a plain, non-negative number
 - date: only return a date if you can clearly read it on the receipt; otherwise null
-- category: pick the single most fitting category from the Available categories list below. Do not make up your own category name.
+- category: pick the single most fitting category from the available list. Do not invent a category.
 - ledgerCategory: pick the single most fitting ledger category (Essentials is typically for food/transport/bills, Rewards for entertainment/shopping, Growth for investments/education, Stability for savings/insurance, Income for salary/inflows).
-- txType: always ""outflow"" for receipts (receipts are purchases)
-- If you cannot read the receipt clearly, still return your best guess with a low confidence score
+- If critical text is unclear, return the best supported value with low confidence; never invent receipt details.";
 
-Return only the JSON object.";
-
-    private async Task<ReceiptScanResult> ScanImageAsync(string base64Image, string mimeType)
+    private async Task<ScanOutcome> ScanImageAsync(string base64Image, string mimeType)
     {
         if (!_aiClient.IsConfigured)
         {
-            throw new ReceiptScanUserException("OCR service is not configured. Ask your administrator to set the AiApiKey.");
+            return ScanOutcome.Failed("OCR service is not configured. Ask your administrator to set the AiApiKey.");
         }
 
         var categories = (await _categoryService.GetCategoriesAsync())
             .Select(c => c.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(name => name)
             .ToList();
+        if (categories.Count == 0)
+        {
+            return ScanOutcome.Failed("No transaction categories are configured.");
+        }
 
         var content = $"Available categories JSON array: {JsonSerializer.Serialize(categories)}";
 
@@ -149,47 +142,59 @@ Return only the JSON object.";
         {
             text = await _aiClient.GenerateTextAsync(
                 [AiPart.FromImage(mimeType, base64Image), AiPart.FromText(content)],
-                0.1,
-                1024,
-                ScanSystemInstruction);
+                new AiGenerationOptions(
+                    Feature: "receipt-ocr",
+                    Temperature: 0,
+                    MaxOutputTokens: 260,
+                    SystemInstruction: ScanSystemInstruction,
+                    ResponseJsonSchema: AiResponseSchemas.Receipt(categories),
+                    ThinkingLevel: "low",
+                    ModelConfigurationKey: "AiModels:ReceiptOcr",
+                    FallbackModelConfigurationKey: "AiFallbackModels:ReceiptOcr"));
         }
         catch (AiClientException ex)
         {
-            throw new ReceiptScanUserException(ex.Message);
+            return ScanOutcome.Failed(ex.Message);
         }
 
         using var resultDoc = JsonDocument.Parse(text);
         var root = resultDoc.RootElement;
 
-        string description = root.TryGetProperty("description", out var descProp) ? (descProp.GetString() ?? "") : "";
+        string description = root.TryGetProperty("description", out var descProp) ? (descProp.GetString() ?? "").Trim() : "";
+        if (description.Length > 120) description = description[..120].Trim();
         decimal? amount = null;
         if (root.TryGetProperty("amount", out var amtProp) && amtProp.ValueKind == JsonValueKind.Number)
         {
             amount = Math.Abs(amtProp.GetDecimal());
         }
 
-        string? date = root.TryGetProperty("date", out var dateProp) && dateProp.ValueKind != JsonValueKind.Null
-            ? dateProp.GetString()
-            : null;
-        string category = root.TryGetProperty("category", out var catProp) ? (catProp.GetString() ?? "") : "";
-        string ledgerCategory = root.TryGetProperty("ledgerCategory", out var lcProp) ? (lcProp.GetString() ?? "Essentials") : "Essentials";
-        string txType = root.TryGetProperty("txType", out var txTypeProp) ? (txTypeProp.GetString() ?? "outflow") : "outflow";
-        double confidence = root.TryGetProperty("confidence", out var confProp) && confProp.ValueKind == JsonValueKind.Number
-            ? confProp.GetDouble()
-            : 0.5;
-
-        if (!ValidLedgerCategories.Contains(ledgerCategory))
+        string? date = null;
+        if (root.TryGetProperty("date", out var dateProp) && dateProp.ValueKind == JsonValueKind.String &&
+            DateOnly.TryParseExact(dateProp.GetString(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsedDate))
         {
-            ledgerCategory = "Essentials";
+            date = parsedDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        }
+        var rawCategory = root.TryGetProperty("category", out var catProp) ? catProp.GetString() : null;
+        string category = categories.FirstOrDefault(c => string.Equals(c, rawCategory, StringComparison.OrdinalIgnoreCase))
+            ?? categories.FirstOrDefault(c => string.Equals(c, "Other", StringComparison.OrdinalIgnoreCase))
+            ?? categories[0];
+        var rawLedgerCategory = root.TryGetProperty("ledgerCategory", out var lcProp) ? lcProp.GetString() : null;
+        string ledgerCategory = ValidLedgerCategories.FirstOrDefault(c => string.Equals(c, rawLedgerCategory, StringComparison.OrdinalIgnoreCase))
+            ?? "Essentials";
+        double confidence = root.TryGetProperty("confidence", out var confProp) && confProp.ValueKind == JsonValueKind.Number
+            ? Math.Clamp(confProp.GetDouble(), 0, 1)
+            : 0.5;
+        if (string.IsNullOrWhiteSpace(description) && amount == null)
+        {
+            return ScanOutcome.Failed("Could not read a merchant or total from the receipt. Please try a clearer photo.");
         }
 
-        return new ReceiptScanResult(description, amount, date, category, ledgerCategory, txType, confidence);
+        return ScanOutcome.Ok(new ReceiptScanResult(description, amount, date, category, ledgerCategory, "outflow", confidence));
     }
 
-    private sealed class ReceiptScanUserException : Exception
+    private sealed record ScanOutcome(ReceiptScanResult? Result, string? ErrorMessage)
     {
-        public ReceiptScanUserException(string message) : base(message)
-        {
-        }
+        public static ScanOutcome Ok(ReceiptScanResult result) => new(result, null);
+        public static ScanOutcome Failed(string message) => new(null, message);
     }
 }

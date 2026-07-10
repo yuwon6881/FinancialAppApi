@@ -20,11 +20,11 @@ public class AiController : ControllerBase
     }
 
     [HttpPost("chat")]
-    public async Task<ActionResult<AiChatResponse>> Chat([FromBody] AiChatRequest request)
+    public async Task<ActionResult<AiChatResponse>> Chat([FromBody] AiChatRequest request, CancellationToken cancellationToken)
     {
         try
         {
-            var outcome = await _aiAssistantService.ChatAsync(request);
+            var outcome = await _aiAssistantService.ChatAsync(request, cancellationToken);
             return outcome.IsProviderError ? StatusCode(503, outcome.Response) : Ok(outcome.Response);
         }
         catch (TaskCanceledException ex)
