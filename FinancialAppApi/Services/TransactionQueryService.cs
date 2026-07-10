@@ -85,6 +85,13 @@ public class TransactionQueryService
         return new TransactionListResult(filtered);
     }
 
+    public async Task<Transaction?> GetTransactionByIdAsync(string id)
+    {
+        return await _context.Transactions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == id && t.LedgerCategory != "Discarded");
+    }
+
     public async Task<List<AutocompleteSuggestion>> GetAutocompleteSuggestionsAsync()
     {
         var recentTxs = await _context.Transactions

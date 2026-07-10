@@ -71,6 +71,19 @@ public class TransactionsController : ControllerBase
         return Ok(await _transactionQueryService.GetAutocompleteSuggestionsAsync());
     }
 
+    // GET: api/transactions/{id}
+    [HttpGet("{id}")]
+    public async Task<ActionResult<TransactionDto>> GetTransaction(string id)
+    {
+        var transaction = await _transactionQueryService.GetTransactionByIdAsync(id);
+        if (transaction == null)
+        {
+            return NotFound();
+        }
+
+        return Ok(MapToDto(transaction));
+    }
+
     // GET: api/transactions/export
     [HttpGet("export")]
     public async Task<IActionResult> ExportTransactions(

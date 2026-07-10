@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Net.Http.Headers;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using FinancialAppApi.Database;
 using Microsoft.EntityFrameworkCore;
@@ -60,6 +62,12 @@ public class AiAssistantService
         }
 
         var context = await BuildContextAsync();
+        var resolvedEdit = await TryResolveLedgerEditAsync(message, context.SensitiveMode);
+        if (resolvedEdit != null)
+        {
+            return resolvedEdit;
+        }
+
         var prompt = BuildPrompt(message, request.History ?? [], context);
         var text = await GenerateGeminiTextAsync(prompt, 0.15, 1400, apiKey);
         return ParseAndValidateResponse(text, context, message);
@@ -322,6 +330,200 @@ public class AiAssistantService
         return (year, month);
     }
 
+    private async Task<AiChatResponse?> TryResolveLedgerEditAsync(string message, bool sensitiveMode)
+    {
+        if (!LooksLikeLedgerEditCommand(message))
+        {
+            return null;
+        }
+
+        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
+        var defaultYear = setting?.SelectedYear ?? DateTime.Now.Year;
+        if (!TryExtractDate(message, defaultYear, out var targetDate, out var matchedDateText))
+        {
+            return null;
+        }
+
+        var searchText = ExtractLedgerEditSearchText(message, matchedDateText);
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            return null;
+        }
+
+        if (sensitiveMode)
+        {
+            return new AiChatResponse("Unhide balances before using AI to edit ledger records.", []);
+        }
+
+        var dateStart = TransactionDate.StartOfDate(targetDate);
+        var dateEnd = TransactionDate.ExclusiveEndOfDate(targetDate);
+        var normalizedSearch = searchText.ToLowerInvariant();
+        var matches = await _context.Transactions
+            .AsNoTracking()
+            .Where(t =>
+                t.LedgerCategory != "Discarded" &&
+                t.Date >= dateStart &&
+                t.Date < dateEnd &&
+                (t.Description.ToLower().Contains(normalizedSearch) ||
+                 t.Category.ToLower().Contains(normalizedSearch) ||
+                 t.LedgerCategory.ToLower().Contains(normalizedSearch)))
+            .OrderByDescending(t => t.Date)
+            .ThenByDescending(t => t.Id)
+            .Select(t => new
+            {
+                t.Id,
+                t.Description
+            })
+            .Take(4)
+            .ToListAsync();
+
+        var formattedDate = FormatDateForReply(targetDate);
+        if (matches.Count == 0)
+        {
+            return new AiChatResponse($"I couldn't find a ledger record matching \"{searchText}\" on {formattedDate}.", []);
+        }
+
+        if (matches.Count > 1)
+        {
+            return new AiChatResponse($"I found {matches.Count} ledger records matching \"{searchText}\" on {formattedDate}. Please specify which one to edit.", []);
+        }
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["id"] = matches[0].Id,
+            ["changes"] = new Dictionary<string, object?>()
+        };
+        return new AiChatResponse($"Opened the \"{matches[0].Description}\" record from {formattedDate}.", [new AiUiAction("openEditLedgerDraft", payload)]);
+    }
+
+    private static bool LooksLikeLedgerEditCommand(string message)
+    {
+        var lower = message.Trim().ToLowerInvariant();
+        if (!Regex.IsMatch(lower, @"\b(edit|update|change|modify)\b", RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        return !(lower.Contains("recurring") ||
+            lower.Contains("subscription") ||
+            lower.Contains("wishlist") ||
+            lower.Contains("wish list") ||
+            lower.Contains("goal"));
+    }
+
+    private static bool TryExtractDate(string message, int defaultYear, out DateOnly date, out string matchedText)
+    {
+        var isoMatch = Regex.Match(message, @"\b(?<year>\d{4})-(?<month>\d{1,2})-(?<day>\d{1,2})\b", RegexOptions.IgnoreCase);
+        if (isoMatch.Success &&
+            TryCreateDate(
+                int.Parse(isoMatch.Groups["year"].Value, CultureInfo.InvariantCulture),
+                int.Parse(isoMatch.Groups["month"].Value, CultureInfo.InvariantCulture),
+                int.Parse(isoMatch.Groups["day"].Value, CultureInfo.InvariantCulture),
+                out date))
+        {
+            matchedText = isoMatch.Value;
+            return true;
+        }
+
+        const string monthPattern = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+        var monthDayMatch = Regex.Match(
+            message,
+            $@"\b(?<month>{monthPattern})\s+(?<day>\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(?<year>\d{{4}}))?\b",
+            RegexOptions.IgnoreCase);
+        if (monthDayMatch.Success &&
+            TryCreateDate(
+                GetMonthNumber(monthDayMatch.Groups["month"].Value),
+                monthDayMatch.Groups["day"].Value,
+                monthDayMatch.Groups["year"].Success ? monthDayMatch.Groups["year"].Value : null,
+                defaultYear,
+                out date))
+        {
+            matchedText = monthDayMatch.Value;
+            return true;
+        }
+
+        var dayMonthMatch = Regex.Match(
+            message,
+            $@"\b(?<day>\d{{1,2}})(?:st|nd|rd|th)?\s+(?<month>{monthPattern})(?:,?\s+(?<year>\d{{4}}))?\b",
+            RegexOptions.IgnoreCase);
+        if (dayMonthMatch.Success &&
+            TryCreateDate(
+                GetMonthNumber(dayMonthMatch.Groups["month"].Value),
+                dayMonthMatch.Groups["day"].Value,
+                dayMonthMatch.Groups["year"].Success ? dayMonthMatch.Groups["year"].Value : null,
+                defaultYear,
+                out date))
+        {
+            matchedText = dayMonthMatch.Value;
+            return true;
+        }
+
+        date = default;
+        matchedText = string.Empty;
+        return false;
+    }
+
+    private static bool TryCreateDate(int month, string dayText, string? yearText, int defaultYear, out DateOnly date)
+    {
+        var year = string.IsNullOrWhiteSpace(yearText)
+            ? defaultYear
+            : int.Parse(yearText, CultureInfo.InvariantCulture);
+        var day = int.Parse(dayText, CultureInfo.InvariantCulture);
+        return TryCreateDate(year, month, day, out date);
+    }
+
+    private static bool TryCreateDate(int year, int month, int day, out DateOnly date)
+    {
+        try
+        {
+            date = new DateOnly(year, month, day);
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            date = default;
+            return false;
+        }
+    }
+
+    private static int GetMonthNumber(string month)
+    {
+        return month[..3].ToLowerInvariant() switch
+        {
+            "jan" => 1,
+            "feb" => 2,
+            "mar" => 3,
+            "apr" => 4,
+            "may" => 5,
+            "jun" => 6,
+            "jul" => 7,
+            "aug" => 8,
+            "sep" => 9,
+            "oct" => 10,
+            "nov" => 11,
+            "dec" => 12,
+            _ => 0
+        };
+    }
+
+    private static string ExtractLedgerEditSearchText(string message, string matchedDateText)
+    {
+        var withoutDate = Regex.Replace(message, Regex.Escape(matchedDateText), " ", RegexOptions.IgnoreCase);
+        var beforeChangeTarget = Regex.Split(withoutDate, @"\s+\b(to|into|as)\b\s+", RegexOptions.IgnoreCase)[0];
+        var cleaned = Regex.Replace(
+            beforeChangeTarget,
+            @"\b(edit|update|change|modify|ledger|record|transaction|entry|on|at|for|please|can|you|the|my|a|an)\b",
+            " ",
+            RegexOptions.IgnoreCase);
+        cleaned = Regex.Replace(cleaned, @"[^\p{L}\p{N}\s'-]", " ");
+        return Regex.Replace(cleaned, @"\s+", " ").Trim();
+    }
+
+    private static string FormatDateForReply(DateOnly date)
+    {
+        return date.ToString("MMMM d, yyyy", CultureInfo.InvariantCulture);
+    }
+
     private static string BuildPrompt(string message, IReadOnlyList<AiChatMessage> history, AiContext context)
     {
         var contextJson = JsonSerializer.Serialize(context, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
@@ -342,6 +544,7 @@ Rules:
 - Delete requests are unsupported. Reply that AI cannot delete records.
 - If ambiguous about target record, category, cycle, action type, amount, or whether the user wants ledger vs recurring vs wishlist, ask one concise clarification with at most 3 questions, return no actions, and set closeChat false.
 - Use only categories, ledger categories, cycles, and record ids from App context.
+- For ledger edit requests, return openEditLedgerDraft when you can identify one exact transaction. Do not return openLedger just to search unless the user explicitly asks to show/filter/navigate.
 - If the user asks a question (for example ""how many"", ""what"", ""why"", ""compare"", ""analyze""), answer the question and return no actions unless the user explicitly asks to open/show/filter/navigate the ledger.
 - If sensitiveMode is true, exact amounts/prices/balances are not available and must not be asked for or revealed. Refuse amount-specific questions briefly. Do not return edit actions in sensitiveMode.
 - Use at most one action unless the user clearly asked for more.
@@ -349,7 +552,7 @@ Rules:
 - Do not end replies with optional follow-up offers or questions like ""would you like a summary?"".
 
 Allowed actions:
-- openLedger payload: {{ month, year, allCycles, category, ledgerCategory, txType, search }}
+- openLedger payload: {{ month, year, allCycles, category, ledgerCategory, txType, search, date }}
 - openAddLedgerDraft payload: {{ description, amount, txType, category, ledgerCategory, date }}
 - openAddRecurringDraft payload: {{ name, amount, category, ledgerCategory, startDate, endDate }}
 - openAddWishlistDraft payload: {{ name, price, priority, isActive }}
