@@ -7,9 +7,24 @@ using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
 
+// Wire contract carried back to the client on AiChatResponse and echoed on the next
+// AiChatRequest. Holds only structured *references* (never amounts or full records) so short
+// follow-ups ("those", "the previous cycle", "it") can be resolved. Treated as untrusted on
+// the way back in (see AiAssistantService.SanitizeConversationState) -- IDs are re-derived
+// against the DB, never trusted verbatim.
+public sealed record AiConversationState(
+    string? LastIntent,
+    string? LastSearchText,
+    string? LastCycleHint,
+    string? LastWishlistReference,
+    string? LastResolvedCycle = null,
+    IReadOnlyList<string>? LastMatchedTransactionIds = null,
+    int? LastWishlistItemId = null,
+    string? LastCategory = null);
+
 public sealed record AiChatMessage(string Role, string Content);
-public sealed record AiChatRequest(string Message, IReadOnlyList<AiChatMessage>? History);
-public sealed record AiChatResponse(string Reply, IReadOnlyList<AiUiAction> Actions, bool CloseChat = false);
+public sealed record AiChatRequest(string Message, IReadOnlyList<AiChatMessage>? History, AiConversationState? State = null);
+public sealed record AiChatResponse(string Reply, IReadOnlyList<AiUiAction> Actions, bool CloseChat = false, AiConversationState? State = null);
 public sealed record AiUiAction(string Type, Dictionary<string, object?> Payload);
 
 // AiChatResponse alone is the wire shape returned to the client either way (a friendly
@@ -18,7 +33,7 @@ public sealed record AiUiAction(string Type, Dictionary<string, object?> Payload
 // endpoint's controller switches on a Status field instead of guessing from the payload.
 public sealed record AiChatOutcome(AiChatResponse Response, bool IsProviderError);
 
-public class AiAssistantService
+public partial class AiAssistantService
 {
     private static readonly string[] LedgerCategories = ["Essentials", "Growth", "Stability", "Rewards", "Income"];
     private static readonly HashSet<string> AllowedActionTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -85,22 +100,48 @@ public class AiAssistantService
         }
 
         var history = SanitizeHistory(request.History);
-        var needs = DetermineContextNeeds(message, history);
-        var contextResult = await BuildContextAsync(needs, cancellationToken);
-        var context = contextResult.Context;
-        var resolvedEdit = await TryResolveLedgerEditAsync(
-            message,
-            context,
-            contextResult.TargetCycles,
-            contextResult.CycleDay,
-            contextResult.DefaultYear,
-            cancellationToken);
-        if (resolvedEdit != null)
+        var priorState = SanitizeConversationState(request.State);
+        var intentPlan = ResolveDeterministically(message, history, priorState);
+        if (intentPlan.Confidence < 0.72 || intentPlan.Intents.Contains(AiIntent.General))
         {
-            return Ok(resolvedEdit);
+            var classified = await TryClassifyIntentAsync(message, history, cancellationToken);
+            if (classified != null && classified.Confidence >= intentPlan.Confidence)
+            {
+                intentPlan = MergeResolutions(message, history, classified, priorState);
+            }
         }
 
-        // Prior turns are still folded into DetermineContextNeeds above regardless (so a
+        var contextResult = await BuildContextAsync(intentPlan, cancellationToken);
+        var context = contextResult.Context;
+        // Generic sufficiency gate: any intent that needs an exact figure whose dataset is
+        // missing (hidden/unavailable) is answered deterministically here rather than handed to
+        // the model with a hole in its context.
+        var insufficient = ResolveInsufficiency(
+            intentPlan.Intents.Select(ToIntentName).ToList(),
+            contextResult.Sufficiency);
+        if (insufficient != null)
+        {
+            return Ok(insufficient);
+        }
+        // A hypothetical ("what if I changed this to 25") is a question, not an edit command --
+        // never resolve it into an openEditLedgerDraft action.
+        if (!intentPlan.Constraints.Hypothetical)
+        {
+            var resolvedEdit = await TryResolveLedgerEditAsync(
+                message,
+                context,
+                contextResult.TargetCycles,
+                contextResult.CycleDay,
+                contextResult.DefaultYear,
+                intentPlan.QueryPlan.TransactionIds,
+                cancellationToken);
+            if (resolvedEdit != null)
+            {
+                return Ok(resolvedEdit);
+            }
+        }
+
+        // Prior turns are still folded into the query plan above regardless (so a
         // multi-message conversation about the same topic keeps fetching the right data) --
         // this only controls whether the model literally sees the past dialogue text, which
         // it rarely needs for a long, self-contained question.
@@ -116,10 +157,10 @@ public class AiAssistantService
                 new AiGenerationOptions(
                     Feature: "chat",
                     Temperature: 0.15,
-                    MaxOutputTokens: needs.NeedsCycleComparison ? 800 : 550,
+                    MaxOutputTokens: intentPlan.QueryPlan.NeedsCycleComparison ? 800 : 550,
                     SystemInstruction: systemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.Chat,
-                    ThinkingLevel: needs.NeedsCycleComparison ? "medium" : "low",
+                    ThinkingLevel: intentPlan.QueryPlan.NeedsCycleComparison ? "medium" : "low",
                     ModelConfigurationKey: "AiModels:Chat",
                     FallbackModelConfigurationKey: "AiFallbackModels:Chat"),
                 cancellationToken);
@@ -132,7 +173,13 @@ public class AiAssistantService
             return new AiChatOutcome(new AiChatResponse(ex.Message, []), IsProviderError: true);
         }
 
-        return Ok(ParseAndValidateResponse(text, context, message));
+        var parsed = ParseAndValidateResponse(text, context, message, intentPlan.Constraints);
+        // Phase 5: an incomplete aggregate must never surface as a bare exact figure.
+        parsed = parsed with { Reply = EnforceApproximateWording(parsed.Reply, contextResult.Sufficiency.Approximate) };
+        // Round-trip the structured references so the client can echo them back on the next
+        // turn (see AiConversationState). Not attached to small-talk/guardrail replies -- those
+        // deliberately carry no financial state.
+        return Ok(parsed with { State = contextResult.OutgoingState });
     }
 
     private static AiChatOutcome Ok(AiChatResponse response) => new(response, IsProviderError: false);
@@ -199,6 +246,158 @@ public class AiAssistantService
         return wordCount <= 5 || FollowUpSignal.IsMatch(trimmed);
     }
 
+    private async Task<IntentClassification?> TryClassifyIntentAsync(
+        string message,
+        IReadOnlyList<AiChatMessage> history,
+        CancellationToken cancellationToken)
+    {
+        var classifierPrompt = $"Classify the user's financial-app request. Return only the JSON schema. " +
+            $"Choose one or more intents, extract searchText for a merchant/activity, and preserve cycle wording. " +
+            $"User message: {JsonSerializer.Serialize(message)} " +
+            $"Recent history: {JsonSerializer.Serialize(history.TakeLast(4))}";
+        try
+        {
+            var text = await _aiClient.GenerateTextAsync(
+                [AiPart.FromText(classifierPrompt)],
+                new AiGenerationOptions(
+                    Feature: "chat-intent-classification",
+                    Temperature: 0,
+                    MaxOutputTokens: 220,
+                    ResponseJsonSchema: AiResponseSchemas.IntentClassification,
+                    ThinkingLevel: "none",
+                    ModelConfigurationKey: "AiModels:IntentClassifier",
+                    FallbackModelConfigurationKey: "AiFallbackModels:IntentClassifier"),
+                cancellationToken);
+            using var document = JsonDocument.Parse(text);
+            var root = document.RootElement;
+            var intents = root.TryGetProperty("intents", out var intentsElement) && intentsElement.ValueKind == JsonValueKind.Array
+                ? intentsElement.EnumerateArray().Select(x => x.GetString()).Where(x => !string.IsNullOrWhiteSpace(x)).Cast<string>().ToList()
+                : [];
+            var confidence = root.TryGetProperty("confidence", out var confidenceElement) && confidenceElement.TryGetDouble(out var value) ? value : 0;
+            // searchText/cycleHint may arrive top-level (legacy) or under an "entities" object.
+            var entities = root.TryGetProperty("entities", out var entitiesElement) && entitiesElement.ValueKind == JsonValueKind.Object
+                ? entitiesElement
+                : root;
+            string? StringField(JsonElement parent, string name) =>
+                parent.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String ? el.GetString() : null;
+            var searchText = StringField(entities, "searchText") ?? StringField(root, "searchText");
+            var cycleHint = StringField(entities, "cycleHint") ?? StringField(root, "cycleHint")
+                ?? StringField(entities, "cycleReference") ?? StringField(entities, "cycleHint");
+            var date = StringField(entities, "date") is { } dateText &&
+                DateOnly.TryParseExact(dateText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsedDate)
+                ? parsedDate : (DateOnly?)null;
+            var category = StringField(entities, "category");
+            var ledgerCategory = StringField(entities, "ledgerCategory");
+            decimal? amount = null;
+            if (entities.TryGetProperty("amount", out var amountElement) && amountElement.ValueKind == JsonValueKind.Number &&
+                amountElement.TryGetDecimal(out var parsedAmount) && parsedAmount >= 0 && parsedAmount <= 1_000_000_000m)
+            {
+                amount = parsedAmount;
+            }
+            var wishlistReference = StringField(entities, "wishlistReference");
+            var transactionReference = StringField(entities, "transactionReference");
+            var classifierConstraints = ParseClassifierConstraints(root);
+            var ambiguities = root.TryGetProperty("ambiguities", out var ambiguityElement) && ambiguityElement.ValueKind == JsonValueKind.Array
+                ? ambiguityElement.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList()
+                : [];
+            // SanitizeClassification rejects unknown intents, clamps confidence, and normalizes text.
+            return SanitizeClassification(intents, confidence, searchText, cycleHint, date, category, ledgerCategory,
+                amount, wishlistReference, transactionReference, classifierConstraints, ambiguities);
+        }
+        catch (Exception ex) when (ex is AiClientException or JsonException or FormatException)
+        {
+            return null;
+        }
+    }
+
+    private static AiConstraints? ParseClassifierConstraints(JsonElement root)
+    {
+        if (!root.TryGetProperty("constraints", out var element) || element.ValueKind != JsonValueKind.Object) return null;
+        bool Bool(string name) => element.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False && value.GetBoolean();
+        var exclusions = element.TryGetProperty("exclusions", out var list) && list.ValueKind == JsonValueKind.Array
+            ? list.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).Where(x => !string.IsNullOrWhiteSpace(x)).Take(20).ToList()
+            : [];
+        return new AiConstraints(Bool("preventNavigation"), Bool("excludeTransfers"), exclusions, [], [], Bool("hypothetical"));
+    }
+
+    private static string? ExtractLikelySearchText(string message, IReadOnlyList<string> intents)
+    {
+        if (!intents.Any(i => i.Equals("ledger.activity_count", StringComparison.OrdinalIgnoreCase) ||
+                              i.Equals("ledger.merchant_search", StringComparison.OrdinalIgnoreCase))) return null;
+
+        var countMatch = Regex.Match(message,
+            @"\b(?:how many|how often|number of times)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{1,50}?)\s+(?:did|do|does|have|has|i|we)\b",
+            RegexOptions.IgnoreCase);
+        if (countMatch.Success) return NormalizeSearchText(countMatch.Groups["value"].Value);
+
+        var showMatch = Regex.Match(message,
+            @"\b(?:show|find|search|latest|last)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{1,50}?)\s+(?:spending|purchase|purchases|transactions?|payments?)\b",
+            RegexOptions.IgnoreCase);
+        if (showMatch.Success) return NormalizeSearchText(showMatch.Groups["value"].Value);
+
+        var merchantMatch = Regex.Match(message,
+            @"\b(?:at|from|for|about|with)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{1,60}?)(?:\s+(?:last|this|previous|current|in|on)\b|[?.!,]|$)",
+            RegexOptions.IgnoreCase);
+        return merchantMatch.Success ? NormalizeSearchText(merchantMatch.Groups["value"].Value) : null;
+    }
+
+    // Bare pronouns/verbs that the loose "how many X did I" pattern can accidentally capture
+    // as the subject when the message has no real subject ("how many did I do?").
+    private static readonly HashSet<string> SearchNoiseTerms = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "did", "do", "does", "have", "has", "i", "we", "it", "that", "this", "them", "those", "these", "the", "a", "an"
+    };
+
+    private static bool IsNoiseSearchTerm(string? term) =>
+        !string.IsNullOrWhiteSpace(term) && SearchNoiseTerms.Contains(term.Trim());
+
+    private static string NormalizeSearchText(string value) =>
+        Regex.Replace(value.Trim(), @"^(?:my|the)\s+", string.Empty, RegexOptions.IgnoreCase);
+
+    private static AiConversationState ResolveConversationState(
+        IReadOnlyList<AiChatMessage> history,
+        IReadOnlyList<string> intents,
+        string? searchText,
+        string? cycleHint,
+        AiConversationState? priorState = null)
+    {
+        var previousUserText = history.LastOrDefault(m => m.Role == "user")?.Content;
+        var carriesTransactionState = Regex.IsMatch(
+            previousUserText ?? string.Empty,
+            @"\b(those|these|them|that one|the highest one|the previous one|all of those|which of those)\b",
+            RegexOptions.IgnoreCase);
+        return new AiConversationState(
+            intents.FirstOrDefault(i => !i.Equals("general", StringComparison.OrdinalIgnoreCase)) ?? priorState?.LastIntent,
+            searchText ?? ExtractLikelySearchText(previousUserText ?? string.Empty, intents) ?? ExtractConversationSearch(previousUserText) ?? priorState?.LastSearchText,
+            cycleHint ?? ExtractConversationCycle(previousUserText) ?? priorState?.LastCycleHint,
+            ExtractWishlistReference(previousUserText) ?? priorState?.LastWishlistReference,
+            priorState?.LastResolvedCycle,
+            carriesTransactionState ? priorState?.LastMatchedTransactionIds : null,
+            carriesTransactionState ? priorState?.LastWishlistItemId : null,
+            priorState?.LastCategory);
+    }
+
+    private static string? ExtractConversationSearch(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var match = Regex.Match(text, @"\b(?:for|from|at|about|on)\s+([\p{L}\p{N}][\p{L}\p{N}'& -]{1,60})", RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value.Trim() : null;
+    }
+
+    private static string? ExtractConversationCycle(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var match = Regex.Match(text, @"\b((?:last|previous|prior|this|current)\s+(?:\d+\s+|few\s+)?(?:cycle|cycles|month|months))\b", RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    private static string? ExtractWishlistReference(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var match = Regex.Match(text, @"\b(?:wishlist|wish list|saving for|afford)\s+([\p{L}\p{N}][\p{L}\p{N}'& -]{1,60})", RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value.Trim() : null;
+    }
+
     // The `history` array is client-supplied on every request (this endpoint is stateless),
     // so it must not be trusted as-is: an unbounded role string or message length would let a
     // caller smuggle fabricated "instructions" into what the model is told is prior
@@ -215,6 +414,50 @@ public class AiAssistantService
             .Where(m => m.Role is "user" or "assistant" && !string.IsNullOrWhiteSpace(m.Content))
             .Select(m => m with { Content = m.Content.Length > MaxHistoryMessageLength ? m.Content[..MaxHistoryMessageLength] : m.Content })
             .ToList();
+    }
+
+    // The canonical intent vocabulary. Also used to reject unknown/tampered intent strings
+    // arriving on client-carried conversation state or classifier output.
+    private static readonly HashSet<string> KnownIntents = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ledger.activity_count", "ledger.merchant_search", "ledger.spending_total",
+        "ledger.transaction_list", "ledger.comparison", "ledger.edit", "ledger.add",
+        "ledger.anomaly", "ledger.duplicates", "wishlist.list", "wishlist.forecast",
+        "wishlist.add", "wishlist.edit", "recurring.list", "recurring.upcoming",
+        "recurring.add", "recurring.edit", "allocation.balance", "allocation.performance",
+        "navigation", "general"
+    };
+
+    private const int MaxStateSearchLength = 80;
+    private const int MaxStateMatchedIds = 50;
+
+    // Client-carried conversation state is untrusted input, exactly like history. An unknown
+    // intent, an over-long search string, or a giant id list must never flow into query
+    // building unchecked. IDs here are only *hints*; they are re-derived/re-validated against
+    // the DB before being surfaced again, never trusted verbatim.
+    private static AiConversationState? SanitizeConversationState(AiConversationState? state)
+    {
+        if (state == null) return null;
+        var intent = !string.IsNullOrWhiteSpace(state.LastIntent) && KnownIntents.Contains(state.LastIntent)
+            ? state.LastIntent.ToLowerInvariant()
+            : null;
+        string? Clamp(string? value) => string.IsNullOrWhiteSpace(value)
+            ? null
+            : (value.Length > MaxStateSearchLength ? value[..MaxStateSearchLength] : value).Trim();
+        var matchedIds = state.LastMatchedTransactionIds?
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Length > 64 ? id[..64] : id)
+            .Take(MaxStateMatchedIds)
+            .ToList();
+        return new AiConversationState(
+            intent,
+            Clamp(state.LastSearchText),
+            Clamp(state.LastCycleHint),
+            Clamp(state.LastWishlistReference),
+            Clamp(state.LastResolvedCycle),
+            matchedIds is { Count: > 0 } ? matchedIds : null,
+            state.LastWishlistItemId is > 0 ? state.LastWishlistItemId : null,
+            Clamp(state.LastCategory));
     }
 
     private const string MonthNamePattern = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
@@ -238,6 +481,10 @@ public class AiAssistantService
         @"\b(how much|how many|total|totals|average|averages|avg|breakdown|sum)\b",
         RegexOptions.Compiled);
 
+    private static readonly Regex CountQuestionSignal = new(
+        @"\b(how many|how often|number of times|times did i|played|visited|frequency)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     // ...unless the user explicitly asks to see the individual records. These words mean the
     // detail sample is genuinely wanted and override the aggregate suppression above.
     private static readonly Regex ExplicitRecordSignal = new(
@@ -252,6 +499,10 @@ public class AiAssistantService
         @"\b(wishlist|wish list|want to buy|saving for|priority item|afford)\b",
         RegexOptions.Compiled);
 
+    private static readonly Regex WishlistForecastSignal = new(
+        @"\b(how long|when can i|when will i|reach|hit|achieve|afford|target date|months? until|cycles? until)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     // Coaching/advice intent -- "how do I improve", "where can I cut", "am I on track".
     // Grounding this kind of answer needs the user's allocation targets, not just actuals,
     // so it turns on the budgetTargets block (and cycle summaries) the same way analysis does.
@@ -259,17 +510,118 @@ public class AiAssistantService
         @"\b(improve|improving|reduce|reducing|cut|cutting|spend less|save more|advice|advise|suggest|suggestion|recommend|recommendation|on track|over ?budget|under ?budget|overspend|overspending|should i|where can i|too much|tips?|optimi[sz]e)\b",
         RegexOptions.Compiled);
 
-    private sealed record ContextNeeds(
+    internal sealed record IntentClassification(
+        IReadOnlyList<string> Intents,
+        double Confidence,
+        string? SearchText,
+        string? CycleHint,
+        DateOnly? Date = null,
+        string? Category = null,
+        string? LedgerCategory = null,
+        decimal? Amount = null,
+        string? WishlistReference = null,
+        string? TransactionReference = null,
+        AiConstraints? Constraints = null,
+        IReadOnlyList<string>? Ambiguities = null);
+
+    // Phase 3: classifier output is untrusted model text -- validate in application code, never
+    // rely solely on provider-side schema enforcement. Rejects unknown intents, clamps
+    // confidence, normalizes/limits search text. Any IDs the classifier invents are discarded
+    // (never parsed here) -- records are only ever resolved against the DB.
+    internal static IntentClassification? SanitizeClassification(
+        IReadOnlyList<string>? rawIntents,
+        double rawConfidence,
+        string? searchText,
+        string? cycleHint,
+        DateOnly? date = null,
+        string? category = null,
+        string? ledgerCategory = null,
+        decimal? amount = null,
+        string? wishlistReference = null,
+        string? transactionReference = null,
+        AiConstraints? constraints = null,
+        IReadOnlyList<string>? ambiguities = null)
+    {
+        var intents = (rawIntents ?? [])
+            .Where(i => !string.IsNullOrWhiteSpace(i))
+            .Select(i => i.Trim().ToLowerInvariant())
+            .Where(KnownIntents.Contains)
+            .Distinct()
+            .Take(4)
+            .ToList();
+        if (intents.Count == 0) return null;
+
+        var confidence = double.IsFinite(rawConfidence) ? Math.Clamp(rawConfidence, 0d, 1d) : 0d;
+        string? Clean(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            var normalized = System.Text.RegularExpressions.Regex.Replace(value.Trim(), @"\s+", " ");
+            return normalized.Length > MaxStateSearchLength ? normalized[..MaxStateSearchLength] : normalized;
+        }
+        DateOnly? validDate = date;
+        if (validDate.HasValue && (validDate.Value < new DateOnly(1900, 1, 1) || validDate.Value > new DateOnly(2100, 12, 31))) validDate = null;
+        decimal? validAmount = amount is >= 0m and <= 1_000_000_000m ? amount : null;
+        var cleanAmbiguities = (ambiguities ?? [])
+            .Where(a => !string.IsNullOrWhiteSpace(a))
+            .Select(Clean)
+            .Where(a => a != null)
+            .Cast<string>()
+            .Take(8)
+            .ToList();
+        var cleanLedgerCategory = Clean(ledgerCategory);
+        if (cleanLedgerCategory != null && !LedgerCategories.Contains(cleanLedgerCategory, StringComparer.OrdinalIgnoreCase))
+        {
+            cleanLedgerCategory = null;
+        }
+        return new IntentClassification(
+            intents, confidence, Clean(searchText), Clean(cycleHint), validDate,
+            Clean(category), cleanLedgerCategory, validAmount,
+            Clean(wishlistReference), Clean(transactionReference), constraints, cleanAmbiguities);
+    }
+
+    private enum TransactionDataLevel
+    {
+        None,
+        AggregateOnly,
+        MatchingRows,
+        BoundedSample
+    }
+
+    private enum DerivedMetric
+    {
+        ActivityCount,
+        MerchantMatches,
+        AnomalyDetection,
+        DuplicateDetection,
+        CycleTotals,
+        CycleComparison,
+        WishlistForecast,
+        AllocationPerformance,
+        RecurringUpcoming
+    }
+
+    // The authoritative typed query plan. Carries the typed intents plus every data-loading
+    // decision derived from them (what transaction level to pull, which derived metrics to
+    // compute, and which optional blocks to include). The plan is the sole data-loading contract.
+    private sealed record AiQueryPlan(
+        IReadOnlyList<AiIntent> Intents,
+        TransactionDataLevel TransactionData,
+        IReadOnlyList<DerivedMetric> Metrics,
+        string? SearchText,
+        string? CycleHint,
+        string QueryText,
+        IReadOnlyList<string> TransactionIds,
+        int? WishlistItemId,
         bool NeedsTransactionDetail,
         bool NeedsCycleSummary,
         bool NeedsCycleComparison,
-        bool NeedsBudgetTargets,
-        bool NeedsRecurring,
         bool NeedsWishlist,
-        string QueryText);
+        bool NeedsWishlistForecast,
+        bool NeedsRecurring,
+        bool NeedsBudgetTargets);
 
     private sealed record TargetCycleSelection(IReadOnlyList<CycleKey> Cycles, bool ExplicitlyRequested);
-    private sealed record AiTransactionRow(
+    internal sealed record AiTransactionRow(
         string Id,
         DateTime Timestamp,
         string Date,
@@ -284,49 +636,24 @@ public class AiAssistantService
         string Category,
         string LedgerCategory,
         decimal Amount);
+    internal sealed record AiWishlistRow(int Id, string Name, decimal Price, string Priority, bool IsActive, bool IsPurchased, DateTime CreatedAt);
     private sealed record TransactionDateRange(DateTime Start, DateTime End);
 
-    private sealed record AiContextBuildResult(AiContext Context, IReadOnlyList<CycleKey> TargetCycles, int CycleDay, int DefaultYear);
+    private sealed record ContextSufficiency(bool Complete, bool Approximate, IReadOnlyList<AiDatasetKey> Missing);
+    private sealed record AiContextBuildResult(
+        AiContext Context,
+        IReadOnlyList<CycleKey> TargetCycles,
+        int CycleDay,
+        int DefaultYear,
+        ContextSufficiency Sufficiency,
+        AiConversationState OutgoingState);
 
-    // Keyword heuristic, not a model call -- zero added latency/cost, in the same style as
-    // the delete/ledger-edit detectors below. A missed signal degrades gracefully: the system
-    // instruction tells the model to ask a clarifying follow-up rather than guess when it
-    // needs numbers that aren't in front of it, instead of silently answering wrong.
-    private static ContextNeeds DetermineContextNeeds(string message, IReadOnlyList<AiChatMessage> history)
+    private async Task<AiContextBuildResult> BuildContextAsync(
+        AiIntentPlan intentPlan,
+        CancellationToken cancellationToken)
     {
-        // Recent user turns are folded in (not just the latest message) so a multi-message
-        // back-and-forth about the same financial topic doesn't lose context piece by piece.
-        var recentUserText = string.Join(
-            " ",
-            history.Where(m => m.Role == "user").Select(m => m.Content).TakeLast(3).Append(message));
-        var queryText = NeedsHistoryContext(message) ? recentUserText : message;
-        var lower = queryText.ToLowerInvariant();
-
-        var needsCycleAnalysis = CycleAnalysisSignal.IsMatch(lower);
-        var needsCycleComparison = CycleComparisonSignal.IsMatch(lower);
-        var needsImprovement = ImprovementSignal.IsMatch(lower);
-        // The per-row detail sample is the single largest block in the prompt, so it is only
-        // worth sending when the user actually wants individual records (find/search/edit/
-        // "which one"). Aggregate questions like "how much did I spend on food" are answered
-        // entirely from cycleSummaries, so a pure "how much/how many/total/average" question
-        // drops the detail block -- unless the user explicitly asked to see the records --
-        // instead of dragging ~120 transactions along for every "how much" question.
-        var aggregateOnly = AggregateQuestionSignal.IsMatch(lower) && !ExplicitRecordSignal.IsMatch(lower);
-        var needsTransactionDetail = TransactionDetailSignal.IsMatch(lower) && !aggregateOnly;
-
-        return new ContextNeeds(
-            NeedsTransactionDetail: needsTransactionDetail,
-            NeedsCycleSummary: needsCycleAnalysis || needsCycleComparison || needsImprovement,
-            NeedsCycleComparison: needsCycleComparison,
-            NeedsBudgetTargets: needsCycleAnalysis || needsImprovement,
-            NeedsRecurring: RecurringSignal.IsMatch(lower),
-            NeedsWishlist: WishlistSignal.IsMatch(lower),
-            QueryText: queryText);
-    }
-
-    private async Task<AiContextBuildResult> BuildContextAsync(ContextNeeds needs, CancellationToken cancellationToken)
-    {
-        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
+        var queryPlan = intentPlan.QueryPlan;
+        var setting = await LoadFinancialSettingAsync(cancellationToken);
         var cycleDay = setting?.CycleDay ?? 28;
         var selectedMonth = setting?.SelectedMonth ?? DateTime.Now.ToString("MMM");
         var selectedYear = setting?.SelectedYear ?? DateTime.Now.Year;
@@ -340,25 +667,25 @@ public class AiAssistantService
 
         var sensitiveMode = setting?.HideSensitive ?? true;
         var targetSelection = ResolveTargetCycles(
-            needs.QueryText,
+            queryPlan.QueryText,
             selectedYear,
             selectedMonthIndex,
-            needs.NeedsCycleSummary,
-            needs.NeedsCycleComparison);
+            queryPlan.NeedsCycleSummary,
+            queryPlan.NeedsCycleComparison);
+        if (queryPlan.NeedsWishlistForecast && !targetSelection.ExplicitlyRequested)
+        {
+            targetSelection = new TargetCycleSelection(
+                Enumerable.Range(1, 3)
+                    .Select(offset => AddMonths(selectedYear, selectedMonthIndex, -offset))
+                    .Select(value => new CycleKey(value.Year, value.MonthIndex))
+                    .ToList(),
+                false);
+        }
 
         object recurringContext = Array.Empty<object>();
-        if (needs.NeedsRecurring)
+        if (queryPlan.NeedsRecurring)
         {
-            var recurring = await _context.RecurringPayments
-                .AsNoTracking()
-                .OrderBy(r => r.Name)
-                .Select(r => new
-                {
-                    r.Id, r.Name, r.Amount, r.Category, r.LedgerCategory,
-                    r.StartDate, r.EndDate, r.DueDate, r.Active
-                })
-                .Take(100)
-                .ToListAsync(cancellationToken);
+            var recurring = await LoadRecurringRowsAsync(cancellationToken);
             recurringContext = sensitiveMode
                 ? recurring.Select(r => new
                 {
@@ -369,19 +696,11 @@ public class AiAssistantService
         }
 
         object wishlistContext = Array.Empty<object>();
-        if (needs.NeedsWishlist)
+        var wishlistRows = new List<AiWishlistRow>();
+        if (queryPlan.NeedsWishlist)
         {
-            var wishlist = await _context.WishlistItems
-                .AsNoTracking()
-                .OrderBy(w => w.IsPurchased)
-                .ThenByDescending(w => w.IsActive)
-                .ThenByDescending(w => w.CreatedAt)
-                .Select(w => new
-                {
-                    w.Id, w.Name, w.Price, w.Priority, w.IsActive, w.IsPurchased, w.CreatedAt
-                })
-                .Take(100)
-                .ToListAsync(cancellationToken);
+            var wishlist = await LoadWishlistRowsAsync(queryPlan.WishlistItemId, cancellationToken);
+            wishlistRows = wishlist;
             wishlistContext = sensitiveMode
                 ? wishlist.Select(w => new
                 {
@@ -392,15 +711,33 @@ public class AiAssistantService
 
         var allTransactions = new List<AiTransactionRow>();
         var scopeTruncated = false;
-        if (needs.NeedsTransactionDetail || needs.NeedsCycleSummary)
+        int? exactMatchCount = null;
+        if (queryPlan.NeedsTransactionDetail || queryPlan.NeedsCycleSummary)
         {
             if (targetSelection.Cycles.Count > 0)
             {
                 var seenIds = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var range in MergeCycleRanges(targetSelection.Cycles, cycleDay))
                 {
-                    var rows = await QueryTransactionsAsync(range.Start, range.End, cancellationToken);
-                    if (rows.Count >= MaxTransactionsPerRange) scopeTruncated = true;
+                    if (queryPlan.TransactionData == TransactionDataLevel.MatchingRows && !string.IsNullOrWhiteSpace(queryPlan.SearchText))
+                    {
+                        exactMatchCount = (exactMatchCount ?? 0) + await CountTransactionsAsync(range.Start, range.End, queryPlan.SearchText, queryPlan.TransactionIds, cancellationToken);
+                    }
+                    var rows = await QueryTransactionsAsync(
+                        range.Start,
+                        range.End,
+                        queryPlan.TransactionData == TransactionDataLevel.MatchingRows ? queryPlan.SearchText : null,
+                        queryPlan.TransactionIds,
+                        cancellationToken);
+                    // QueryTransactionsAsync fetches one row beyond the cap: if it comes back we
+                    // KNOW the range genuinely exceeded the cap (so aggregates are partial). This
+                    // distinguishes exactly MaxTransactionsPerRange rows (complete) from more than
+                    // that (truncated) -- the extra row is dropped and never surfaced.
+                    if (rows.Count > MaxTransactionsPerRange)
+                    {
+                        scopeTruncated = true;
+                        rows = rows.Take(MaxTransactionsPerRange).ToList();
+                    }
                     foreach (var row in rows)
                     {
                         if (seenIds.Add(row.Id)) allTransactions.Add(row);
@@ -411,15 +748,11 @@ public class AiAssistantService
             {
                 // A detail request with no cycle clue (for example, "find Grab") keeps a
                 // bounded recent fallback. Explicit/relative cycle requests never use it.
-                var rows = await _context.Transactions
-                    .AsNoTracking()
-                    .Where(t => t.LedgerCategory != "Discarded")
-                    .OrderByDescending(t => t.Date)
-                    .ThenByDescending(t => t.Id)
-                    .Take(500)
-                    .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.Description, t.Category, t.LedgerCategory, t.Amount))
-                    .ToListAsync(cancellationToken);
-                allTransactions.AddRange(rows.Select(ToAiTransactionRow));
+                var rows = await LoadRecentFallbackTransactionsAsync(
+                    queryPlan.TransactionData == TransactionDataLevel.MatchingRows ? queryPlan.SearchText : null,
+                    queryPlan.TransactionIds,
+                    cancellationToken);
+                allTransactions.AddRange(rows);
             }
         }
 
@@ -428,8 +761,29 @@ public class AiAssistantService
             .ThenByDescending(t => t.Id)
             .ToList();
 
+        // Phase 2: enforce scope exclusions deterministically before any aggregate, detail
+        // sample, or derived metric is built -- "excluding rent" / "without transfers" must
+        // remove those rows from every downstream number, not just be hinted to the model.
+        var constraints = intentPlan.Constraints;
+        var (excludedCategories, excludedLedgerCategories) = ResolveConstraintCategories(
+            constraints.ExcludedCategories, categories, LedgerCategories);
+        if (constraints.ExcludeTransfers || excludedCategories.Count > 0 || excludedLedgerCategories.Count > 0)
+        {
+            allTransactions = allTransactions.Where(t =>
+                    !(constraints.ExcludeTransfers && IsTransfer(t)) &&
+                    !excludedCategories.Contains(t.Category, StringComparer.OrdinalIgnoreCase) &&
+                    !excludedLedgerCategories.Contains(t.LedgerCategory, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        // Whether an exact cycle total is even eligible to be recovered: SumOutflowAsync cannot
+        // express category exclusions, so an "exact" figure that ignored them would lie.
+        var cycleTotalRecoverable = targetSelection.Cycles.Count > 0
+            && excludedCategories.Count == 0
+            && excludedLedgerCategories.Count == 0;
+
         object recentTransactions;
-        if (!needs.NeedsTransactionDetail)
+        if (!queryPlan.NeedsTransactionDetail)
         {
             recentTransactions = Array.Empty<object>();
         }
@@ -459,16 +813,25 @@ public class AiAssistantService
             }).ToList();
         }
 
-        var cycleSummaries = needs.NeedsCycleSummary
-            ? BuildCycleSummaries(allTransactions, targetSelection.Cycles, cycleDay, !sensitiveMode)
-            : new List<object>();
+        var activeCycleStart = CategoryAttributionService.GetCycleRange(selectedYear, selectedMonthIndex, cycleDay).start;
+        var wishlistReference = intentPlan.QueryPlan.SearchText
+            ?? intentPlan.ConversationState.LastWishlistReference;
+        var wishlistForecast = queryPlan.NeedsWishlistForecast && !sensitiveMode
+            ? BuildWishlistForecast(new WishlistForecastPolicy(
+                    wishlistRows,
+                    allTransactions,
+                    targetSelection.Cycles,
+                    cycleDay,
+                    activeCycleStart,
+                    wishlistReference))
+            : null;
 
         // The user's allocation goals: fractions of income per ledger category plus the
         // stability-fund target. Actuals live in cycleSummaries.ledgerNet -- these targets are
         // what makes "how am I doing" / "where can I cut" answerable rather than guessed. Only
         // sent for analysis/coaching questions, and never in sensitiveMode (advice is
         // inherently amount-based, which sensitiveMode refuses anyway).
-        object? budgetTargets = needs.NeedsBudgetTargets && !sensitiveMode
+        object? budgetTargets = queryPlan.NeedsBudgetTargets && !sensitiveMode
             ? new
             {
                 note = "Fractions of income allocated per ledger category. Compare against cycleSummaries.ledgerNet.",
@@ -491,6 +854,108 @@ public class AiAssistantService
             })
             .ToList();
 
+        // Outgoing conversation state: structured references the client echoes back next turn.
+        // Matched transaction ids are the rows the DB actually returned this turn (re-derived,
+        // never the client's claimed ids), capped, and only when this was a matching-row query.
+        var matchedIds = queryPlan.TransactionData == TransactionDataLevel.MatchingRows && !string.IsNullOrWhiteSpace(queryPlan.SearchText)
+            ? allTransactions.Take(MaxStateMatchedIds).Select(t => t.Id).ToList()
+            : null;
+        var resolvedCycleLabel = targetSelection.Cycles.Count > 0
+            ? $"{FinancialConstants.MonthAbbreviations[targetSelection.Cycles[0].MonthIndex - 1]} {targetSelection.Cycles[0].Year}"
+            : null;
+        int? resolvedWishlistItemId = wishlistRows.Count == 1
+            ? wishlistRows[0].Id
+            : wishlistRows.Count(w => w.IsActive && !w.IsPurchased) == 1
+                ? wishlistRows.First(w => w.IsActive && !w.IsPurchased).Id
+                : null;
+        var baseState = intentPlan.ConversationState;
+        var outgoingState = baseState with
+        {
+            LastSearchText = queryPlan.SearchText ?? baseState.LastSearchText,
+            LastCycleHint = queryPlan.CycleHint ?? baseState.LastCycleHint,
+            LastResolvedCycle = resolvedCycleLabel ?? baseState.LastResolvedCycle,
+            LastMatchedTransactionIds = matchedIds ?? baseState.LastMatchedTransactionIds,
+            LastWishlistItemId = queryPlan.WishlistItemId.HasValue
+                ? resolvedWishlistItemId
+                : resolvedWishlistItemId ?? baseState.LastWishlistItemId
+        };
+
+        // Phase 5: assemble explicit dataset statuses and run the sufficiency gate.
+        var anyExplicitCycleEmpty = targetSelection.ExplicitlyRequested && targetSelection.Cycles.Count > 0 && allTransactions.Count == 0;
+        var datasetStates = new Dictionary<AiDatasetKey, AiDatasetState>();
+        if (queryPlan.NeedsTransactionDetail)
+        {
+            datasetStates[AiDatasetKey.TransactionDetails] = new AiDatasetState(
+                scopeTruncated ? AiDatasetStatus.Truncated : anyExplicitCycleEmpty ? AiDatasetStatus.VerifiedEmpty : AiDatasetStatus.Available,
+                TotalCount: allTransactions.Count, IncludedCount: Math.Min(allTransactions.Count, 120));
+        }
+        if (queryPlan.NeedsCycleSummary)
+        {
+            // First pass: no recovery has run yet, so a truncated sample never has an exact metric.
+            datasetStates[AiDatasetKey.CycleSummaries] = new AiDatasetState(
+                scopeTruncated ? AiDatasetStatus.Truncated : AiDatasetStatus.Available,
+                HasExactMetric: !scopeTruncated);
+        }
+        if (queryPlan.Metrics.Contains(DerivedMetric.ActivityCount) || queryPlan.Metrics.Contains(DerivedMetric.MerchantMatches))
+        {
+            datasetStates[AiDatasetKey.TransactionMatches] = new AiDatasetState(
+                scopeTruncated && !exactMatchCount.HasValue ? AiDatasetStatus.Truncated : AiDatasetStatus.Available,
+                TotalCount: exactMatchCount, IncludedCount: allTransactions.Count, HasExactMetric: exactMatchCount.HasValue);
+        }
+        if (queryPlan.NeedsWishlist)
+        {
+            datasetStates[AiDatasetKey.Wishlist] = new AiDatasetState(wishlistRows.Count == 0 ? AiDatasetStatus.VerifiedEmpty : AiDatasetStatus.Available);
+        }
+        if (queryPlan.NeedsWishlistForecast)
+        {
+            datasetStates[AiDatasetKey.WishlistForecast] = sensitiveMode
+                ? new AiDatasetState(AiDatasetStatus.Hidden, Reason: "hidden by sensitive mode")
+                : new AiDatasetState(wishlistForecast == null ? AiDatasetStatus.VerifiedEmpty : AiDatasetStatus.Available);
+        }
+        if (queryPlan.NeedsRecurring)
+        {
+            datasetStates[AiDatasetKey.Recurring] = new AiDatasetState(AiDatasetStatus.Available);
+        }
+        if (queryPlan.NeedsBudgetTargets)
+        {
+            datasetStates[AiDatasetKey.BudgetTargets] = sensitiveMode
+                ? new AiDatasetState(AiDatasetStatus.Hidden, Reason: "hidden by sensitive mode")
+                : new AiDatasetState(AiDatasetStatus.Available);
+        }
+        var intentNames = intentPlan.Intents.Select(ToIntentName).ToList();
+
+        // Phase 4 pipeline: validate what was loaded, recover only what the validator flagged as
+        // deterministically recoverable, then validate again before generation ever runs. This
+        // replaces the previous approach of recovering unconditionally whenever the scope was
+        // truncated -- recovery now only fires for a dataset the first pass actually asked for.
+        var firstPassResult = EvaluateSufficiency(intentNames, datasetStates);
+        decimal? recoveredOutflow = null;
+        IReadOnlyDictionary<CycleKey, decimal>? perCycleRecoveredOutflow = null;
+        var needsCycleRecovery = firstPassResult.Recoverable.Any(r => r.DatasetKey == AiDatasetKey.CycleSummaries)
+            && cycleTotalRecoverable;
+        if (needsCycleRecovery)
+        {
+            var searchFilter = queryPlan.TransactionData == TransactionDataLevel.MatchingRows ? queryPlan.SearchText : null;
+            // Recovered per cycle (not one merged figure) so a multi-cycle comparison gets an
+            // exact outflow for EACH requested cycle, not a single blended total across all of
+            // them -- a blended total would be the wrong shape for "compare March vs April".
+            perCycleRecoveredOutflow = await RecoverCycleOutflowByRangeAsync(
+                targetSelection.Cycles, cycleDay, searchFilter, queryPlan.TransactionIds, cancellationToken);
+            recoveredOutflow = perCycleRecoveredOutflow.Values.Sum();
+            datasetStates[AiDatasetKey.CycleSummaries] = datasetStates[AiDatasetKey.CycleSummaries] with { HasExactMetric = true };
+        }
+        var sufficiencyResult = needsCycleRecovery
+            ? EvaluateSufficiency(intentNames, datasetStates)
+            : firstPassResult;
+        var resolution = ToResolution(intentPlan);
+
+        // Built after recovery so a per-cycle exact outflow (when recovered) replaces the
+        // truncated sample sum in both the single-cycle summary and the multi-cycle comparison.
+        var cycleSummaries = queryPlan.NeedsCycleSummary
+            ? BuildCycleSummaries(allTransactions, targetSelection.Cycles, cycleDay, !sensitiveMode, perCycleRecoveredOutflow)
+            : new List<object>();
+        var derivedMetrics = BuildDerivedMetrics(queryPlan, allTransactions, targetSelection.Cycles, cycleDay, sensitiveMode, exactMatchCount, perCycleRecoveredOutflow);
+
         var context = new AiContext(
             Currency: setting?.Currency ?? "USD",
             Today: DateTime.Now.ToString("yyyy-MM-dd"),
@@ -509,47 +974,166 @@ public class AiAssistantService
                 targetWasExplicit = targetSelection.ExplicitlyRequested,
                 aggregatesCoverAllTransactionsInRequestedCycles = targetSelection.Cycles.Count > 0 && !scopeTruncated,
                 aggregatesTruncated = scopeTruncated,
-                detailedTransactionsIncluded = needs.NeedsTransactionDetail ? Math.Min(allTransactions.Count, 120) : 0,
+                // Present only when the sample was truncated but the database returned the exact
+                // headline outflow: use this figure, not the partial sample sum, and do not hedge.
+                recoveredExactOutflow = recoveredOutflow,
+                detailedTransactionsIncluded = queryPlan.NeedsTransactionDetail ? Math.Min(allTransactions.Count, 120) : 0,
                 detailedTransactionsTotalInScope = allTransactions.Count
             },
+            IntentNames: intentNames,
+            IntentResolution: resolution == null
+                ? null
+                : new
+                {
+                    intents = resolution.Intents.Select(i => i.ToString()).ToList(),
+                    confidence = resolution.Confidence,
+                    usedClassifier = resolution.UsedClassifier,
+                    ambiguities = resolution.Ambiguities
+                },
+            Sufficiency: new
+            {
+                canAnswer = sufficiencyResult.CanAnswer,
+                isApproximate = sufficiencyResult.IsApproximate,
+                missing = sufficiencyResult.Missing.Select(m => new { dataset = m.DatasetKey, reason = m.Reason }).ToList(),
+                recoverable = sufficiencyResult.Recoverable.Select(m => new { dataset = m.DatasetKey, reason = m.Reason }).ToList()
+            },
+            QueryPlan: new
+            {
+                transactionData = queryPlan.TransactionData.ToString(),
+                metrics = queryPlan.Metrics.Select(metric => metric.ToString()).ToList(),
+                searchText = queryPlan.SearchText,
+                cycleHint = queryPlan.CycleHint
+            },
+            ConversationState: outgoingState,
+            Constraints: constraints == AiConstraints.None
+                ? null
+                : new
+                {
+                    preventNavigation = constraints.PreventNavigation,
+                    excludeTransfers = constraints.ExcludeTransfers,
+                    excludedCategories,
+                    excludedLedgerCategories,
+                    includedTerms = constraints.IncludedCategories,
+                    hypothetical = constraints.Hypothetical
+                },
+            DerivedMetrics: derivedMetrics,
             CycleSummaries: cycleSummaries,
             RecentTransactions: recentTransactions,
             RecurringPayments: recurringContext,
             WishlistItems: wishlistContext,
-            BudgetTargets: budgetTargets);
-        return new AiContextBuildResult(context, targetSelection.Cycles, cycleDay, selectedYear);
+            BudgetTargets: budgetTargets,
+            WishlistForecast: wishlistForecast);
+        var missing = sufficiencyResult.Missing.Select(m => m.DatasetKey).ToList();
+        var sufficiency = new ContextSufficiency(
+            Complete: sufficiencyResult.CanAnswer,
+            // A truncated scope forces approximate wording UNLESS the exact figure was recovered
+            // from the database (SQL SUM), in which case the headline number is precise.
+            Approximate: sufficiencyResult.IsApproximate || (scopeTruncated && !recoveredOutflow.HasValue),
+            Missing: missing);
+        return new AiContextBuildResult(context, targetSelection.Cycles, cycleDay, selectedYear, sufficiency, outgoingState);
     }
 
-    private async Task<List<AiTransactionRow>> QueryTransactionsAsync(
-        DateTime start,
-        DateTime end,
-        CancellationToken cancellationToken)
+    private static object BuildDerivedMetrics(
+        AiQueryPlan queryPlan,
+        IReadOnlyList<AiTransactionRow> transactions,
+        IReadOnlyList<CycleKey> cycles,
+        int cycleDay,
+        bool sensitiveMode,
+        int? exactMatchCount,
+        IReadOnlyDictionary<CycleKey, decimal>? perCycleRecoveredOutflow)
     {
-        var rows = await _context.Transactions
-            .AsNoTracking()
-            .Where(t => t.LedgerCategory != "Discarded" && t.Date >= start && t.Date < end)
-            .OrderByDescending(t => t.Date)
-            .ThenByDescending(t => t.Id)
-            .Take(MaxTransactionsPerRange)
-            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.Description, t.Category, t.LedgerCategory, t.Amount))
-            .ToListAsync(cancellationToken);
-        return rows.Select(ToAiTransactionRow).ToList();
+        var metrics = new Dictionary<string, object?>();
+        if (queryPlan.Metrics.Contains(DerivedMetric.ActivityCount) || queryPlan.Metrics.Contains(DerivedMetric.MerchantMatches))
+        {
+            metrics["transactionMatches"] = new
+            {
+                query = queryPlan.SearchText,
+                count = exactMatchCount ?? transactions.Count,
+                complete = queryPlan.TransactionData == TransactionDataLevel.MatchingRows && (exactMatchCount.HasValue || transactions.Count < MaxTransactionsPerRange),
+                    rows = sensitiveMode
+                        ? transactions.Take(120).Select(t => (object)new { t.Id, t.Date, t.Description, t.Category }).ToList()
+                        : transactions.Take(120).Select(t => (object)new { t.Id, t.Date, t.Description, t.Category, t.Amount }).ToList()
+            };
+        }
+        if (queryPlan.TransactionIds.Count > 0)
+        {
+            var referenced = transactions
+                .Where(t => queryPlan.TransactionIds.Contains(t.Id, StringComparer.Ordinal))
+                .ToList();
+            var outflows = referenced.Where(t => t.Amount < 0 && !IsTransfer(t)).ToList();
+            var highest = outflows.OrderByDescending(t => Math.Abs(t.Amount)).FirstOrDefault();
+            metrics["referencedTransactions"] = new
+            {
+                ids = referenced.Select(t => t.Id).ToList(),
+                count = referenced.Count,
+                totalCost = Math.Abs(outflows.Sum(t => t.Amount)),
+                highest = highest == null ? null : new
+                {
+                    highest.Id,
+                    highest.Description,
+                    highest.Date,
+                    amount = sensitiveMode ? (decimal?)null : Math.Abs(highest.Amount)
+                },
+                complete = referenced.Count == queryPlan.TransactionIds.Count
+            };
+        }
+        if (queryPlan.Metrics.Contains(DerivedMetric.CycleComparison))
+        {
+            metrics["cycleComparison"] = BuildCycleComparison(transactions, cycles, cycleDay, perCycleRecoveredOutflow);
+        }
+        if (queryPlan.Metrics.Contains(DerivedMetric.AnomalyDetection))
+        {
+            metrics["anomalies"] = DetectAnomalies(transactions)
+                .Select(a => sensitiveMode
+                    ? (object)new { a.Id, a.Description, a.Category, amount = (decimal?)null, a.Score, a.Reason }
+                    : new { a.Id, a.Description, a.Category, amount = (decimal?)a.Amount, a.Score, a.Reason })
+                .ToList();
+        }
+        if (queryPlan.Metrics.Contains(DerivedMetric.DuplicateDetection))
+        {
+            metrics["duplicateCandidates"] = DetectDuplicates(transactions)
+                .Select(d => sensitiveMode
+                    ? (object)new { d.Ids, d.Description, d.DaysApart, d.Confidence, d.Reasons, amount = (decimal?)null }
+                    : new { d.Ids, d.Description, d.DaysApart, d.Confidence, d.Reasons, amount = (decimal?)d.Amount })
+                .ToList();
+        }
+        return metrics;
     }
 
-    private static AiTransactionRow ToAiTransactionRow(AiTransactionDbRow row) => new(
-        row.Id,
-        row.Date,
-        TransactionDate.ToDateOnly(row.Date).ToString("yyyy-MM-dd"),
-        row.Description,
-        row.Category,
-        row.LedgerCategory,
-        row.Amount);
+    private static object BuildCycleComparison(
+        IReadOnlyList<AiTransactionRow> transactions,
+        IReadOnlyList<CycleKey> cycles,
+        int cycleDay,
+        IReadOnlyDictionary<CycleKey, decimal>? perCycleRecoveredOutflow)
+    {
+        return cycles.Select(cycle =>
+        {
+            var range = CategoryAttributionService.GetCycleRange(cycle.Year, cycle.MonthIndex, cycleDay);
+            var start = TransactionDate.StartOfDate(DateOnly.FromDateTime(range.start));
+            var end = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(range.end));
+            var txs = transactions.Where(t => t.Timestamp >= start && t.Timestamp < end && !IsTransfer(t)).ToList();
+            // Prefer the recovered exact SUM for this specific cycle when the sample was
+            // truncated; otherwise the in-memory sample sum is already complete.
+            var recovered = perCycleRecoveredOutflow != null && perCycleRecoveredOutflow.ContainsKey(cycle);
+            var outflow = recovered ? perCycleRecoveredOutflow![cycle] : Math.Abs(txs.Where(t => t.Amount < 0).Sum(t => t.Amount));
+            return new
+            {
+                month = FinancialConstants.MonthAbbreviations[cycle.MonthIndex - 1],
+                year = cycle.Year,
+                inflow = txs.Where(t => t.Amount > 0).Sum(t => t.Amount),
+                outflow,
+                net = txs.Where(t => t.Amount > 0).Sum(t => t.Amount) - outflow,
+                exactOutflow = recovered
+            };
+        }).ToList();
+    }
 
     private static List<object> BuildCycleSummaries(
         IReadOnlyList<AiTransactionRow> transactions,
         IReadOnlyList<CycleKey> cycles,
         int cycleDay,
-        bool includeAmounts)
+        bool includeAmounts,
+        IReadOnlyDictionary<CycleKey, decimal>? perCycleRecoveredOutflow)
     {
         var summaries = new List<object>();
         foreach (var cycle in cycles)
@@ -560,6 +1144,7 @@ public class AiAssistantService
             var txs = transactions
                 .Where(t => t.Timestamp >= start && t.Timestamp < end)
                 .ToList();
+            var nonTransferTxs = txs.Where(t => !IsTransfer(t)).ToList();
 
             if (!includeAmounts)
             {
@@ -598,7 +1183,7 @@ public class AiAssistantService
                 continue;
             }
 
-            var categorySpend = txs
+            var categorySpend = nonTransferTxs
                 .Where(t => t.Amount < 0)
                 .GroupBy(t => t.Category)
                 .Select(g => new { category = g.Key, outflow = Math.Abs(g.Sum(t => t.Amount)) })
@@ -611,7 +1196,7 @@ public class AiAssistantService
                 .Select(c => new
                 {
                     ledgerCategory = c,
-                    net = txs.Sum(t => CategoryAttributionService.GetCategoryAmount(new Models.Transaction
+                        net = nonTransferTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(new Models.Transaction
                     {
                         Amount = t.Amount,
                         LedgerCategory = t.LedgerCategory
@@ -619,15 +1204,21 @@ public class AiAssistantService
                 })
                 .ToList();
 
+            var recoveredExact = perCycleRecoveredOutflow != null && perCycleRecoveredOutflow.ContainsKey(cycle);
+            var income = nonTransferTxs.Where(t => t.Amount > 0).Sum(t => t.Amount);
+            var outflow = recoveredExact ? perCycleRecoveredOutflow![cycle] : Math.Abs(nonTransferTxs.Where(t => t.Amount < 0).Sum(t => t.Amount));
             summaries.Add(new
             {
                 month = FinancialConstants.MonthAbbreviations[cycle.MonthIndex - 1],
                 year = cycle.Year,
                 label = range.label,
                 transactionCount = txs.Count,
-                income = txs.Where(t => t.Amount > 0 && !t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase)).Sum(t => t.Amount),
-                outflow = Math.Abs(txs.Where(t => t.Amount < 0).Sum(t => t.Amount)),
-                netChange = txs.Where(t => !t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase)).Sum(t => t.Amount),
+                income,
+                outflow,
+                netChange = income - outflow,
+                // True when this cycle's outflow/netChange came from an exact database SUM
+                // rather than the (possibly truncated) in-memory sample.
+                exactOutflow = recoveredExact,
                 categorySpend,
                 ledgerNet,
                 largestTransactions = txs
@@ -648,6 +1239,10 @@ public class AiAssistantService
         }
         return summaries;
     }
+
+    private static bool IsTransfer(AiTransactionRow transaction) =>
+        transaction.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase) ||
+        transaction.Category.Equals("Transfer", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsInCycle(AiTransactionRow transaction, CycleKey cycle, int cycleDay)
     {
@@ -835,6 +1430,7 @@ public class AiAssistantService
         IReadOnlyList<CycleKey> targetCycles,
         int cycleDay,
         int defaultYear,
+        IReadOnlyList<string>? referencedTransactionIds,
         CancellationToken cancellationToken)
     {
         if (!LooksLikeLedgerEditCommand(message))
@@ -844,11 +1440,12 @@ public class AiAssistantService
 
         // defaultYear is threaded in from the already-loaded FinancialSetting during context
         // build, so this path no longer re-queries the settings row on every edit command.
+        var hasReferencedIds = referencedTransactionIds is { Count: > 0 };
         var hasExactDate = TryExtractDate(message, defaultYear, out var targetDate, out var matchedDateText);
-        if (!hasExactDate && targetCycles.Count == 0) return null;
+        if (!hasReferencedIds && !hasExactDate && targetCycles.Count == 0) return null;
 
-        var searchText = ExtractLedgerEditSearchText(message, matchedDateText);
-        if (string.IsNullOrWhiteSpace(searchText) && !hasExactDate)
+        var searchText = hasReferencedIds ? null : ExtractLedgerEditSearchText(message, matchedDateText);
+        if (!hasReferencedIds && string.IsNullOrWhiteSpace(searchText) && !hasExactDate)
         {
             return null;
         }
@@ -858,16 +1455,19 @@ public class AiAssistantService
             return new AiChatResponse("Unhide balances before using AI to edit ledger records.", []);
         }
 
-        var normalizedSearch = searchText.ToLowerInvariant();
-        var query = _context.Transactions
-            .AsNoTracking()
-            .Where(t => t.LedgerCategory != "Discarded");
+        DateTime? scopeStart = null;
+        DateTime? scopeEnd = null;
         string scopeLabel;
-        if (hasExactDate)
+        if (hasReferencedIds)
+        {
+            scopeLabel = "for the referenced record";
+        }
+        else if (hasExactDate)
         {
             var dateStart = TransactionDate.StartOfDate(targetDate);
             var dateEnd = TransactionDate.ExclusiveEndOfDate(targetDate);
-            query = query.Where(t => t.Date >= dateStart && t.Date < dateEnd);
+            scopeStart = dateStart;
+            scopeEnd = dateEnd;
             scopeLabel = $"on {FormatDateForReply(targetDate)}";
         }
         else
@@ -883,29 +1483,17 @@ public class AiAssistantService
                 .ToList();
             var minStart = ranges.Min(range => range.Start);
             var maxEnd = ranges.Max(range => range.End);
-            query = query.Where(t => t.Date >= minStart && t.Date < maxEnd);
+            scopeStart = minStart;
+            scopeEnd = maxEnd;
             scopeLabel = ranges.Count == 1 ? $"in {ranges[0].label}" : "in the requested cycles";
         }
 
-        if (!string.IsNullOrWhiteSpace(normalizedSearch))
-        {
-            query = query.Where(t =>
-                t.Description.ToLower().Contains(normalizedSearch) ||
-                t.Category.ToLower().Contains(normalizedSearch) ||
-                t.LedgerCategory.ToLower().Contains(normalizedSearch));
-        }
-
-        var matches = await query
-            .OrderByDescending(t => t.Date)
-            .ThenByDescending(t => t.Id)
-            .Select(t => new
-            {
-                t.Id,
-                t.Description,
-                t.Date
-            })
-            .Take(4)
-            .ToListAsync(cancellationToken);
+        var matches = await FindLedgerEditMatchesAsync(
+            searchText,
+            referencedTransactionIds ?? [],
+            scopeStart,
+            scopeEnd,
+            cancellationToken);
 
         if (matches.Count == 0)
         {
@@ -1142,8 +1730,14 @@ Rules:
 - If ambiguous about target record, category, cycle, action type, amount, or whether the user wants ledger vs recurring vs wishlist, ask one concise clarification with at most 3 questions, return no actions, and set closeChat false.
 - Use only categories, ledger categories, cycles, and record ids from App context.
 - requestedCycles is the server-resolved scope for named/relative cycles. Cycle summaries cover every transaction in those cycles; recentTransactions is only a bounded detail sample. Use cycleSummaries for totals and recentTransactions for identifying individual records.
+- The server preloads context based on the question. If a relevant block is present, use it directly; never claim that the application lacks access to that data. An empty block is not the same as unavailable data: check dataScope and sensitiveMode.
+- intents and queryPlan describe the server's query plan. sufficiency is authoritative; do not answer with invented numbers when a required dataset is incomplete.
+- queryPlan and derivedMetrics are authoritative server outputs. Use derivedMetrics for counts, merchant/activity matches, comparisons, and forecasts; do not recount a bounded sample when a derived metric is present.
+- conversationState contains structured references from the prior turn. Use it to resolve short follow-ups such as ""those"", ""the previous cycle"", or ""it"" before asking for clarification.
 - Every transaction object has a txType field (""inflow"", ""outflow"", or ""transfer""). Positive amounts are inflows (income), negative amounts are outflows (expenses). When asked about expenses or finding the most expensive transactions, look only at transactions where txType is ""outflow"". Never treat inflows or transfers as expenses.
 - If dataScope.aggregatesTruncated is true, the cycle aggregates cover only part of that cycle; say the totals are approximate rather than presenting them as complete.
+- For count/frequency questions about an activity or description (for example, badminton), use derivedMetrics.transactionMatches.count and state the matching date range.
+- wishlistForecast is a server-calculated estimate. Use its cycles, target date, savings rate, and status; do not invent a different arithmetic method. If sensitiveMode is true, explain that exact wishlist forecasting is hidden by privacy mode.
 - budgetTargets holds the user's ledger allocation goals (fractions of income per ledger category) plus their stability-fund target. When analyzing spending or giving improvement advice, compare cycleSummaries.ledgerNet and categorySpend against budgetTargets and be specific about which ledger categories are over or under goal. If budgetTargets is absent (sensitiveMode or a non-analysis question), give general guidance without inventing target numbers.
 - A requested cycle with hasTransactions=false is verified empty. An empty recentTransactions array alone does not prove there is no data unless dataScope says the target was explicit and the requested cycle is empty.
 - If the user refers to an old or relative cycle, use requestedCycles rather than the active cycle. Never silently substitute the active or newest cycle.
@@ -1176,7 +1770,7 @@ Allowed actions:
         // WhenWritingNull keeps optional blocks (e.g. budgetTargets on a non-analysis or
         // sensitive-mode turn) out of the prompt entirely rather than emitting a dead
         // "budgetTargets":null line on every request.
-        var contextJson = JsonSerializer.Serialize(context, new JsonSerializerOptions
+        var contextJson = JsonSerializer.Serialize(BuildAnswerContext(context), new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
@@ -1188,7 +1782,7 @@ Recent chat JSON: {historyJson}
 App context JSON: {contextJson}";
     }
 
-    private AiChatResponse ParseAndValidateResponse(string text, AiContext context, string userMessage)
+    private AiChatResponse ParseAndValidateResponse(string text, AiContext context, string userMessage, AiConstraints constraints)
     {
         using var doc = JsonDocument.Parse(text);
         var root = doc.RootElement;
@@ -1208,6 +1802,9 @@ App context JSON: {contextJson}";
                     : [];
                 if (context.SensitiveMode && type.StartsWith("openEdit", StringComparison.OrdinalIgnoreCase)) continue;
                 if (IsQuestionOnlyRequest(userMessage) && type.Equals("openLedger", StringComparison.OrdinalIgnoreCase)) continue;
+                // "Don't open the ledger" -> honor the negation deterministically; drop every
+                // navigation action regardless of what the model chose to return.
+                if (constraints.PreventNavigation && IsNavigationAction(type)) continue;
                 if (context.SensitiveMode)
                 {
                     RemoveSensitivePayloadFields(payload);
@@ -1247,6 +1844,13 @@ App context JSON: {contextJson}";
             changes.Remove("price");
         }
     }
+
+    private static readonly HashSet<string> NavigationActionTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "openLedger", "openDashboard", "openRecurring", "openWishlist", "openSettings"
+    };
+
+    private static bool IsNavigationAction(string type) => NavigationActionTypes.Contains(type);
 
     private static bool IsQuestionOnlyRequest(string message)
     {
@@ -1432,7 +2036,7 @@ App context JSON: {contextJson}";
                 string.Equals(p.ToString(), id, StringComparison.OrdinalIgnoreCase));
     }
 
-    private sealed record CycleKey(int Year, int MonthIndex);
+    internal sealed record CycleKey(int Year, int MonthIndex);
 
     private sealed record AiContext(
         string Currency,
@@ -1443,9 +2047,17 @@ App context JSON: {contextJson}";
         IReadOnlyList<string> LedgerCategories,
         object RequestedCycles,
         object DataScope,
+        IReadOnlyList<string> IntentNames,
+        object? IntentResolution,
+        object Sufficiency,
+        object QueryPlan,
+        AiConversationState? ConversationState,
+        object? Constraints,
+        object DerivedMetrics,
         object CycleSummaries,
         object RecentTransactions,
         object RecurringPayments,
         object WishlistItems,
-        object? BudgetTargets);
+        object? BudgetTargets,
+        object? WishlistForecast);
 }

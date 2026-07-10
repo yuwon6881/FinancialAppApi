@@ -22,6 +22,47 @@ internal static class AiResponseSchemas
         },
         ["reply", "closeChat", "actions"]);
 
+    private static readonly IReadOnlyList<string> IntentEnum =
+    [
+        "ledger.activity_count", "ledger.merchant_search", "ledger.spending_total",
+        "ledger.transaction_list", "ledger.comparison", "ledger.edit", "ledger.add",
+        "ledger.anomaly", "ledger.duplicates", "wishlist.list", "wishlist.forecast",
+        "wishlist.add", "wishlist.edit", "recurring.list", "recurring.upcoming",
+        "recurring.add", "recurring.edit", "allocation.balance", "allocation.performance",
+        "navigation", "general"
+    ];
+
+    public static readonly object IntentClassification = Obj(
+        new Dictionary<string, object>
+        {
+            ["intents"] = Arr(Str(enums: IntentEnum), maxItems: 4),
+            ["confidence"] = Num("Confidence from 0 to 1.", 0, 1),
+            ["entities"] = Obj(
+                new Dictionary<string, object>
+                {
+                    ["searchText"] = NullableString("Activity or merchant text to match; null when not applicable."),
+                    ["cycleHint"] = NullableString("Relative or explicit cycle wording; null when not applicable."),
+                    ["wishlistReference"] = NullableString("Wishlist item name the user referenced; null otherwise."),
+                    ["transactionReference"] = NullableString("Specific transaction the user referenced; null otherwise."),
+                    ["category"] = NullableString("Category name the user referenced; null otherwise."),
+                    ["ledgerCategory"] = NullableString("Ledger category; null otherwise."),
+                    ["date"] = NullableString("Explicit date in YYYY-MM-DD format; null otherwise."),
+                    ["amount"] = NullableNumber("Non-negative amount mentioned by the user; null otherwise.")
+                },
+                ["searchText", "cycleHint", "date", "wishlistReference", "transactionReference", "category", "ledgerCategory", "amount"]),
+            ["constraints"] = Obj(
+                new Dictionary<string, object>
+                {
+                    ["preventNavigation"] = Bool(),
+                    ["excludeTransfers"] = Bool(),
+                    ["exclusions"] = Arr(Str("Category or scope term to exclude.")),
+                    ["hypothetical"] = Bool()
+                },
+                ["preventNavigation", "excludeTransfers", "exclusions", "hypothetical"]),
+            ["ambiguities"] = Arr(Str("A brief note about anything ambiguous the classifier could not resolve."))
+        },
+        ["intents", "confidence", "entities", "constraints", "ambiguities"]);
+
     public static object CategorySuggestions(IReadOnlyList<string> categories) => Obj(
         new Dictionary<string, object>
         {

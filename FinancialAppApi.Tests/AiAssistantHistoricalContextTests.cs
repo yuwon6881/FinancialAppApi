@@ -289,9 +289,11 @@ public class AiAssistantHistoricalContextTests
 
         await service.ChatAsync(new AiChatRequest("How can I improve my spending this cycle?", []));
 
-        // budgetTargets are amount-oriented guidance the app withholds in sensitive mode, and
-        // WhenWritingNull keeps the key out of the prompt entirely rather than sending null.
-        Assert.DoesNotContain("budgetTargets", handler.UserContent);
+        // budgetTargets are amount-oriented guidance the app withholds in sensitive mode: the
+        // data block and its allocation values must not reach the prompt. (The sufficiency gate
+        // may still *name* budgetTargets as a hidden/missing dataset -- that leaks no values.)
+        Assert.DoesNotContain("Fractions of income", handler.UserContent);
+        Assert.DoesNotContain("\"essentials\":0.5", handler.UserContent);
     }
 
     [Fact]
@@ -371,6 +373,130 @@ public class AiAssistantHistoricalContextTests
         var changes = Assert.IsType<Dictionary<string, object?>>(action.Payload["changes"]);
         Assert.Equal("Social", changes["category"]);
         Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task ChatAsync_CountActivityLoadsCycleTransactions()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.TransactionCategories.Add(new TransactionCategory { Id = "sport", Name = "Sports" });
+        context.Transactions.Add(Transaction("badminton", new DateTime(2026, 6, 10, 12, 0, 0, DateTimeKind.Utc), "Badminton court", -12));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("How many badminton I played last cycle?", []));
+
+        Assert.Contains("Badminton court", handler.UserContent);
+        Assert.Contains("\"detailedTransactionsIncluded\":1", handler.UserContent);
+        Assert.Contains("\"month\":\"Jun\"", handler.UserContent);
+        Assert.Contains("transactionMatches", handler.UserContent);
+        Assert.Contains("\"count\":1", handler.UserContent);
+        Assert.Contains("\"searchText\":\"badminton\"", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_WishlistForecastLoadsServerEstimate()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.WishlistItems.Add(new WishlistItem { Id = 7, Name = "Badminton racket", Price = 100, IsActive = true, IsPurchased = false });
+        context.Transactions.AddRange(
+            Transaction("saving-apr", new DateTime(2026, 4, 10, 12, 0, 0, DateTimeKind.Utc), "Salary", 200),
+            Transaction("saving-may", new DateTime(2026, 5, 10, 12, 0, 0, DateTimeKind.Utc), "Salary", 200),
+            Transaction("saving-jun", new DateTime(2026, 6, 10, 12, 0, 0, DateTimeKind.Utc), "Salary", 200));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("How long can I hit my wishlist target?", []));
+
+        Assert.Contains("wishlistForecast", handler.UserContent);
+        Assert.Contains("Badminton racket", handler.UserContent);
+        Assert.Contains("estimatedCycles", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_SensitiveWishlistForecastIsBlockedBeforeModelCall()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = true });
+        context.WishlistItems.Add(new WishlistItem { Id = 8, Name = "Camera", Price = 500, IsActive = true, IsPurchased = false });
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        var outcome = await service.ChatAsync(new AiChatRequest("How long until I hit my wishlist target?", []));
+
+        Assert.Equal(0, handler.CallCount);
+        Assert.Contains("sensitive mode", outcome.Response.Reply, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ChatAsync_FollowUpCarriesStructuredConversationReferences()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.Transactions.Add(Transaction("badminton", new DateTime(2026, 6, 10, 12, 0, 0, DateTimeKind.Utc), "Badminton court", -12));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("What about those?", [new AiChatMessage("user", "How many badminton I played last cycle?")]));
+
+        Assert.Contains("conversationState", handler.UserContent);
+        Assert.Contains("badminton", handler.UserContent, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ChatAsync_MerchantSearchLoadsOnlyMatchingRowsAndMetric()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.Transactions.AddRange(
+            Transaction("coffee", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "Starbucks", -8),
+            Transaction("other", new DateTime(2026, 7, 11, 12, 0, 0, DateTimeKind.Utc), "Grocery store", -40));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("Show Starbucks spending", []));
+
+        Assert.Contains("Starbucks", handler.UserContent);
+        Assert.DoesNotContain("Grocery store", handler.UserContent);
+        Assert.Contains("\"searchText\":\"Starbucks\"", handler.UserContent);
+        Assert.Contains("\"count\":1", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_UnknownNaturalLanguageStillProducesStructuredIntentContext()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.TransactionCategories.Add(new TransactionCategory { Id = "food", Name = "Food" });
+        context.Transactions.Add(Transaction("coffee", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "Coffee shop", -8));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("Where did my money go this month?", []));
+
+        Assert.Contains("\"intents\"", handler.UserContent);
+        Assert.Contains("\"sufficiency\"", handler.UserContent);
+        Assert.Contains("cycleSummaries", handler.UserContent);
     }
 
     private static Transaction Transaction(string id, DateTime date, string description, decimal amount) => new()
