@@ -441,7 +441,8 @@ public class AiAssistantService
                 t.Date,
                 t.Description,
                 t.Category,
-                t.LedgerCategory
+                t.LedgerCategory,
+                txType = t.Amount < 0 ? "outflow" : t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase) ? "transfer" : "inflow"
             }).ToList();
         }
         else
@@ -453,7 +454,8 @@ public class AiAssistantService
                 t.Description,
                 t.Category,
                 t.LedgerCategory,
-                t.Amount
+                t.Amount,
+                txType = t.Amount < 0 ? "outflow" : t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase) ? "transfer" : "inflow"
             }).ToList();
         }
 
@@ -588,7 +590,8 @@ public class AiAssistantService
                             t.Date,
                             t.Description,
                             t.Category,
-                            t.LedgerCategory
+                            t.LedgerCategory,
+                            txType = t.Amount < 0 ? "outflow" : t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase) ? "transfer" : "inflow"
                         })
                         .ToList()
                 });
@@ -637,7 +640,8 @@ public class AiAssistantService
                         t.Description,
                         t.Category,
                         t.LedgerCategory,
-                        t.Amount
+                        t.Amount,
+                        txType = t.Amount < 0 ? "outflow" : t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase) ? "transfer" : "inflow"
                     })
                     .ToList()
             });
@@ -1138,6 +1142,7 @@ Rules:
 - If ambiguous about target record, category, cycle, action type, amount, or whether the user wants ledger vs recurring vs wishlist, ask one concise clarification with at most 3 questions, return no actions, and set closeChat false.
 - Use only categories, ledger categories, cycles, and record ids from App context.
 - requestedCycles is the server-resolved scope for named/relative cycles. Cycle summaries cover every transaction in those cycles; recentTransactions is only a bounded detail sample. Use cycleSummaries for totals and recentTransactions for identifying individual records.
+- Every transaction object has a txType field (""inflow"", ""outflow"", or ""transfer""). Positive amounts are inflows (income), negative amounts are outflows (expenses). When asked about expenses or finding the most expensive transactions, look only at transactions where txType is ""outflow"". Never treat inflows or transfers as expenses.
 - If dataScope.aggregatesTruncated is true, the cycle aggregates cover only part of that cycle; say the totals are approximate rather than presenting them as complete.
 - budgetTargets holds the user's ledger allocation goals (fractions of income per ledger category) plus their stability-fund target. When analyzing spending or giving improvement advice, compare cycleSummaries.ledgerNet and categorySpend against budgetTargets and be specific about which ledger categories are over or under goal. If budgetTargets is absent (sensitiveMode or a non-analysis question), give general guidance without inventing target numbers.
 - A requested cycle with hasTransactions=false is verified empty. An empty recentTransactions array alone does not prove there is no data unless dataScope says the target was explicit and the requested cycle is empty.
