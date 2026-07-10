@@ -48,6 +48,10 @@ public class AiAssistantService
         {
             return new AiChatResponse("Please ask a financial question or tell me what you want to open.", []);
         }
+        if (LooksLikeDeleteCommand(message))
+        {
+            return new AiChatResponse("I'm unable to delete records. You can delete it manually from the app if sensitive mode is off.", []);
+        }
 
         var apiKey = _configuration["GeminiApiKey"];
         if (string.IsNullOrWhiteSpace(apiKey))
@@ -58,7 +62,7 @@ public class AiAssistantService
         var context = await BuildContextAsync();
         var prompt = BuildPrompt(message, request.History ?? [], context);
         var text = await GenerateGeminiTextAsync(prompt, 0.15, 1400, apiKey);
-        return ParseAndValidateResponse(text, context);
+        return ParseAndValidateResponse(text, context, message);
     }
 
     private async Task<AiContext> BuildContextAsync()
@@ -76,6 +80,8 @@ public class AiAssistantService
             .Select(c => c.Name)
             .ToListAsync();
 
+        var sensitiveMode = setting?.HideSensitive ?? true;
+
         var recurring = await _context.RecurringPayments
             .AsNoTracking()
             .OrderBy(r => r.Name)
@@ -92,6 +98,19 @@ public class AiAssistantService
                 r.Active
             })
             .ToListAsync();
+        var recurringContext = sensitiveMode
+            ? recurring.Select(r => new
+            {
+                r.Id,
+                r.Name,
+                r.Category,
+                r.LedgerCategory,
+                r.StartDate,
+                r.EndDate,
+                r.DueDate,
+                r.Active
+            }).ToList()
+            : (object)recurring;
 
         var wishlist = await _context.WishlistItems
             .AsNoTracking()
@@ -109,6 +128,17 @@ public class AiAssistantService
                 w.CreatedAt
             })
             .ToListAsync();
+        var wishlistContext = sensitiveMode
+            ? wishlist.Select(w => new
+            {
+                w.Id,
+                w.Name,
+                w.Priority,
+                w.IsActive,
+                w.IsPurchased,
+                w.CreatedAt
+            }).ToList()
+            : (object)wishlist;
 
         var allTransactions = await _context.Transactions
             .AsNoTracking()
@@ -127,8 +157,17 @@ public class AiAssistantService
             })
             .ToListAsync();
 
-        var recentTransactions = allTransactions.Take(80).ToList();
-        var cycleSummaries = BuildCycleWindowSummaries(allTransactions, selectedYear, selectedMonthIndex, cycleDay);
+        var recentTransactions = sensitiveMode
+            ? allTransactions.Take(80).Select(t => new
+            {
+                t.Id,
+                t.Date,
+                t.Description,
+                t.Category,
+                t.LedgerCategory
+            }).ToList()
+            : (object)allTransactions.Take(80).ToList();
+        var cycleSummaries = BuildCycleWindowSummaries(allTransactions, selectedYear, selectedMonthIndex, cycleDay, !sensitiveMode);
 
         var availableCycles = allTransactions
             .Select(t =>
@@ -153,7 +192,7 @@ public class AiAssistantService
         return new AiContext(
             Currency: setting?.Currency ?? "USD",
             Today: DateTime.Now.ToString("yyyy-MM-dd"),
-            SensitiveMode: setting?.HideSensitive ?? true,
+            SensitiveMode: sensitiveMode,
             ActiveCycle: new
             {
                 month = selectedMonth,
@@ -165,15 +204,16 @@ public class AiAssistantService
             AvailableCycles: availableCycles,
             CycleSummaries: cycleSummaries,
             RecentTransactions: recentTransactions,
-            RecurringPayments: recurring,
-            WishlistItems: wishlist);
+            RecurringPayments: recurringContext,
+            WishlistItems: wishlistContext);
     }
 
     private static List<object> BuildCycleWindowSummaries(
         IEnumerable<dynamic> transactions,
         int centerYear,
         int centerMonthIndex,
-        int cycleDay)
+        int cycleDay,
+        bool includeAmounts)
     {
         var summaries = new List<object>();
         var txList = transactions.ToList();
@@ -187,6 +227,42 @@ public class AiAssistantService
                 .Where(t => DateTime.Parse((string)t.Date) >= start && DateTime.Parse((string)t.Date) < end)
                 .ToList();
             if (txs.Count == 0) continue;
+
+            if (!includeAmounts)
+            {
+                summaries.Add(new
+                {
+                    month = FinancialConstants.MonthAbbreviations[monthIndex - 1],
+                    year,
+                    label = range.label,
+                    transactionCount = txs.Count,
+                    categoryCounts = txs
+                        .GroupBy(t => (string)t.Category)
+                        .Select(g => new { category = g.Key, count = g.Count() })
+                        .OrderByDescending(x => x.count)
+                        .Take(8)
+                        .ToList(),
+                    ledgerCounts = txs
+                        .GroupBy(t => (string)t.LedgerCategory)
+                        .Select(g => new { ledgerCategory = g.Key, count = g.Count() })
+                        .OrderByDescending(x => x.count)
+                        .Take(8)
+                        .ToList(),
+                    recentTransactions = txs
+                        .OrderByDescending(t => (string)t.Date)
+                        .Take(8)
+                        .Select(t => new
+                        {
+                            t.Id,
+                            t.Date,
+                            t.Description,
+                            t.Category,
+                            t.LedgerCategory
+                        })
+                        .ToList()
+                });
+                continue;
+            }
 
             var categorySpend = txs
                 .Where(t => (decimal)t.Amount < 0)
@@ -263,11 +339,14 @@ Rules:
 - Never modify settings. Never create/update/delete ledger, wishlist, or recurring records. Draft/open modal only.
 - Transaction creation means openAddLedgerDraft only; never save/send a transaction.
 - Never directly toggle recurring active state. If the user asks to turn a recurring payment on or off, explain that AI cannot perform that direct toggle.
+- Delete requests are unsupported. Reply that AI cannot delete records.
 - If ambiguous about target record, category, cycle, action type, amount, or whether the user wants ledger vs recurring vs wishlist, ask one concise clarification with at most 3 questions, return no actions, and set closeChat false.
 - Use only categories, ledger categories, cycles, and record ids from App context.
-- If sensitiveMode is true, do not reveal exact financial amounts in reply. You may still navigate or open drafts.
+- If the user asks a question (for example ""how many"", ""what"", ""why"", ""compare"", ""analyze""), answer the question and return no actions unless the user explicitly asks to open/show/filter/navigate the ledger.
+- If sensitiveMode is true, exact amounts/prices/balances are not available and must not be asked for or revealed. Refuse amount-specific questions briefly. Do not return edit actions in sensitiveMode.
 - Use at most one action unless the user clearly asked for more.
 - Set closeChat true only when the request is fully handled by a non-edit returned action and your reply contains no follow-up question. For edit actions, Q&A, analysis, rejected, or clarification replies, set closeChat false.
+- Do not end replies with optional follow-up offers or questions like ""would you like a summary?"".
 
 Allowed actions:
 - openLedger payload: {{ month, year, allCycles, category, ledgerCategory, txType, search }}
@@ -288,7 +367,7 @@ Output schema:
 }}";
     }
 
-    private AiChatResponse ParseAndValidateResponse(string text, AiContext context)
+    private AiChatResponse ParseAndValidateResponse(string text, AiContext context, string userMessage)
     {
         text = StripJsonFence(text.Trim());
         using var doc = JsonDocument.Parse(text);
@@ -307,6 +386,12 @@ Output schema:
                 var payload = actionEl.TryGetProperty("payload", out var payloadProp) && payloadProp.ValueKind == JsonValueKind.Object
                     ? JsonSerializer.Deserialize<Dictionary<string, object?>>(payloadProp.GetRawText()) ?? []
                     : [];
+                if (context.SensitiveMode && type.StartsWith("openEdit", StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsQuestionOnlyRequest(userMessage) && type.Equals("openLedger", StringComparison.OrdinalIgnoreCase)) continue;
+                if (context.SensitiveMode)
+                {
+                    RemoveSensitivePayloadFields(payload);
+                }
                 if (!IsActionSafe(type, payload, context)) continue;
                 actions.Add(new AiUiAction(type, payload));
             }
@@ -323,6 +408,72 @@ Output schema:
         }
 
         return new AiChatResponse(reply, actions, closeChat);
+    }
+
+    private static void RemoveSensitivePayloadFields(Dictionary<string, object?> payload)
+    {
+        payload.Remove("amount");
+        payload.Remove("price");
+        if (payload.TryGetValue("changes", out var changesObj) && changesObj is JsonElement changesElement && changesElement.ValueKind == JsonValueKind.Object)
+        {
+            var changes = JsonSerializer.Deserialize<Dictionary<string, object?>>(changesElement.GetRawText()) ?? [];
+            changes.Remove("amount");
+            changes.Remove("price");
+            payload["changes"] = changes;
+        }
+        else if (changesObj is Dictionary<string, object?> changes)
+        {
+            changes.Remove("amount");
+            changes.Remove("price");
+        }
+    }
+
+    private static bool IsQuestionOnlyRequest(string message)
+    {
+        var lower = message.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(lower)) return false;
+
+        var asksQuestion = lower.Contains('?') ||
+            lower.StartsWith("how ") ||
+            lower.StartsWith("what ") ||
+            lower.StartsWith("why ") ||
+            lower.StartsWith("when ") ||
+            lower.StartsWith("where ") ||
+            lower.StartsWith("who ") ||
+            lower.StartsWith("which ") ||
+            lower.StartsWith("can you tell") ||
+            lower.StartsWith("tell me") ||
+            lower.StartsWith("analyze") ||
+            lower.StartsWith("compare");
+        if (!asksQuestion) return false;
+
+        return !(lower.Contains("open ") ||
+            lower.Contains("show me ") ||
+            lower.Contains("go to ") ||
+            lower.Contains("navigate") ||
+            lower.Contains("filter") ||
+            lower.Contains("apply filter") ||
+            lower.Contains("take me"));
+    }
+
+    private static bool LooksLikeDeleteCommand(string message)
+    {
+        var lower = message.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(lower)) return false;
+
+        var startsAsDelete = lower.StartsWith("delete ") ||
+            lower.StartsWith("remove ") ||
+            lower.StartsWith("erase ") ||
+            lower.StartsWith("cancel ") ||
+            lower.StartsWith("discard ");
+        if (!startsAsDelete) return false;
+
+        return !(lower.StartsWith("what ") ||
+            lower.StartsWith("which ") ||
+            lower.StartsWith("why ") ||
+            lower.StartsWith("how ") ||
+            lower.Contains(" redundant") ||
+            lower.Contains(" should i "));
     }
 
     private static bool LooksLikeFollowUp(string reply)
