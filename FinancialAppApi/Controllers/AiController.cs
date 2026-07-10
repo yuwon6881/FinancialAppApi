@@ -24,11 +24,8 @@ public class AiController : ControllerBase
     {
         try
         {
-            return Ok(await _aiAssistantService.ChatAsync(request));
-        }
-        catch (AiAssistantService.AiAssistantUserException ex)
-        {
-            return StatusCode(503, new { reply = ex.Message, actions = Array.Empty<object>() });
+            var outcome = await _aiAssistantService.ChatAsync(request);
+            return outcome.IsProviderError ? StatusCode(503, outcome.Response) : Ok(outcome.Response);
         }
         catch (TaskCanceledException ex)
         {
@@ -39,6 +36,11 @@ public class AiController : ControllerBase
         {
             _logger.LogWarning(ex, "AI chat returned invalid JSON.");
             return StatusCode(503, new { reply = "AI returned an unreadable response. Please try again.", actions = Array.Empty<object>() });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error while handling AI chat request.");
+            return StatusCode(503, new { reply = "AI is unavailable. Please try again.", actions = Array.Empty<object>() });
         }
     }
 }

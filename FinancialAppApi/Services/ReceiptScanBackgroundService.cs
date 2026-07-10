@@ -1,7 +1,7 @@
 namespace FinancialAppApi.Services;
 
 // Single consumer for the ReceiptScanQueue. Processes queued receipt-scan jobs one at
-// a time so the fallback OCR path never runs more concurrent Gemini calls than a
+// a time so the fallback OCR path never runs more concurrent AI provider calls than a
 // free-tier container can absorb. Each job gets its own DI scope (ReceiptScanProcessor
 // is scoped and depends on the scoped AppDbContext).
 public class ReceiptScanBackgroundService : BackgroundService

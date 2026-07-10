@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using FinancialAppApi.Database;
@@ -11,6 +10,12 @@ public sealed record AiChatMessage(string Role, string Content);
 public sealed record AiChatRequest(string Message, IReadOnlyList<AiChatMessage>? History);
 public sealed record AiChatResponse(string Reply, IReadOnlyList<AiUiAction> Actions, bool CloseChat = false);
 public sealed record AiUiAction(string Type, Dictionary<string, object?> Payload);
+
+// AiChatResponse alone is the wire shape returned to the client either way (a friendly
+// message is a valid chat reply whether or not the AI provider itself succeeded) -- but the
+// controller still needs to know whether to report 200 or 503, the same way every other AI
+// endpoint's controller switches on a Status field instead of guessing from the payload.
+public sealed record AiChatOutcome(AiChatResponse Response, bool IsProviderError);
 
 public class AiAssistantService
 {
@@ -26,54 +31,138 @@ public class AiAssistantService
         "openEditWishlistDraft"
     };
 
-    private readonly HttpClient _httpClient;
+    private const int MaxMessageLength = 2000;
+    private const int MaxHistoryMessageLength = 2000;
+
+    private readonly AiClient _aiClient;
     private readonly AppDbContext _context;
-    private readonly IConfiguration _configuration;
-    private readonly ILogger<AiAssistantService> _logger;
+    private readonly TransactionCategoryService _categoryService;
 
     public AiAssistantService(
-        HttpClient httpClient,
+        AiClient aiClient,
         AppDbContext context,
-        IConfiguration configuration,
-        ILogger<AiAssistantService> logger)
+        TransactionCategoryService categoryService)
     {
-        _httpClient = httpClient;
+        _aiClient = aiClient;
         _context = context;
-        _configuration = configuration;
-        _logger = logger;
+        _categoryService = categoryService;
     }
 
-    public async Task<AiChatResponse> ChatAsync(AiChatRequest request)
+    public async Task<AiChatOutcome> ChatAsync(AiChatRequest request)
     {
         var message = (request.Message ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(message))
         {
-            return new AiChatResponse("Please ask a financial question or tell me what you want to open.", []);
+            return Ok(new AiChatResponse("Please ask a financial question or tell me what you want to open.", []));
+        }
+        if (message.Length > MaxMessageLength)
+        {
+            return Ok(new AiChatResponse("That message is too long. Please shorten it and try again.", []));
         }
         if (LooksLikeDeleteCommand(message))
         {
-            return new AiChatResponse("I'm unable to delete records. You can delete it manually from the app if sensitive mode is off.", []);
+            return Ok(new AiChatResponse("I'm unable to delete records. You can delete it manually from the app if sensitive mode is off.", []));
         }
 
-        var apiKey = _configuration["GeminiApiKey"];
-        if (string.IsNullOrWhiteSpace(apiKey))
+        if (!_aiClient.IsConfigured)
         {
-            return new AiChatResponse("AI chat is not configured on the server.", []);
+            return Ok(new AiChatResponse("AI chat is not configured on the server.", []));
         }
 
-        var context = await BuildContextAsync();
+        var history = SanitizeHistory(request.History);
+        var needs = DetermineContextNeeds(message, history);
+        var context = await BuildContextAsync(needs);
         var resolvedEdit = await TryResolveLedgerEditAsync(message, context.SensitiveMode);
         if (resolvedEdit != null)
         {
-            return resolvedEdit;
+            return Ok(resolvedEdit);
         }
 
-        var prompt = BuildPrompt(message, request.History ?? [], context);
-        var text = await GenerateGeminiTextAsync(prompt, 0.15, 1400, apiKey);
-        return ParseAndValidateResponse(text, context, message);
+        var systemInstruction = BuildSystemInstruction();
+        var userContent = BuildUserContent(message, history, context);
+
+        string text;
+        try
+        {
+            text = await _aiClient.GenerateTextAsync([AiPart.FromText(userContent)], 0.15, 1400, systemInstruction);
+        }
+        catch (AiClientException ex)
+        {
+            // Matches every other AI endpoint: a Status-style signal the controller switches
+            // on to pick 200 vs 503, not a thrown exception crossing the service boundary --
+            // the friendly reply text is still the same AiChatResponse shape either way.
+            return new AiChatOutcome(new AiChatResponse(ex.Message, []), IsProviderError: true);
+        }
+
+        return Ok(ParseAndValidateResponse(text, context, message));
     }
 
-    private async Task<AiContext> BuildContextAsync()
+    private static AiChatOutcome Ok(AiChatResponse response) => new(response, IsProviderError: false);
+
+    // The `history` array is client-supplied on every request (this endpoint is stateless),
+    // so it must not be trusted as-is: an unbounded role string or message length would let a
+    // caller smuggle fabricated "instructions" into what the model is told is prior
+    // conversation. Restrict to the two real roles and cap length like any other input.
+    private static IReadOnlyList<AiChatMessage> SanitizeHistory(IReadOnlyList<AiChatMessage>? history)
+    {
+        if (history == null || history.Count == 0)
+        {
+            return [];
+        }
+
+        return history
+            .TakeLast(6)
+            .Where(m => m.Role is "user" or "assistant" && !string.IsNullOrWhiteSpace(m.Content))
+            .Select(m => m with { Content = m.Content.Length > MaxHistoryMessageLength ? m.Content[..MaxHistoryMessageLength] : m.Content })
+            .ToList();
+    }
+
+    // RecentTransactions (up to 80 rows) and CycleSummaries (7 rolling cycle windows, each
+    // with its own category/ledger breakdowns) are the two expensive pieces of AiContext --
+    // together they are the large majority of every chat request's token cost, and most
+    // messages (navigation, wishlist/recurring questions, greetings, out-of-scope requests)
+    // never reference them at all. Everything else in AiContext (categories, recurring,
+    // wishlist, available cycles) is cheap regardless, so it stays unconditional -- the
+    // savings from trimming those would be small and not worth the risk of breaking
+    // recurring/wishlist Q&A that a keyword heuristic can't perfectly recognize.
+    private static readonly Regex CycleComparisonSignal = new(
+        @"\b(compare|comparison|vs\.?|versus|trend|previous|last month|last cycle|prior month|history|historical|over time|each month|every month|past (few |\d+ )?months?|year over year|month over month)\b",
+        RegexOptions.Compiled);
+
+    private static readonly Regex CycleAnalysisSignal = new(
+        @"\b(spend|spent|spending|budget|income|outflow|inflow|balance|total|average|net|save|saved|savings|essentials|growth|stability|rewards|cycle|this month|last month|how much)\b",
+        RegexOptions.Compiled);
+
+    private static readonly Regex TransactionDetailSignal = new(
+        @"\b(transaction|transactions|ledger|purchase|purchased|bought|paid|payment|receipt|charge|charged|expense|expenses|find|search|when did|did i|edit|update|change|modify|record|entry)\b",
+        RegexOptions.Compiled);
+
+    private sealed record ContextNeeds(bool NeedsTransactionDetail, bool NeedsCycleSummary, bool NeedsCycleComparison);
+
+    // Keyword heuristic, not a model call -- zero added latency/cost, in the same style as
+    // the delete/ledger-edit detectors below. A missed signal degrades gracefully: the system
+    // instruction tells the model to ask a clarifying follow-up rather than guess when it
+    // needs numbers that aren't in front of it, instead of silently answering wrong.
+    private static ContextNeeds DetermineContextNeeds(string message, IReadOnlyList<AiChatMessage> history)
+    {
+        // Recent user turns are folded in (not just the latest message) so a multi-message
+        // back-and-forth about the same financial topic doesn't lose context piece by piece.
+        var recentUserText = string.Join(
+            " ",
+            history.Where(m => m.Role == "user").Select(m => m.Content).TakeLast(3).Append(message));
+        var lower = recentUserText.ToLowerInvariant();
+
+        var needsCycleAnalysis = CycleAnalysisSignal.IsMatch(lower);
+        var needsCycleComparison = CycleComparisonSignal.IsMatch(lower);
+        var needsTransactionDetail = needsCycleAnalysis || TransactionDetailSignal.IsMatch(lower);
+
+        return new ContextNeeds(
+            NeedsTransactionDetail: needsTransactionDetail,
+            NeedsCycleSummary: needsCycleAnalysis || needsCycleComparison,
+            NeedsCycleComparison: needsCycleComparison);
+    }
+
+    private async Task<AiContext> BuildContextAsync(ContextNeeds needs)
     {
         var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
         var cycleDay = setting?.CycleDay ?? 28;
@@ -82,11 +171,10 @@ public class AiAssistantService
         var selectedMonthIndex = Array.IndexOf(FinancialConstants.MonthAbbreviations, selectedMonth) + 1;
         if (selectedMonthIndex <= 0) selectedMonthIndex = DateTime.Now.Month;
 
-        var categories = await _context.TransactionCategories
-            .AsNoTracking()
-            .OrderBy(c => c.Name)
+        var categories = (await _categoryService.GetCategoriesAsync())
             .Select(c => c.Name)
-            .ToListAsync();
+            .OrderBy(name => name)
+            .ToList();
 
         var sensitiveMode = setting?.HideSensitive ?? true;
 
@@ -165,17 +253,30 @@ public class AiAssistantService
             })
             .ToListAsync();
 
-        var recentTransactions = sensitiveMode
-            ? allTransactions.Take(80).Select(t => new
+        object recentTransactions;
+        if (!needs.NeedsTransactionDetail)
+        {
+            recentTransactions = Array.Empty<object>();
+        }
+        else if (sensitiveMode)
+        {
+            recentTransactions = allTransactions.Take(80).Select(t => new
             {
                 t.Id,
                 t.Date,
                 t.Description,
                 t.Category,
                 t.LedgerCategory
-            }).ToList()
-            : (object)allTransactions.Take(80).ToList();
-        var cycleSummaries = BuildCycleWindowSummaries(allTransactions, selectedYear, selectedMonthIndex, cycleDay, !sensitiveMode);
+            }).ToList();
+        }
+        else
+        {
+            recentTransactions = allTransactions.Take(80).ToList();
+        }
+
+        var cycleSummaries = needs.NeedsCycleSummary
+            ? BuildCycleWindowSummaries(allTransactions, selectedYear, selectedMonthIndex, cycleDay, !sensitiveMode, needs.NeedsCycleComparison ? 3 : 0)
+            : new List<object>();
 
         var availableCycles = allTransactions
             .Select(t =>
@@ -221,11 +322,12 @@ public class AiAssistantService
         int centerYear,
         int centerMonthIndex,
         int cycleDay,
-        bool includeAmounts)
+        bool includeAmounts,
+        int windowRadius)
     {
         var summaries = new List<object>();
         var txList = transactions.ToList();
-        for (var offset = -3; offset <= 3; offset++)
+        for (var offset = -windowRadius; offset <= windowRadius; offset++)
         {
             var (year, monthIndex) = AddMonths(centerYear, centerMonthIndex, offset);
             var range = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
@@ -524,16 +626,12 @@ public class AiAssistantService
         return date.ToString("MMMM d, yyyy", CultureInfo.InvariantCulture);
     }
 
-    private static string BuildPrompt(string message, IReadOnlyList<AiChatMessage> history, AiContext context)
+    // Kept as a fixed, request-independent string (no interpolated data) so it forms an
+    // identical prefix on every call -- see AiClient for why that matters for cost.
+    // Per-request data (message/history/live app context) goes in BuildUserContent instead.
+    private static string BuildSystemInstruction()
     {
-        var contextJson = JsonSerializer.Serialize(context, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-        var historyJson = JsonSerializer.Serialize(history.TakeLast(6), new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-
-        return $@"You are FinancialApp AI. Return ONLY valid JSON, no markdown.
-
-User message: {JsonSerializer.Serialize(message)}
-Recent chat JSON: {historyJson}
-App context JSON: {contextJson}
+        return @"You are FinancialApp AI. Return ONLY valid JSON, no markdown.
 
 Rules:
 - Only fulfill these capabilities: cycle analysis, ledger navigation/filtering, opening add/edit drafts for ledger/recurring/wishlist, and wishlist/recurring Q&A.
@@ -544,6 +642,7 @@ Rules:
 - Delete requests are unsupported. Reply that AI cannot delete records.
 - If ambiguous about target record, category, cycle, action type, amount, or whether the user wants ledger vs recurring vs wishlist, ask one concise clarification with at most 3 questions, return no actions, and set closeChat false.
 - Use only categories, ledger categories, cycles, and record ids from App context.
+- App context only includes recentTransactions/cycleSummaries when the question appears to need them; both can legitimately be empty arrays. If you need specific transaction or cycle numbers to answer accurately and they are missing from App context, ask one brief clarifying question instead of guessing or claiming the user has no data.
 - For ledger edit requests, return openEditLedgerDraft when you can identify one exact transaction. Do not return openLedger just to search unless the user explicitly asks to show/filter/navigate.
 - If the user asks a question (for example ""how many"", ""what"", ""why"", ""compare"", ""analyze""), answer the question and return no actions unless the user explicitly asks to open/show/filter/navigate the ledger.
 - If sensitiveMode is true, exact amounts/prices/balances are not available and must not be asked for or revealed. Refuse amount-specific questions briefly. Do not return edit actions in sensitiveMode.
@@ -552,27 +651,36 @@ Rules:
 - Do not end replies with optional follow-up offers or questions like ""would you like a summary?"".
 
 Allowed actions:
-- openLedger payload: {{ month, year, allCycles, category, ledgerCategory, txType, search, date }}
-- openAddLedgerDraft payload: {{ description, amount, txType, category, ledgerCategory, date }}
-- openAddRecurringDraft payload: {{ name, amount, category, ledgerCategory, startDate, endDate }}
-- openAddWishlistDraft payload: {{ name, price, priority, isActive }}
-- openEditLedgerDraft payload: {{ id, changes }}
-- openEditRecurringDraft payload: {{ id, changes }}
-- openEditWishlistDraft payload: {{ id, changes }}
+- openLedger payload: { month, year, allCycles, category, ledgerCategory, txType, search, date }
+- openAddLedgerDraft payload: { description, amount, txType, category, ledgerCategory, date }
+- openAddRecurringDraft payload: { name, amount, category, ledgerCategory, startDate, endDate }
+- openAddWishlistDraft payload: { name, price, priority, isActive }
+- openEditLedgerDraft payload: { id, changes }
+- openEditRecurringDraft payload: { id, changes }
+- openEditWishlistDraft payload: { id, changes }
 
 Output schema:
-{{
+{
   ""reply"": ""short user-facing reply"",
   ""closeChat"": false,
   ""actions"": [
-    {{ ""type"": ""one allowed action type"", ""payload"": {{ }} }}
+    { ""type"": ""one allowed action type"", ""payload"": { } }
   ]
-}}";
+}";
+    }
+
+    private static string BuildUserContent(string message, IReadOnlyList<AiChatMessage> history, AiContext context)
+    {
+        var contextJson = JsonSerializer.Serialize(context, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        var historyJson = JsonSerializer.Serialize(history, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        return $@"User message: {JsonSerializer.Serialize(message)}
+Recent chat JSON: {historyJson}
+App context JSON: {contextJson}";
     }
 
     private AiChatResponse ParseAndValidateResponse(string text, AiContext context, string userMessage)
     {
-        text = StripJsonFence(text.Trim());
         using var doc = JsonDocument.Parse(text);
         var root = doc.RootElement;
         var reply = root.TryGetProperty("reply", out var replyProp) ? replyProp.GetString() ?? "" : "";
@@ -664,12 +772,14 @@ Output schema:
         var lower = message.Trim().ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(lower)) return false;
 
-        var startsAsDelete = lower.StartsWith("delete ") ||
-            lower.StartsWith("remove ") ||
-            lower.StartsWith("erase ") ||
-            lower.StartsWith("cancel ") ||
-            lower.StartsWith("discard ");
-        if (!startsAsDelete) return false;
+        // Word-boundary match (not just StartsWith) so phrasings like "please delete this"
+        // or "can you remove that" are still caught by the deterministic refusal below,
+        // rather than falling through to the model's own (best-effort, not guaranteed)
+        // instruction-following for the same rule.
+        if (!Regex.IsMatch(lower, @"\b(delete|remove|erase|cancel|discard)\b"))
+        {
+            return false;
+        }
 
         return !(lower.StartsWith("what ") ||
             lower.StartsWith("which ") ||
@@ -725,67 +835,6 @@ Output schema:
                 string.Equals(p.ToString(), id, StringComparison.OrdinalIgnoreCase));
     }
 
-    private async Task<string> GenerateGeminiTextAsync(string prompt, double temperature, int maxOutputTokens, string apiKey)
-    {
-        var requestBody = new
-        {
-            contents = new[]
-            {
-                new { parts = new object[] { new { text = prompt } } }
-            },
-            generationConfig = new { temperature, maxOutputTokens }
-        };
-
-        var primaryModel = _configuration["GeminiModel"];
-        if (string.IsNullOrWhiteSpace(primaryModel)) primaryModel = "gemini-3.1-flash-lite";
-        const string fallbackModel = "gemini-3.5-flash";
-
-        try
-        {
-            return await CallGeminiAsync(primaryModel, requestBody, apiKey);
-        }
-        catch (GeminiUnavailableException)
-        {
-            _logger.LogWarning("Primary model {PrimaryModel} unavailable, retrying with fallback {FallbackModel}.", primaryModel, fallbackModel);
-            return await CallGeminiAsync(fallbackModel, requestBody, apiKey);
-        }
-    }
-
-    private async Task<string> CallGeminiAsync(string model, object requestBody, string apiKey)
-    {
-        var geminiUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}";
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, geminiUrl);
-        httpRequest.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(requestBody));
-        httpRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-
-        var response = await _httpClient.SendAsync(httpRequest);
-        if (response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
-        {
-            throw new GeminiUnavailableException();
-        }
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("Gemini API error {Status} (model {Model}): {Body}", response.StatusCode, model, errorBody);
-            throw new AiAssistantUserException("AI service returned an error. Please try again.");
-        }
-
-        var responseBody = await response.Content.ReadAsStringAsync();
-        using var geminiDoc = JsonDocument.Parse(responseBody);
-        var candidate = geminiDoc.RootElement.GetProperty("candidates")[0];
-        return candidate.GetProperty("content").GetProperty("parts")[0].GetProperty("text").GetString() ?? "";
-    }
-
-    private static string StripJsonFence(string text)
-    {
-        if (!text.StartsWith("```", StringComparison.Ordinal)) return text;
-        var firstNewline = text.IndexOf('\n');
-        var lastFence = text.LastIndexOf("```", StringComparison.Ordinal);
-        return firstNewline > 0 && lastFence > firstNewline
-            ? text.Substring(firstNewline + 1, lastFence - firstNewline - 1).Trim()
-            : text;
-    }
-
     private sealed record CycleKey(int Year, int MonthIndex);
 
     private sealed record AiContext(
@@ -800,11 +849,4 @@ Output schema:
         object RecentTransactions,
         object RecurringPayments,
         object WishlistItems);
-
-    private sealed class GeminiUnavailableException : Exception { }
-
-    public sealed class AiAssistantUserException : Exception
-    {
-        public AiAssistantUserException(string message) : base(message) { }
-    }
 }

@@ -1,8 +1,8 @@
-using System.Net.Http.Headers;
 using System.Text.Json;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace FinancialAppApi.Services;
 
@@ -31,31 +31,50 @@ public sealed record CategoryCleanupAction(
 
 public sealed record CategoryCleanupApplyResult(int AppliedCount, IReadOnlyList<CategoryCleanupAction> UndoActions);
 
+// Mirrors the Status-enum-plus-message pattern the rest of the app uses for expected
+// failures (e.g. CreateTransactionCategoryResult/DeleteTransactionCategoryResult) instead
+// of exceptions, so the controller can switch on a result the same way it does for every
+// non-AI endpoint. Reserved for the read-only suggestion calls below; ApplyCategoryCleanupAsync
+// still throws CategorySuggestionUserException internally because it needs to unwind out of
+// a multi-action DB transaction, which is a genuinely different (and already idiomatic) use
+// of exceptions than translating an AI-provider failure into an HTTP status.
+public enum AiOperationStatus { Ok, Unavailable }
+
+public sealed record AiOperationResult<T>(AiOperationStatus Status, T? Data, string? Message = null)
+{
+    public static AiOperationResult<T> Ok(T data) => new(AiOperationStatus.Ok, data);
+    public static AiOperationResult<T> Failed(string message) => new(AiOperationStatus.Unavailable, default, message);
+}
+
 public sealed class CategorySuggestionService
 {
     private sealed record CategoryReviewTransaction(string Id, string Description, string Category, string LedgerCategory, decimal Amount);
 
-    private readonly HttpClient _httpClient;
+    // Category suggestions run at temperature 0.0 against a fixed (description, txType,
+    // categories) input, so an identical call is expected to produce an identical answer --
+    // caching it briefly avoids paying for a repeat AI call when a user revisits/re-blurs
+    // the same description field, which is common while filling out a transaction form.
+    private const string SuggestCachePrefix = "ai-category-suggest:";
+    private static readonly TimeSpan SuggestCacheTtl = TimeSpan.FromMinutes(15);
+
+    private readonly AiClient _aiClient;
     private readonly AppDbContext _context;
     private readonly TransactionCategoryService _categoryService;
-    private readonly IConfiguration _configuration;
-    private readonly ILogger<CategorySuggestionService> _logger;
+    private readonly IMemoryCache _cache;
 
     public CategorySuggestionService(
-        HttpClient httpClient,
+        AiClient aiClient,
         AppDbContext context,
         TransactionCategoryService categoryService,
-        IConfiguration configuration,
-        ILogger<CategorySuggestionService> logger)
+        IMemoryCache cache)
     {
-        _httpClient = httpClient;
+        _aiClient = aiClient;
         _context = context;
         _categoryService = categoryService;
-        _configuration = configuration;
-        _logger = logger;
+        _cache = cache;
     }
 
-    public async Task<IReadOnlyList<CategorySuggestion>> SuggestAsync(
+    public async Task<AiOperationResult<IReadOnlyList<CategorySuggestion>>> SuggestAsync(
         string description,
         string? txType,
         IEnumerable<string>? requestedCategories)
@@ -73,33 +92,58 @@ public sealed class CategorySuggestionService
 
         if (categoryNames.Count == 0)
         {
-            return [];
+            return AiOperationResult<IReadOnlyList<CategorySuggestion>>.Ok([]);
         }
 
-        var apiKey = _configuration["GeminiApiKey"];
-        if (string.IsNullOrWhiteSpace(apiKey))
+        if (!_aiClient.IsConfigured)
         {
-            throw new CategorySuggestionUserException("AI category suggestions are not configured.");
+            return AiOperationResult<IReadOnlyList<CategorySuggestion>>.Failed("AI category suggestions are not configured.");
         }
 
         var safeTxType = string.Equals(txType, "inflow", StringComparison.OrdinalIgnoreCase)
             ? "inflow"
             : "outflow";
+
+        var cacheKey = SuggestCachePrefix + string.Join('|', [
+            description.Trim().ToLowerInvariant(),
+            safeTxType,
+            string.Join(',', categoryNames.Select(c => c.ToLowerInvariant()))
+        ]);
+        if (_cache.TryGetValue(cacheKey, out IReadOnlyList<CategorySuggestion>? cached) && cached != null)
+        {
+            return AiOperationResult<IReadOnlyList<CategorySuggestion>>.Ok(cached);
+        }
+
         var categoriesJson = JsonSerializer.Serialize(categoryNames);
-        var prompt = $@"You suggest transaction categories for a personal finance app.
+        var content = $@"Transaction description: {JsonSerializer.Serialize(description)}
+Transaction type: {safeTxType}
+Available categories JSON array: {categoriesJson}";
+
+        string text;
+        try
+        {
+            text = await _aiClient.GenerateTextAsync([AiPart.FromText(content)], 0.0, 512, SuggestSystemInstruction);
+        }
+        catch (AiClientException ex)
+        {
+            return AiOperationResult<IReadOnlyList<CategorySuggestion>>.Failed(ex.Message);
+        }
+
+        var suggestions = ParseSuggestions(text, categoryNames);
+        _cache.Set(cacheKey, suggestions, SuggestCacheTtl);
+        return AiOperationResult<IReadOnlyList<CategorySuggestion>>.Ok(suggestions);
+    }
+
+    private const string SuggestSystemInstruction = @"You suggest transaction categories for a personal finance app.
 Score every available category internally for how well it matches the transaction description, then return only the top 3.
 Return ONLY valid JSON, no markdown, no explanation.
 
-Transaction description: {JsonSerializer.Serialize(description)}
-Transaction type: {safeTxType}
-Available categories JSON array: {categoriesJson}
-
 JSON schema:
-{{
+{
   ""suggestions"": [
-    {{ ""category"": ""<exact category name from the available list>"", ""confidence"": <0.0 to 1.0> }}
+    { ""category"": ""<exact category name from the available list>"", ""confidence"": <0.0 to 1.0> }
   ]
-}}
+}
 
 Rules:
 - category must be copied exactly from the available categories list.
@@ -107,54 +151,18 @@ Rules:
 - Return at most 3 suggestions, ordered from highest confidence to lowest.
 - Do not include ledger categories. Do not create new category names.";
 
-        var requestBody = new
-        {
-            contents = new[]
-            {
-                new
-                {
-                    parts = new object[]
-                    {
-                        new { text = prompt }
-                    }
-                }
-            },
-            generationConfig = new
-            {
-                temperature = 0.0,
-                maxOutputTokens = 512
-            }
-        };
-
-        var primaryModel = _configuration["GeminiModel"];
-        if (string.IsNullOrWhiteSpace(primaryModel))
-        {
-            primaryModel = "gemini-3.1-flash-lite";
-        }
-        const string fallbackModel = "gemini-3.5-flash";
-
-        string text;
-        try
-        {
-            text = await CallGeminiAsync(primaryModel, requestBody, apiKey);
-        }
-        catch (GeminiUnavailableException)
-        {
-            _logger.LogWarning("Primary model {PrimaryModel} unavailable, retrying with fallback {FallbackModel}.", primaryModel, fallbackModel);
-            text = await CallGeminiAsync(fallbackModel, requestBody, apiKey);
-        }
-
-        return ParseSuggestions(text, categoryNames);
-    }
-
-    public async Task<IReadOnlyList<TransactionNoteSuggestion>> SuggestNotesAsync(
+    public async Task<AiOperationResult<IReadOnlyList<TransactionNoteSuggestion>>> SuggestNotesAsync(
         string description,
         string? category,
         string? ledgerCategory,
         string? txType,
         IEnumerable<string>? historyDescriptions)
     {
-        var apiKey = GetApiKey();
+        if (!_aiClient.IsConfigured)
+        {
+            return AiOperationResult<IReadOnlyList<TransactionNoteSuggestion>>.Failed("AI category suggestions are not configured.");
+        }
+
         var history = (historyDescriptions ?? [])
             .Select(h => h.Trim())
             .Where(h => !string.IsNullOrWhiteSpace(h))
@@ -162,22 +170,35 @@ Rules:
             .Take(20)
             .ToList();
 
-        var prompt = $@"You rewrite transaction descriptions for a personal finance ledger.
-Return exactly 3 concise, useful alternatives for the user to select.
-Return ONLY valid JSON, no markdown, no explanation.
-
-Current description: {JsonSerializer.Serialize(description)}
+        var content = $@"Current description: {JsonSerializer.Serialize(description)}
 Transaction type: {JsonSerializer.Serialize(txType ?? "")}
 Category: {JsonSerializer.Serialize(category ?? "")}
 Ledger category: {JsonSerializer.Serialize(ledgerCategory ?? "")}
-Recent description examples JSON array: {JsonSerializer.Serialize(history)}
+Recent description examples JSON array: {JsonSerializer.Serialize(history)}";
+
+        string text;
+        try
+        {
+            text = await _aiClient.GenerateTextAsync([AiPart.FromText(content)], 0.25, 512, SuggestNotesSystemInstruction);
+        }
+        catch (AiClientException ex)
+        {
+            return AiOperationResult<IReadOnlyList<TransactionNoteSuggestion>>.Failed(ex.Message);
+        }
+
+        return AiOperationResult<IReadOnlyList<TransactionNoteSuggestion>>.Ok(ParseNoteSuggestions(text));
+    }
+
+    private const string SuggestNotesSystemInstruction = @"You rewrite transaction descriptions for a personal finance ledger.
+Return exactly 3 concise, useful alternatives for the user to select.
+Return ONLY valid JSON, no markdown, no explanation.
 
 JSON schema:
-{{
+{
   ""notes"": [
-    {{ ""note"": ""<clean transaction description>"", ""reason"": ""<short reason>"" }}
+    { ""note"": ""<clean transaction description>"", ""reason"": ""<short reason>"" }
   ]
-}}
+}
 
 Rules:
 - Do not invent details like people, locations, receipt numbers, or dates.
@@ -186,16 +207,9 @@ Rules:
 - Use title case only when it looks natural for a merchant or proper name.
 - The three notes should be meaningfully different: cleaned, shorter, and more specific if possible.";
 
-        var text = await GenerateGeminiTextAsync(prompt, 0.25, 512);
-        return ParseNoteSuggestions(text);
-    }
-
-    public async Task<CategoryCleanupReview> ReviewCategoryCleanupAsync()
+    public async Task<AiOperationResult<CategoryCleanupReview>> ReviewCategoryCleanupAsync()
     {
-        var categories = await _context.TransactionCategories
-            .AsNoTracking()
-            .OrderBy(c => c.Name)
-            .ToListAsync();
+        var categories = await _categoryService.GetCategoriesAsync();
         var visibleCategories = categories
             .Where(c => !TransactionCategoryService.IsReservedName(c.Name))
             .Select(c => c.Name.Trim())
@@ -206,7 +220,7 @@ Rules:
 
         if (visibleCategories.Count == 0)
         {
-            return new CategoryCleanupReview([]);
+            return AiOperationResult<CategoryCleanupReview>.Ok(new CategoryCleanupReview([]));
         }
 
         var recentTransactions = await _context.Transactions
@@ -234,16 +248,34 @@ Rules:
             })
             .ToList();
 
-        var prompt = $@"You review custom transaction categories for a personal finance app.
+        var content = $@"Existing categories JSON array: {JsonSerializer.Serialize(visibleCategories)}
+Recent usage JSON array: {JsonSerializer.Serialize(usage)}";
+
+        if (!_aiClient.IsConfigured)
+        {
+            return AiOperationResult<CategoryCleanupReview>.Failed("AI category suggestions are not configured.");
+        }
+
+        string text;
+        try
+        {
+            text = await _aiClient.GenerateTextAsync([AiPart.FromText(content)], 0.1, 1024, ReviewCleanupSystemInstruction);
+        }
+        catch (AiClientException ex)
+        {
+            return AiOperationResult<CategoryCleanupReview>.Failed(ex.Message);
+        }
+
+        return AiOperationResult<CategoryCleanupReview>.Ok(ParseCategoryCleanupReview(text, visibleCategories, recentTransactions));
+    }
+
+    private const string ReviewCleanupSystemInstruction = @"You review custom transaction categories for a personal finance app.
 Suggest safe cleanup actions at the CATEGORY level only. Return ONLY valid JSON, no markdown, no explanation.
 
-Existing categories JSON array: {JsonSerializer.Serialize(visibleCategories)}
-Recent usage JSON array: {JsonSerializer.Serialize(usage)}
-
 JSON schema:
-{{
+{
   ""suggestions"": [
-    {{
+    {
       ""type"": ""delete"" | ""merge"" | ""add"" | ""consolidate"",
       ""title"": ""<short title>"",
       ""summary"": ""<one-sentence reason>"",
@@ -251,9 +283,9 @@ JSON schema:
       ""targetCategory"": ""<existing category name for merge, or null>"",
       ""newCategoryName"": ""<new category name for add, or null>"",
       ""confidence"": <0.0 to 1.0>
-    }}
+    }
   ]
-}}
+}
 
 Rules:
 - Return at most 5 suggestions. An empty suggestions array is a completely valid and often correct answer when the existing categories already look healthy -- never invent a suggestion just to have something to say.
@@ -264,10 +296,6 @@ Rules:
 - For add, newCategoryName must not already exist and should be broadly useful.
 - Never suggest Transfer or Adjustment.
 - Prefer conservative cleanup. If unsure, return fewer suggestions or none at all.";
-
-        var text = await GenerateGeminiTextAsync(prompt, 0.1, 1024);
-        return ParseCategoryCleanupReview(text, visibleCategories, recentTransactions);
-    }
 
     public async Task<CategoryCleanupApplyResult> ApplyCategoryCleanupAsync(IReadOnlyList<CategoryCleanupAction> actions)
     {
@@ -538,46 +566,6 @@ Rules:
         return recurringPayments.Count;
     }
 
-    private async Task<string> GenerateGeminiTextAsync(string prompt, double temperature, int maxOutputTokens)
-    {
-        var apiKey = GetApiKey();
-        var requestBody = new
-        {
-            contents = new[]
-            {
-                new
-                {
-                    parts = new object[]
-                    {
-                        new { text = prompt }
-                    }
-                }
-            },
-            generationConfig = new
-            {
-                temperature,
-                maxOutputTokens
-            }
-        };
-
-        var primaryModel = _configuration["GeminiModel"];
-        if (string.IsNullOrWhiteSpace(primaryModel))
-        {
-            primaryModel = "gemini-3.1-flash-lite";
-        }
-        const string fallbackModel = "gemini-3.5-flash";
-
-        try
-        {
-            return await CallGeminiAsync(primaryModel, requestBody, apiKey);
-        }
-        catch (GeminiUnavailableException)
-        {
-            _logger.LogWarning("Primary model {PrimaryModel} unavailable, retrying with fallback {FallbackModel}.", primaryModel, fallbackModel);
-            return await CallGeminiAsync(fallbackModel, requestBody, apiKey);
-        }
-    }
-
     private static IReadOnlyList<TransactionNoteSuggestion> ParseNoteSuggestions(string text)
     {
         text = StripMarkdownFence(text.Trim());
@@ -745,55 +733,6 @@ Rules:
         };
     }
 
-    private async Task<string> CallGeminiAsync(string model, object requestBody, string apiKey)
-    {
-        var geminiUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}";
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, geminiUrl);
-        httpRequest.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(requestBody));
-        httpRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-
-        var response = await _httpClient.SendAsync(httpRequest);
-
-        if (response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
-        {
-            var unavailableBody = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("Gemini API 503 (model {Model}): {Body}", model, unavailableBody);
-            throw new GeminiUnavailableException();
-        }
-
-        if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
-        {
-            var quotaBody = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("Gemini API 429 (model {Model}): {Body}", model, quotaBody);
-            throw new CategorySuggestionUserException("AI service rate limit reached. Please wait a moment and try again.");
-        }
-
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("Gemini API error {Status} (model {Model}): {Body}", response.StatusCode, model, errorBody);
-            throw new CategorySuggestionUserException("AI service returned an error. Please try again.");
-        }
-
-        var responseBody = await response.Content.ReadAsStringAsync();
-        using var geminiDoc = JsonDocument.Parse(responseBody);
-        var candidate = geminiDoc.RootElement.GetProperty("candidates")[0];
-        var text = candidate
-            .GetProperty("content")
-            .GetProperty("parts")[0]
-            .GetProperty("text")
-            .GetString() ?? "";
-
-        if (candidate.TryGetProperty("finishReason", out var finishReasonProp) &&
-            finishReasonProp.GetString() == "MAX_TOKENS")
-        {
-            _logger.LogWarning("Gemini response truncated by MAX_TOKENS (model {Model}). Partial text: {RawText}", model, text);
-            throw new CategorySuggestionUserException("AI response was too long and got cut off. Please try again.");
-        }
-
-        return text;
-    }
-
     private static IEnumerable<string> NormalizeCategoryNames(IEnumerable<string>? requestedCategories)
     {
         return requestedCategories?
@@ -802,17 +741,6 @@ Rules:
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(c => c)
             .Take(100) ?? [];
-    }
-
-    private string GetApiKey()
-    {
-        var apiKey = _configuration["GeminiApiKey"];
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            throw new CategorySuggestionUserException("AI category suggestions are not configured.");
-        }
-
-        return apiKey;
     }
 
     private static string? CleanCategoryName(string? name)
@@ -859,8 +787,6 @@ Rules:
 
         return text;
     }
-
-    private sealed class GeminiUnavailableException : Exception { }
 }
 
 public sealed class CategorySuggestionUserException : Exception

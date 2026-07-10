@@ -49,12 +49,15 @@ builder.Services.AddResponseCompression(options =>
 builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 
-builder.Services.AddHttpClient<ReceiptScanProcessor>(c => c.Timeout = TimeSpan.FromSeconds(30));
-builder.Services.AddHttpClient<CategorySuggestionService>(c => c.Timeout = TimeSpan.FromSeconds(10));
-builder.Services.AddHttpClient<AiAssistantService>(c => c.Timeout = TimeSpan.FromSeconds(20));
+// Single shared HTTP client for every AI-provider-calling service (Ask AI, category
+// suggestions/cleanup, receipt OCR) -- see AiClient for why they were consolidated.
+builder.Services.AddHttpClient<AiClient>(c => c.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddScoped<ReceiptScanProcessor>();
+builder.Services.AddScoped<CategorySuggestionService>();
+builder.Services.AddScoped<AiAssistantService>();
 builder.Services.AddHttpClient<ReceiptScanTaskDispatcher>(c => c.Timeout = TimeSpan.FromSeconds(15));
 // Bounded in-process work queue + single consumer for the OCR fallback path, so a
-// burst of receipt uploads can't spawn unbounded concurrent Gemini calls on a
+// burst of receipt uploads can't spawn unbounded concurrent AI provider calls on a
 // 1-vCPU free-tier container. Cloud Tasks remains the preferred path when configured.
 builder.Services.AddSingleton<ReceiptScanQueue>();
 builder.Services.AddHostedService<ReceiptScanBackgroundService>();

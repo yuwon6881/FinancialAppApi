@@ -6,7 +6,7 @@ namespace FinancialAppApi.Services;
 //
 // This is the fallback path used when Cloud Tasks is not configured. It replaces a
 // fire-and-forget Task.Run per upload, which on a 1-vCPU free-tier Cloud Run container
-// could spawn an unbounded number of concurrent Gemini calls under a burst of uploads.
+// could spawn an unbounded number of concurrent AI provider calls under a burst of uploads.
 // The bounded capacity provides backpressure: once the queue is full, enqueues wait
 // (briefly) rather than piling on more concurrent work than the container can handle.
 public class ReceiptScanQueue

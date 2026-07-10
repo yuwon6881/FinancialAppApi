@@ -1,4 +1,3 @@
-using System.Net.Http.Headers;
 using System.Text.Json;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
@@ -17,20 +16,20 @@ public record ReceiptScanResult(
 
 public class ReceiptScanProcessor
 {
-    private readonly HttpClient _httpClient;
+    private readonly AiClient _aiClient;
     private readonly AppDbContext _context;
-    private readonly IConfiguration _configuration;
+    private readonly TransactionCategoryService _categoryService;
     private readonly ILogger<ReceiptScanProcessor> _logger;
 
     public ReceiptScanProcessor(
-        HttpClient httpClient,
+        AiClient aiClient,
         AppDbContext context,
-        IConfiguration configuration,
+        TransactionCategoryService categoryService,
         ILogger<ReceiptScanProcessor> logger)
     {
-        _httpClient = httpClient;
+        _aiClient = aiClient;
         _context = context;
-        _configuration = configuration;
+        _categoryService = categoryService;
         _logger = logger;
     }
 
@@ -104,101 +103,59 @@ public class ReceiptScanProcessor
         await _context.SaveChangesAsync();
     }
 
-    private async Task<ReceiptScanResult> ScanImageAsync(string base64Image, string mimeType)
-    {
-        var apiKey = _configuration["GeminiApiKey"];
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            throw new ReceiptScanUserException("OCR service is not configured. Ask your administrator to set the GeminiApiKey.");
-        }
+    private static readonly string[] ValidLedgerCategories = ["Essentials", "Growth", "Stability", "Rewards", "Income"];
 
-        var categories = await _context.TransactionCategories
-            .OrderBy(c => c.Name)
-            .Select(c => c.Name)
-            .ToListAsync();
-
-        var validLedgerCategories = new[] { "Essentials", "Growth", "Stability", "Rewards", "Income" };
-
-        var prompt = $@"You are a receipt/invoice OCR assistant for a personal finance app.
-Analyze this receipt image and extract the following fields. Return ONLY valid JSON, no markdown, no explanation.
+    private const string ScanSystemInstruction = @"You are a receipt/invoice OCR assistant for a personal finance app.
+Analyze the receipt image and extract the following fields. Return ONLY valid JSON, no markdown, no explanation.
 
 JSON schema:
-{{
+{
   ""description"": ""<merchant name or brief description of purchase, e.g. 'McDonald's', 'Grab Ride', 'Electricity Bill'>"",
   ""amount"": <numeric value, positive number, e.g. 24.50 - extract the TOTAL amount paid>,
   ""date"": ""<ISO date string YYYY-MM-DD if visible on receipt, otherwise null>"",
-  ""category"": ""<best-fit subcategory - MUST be one of the listed categories: {string.Join(", ", categories)} (fallback to 'Other')>"",
-  ""ledgerCategory"": ""<best-fit ledger category - MUST be one of: {string.Join(", ", validLedgerCategories)}>"",
+  ""category"": ""<best-fit category, MUST be one of the Available categories listed below (fallback to 'Other')>"",
+  ""ledgerCategory"": ""<best-fit ledger category - MUST be one of: Essentials, Growth, Stability, Rewards, Income>"",
   ""txType"": ""outflow"",
   ""confidence"": <0.0 to 1.0 indicating how confident you are in the extracted data>
-}}
+}
 
 Rules:
 - description: use the merchant/store name if visible; otherwise describe the purchase type
-- amount: extract the final TOTAL amount (after tax/tip if applicable); return as a plain number
+- amount: extract the final TOTAL amount (after tax/tip if applicable); return as a plain, non-negative number
 - date: only return a date if you can clearly read it on the receipt; otherwise null
-- category: pick the single most fitting category from this exact list: {string.Join(", ", categories)}. Do not make up your own category name.
-- ledgerCategory: pick the single most fitting ledger category from this list: {string.Join(", ", validLedgerCategories)} (Essentials is typically for food/transport/bills, Rewards for entertainment/shopping, Growth for investments/education, Stability for savings/insurance, Income for salary/inflows).
+- category: pick the single most fitting category from the Available categories list below. Do not make up your own category name.
+- ledgerCategory: pick the single most fitting ledger category (Essentials is typically for food/transport/bills, Rewards for entertainment/shopping, Growth for investments/education, Stability for savings/insurance, Income for salary/inflows).
 - txType: always ""outflow"" for receipts (receipts are purchases)
 - If you cannot read the receipt clearly, still return your best guess with a low confidence score
 
 Return only the JSON object.";
 
-        var requestBody = new
+    private async Task<ReceiptScanResult> ScanImageAsync(string base64Image, string mimeType)
+    {
+        if (!_aiClient.IsConfigured)
         {
-            contents = new[]
-            {
-                new
-                {
-                    parts = new object[]
-                    {
-                        new
-                        {
-                            inline_data = new
-                            {
-                                mime_type = mimeType,
-                                data = base64Image
-                            }
-                        },
-                        new { text = prompt }
-                    }
-                }
-            },
-            generationConfig = new
-            {
-                temperature = 0.1,
-                maxOutputTokens = 1024
-            }
-        };
-
-        var primaryModel = _configuration["GeminiModel"];
-        if (string.IsNullOrWhiteSpace(primaryModel))
-        {
-            primaryModel = "gemini-3.1-flash-lite";
+            throw new ReceiptScanUserException("OCR service is not configured. Ask your administrator to set the AiApiKey.");
         }
-        const string fallbackModel = "gemini-3.5-flash";
+
+        var categories = (await _categoryService.GetCategoriesAsync())
+            .Select(c => c.Name)
+            .OrderBy(name => name)
+            .ToList();
+
+        var content = $"Available categories JSON array: {JsonSerializer.Serialize(categories)}";
 
         string text;
         try
         {
-            text = await CallGeminiAsync(primaryModel, requestBody, apiKey);
+            text = await _aiClient.GenerateTextAsync(
+                [AiPart.FromImage(mimeType, base64Image), AiPart.FromText(content)],
+                0.1,
+                1024,
+                ScanSystemInstruction);
         }
-        catch (GeminiUnavailableException)
+        catch (AiClientException ex)
         {
-            // Primary model unavailable — silently retry with the fallback
-            _logger.LogWarning("Primary model {PrimaryModel} unavailable, retrying with fallback {FallbackModel}.", primaryModel, fallbackModel);
-            text = await CallGeminiAsync(fallbackModel, requestBody, apiKey);
-        }
-
-        text = text.Trim();
-        if (text.StartsWith("```"))
-        {
-            var firstNewline = text.IndexOf('\n');
-            var lastFence = text.LastIndexOf("```", StringComparison.Ordinal);
-            if (firstNewline > 0 && lastFence > firstNewline)
-            {
-                text = text.Substring(firstNewline + 1, lastFence - firstNewline - 1).Trim();
-            }
+            throw new ReceiptScanUserException(ex.Message);
         }
 
         using var resultDoc = JsonDocument.Parse(text);
@@ -208,7 +165,7 @@ Return only the JSON object.";
         decimal? amount = null;
         if (root.TryGetProperty("amount", out var amtProp) && amtProp.ValueKind == JsonValueKind.Number)
         {
-            amount = amtProp.GetDecimal();
+            amount = Math.Abs(amtProp.GetDecimal());
         }
 
         string? date = root.TryGetProperty("date", out var dateProp) && dateProp.ValueKind != JsonValueKind.Null
@@ -221,64 +178,13 @@ Return only the JSON object.";
             ? confProp.GetDouble()
             : 0.5;
 
-        if (!validLedgerCategories.Contains(ledgerCategory))
+        if (!ValidLedgerCategories.Contains(ledgerCategory))
         {
             ledgerCategory = "Essentials";
         }
 
         return new ReceiptScanResult(description, amount, date, category, ledgerCategory, txType, confidence);
     }
-
-    private async Task<string> CallGeminiAsync(string model, object requestBody, string apiKey)
-    {
-        var geminiUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}";
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, geminiUrl);
-        httpRequest.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(requestBody));
-        httpRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-
-        var response = await _httpClient.SendAsync(httpRequest);
-
-        if (response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
-        {
-            var unavailableBody = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("Gemini API 503 (model {Model}): {Body}", model, unavailableBody);
-            throw new GeminiUnavailableException();
-        }
-
-        if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
-        {
-            var quotaBody = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("Gemini API 429 (model {Model}): {Body}", model, quotaBody);
-            throw new ReceiptScanUserException("AI service rate limit reached. Please wait a moment and try again.");
-        }
-
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("Gemini API error {Status} (model {Model}): {Body}", response.StatusCode, model, errorBody);
-            throw new ReceiptScanUserException("AI service returned an error. Please try again.");
-        }
-
-        var responseBody = await response.Content.ReadAsStringAsync();
-        using var geminiDoc = JsonDocument.Parse(responseBody);
-        var candidate = geminiDoc.RootElement.GetProperty("candidates")[0];
-        var text = candidate
-            .GetProperty("content")
-            .GetProperty("parts")[0]
-            .GetProperty("text")
-            .GetString() ?? "";
-
-        if (candidate.TryGetProperty("finishReason", out var finishReasonProp) &&
-            finishReasonProp.GetString() == "MAX_TOKENS")
-        {
-            _logger.LogWarning("Gemini response truncated by MAX_TOKENS (model {Model}). Partial text: {RawText}", model, text);
-            throw new ReceiptScanUserException("AI response was too long and got cut off. Please try again.");
-        }
-
-        return text;
-    }
-
-    private sealed class GeminiUnavailableException : Exception { }
 
     private sealed class ReceiptScanUserException : Exception
     {

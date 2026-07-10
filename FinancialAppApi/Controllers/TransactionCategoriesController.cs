@@ -56,15 +56,13 @@ public class TransactionCategoriesController : ControllerBase
 
         try
         {
-            var suggestions = await _categorySuggestionService.SuggestAsync(
+            var result = await _categorySuggestionService.SuggestAsync(
                 request.Description.Trim(),
                 request.TxType,
                 request.Categories);
-            return Ok(new { suggestions });
-        }
-        catch (CategorySuggestionUserException ex)
-        {
-            return StatusCode(503, new { message = ex.Message });
+            return result.Status == AiOperationStatus.Ok
+                ? Ok(new { suggestions = result.Data })
+                : StatusCode(503, new { message = result.Message });
         }
         catch (TaskCanceledException ex)
         {
@@ -88,17 +86,15 @@ public class TransactionCategoriesController : ControllerBase
 
         try
         {
-            var suggestions = await _categorySuggestionService.SuggestNotesAsync(
+            var result = await _categorySuggestionService.SuggestNotesAsync(
                 request.Description.Trim(),
                 request.Category,
                 request.LedgerCategory,
                 request.TxType,
                 request.HistoryDescriptions);
-            return Ok(new { suggestions });
-        }
-        catch (CategorySuggestionUserException ex)
-        {
-            return StatusCode(503, new { message = ex.Message });
+            return result.Status == AiOperationStatus.Ok
+                ? Ok(new { suggestions = result.Data })
+                : StatusCode(503, new { message = result.Message });
         }
         catch (TaskCanceledException ex)
         {
@@ -117,11 +113,10 @@ public class TransactionCategoriesController : ControllerBase
     {
         try
         {
-            return Ok(await _categorySuggestionService.ReviewCategoryCleanupAsync());
-        }
-        catch (CategorySuggestionUserException ex)
-        {
-            return StatusCode(503, new { message = ex.Message });
+            var result = await _categorySuggestionService.ReviewCategoryCleanupAsync();
+            return result.Status == AiOperationStatus.Ok
+                ? Ok(result.Data)
+                : StatusCode(503, new { message = result.Message });
         }
         catch (TaskCanceledException ex)
         {
