@@ -48,6 +48,9 @@ public partial class AiAssistantService
         if (needsCycleComparison) metrics.Add(DerivedMetric.CycleComparison);
         if (needsWishlistForecast) metrics.Add(DerivedMetric.WishlistForecast);
         if (needsBudgetTargets) metrics.Add(DerivedMetric.AllocationPerformance);
+        // A free-text entity is itself a request for matched transaction facts, regardless of
+        // whether the wording was classified as merchant search, spending total, or list.
+        if (!string.IsNullOrWhiteSpace(searchText)) metrics.Add(DerivedMetric.MerchantMatches);
 
         // Transaction level takes the strongest requirement across the combined intents:
         // matching rows (a count/merchant search needs exact matches) > bounded sample >
@@ -56,7 +59,9 @@ public partial class AiAssistantService
             ? (metrics.Contains(DerivedMetric.ActivityCount) || metrics.Contains(DerivedMetric.MerchantMatches)
                 ? TransactionDataLevel.MatchingRows
                 : TransactionDataLevel.BoundedSample)
-            : needsCycleSummary ? TransactionDataLevel.AggregateOnly : TransactionDataLevel.None;
+            : needsCycleSummary
+                ? (metrics.Contains(DerivedMetric.MerchantMatches) ? TransactionDataLevel.MatchingRows : TransactionDataLevel.AggregateOnly)
+                : TransactionDataLevel.None;
 
         return new AiQueryPlan(
             intents,

@@ -509,6 +509,69 @@ public class AiAssistantHistoricalContextTests
         Amount = amount
     };
 
+    [Fact]
+    public async Task ChatAsync_GenericTransactionPhraseUsesPartialMatchInRequestedCycles()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.Transactions.AddRange(
+            Transaction("tng", new DateTime(2026, 6, 10, 12, 0, 0, DateTimeKind.Utc), "TNG eWallet Reload", -30),
+            Transaction("other", new DateTime(2026, 6, 11, 12, 0, 0, DateTimeKind.Utc), "Groceries", -50));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("Any TNG transactions in last 3 cycles?", []));
+
+        Assert.Contains("TNG eWallet Reload", handler.UserContent);
+        Assert.DoesNotContain("Groceries", handler.UserContent);
+        Assert.Contains("\"searchText\":\"TNG\"", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_SpendingOnDescriptionIncludesAuthoritativeMatchedTotal()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.Transactions.AddRange(
+            Transaction("one", new DateTime(2026, 6, 10, 12, 0, 0, DateTimeKind.Utc), "Badminton court", -20),
+            Transaction("two", new DateTime(2026, 6, 11, 12, 0, 0, DateTimeKind.Utc), "Post badminton meal", -12));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("How much I spend on badminton last cycle", []));
+
+        Assert.Contains("\"searchText\":\"badminton\"", handler.UserContent, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"totalOutflow\":32", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_DailyExtremesAreComputedByServer()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.Transactions.AddRange(
+            Transaction("income", new DateTime(2026, 7, 2, 12, 0, 0, DateTimeKind.Utc), "Salary", 1000),
+            Transaction("small", new DateTime(2026, 7, 3, 12, 0, 0, DateTimeKind.Utc), "Lunch", -20),
+            Transaction("large", new DateTime(2026, 7, 4, 12, 0, 0, DateTimeKind.Utc), "Rent", -500));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("Which day I received the most vs spent the most this cycle?", []));
+
+        Assert.Contains("dailyExtremes", handler.UserContent);
+        Assert.Contains("\"date\":\"2026-07-02\",\"inflow\":1000", handler.UserContent);
+        Assert.Contains("\"date\":\"2026-07-04\",\"inflow\":0,\"outflow\":500", handler.UserContent);
+    }
+
     private sealed class CapturingHandler : HttpMessageHandler
     {
         public string UserContent { get; private set; } = string.Empty;

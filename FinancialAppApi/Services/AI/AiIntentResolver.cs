@@ -53,7 +53,7 @@ public partial class AiAssistantService
     }
 
     private static readonly Regex TransactionStateReferenceSignal = new(
-        @"\b(those|these|them|that one|the highest one|the previous one|all of those|which of those|those ones|it|that)\b",
+        @"\b(those|these|them|that one|the highest one|the previous one|all of those|which of those|those ones|it|that|alone|only that|just that)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static bool UsesPriorTransactionState(string message) =>
@@ -78,10 +78,11 @@ public partial class AiAssistantService
         // user actually wants individual records; a pure "how much/how many/total" question is
         // answered from cycle aggregates instead (unless a count, which still needs matches).
         var aggregateOnly = AggregateQuestionSignal.IsMatch(lower) && !ExplicitRecordSignal.IsMatch(lower);
-        var needsTransactionDetail = (TransactionDetailSignal.IsMatch(lower) || needsCount) &&
+        var asksDailyExtreme = Regex.IsMatch(lower, @"\b(which|what) day\b.*\b(most|highest|largest)\b|\bmost\b.*\b(day|daily)\b");
+        var needsTransactionDetail = (TransactionDetailSignal.IsMatch(lower) || needsCount || asksDailyExtreme) &&
             (!aggregateOnly || needsCount);
 
-        var needsCycleSummary = needsCycleAnalysis || needsCycleComparison || needsImprovement || needsCount || needsWishlistForecast;
+        var needsCycleSummary = needsCycleAnalysis || needsCycleComparison || needsImprovement || needsCount || needsWishlistForecast || asksDailyExtreme;
         var needsBudgetTargets = needsCycleAnalysis || needsImprovement;
 
         // Negated topics ("I'm not asking about my wishlist") drop the matching data block so the

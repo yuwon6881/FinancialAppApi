@@ -157,7 +157,7 @@ public partial class AiAssistantService
                 new AiGenerationOptions(
                     Feature: "chat",
                     Temperature: 0.15,
-                    MaxOutputTokens: intentPlan.QueryPlan.NeedsCycleComparison ? 800 : 550,
+                    MaxOutputTokens: intentPlan.QueryPlan.NeedsCycleComparison ? 1100 : 800,
                     SystemInstruction: systemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.Chat,
                     ThinkingLevel: intentPlan.QueryPlan.NeedsCycleComparison ? "medium" : "low",
@@ -323,7 +323,22 @@ public partial class AiAssistantService
     private static string? ExtractLikelySearchText(string message, IReadOnlyList<string> intents)
     {
         if (!intents.Any(i => i.Equals("ledger.activity_count", StringComparison.OrdinalIgnoreCase) ||
-                              i.Equals("ledger.merchant_search", StringComparison.OrdinalIgnoreCase))) return null;
+                              i.Equals("ledger.merchant_search", StringComparison.OrdinalIgnoreCase) ||
+                              i.Equals("ledger.spending_total", StringComparison.OrdinalIgnoreCase) ||
+                              i.Equals("ledger.transaction_list", StringComparison.OrdinalIgnoreCase))) return null;
+
+        // Common natural-language shapes. Keep the captured term deliberately short and stop
+        // before cycle wording so "TNG transactions in the last 3 cycles" searches for TNG,
+        // not for the whole tail of the sentence.
+        var genericTransactions = Regex.Match(message,
+            @"\b(?:any|show|find|list|search(?:\s+for)?)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{0,60}?)\s+(?:transactions?|payments?|purchases?|charges?|records?|entries)\b",
+            RegexOptions.IgnoreCase);
+        if (genericTransactions.Success) return NormalizeSearchText(genericTransactions.Groups["value"].Value);
+
+        var spendOn = Regex.Match(message,
+            @"\b(?:spend|spent|spending|paid|pay|cost)\s+(?:how much\s+)?(?:on|at|for|to)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{0,60}?)(?=\s+\b(?:last|this|previous|current|past|in|during|across)\b|[?.!,]|$)",
+            RegexOptions.IgnoreCase);
+        if (spendOn.Success) return NormalizeSearchText(spendOn.Groups["value"].Value);
 
         var countMatch = Regex.Match(message,
             @"\b(?:how many|how often|number of times)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{1,50}?)\s+(?:did|do|does|have|has|i|we)\b",
@@ -334,6 +349,10 @@ public partial class AiAssistantService
             @"\b(?:show|find|search|latest|last)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{1,50}?)\s+(?:spending|purchase|purchases|transactions?|payments?)\b",
             RegexOptions.IgnoreCase);
         if (showMatch.Success) return NormalizeSearchText(showMatch.Groups["value"].Value);
+
+        if (!intents.Any(i => i.Equals("ledger.activity_count", StringComparison.OrdinalIgnoreCase) ||
+                              i.Equals("ledger.merchant_search", StringComparison.OrdinalIgnoreCase) ||
+                              i.Equals("ledger.spending_total", StringComparison.OrdinalIgnoreCase))) return null;
 
         var merchantMatch = Regex.Match(message,
             @"\b(?:at|from|for|about|with)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{1,60}?)(?:\s+(?:last|this|previous|current|in|on)\b|[?.!,]|$)",
@@ -597,7 +616,9 @@ public partial class AiAssistantService
         CycleComparison,
         WishlistForecast,
         AllocationPerformance,
-        RecurringUpcoming
+        RecurringUpcoming,
+        DailyExtremes,
+        BalanceSnapshot
     }
 
     // The authoritative typed query plan. Carries the typed intents plus every data-loading
@@ -954,7 +975,31 @@ public partial class AiAssistantService
         var cycleSummaries = queryPlan.NeedsCycleSummary
             ? BuildCycleSummaries(allTransactions, targetSelection.Cycles, cycleDay, !sensitiveMode, perCycleRecoveredOutflow)
             : new List<object>();
-        var derivedMetrics = BuildDerivedMetrics(queryPlan, allTransactions, targetSelection.Cycles, cycleDay, sensitiveMode, exactMatchCount, perCycleRecoveredOutflow);
+        object? balanceSnapshot = null;
+        if (!sensitiveMode && Regex.IsMatch(queryPlan.QueryText, @"\b(wallet balance|ledger (?:category )?(?:balance|balances)|most balance|highest balance|balance right now)\b", RegexOptions.IgnoreCase))
+        {
+            var opening = await new CycleBalanceService(_context).GetOpeningBalanceAsync(selectedYear, selectedMonthIndex, cycleDay);
+            var activeTransactions = allTransactions.Where(t => IsInCycle(t, new CycleKey(selectedYear, selectedMonthIndex), cycleDay)).ToList();
+            decimal Net(string category) => activeTransactions.Sum(t => CategoryAttributionService.GetCategoryAmount(new Models.Transaction
+            {
+                Amount = t.Amount,
+                LedgerCategory = t.LedgerCategory
+            }, category));
+            var balances = new[]
+            {
+                new { ledgerCategory = "Essentials", balance = opening.essentials + Net("Essentials") },
+                new { ledgerCategory = "Growth", balance = opening.growth + Net("Growth") },
+                new { ledgerCategory = "Stability", balance = opening.stability + Net("Stability") },
+                new { ledgerCategory = "Rewards", balance = opening.rewards + Net("Rewards") }
+            };
+            balanceSnapshot = new
+            {
+                walletBalance = balances.Where(b => b.ledgerCategory != "Growth").Sum(b => b.balance),
+                ledgerBalances = balances,
+                highestLedgerBalance = balances.OrderByDescending(b => b.balance).First()
+            };
+        }
+        var derivedMetrics = BuildDerivedMetrics(queryPlan, allTransactions, targetSelection.Cycles, cycleDay, sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, balanceSnapshot);
 
         var context = new AiContext(
             Currency: setting?.Currency ?? "USD",
@@ -1040,7 +1085,8 @@ public partial class AiAssistantService
         int cycleDay,
         bool sensitiveMode,
         int? exactMatchCount,
-        IReadOnlyDictionary<CycleKey, decimal>? perCycleRecoveredOutflow)
+        IReadOnlyDictionary<CycleKey, decimal>? perCycleRecoveredOutflow,
+        object? balanceSnapshot = null)
     {
         var metrics = new Dictionary<string, object?>();
         if (queryPlan.Metrics.Contains(DerivedMetric.ActivityCount) || queryPlan.Metrics.Contains(DerivedMetric.MerchantMatches))
@@ -1049,10 +1095,28 @@ public partial class AiAssistantService
             {
                 query = queryPlan.SearchText,
                 count = exactMatchCount ?? transactions.Count,
+                totalOutflow = sensitiveMode ? (decimal?)null : Math.Abs(transactions.Where(t => t.Amount < 0 && !IsTransfer(t)).Sum(t => t.Amount)),
                 complete = queryPlan.TransactionData == TransactionDataLevel.MatchingRows && (exactMatchCount.HasValue || transactions.Count < MaxTransactionsPerRange),
                     rows = sensitiveMode
                         ? transactions.Take(120).Select(t => (object)new { t.Id, t.Date, t.Description, t.Category }).ToList()
                         : transactions.Take(120).Select(t => (object)new { t.Id, t.Date, t.Description, t.Category, t.Amount }).ToList()
+            };
+        }
+        if (balanceSnapshot != null) metrics["balanceSnapshot"] = balanceSnapshot;
+        if (Regex.IsMatch(queryPlan.QueryText, @"\b(which|what) day\b.*\b(most|highest|largest)\b|\bmost\b.*\b(day|daily)\b", RegexOptions.IgnoreCase))
+        {
+            var daily = transactions.Where(t => !IsTransfer(t))
+                .GroupBy(t => t.Date)
+                .Select(g => new
+                {
+                    date = g.Key,
+                    inflow = g.Where(t => t.Amount > 0).Sum(t => t.Amount),
+                    outflow = Math.Abs(g.Where(t => t.Amount < 0).Sum(t => t.Amount))
+                }).ToList();
+            metrics["dailyExtremes"] = sensitiveMode || daily.Count == 0 ? null : new
+            {
+                highestInflowDay = daily.OrderByDescending(d => d.inflow).First(),
+                highestOutflowDay = daily.OrderByDescending(d => d.outflow).First()
             };
         }
         if (queryPlan.TransactionIds.Count > 0)
@@ -1433,7 +1497,9 @@ public partial class AiAssistantService
         IReadOnlyList<string>? referencedTransactionIds,
         CancellationToken cancellationToken)
     {
-        if (!LooksLikeLedgerEditCommand(message))
+        var selectionFollowUp = referencedTransactionIds is { Count: > 0 } &&
+            Regex.IsMatch(message, @"\b(alone|only|just|that one|this one)\b", RegexOptions.IgnoreCase);
+        if (!LooksLikeLedgerEditCommand(message) && !selectionFollowUp)
         {
             return null;
         }
@@ -1444,7 +1510,9 @@ public partial class AiAssistantService
         var hasExactDate = TryExtractDate(message, defaultYear, out var targetDate, out var matchedDateText);
         if (!hasReferencedIds && !hasExactDate && targetCycles.Count == 0) return null;
 
-        var searchText = hasReferencedIds ? null : ExtractLedgerEditSearchText(message, matchedDateText);
+        var searchText = hasReferencedIds && selectionFollowUp
+            ? Regex.Replace(message, @"\b(the|one|alone|only|just|that|this|record|transaction|entry)\b", " ", RegexOptions.IgnoreCase).Trim()
+            : hasReferencedIds ? null : ExtractLedgerEditSearchText(message, matchedDateText);
         if (!hasReferencedIds && string.IsNullOrWhiteSpace(searchText) && !hasExactDate)
         {
             return null;
@@ -1635,6 +1703,7 @@ public partial class AiAssistantService
             : Regex.Replace(message, Regex.Escape(matchedDateText), " ", RegexOptions.IgnoreCase);
         withoutDate = Regex.Replace(withoutDate, $@"\b(?:{MonthNamePattern})(?:\s+(?:19|20)\d{{2}})?\b", " ", RegexOptions.IgnoreCase);
         withoutDate = Regex.Replace(withoutDate, @"\b(this|current|previous|prior|last|past)\s+(?:\d+\s+|few\s+)?(cycle|cycles|month|months)\b", " ", RegexOptions.IgnoreCase);
+        withoutDate = Regex.Replace(withoutDate, @"\b(cycle|cycles|month|months)\b", " ", RegexOptions.IgnoreCase);
         var beforeChangeTarget = Regex.Split(withoutDate, @"\s+\b(to|into|as)\b\s+", RegexOptions.IgnoreCase)[0];
         var cleaned = Regex.Replace(
             beforeChangeTarget,
@@ -1750,6 +1819,10 @@ Rules:
 - Use at most one action unless the user clearly asked for more.
 - Set closeChat true only when the request is fully handled by a non-edit returned action and your reply contains no follow-up question. For edit actions, Q&A, analysis, rejected, or clarification replies, set closeChat false.
 - Do not end replies with optional follow-up offers or questions like ""would you like a summary?"".
+- Be concise: normally answer in 2-5 short sentences or at most 6 bullets. Never restate the entire context.
+- balanceSnapshot is authoritative for wallet balance and current ledger balances. A cycle's netChange or ledgerNet is activity, not a balance.
+- dailyExtremes is authoritative for the highest-inflow and highest-outflow day.
+- For requests to sort, compare, recommend category combinations, or identify inactive/discarded subscriptions, answer the question only. Do not navigate unless explicitly asked to open or show a screen.
 
 Allowed actions:
 - openDashboard payload: { }
