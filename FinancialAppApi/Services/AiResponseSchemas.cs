@@ -12,7 +12,8 @@ internal static class AiResponseSchemas
                 {
                     ["type"] = Str(enums:
                     [
-                        "openLedger", "openAddLedgerDraft", "openAddRecurringDraft", "openAddWishlistDraft",
+                        "openLedger", "openDashboard", "openRecurring", "openWishlist", "openSettings",
+                        "openAddLedgerDraft", "openAddRecurringDraft", "openAddWishlistDraft",
                         "openEditLedgerDraft", "openEditRecurringDraft", "openEditWishlistDraft"
                     ]),
                     ["payload"] = ActionPayload()
