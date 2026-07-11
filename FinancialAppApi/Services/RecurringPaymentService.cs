@@ -133,6 +133,11 @@ public class RecurringPaymentService
             return false;
         }
 
+        if (TransactionCategoryService.IsReservedName(category))
+        {
+            return true;
+        }
+
         return await _context.TransactionCategories.AnyAsync(c => c.Name.ToLower() == category.Trim().ToLower());
     }
 }
