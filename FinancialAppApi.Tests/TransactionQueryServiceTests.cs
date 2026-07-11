@@ -45,8 +45,8 @@ public class TransactionQueryServiceTests
         await using var context = TestHelpers.NewInMemoryContext();
         context.Transactions.AddRange(
             NewTransaction("income-1", "Salary", "Salary", "Income", 1000m),
-            NewTransaction("income-1-split-0", "Salary - Essentials Split", "Salary", "Essentials", 400m),
-            NewTransaction("income-1-split-1", "Salary - Growth Split", "Salary", "Growth", 300m));
+            NewTransaction("tx-1780023496780-split-Essentials", "[Split: Stability] Jun Salary", "Salary", "Essentials", 400m),
+            NewTransaction("generated-transfer-row", "[Split: Growth] Jun Salary", "Salary", "Transfer:Income->Growth", 300m));
         await context.SaveChangesAsync();
         var service = new TransactionQueryService(context);
 

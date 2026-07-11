@@ -95,7 +95,9 @@ public class TransactionQueryService
     public async Task<List<AutocompleteSuggestion>> GetAutocompleteSuggestionsAsync()
     {
         var recentTxs = await _context.Transactions
-            .Where(t => t.LedgerCategory != "Discarded" && !t.Id.Contains("-split-"))
+            .Where(t => t.LedgerCategory != "Discarded"
+                && !t.Id.Contains("-split-")
+                && !t.LedgerCategory.StartsWith("Transfer:Income->"))
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.Id)
             .Take(1000)
