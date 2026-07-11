@@ -453,7 +453,10 @@ public class AiAssistantHistoricalContextTests
         using var cache = new MemoryCache(new MemoryCacheOptions());
         var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
-        await service.ChatAsync(new AiChatRequest("What about those?", [new AiChatMessage("user", "How many badminton I played last cycle?")]));
+        // Two real turns: the follow-up now carries context through the structured frame
+        // (outcome.Response.State), not through resent prior-message prose.
+        var first = await service.ChatAsync(new AiChatRequest("How many badminton I played last cycle?", []));
+        await service.ChatAsync(new AiChatRequest("What about those?", [], first.Response.State));
 
         Assert.Contains("conversationState", handler.UserContent);
         Assert.Contains("badminton", handler.UserContent, StringComparison.OrdinalIgnoreCase);

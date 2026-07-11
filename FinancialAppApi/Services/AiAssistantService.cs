@@ -12,6 +12,12 @@ namespace FinancialAppApi.Services;
 // follow-ups ("those", "the previous cycle", "it") can be resolved. Treated as untrusted on
 // the way back in (see AiAssistantService.SanitizeConversationState) -- IDs are re-derived
 // against the DB, never trusted verbatim.
+// Typed amount comparison carried on the conversation frame (comparator + low + optional high),
+// stored typed rather than as text so no information is lost across turns; canonical display text
+// is generated only when a follow-up is expanded (AiAssistantService.FormatAmountThreshold).
+// Comparator is one of AmountComparator's names ("GreaterThan", "Between", ...).
+public sealed record AiAmountThreshold(string Comparator, decimal Low, decimal? High = null);
+
 public sealed record AiConversationState(
     string? LastIntent,
     string? LastSearchText,
@@ -20,7 +26,25 @@ public sealed record AiConversationState(
     string? LastResolvedCycle = null,
     IReadOnlyList<string>? LastMatchedTransactionIds = null,
     int? LastWishlistItemId = null,
-    string? LastCategory = null);
+    string? LastCategory = null,
+    // Resolved query "frame" carried across turns so a short follow-up ("how about last cycle",
+    // "what about over 200") overrides only the dimension it names and inherits the rest -- rather
+    // than the old approach of re-parsing the prior message's raw text, which let stale wording
+    // ("this cycle") collide with the new turn. Cycles are concrete "yyyy-MM" keys (never
+    // "this"/"last"); the threshold is typed; the remaining filters persist so exclusions/
+    // inclusions, transaction type, exact date, comparison scope, category and references survive a
+    // follow-up. Untrusted like every other client-echoed field (see SanitizeConversationState) --
+    // re-validated / re-parsed against the DB and canonical parsers, never trusted verbatim.
+    IReadOnlyList<string>? LastResolvedCycleKeys = null,
+    AiAmountThreshold? LastAmountThreshold = null,
+    bool LastExcludeTransfers = false,
+    IReadOnlyList<string>? LastExcludedCategories = null,
+    IReadOnlyList<string>? LastIncludedCategories = null,
+    string? LastLedgerCategory = null,
+    string? LastTransactionType = null,
+    string? LastExactDate = null,
+    bool LastComparison = false,
+    string? LastRecurringReference = null);
 
 public sealed record AiChatMessage(string Role, string Content);
 public sealed record AiChatRequest(string Message, IReadOnlyList<AiChatMessage>? History, AiConversationState? State = null);
@@ -101,13 +125,16 @@ public partial class AiAssistantService
 
         var history = SanitizeHistory(request.History);
         var priorState = SanitizeConversationState(request.State);
-        var intentPlan = ResolveDeterministically(message, history, priorState);
+        // An explicit reset ("never mind", "start over", "forget that", "new question") abandons the
+        // carried frame so the request is resolved fresh instead of inheriting stale parameters.
+        if (IsContextResetRequest(message)) priorState = null;
+        var intentPlan = ResolveDeterministically(message, priorState);
         if (intentPlan.Confidence < 0.72 || intentPlan.Intents.Contains(AiIntent.General))
         {
-            var classified = await TryClassifyIntentAsync(message, history, cancellationToken);
+            var classified = await TryClassifyIntentAsync(message, priorState, cancellationToken);
             if (classified != null && classified.Confidence >= intentPlan.Confidence)
             {
-                intentPlan = MergeResolutions(message, history, classified, priorState);
+                intentPlan = MergeResolutions(message, classified, priorState);
             }
         }
 
@@ -144,11 +171,12 @@ public partial class AiAssistantService
             }
         }
 
-        // Prior turns are still folded into the query plan above regardless (so a
-        // multi-message conversation about the same topic keeps fetching the right data) --
-        // this only controls whether the model literally sees the past dialogue text, which
-        // it rarely needs for a long, self-contained question.
-        var promptHistory = NeedsHistoryContext(message) ? history : [];
+        // Data-query follow-ups are fully reconstructed server-side (BuildQueryText folds the
+        // resolved frame into the request), so the model needs NO prior dialogue for them -- that
+        // prose is never sent, saving tokens. The exception is a *semantic* follow-up ("why?", "is
+        // that good?", "explain that") that refers to the assistant's own previous conclusion
+        // rather than to data: for those we send a bounded last exchange so "that"/"it" resolves.
+        var promptHistory = IsSemanticFollowUp(message) ? BoundedSemanticHistory(history) : [];
         var systemInstruction = BuildSystemInstruction();
         var userContent = BuildUserContent(message, promptHistory, context);
 
@@ -248,15 +276,59 @@ public partial class AiAssistantService
         return wordCount <= 5 || FollowUpSignal.IsMatch(trimmed);
     }
 
+    // A *semantic* follow-up asks about the assistant's own previous answer/conclusion ("why?", "is
+    // that good?", "explain that", "should I be worried?") rather than requesting data that can be
+    // reconstructed from the frame. These need the model to see the prior exchange, so a bounded
+    // last user+assistant pair is sent for them (and only them).
+    private static readonly Regex SemanticFollowUpSignal = new(
+        @"^(?:why\b|why\?|how so\b|really\??$|and\?$|so\?$|meaning\??$)" +
+        @"|\bis that (?:good|bad|normal|a lot|too (?:much|high|low)|ok|okay|fine|healthy|concerning|worrying|expensive|cheap)\b" +
+        @"|\bgood or bad\b|\bshould i (?:be )?(?:worry|worried|concerned)\b" +
+        @"|\b(?:explain|elaborate|clarify)(?: that| this| it)?\b|\bwhat (?:do|does) (?:you|that|this|it) mean\b" +
+        @"|\btell me more\b|\bexpand on (?:that|this|it)\b|\bbreak (?:that|this|it) down\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static bool IsSemanticFollowUp(string message) => SemanticFollowUpSignal.IsMatch(message.Trim());
+
+    // Explicit "drop the context" phrasing. Kept tight (leading phrase or standalone) so it never
+    // fires on an ordinary question that merely contains one of these words.
+    private static readonly Regex ContextResetSignal = new(
+        @"^(?:never ?mind|forget (?:that|it|about that|everything)|start over|start again|reset|clear (?:that|it|context|everything)|new (?:question|topic)|different (?:question|topic)|unrelated|change of topic|scratch that|ignore (?:that|the above|previous))\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static bool IsContextResetRequest(string message) => ContextResetSignal.IsMatch(message.Trim());
+
+    // The minimal prior context a semantic follow-up needs: the last assistant turn (its
+    // conclusion) plus the user turn that prompted it. Already sanitized/length-capped upstream.
+    private static IReadOnlyList<AiChatMessage> BoundedSemanticHistory(IReadOnlyList<AiChatMessage> history) =>
+        history.Count <= 2 ? history : history.TakeLast(2).ToList();
+
+    // Compact canonical one-liner of the prior resolved frame for the intent classifier -- carries
+    // enough to disambiguate a short follow-up without sending any prior message prose.
+    private static string SummarizePriorFrame(AiConversationState? state)
+    {
+        if (state == null) return string.Empty;
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(state.LastIntent)) parts.Add($"intent={state.LastIntent}");
+        if (state.LastResolvedCycleKeys is { Count: > 0 } cycles) parts.Add($"cycles={string.Join(",", cycles)}");
+        if (FormatAmountThreshold(state.LastAmountThreshold) is { } threshold) parts.Add($"threshold={threshold}");
+        if (!string.IsNullOrWhiteSpace(state.LastSearchText)) parts.Add($"search={state.LastSearchText}");
+        if (state.LastComparison) parts.Add("comparison=true");
+        return string.Join("; ", parts);
+    }
+
     private async Task<IntentClassification?> TryClassifyIntentAsync(
         string message,
-        IReadOnlyList<AiChatMessage> history,
+        AiConversationState? priorState,
         CancellationToken cancellationToken)
     {
+        // No prior dialogue is sent -- only a compact, canonical summary of the prior turn's
+        // resolved frame (a few tokens) so the classifier can still interpret a short follow-up
+        // ("how about last cycle") without shipping the previous message text back to the model.
         var classifierPrompt = $"Classify the user's financial-app request. Return only the JSON schema. " +
             $"Choose one or more intents, extract searchText for a merchant/activity, and preserve cycle wording. " +
             $"User message: {JsonSerializer.Serialize(message)} " +
-            $"Recent history: {JsonSerializer.Serialize(history.TakeLast(4))}";
+            $"Prior request summary: {JsonSerializer.Serialize(SummarizePriorFrame(priorState))}";
         try
         {
             var text = await _aiClient.GenerateTextAsync(
@@ -371,37 +443,52 @@ public partial class AiAssistantService
     private static bool IsNoiseSearchTerm(string? term) =>
         !string.IsNullOrWhiteSpace(term) && SearchNoiseTerms.Contains(term.Trim());
 
+    // Cycle/amount wording is never a merchant/activity search. A follow-up like "how about last
+    // cycle over 100" would otherwise let the "about" preposition capture "last cycle over 100" as
+    // a bogus search filter (matching nothing). Genuine inherited search comes from the prior
+    // frame, not from re-extracting the expanded text.
+    private static readonly Regex NonSearchPhraseSignal = new(
+        @"\b(cycle|cycles|month|months|year|years|over|under|above|below|between|exceed(?:s|ed|ing)?|more than|less than|at least|at most)\b|^(last|this|previous|current|next|prior)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static bool LooksLikeCycleOrAmountPhrase(string? term) =>
+        !string.IsNullOrWhiteSpace(term) && NonSearchPhraseSignal.IsMatch(term);
+
     private static string NormalizeSearchText(string value) =>
         Regex.Replace(value.Trim(), @"^(?:my|the)\s+", string.Empty, RegexOptions.IgnoreCase);
 
+    // Builds the base conversation frame for this turn: this turn's resolved intent/search/cycle,
+    // with every other dimension carried forward from the prior frame (BuildContextAsync then
+    // overrides the dimensions actually in play this turn with their freshly-resolved values). No
+    // longer reads the prior message text -- a referential follow-up ("which of those") is detected
+    // from the CURRENT message via UsesPriorTransactionState, and the prior frame supplies the ids.
     private static AiConversationState ResolveConversationState(
-        IReadOnlyList<AiChatMessage> history,
+        string message,
         IReadOnlyList<string> intents,
         string? searchText,
         string? cycleHint,
         AiConversationState? priorState = null)
     {
-        var previousUserText = history.LastOrDefault(m => m.Role == "user")?.Content;
-        var carriesTransactionState = Regex.IsMatch(
-            previousUserText ?? string.Empty,
-            @"\b(those|these|them|that one|this one|the one|the highest one|the previous one|the (?:first|second|third|last|pure|only) one|all of those|which of those)\b",
-            RegexOptions.IgnoreCase);
+        var carriesTransactionState = UsesPriorTransactionState(message);
         return new AiConversationState(
             intents.FirstOrDefault(i => !i.Equals("general", StringComparison.OrdinalIgnoreCase)) ?? priorState?.LastIntent,
-            searchText ?? ExtractLikelySearchText(previousUserText ?? string.Empty, intents) ?? ExtractConversationSearch(previousUserText) ?? priorState?.LastSearchText,
-            cycleHint ?? ExtractConversationCycle(previousUserText) ?? priorState?.LastCycleHint,
-            ExtractWishlistReference(previousUserText) ?? priorState?.LastWishlistReference,
+            searchText ?? priorState?.LastSearchText,
+            cycleHint ?? priorState?.LastCycleHint,
+            ExtractWishlistReference(message) ?? priorState?.LastWishlistReference,
             priorState?.LastResolvedCycle,
             carriesTransactionState ? priorState?.LastMatchedTransactionIds : null,
             carriesTransactionState ? priorState?.LastWishlistItemId : null,
-            priorState?.LastCategory);
-    }
-
-    private static string? ExtractConversationSearch(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return null;
-        var match = Regex.Match(text, @"\b(?:for|from|at|about|on)\s+([\p{L}\p{N}][\p{L}\p{N}'& -]{1,60})", RegexOptions.IgnoreCase);
-        return match.Success ? match.Groups[1].Value.Trim() : null;
+            priorState?.LastCategory,
+            priorState?.LastResolvedCycleKeys,
+            priorState?.LastAmountThreshold,
+            priorState?.LastExcludeTransfers ?? false,
+            priorState?.LastExcludedCategories,
+            priorState?.LastIncludedCategories,
+            priorState?.LastLedgerCategory,
+            priorState?.LastTransactionType,
+            priorState?.LastExactDate,
+            priorState?.LastComparison ?? false,
+            priorState?.LastRecurringReference);
     }
 
     private static string? ExtractConversationCycle(string? text)
@@ -469,6 +556,39 @@ public partial class AiAssistantService
             .Select(id => id.Length > 64 ? id[..64] : id)
             .Take(MaxStateMatchedIds)
             .ToList();
+        // Resolved-frame fields are untrusted too. Cycle keys must be canonical "yyyy-MM" in a sane
+        // range; the threshold must round-trip through the canonical parser (rejecting anything the
+        // parser can't read); excluded categories are clamped/capped; the ledger category must be a
+        // real one.
+        var cycleKeys = state.LastResolvedCycleKeys?
+            .Where(IsValidCycleKey)
+            .Distinct()
+            .Take(24)
+            .ToList();
+        // Round-trip the typed threshold through the internal validator (rejects a bad comparator
+        // name or out-of-range amount).
+        var threshold = ToInternalThreshold(state.LastAmountThreshold) is { } internalThreshold
+            ? ToWireThreshold(internalThreshold)
+            : null;
+        IReadOnlyList<string>? CleanCategoryList(IReadOnlyList<string>? list) => list?
+            .Select(Clamp)
+            .Where(c => c != null)
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(20)
+            .ToList() is { Count: > 0 } cleaned ? cleaned : null;
+        var excludedCategories = CleanCategoryList(state.LastExcludedCategories);
+        var includedCategories = CleanCategoryList(state.LastIncludedCategories);
+        var ledgerCategory = !string.IsNullOrWhiteSpace(state.LastLedgerCategory)
+            && LedgerCategories.Contains(state.LastLedgerCategory, StringComparer.OrdinalIgnoreCase)
+            ? LedgerCategories.First(c => c.Equals(state.LastLedgerCategory, StringComparison.OrdinalIgnoreCase))
+            : null;
+        var transactionType = state.LastTransactionType is "inflow" or "outflow" or "transfer"
+            ? state.LastTransactionType
+            : null;
+        var exactDate = DateOnly.TryParseExact(state.LastExactDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _)
+            ? state.LastExactDate
+            : null;
         return new AiConversationState(
             intent,
             Clamp(state.LastSearchText),
@@ -477,7 +597,47 @@ public partial class AiAssistantService
             Clamp(state.LastResolvedCycle),
             matchedIds is { Count: > 0 } ? matchedIds : null,
             state.LastWishlistItemId is > 0 ? state.LastWishlistItemId : null,
-            Clamp(state.LastCategory));
+            Clamp(state.LastCategory),
+            cycleKeys is { Count: > 0 } ? cycleKeys : null,
+            threshold,
+            state.LastExcludeTransfers,
+            excludedCategories,
+            includedCategories,
+            ledgerCategory,
+            transactionType,
+            exactDate,
+            state.LastComparison,
+            Clamp(state.LastRecurringReference));
+    }
+
+    private static readonly Regex CycleKeyPattern = new(@"^\d{4}-(0[1-9]|1[0-2])$", RegexOptions.Compiled);
+
+    private static bool IsValidCycleKey(string? key)
+    {
+        if (string.IsNullOrWhiteSpace(key) || !CycleKeyPattern.IsMatch(key)) return false;
+        var year = int.Parse(key[..4], CultureInfo.InvariantCulture);
+        return year is >= 1900 and <= 2100;
+    }
+
+    // "yyyy-MM" <-> CycleKey, the canonical wire form for a resolved cycle in the conversation
+    // frame (unambiguous, unlike "this"/"last cycle").
+    private static string FormatCycleKey(CycleKey cycle) =>
+        $"{cycle.Year:D4}-{cycle.MonthIndex:D2}";
+
+    private static CycleKey? ParseCycleKey(string? key) =>
+        IsValidCycleKey(key)
+            ? new CycleKey(int.Parse(key![..4], CultureInfo.InvariantCulture), int.Parse(key[5..], CultureInfo.InvariantCulture))
+            : null;
+
+    // Coarse inflow/outflow/transfer classification of a request, stored on the frame so a
+    // follow-up keeps the same money-direction filter. Best-effort keyword match; null when the
+    // request doesn't lean one way.
+    private static string? DetectTransactionType(string queryText)
+    {
+        if (Regex.IsMatch(queryText, @"\btransfers?\b", RegexOptions.IgnoreCase)) return "transfer";
+        if (Regex.IsMatch(queryText, @"\b(income|inflow|inflows|earnings?|salary|paychecks?|deposits?|received|credited?)\b", RegexOptions.IgnoreCase)) return "inflow";
+        if (Regex.IsMatch(queryText, @"\b(outflow|outflows|expenses?|spending|spent|spend|withdrawals?|debited?)\b", RegexOptions.IgnoreCase)) return "outflow";
+        return null;
     }
 
     private const string MonthNamePattern = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
@@ -487,11 +647,11 @@ public partial class AiAssistantService
         RegexOptions.Compiled);
 
     private static readonly Regex CycleAnalysisSignal = new(
-        @"\b(spend|spent|spending|budget|income|outflow|inflow|balance|total|average|net|save|saved|savings|essentials|growth|stability|rewards|cycle|this month|last month|how much|money going|doing better|doing worse|afford|financial health|performance)\b",
+        @"\b(spend|spent|spending|budget|income|earnings?|salary|paychecks?|cash ?flow|outflow|inflow|balance|total|average|net|save|saved|savings|essentials|growth|stability|rewards|cycle|this month|last month|how much|money going|doing better|doing worse|afford|financial health|performance)\b",
         RegexOptions.Compiled);
 
     private static readonly Regex TransactionDetailSignal = new(
-        @"\b(transaction|transactions|ledger|purchase|purchased|bought|paid|payment|receipt|charge|charged|expense|expenses|find|search|when did|did i|edit|update|change|modify|record|entry|merchant|cost me|how often|frequency)\b",
+        @"\b(transaction|transactions|ledger|purchase|purchased|bought|paid|payment|receipt|charge|charged|expense|expenses|deposit|deposits|withdrawal|withdrawals|refund|refunds|debit|debits|credit|credits|find|search|when did|did i|edit|update|change|modify|record|entry|merchant|cost me|how often|how frequently|frequency|largest|biggest|highest|lowest|smallest|most expensive|cheapest)\b",
         RegexOptions.Compiled);
 
     // "how much / how many / total / average" questions are answered from the cycle summary
@@ -502,7 +662,7 @@ public partial class AiAssistantService
         RegexOptions.Compiled);
 
     private static readonly Regex CountQuestionSignal = new(
-        @"\b(how many|how often|number of times|times did i|played|visited|frequency)\b",
+        @"\b(how many|how often|how frequently|number of times|times did i|played|visited|frequency)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // ...unless the user explicitly asks to see the individual records. These words mean the
@@ -512,11 +672,11 @@ public partial class AiAssistantService
         RegexOptions.Compiled);
 
     private static readonly Regex RecurringSignal = new(
-        @"\b(recurring|subscription|subscriptions|bill|bills|monthly payment|autopay|auto-pay)\b",
+        @"\b(recurring|subscription|subscriptions|membership|memberships|renewal|renewals|renews?|bill|bills|instalments?|installments?|standing orders?|monthly payment|autopay|auto-pay)\b",
         RegexOptions.Compiled);
 
     private static readonly Regex WishlistSignal = new(
-        @"\b(wishlist|wish list|want to buy|saving for|priority item|afford|goal|goals|savings? goal|savings? target)\b",
+        @"\b(wishlist|wish list|bucket list|dream purchase|next purchase|want to buy|planning to buy|saving for|priority item|afford|goal|goals|savings? goal|savings? target)\b",
         RegexOptions.Compiled);
 
     private static readonly Regex WishlistForecastSignal = new(
@@ -968,16 +1128,64 @@ public partial class AiAssistantService
             : wishlistRows.Count(w => w.IsActive && !w.IsPurchased) == 1
                 ? wishlistRows.First(w => w.IsActive && !w.IsPurchased).Id
                 : null;
+        // Resolve this turn's frame dimensions so the next follow-up can inherit them. Each falls
+        // back to the base (prior) value when not in play this turn, giving "sticky" context that a
+        // later turn's explicit value overrides (and read-side family scoping stops an incompatible
+        // turn from consuming it).
+        var turnCycleKeys = targetSelection.Cycles.Count > 0
+            ? targetSelection.Cycles.Select(FormatCycleKey).ToList()
+            : null;
+        var turnThreshold = TryParseAmountThreshold(queryPlan.QueryText) is { } parsedThreshold
+            ? ToWireThreshold(parsedThreshold)
+            : null;
+        var turnExactDate = intentPlan.Entities?.Date?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var turnTransactionType = DetectTransactionType(queryPlan.QueryText);
+        var isRecurringTurn = intentPlan.Intents.Any(i => i is AiIntent.RecurringList or AiIntent.RecurringUpcoming or AiIntent.RecurringAdd or AiIntent.RecurringEdit);
+        // A threshold-only question ("which transaction exceeded 100") has no searchText, so its
+        // matching rows weren't captured above -- capture them here so a referential follow-up
+        // ("which of those was the biggest?") can resolve against them.
+        var thresholdMatchedIds = matchedIds == null && !sensitiveMode && ToInternalThreshold(turnThreshold) is { } activeThreshold
+            ? allTransactions
+                .Where(t => t.Amount < 0 && !IsTransfer(t) && MatchesThreshold(Math.Abs(t.Amount), activeThreshold))
+                .Take(MaxStateMatchedIds).Select(t => t.Id).ToList()
+            : null;
+        if (thresholdMatchedIds is { Count: 0 }) thresholdMatchedIds = null;
+        // Filter-lifting follow-ups drop the sticky exclusions instead of carrying them forever.
+        // (queryPlan.QueryText contains the original message; expansion only appends, so these
+        // phrases are still detectable and the appended canonical clauses never trip them.)
+        var clearsFilters = WantsClearFilters(queryPlan.QueryText);
+        var includesTransfers = WantsIncludeTransfers(queryPlan.QueryText);
         var baseState = intentPlan.ConversationState;
         var outgoingState = baseState with
         {
             LastSearchText = queryPlan.SearchText ?? baseState.LastSearchText,
             LastCycleHint = queryPlan.CycleHint ?? baseState.LastCycleHint,
             LastResolvedCycle = resolvedCycleLabel ?? baseState.LastResolvedCycle,
-            LastMatchedTransactionIds = matchedIds ?? baseState.LastMatchedTransactionIds,
+            LastMatchedTransactionIds = matchedIds ?? thresholdMatchedIds ?? baseState.LastMatchedTransactionIds,
             LastWishlistItemId = queryPlan.WishlistItemId.HasValue
                 ? resolvedWishlistItemId
-                : resolvedWishlistItemId ?? baseState.LastWishlistItemId
+                : resolvedWishlistItemId ?? baseState.LastWishlistItemId,
+            LastResolvedCycleKeys = turnCycleKeys ?? baseState.LastResolvedCycleKeys,
+            LastAmountThreshold = turnThreshold ?? baseState.LastAmountThreshold,
+            LastExcludeTransfers = !includesTransfers && (constraints.ExcludeTransfers || baseState.LastExcludeTransfers),
+            LastExcludedCategories = clearsFilters
+                ? null
+                : constraints.ExcludedCategories is { Count: > 0 }
+                    ? constraints.ExcludedCategories
+                    : baseState.LastExcludedCategories,
+            LastIncludedCategories = clearsFilters
+                ? null
+                : constraints.IncludedCategories is { Count: > 0 }
+                    ? constraints.IncludedCategories
+                    : baseState.LastIncludedCategories,
+            LastLedgerCategory = intentPlan.Entities?.LedgerCategory ?? baseState.LastLedgerCategory,
+            LastCategory = intentPlan.Entities?.Category ?? baseState.LastCategory,
+            LastTransactionType = turnTransactionType ?? baseState.LastTransactionType,
+            LastExactDate = turnExactDate ?? baseState.LastExactDate,
+            LastComparison = queryPlan.NeedsCycleComparison || baseState.LastComparison,
+            LastRecurringReference = isRecurringTurn
+                ? queryPlan.SearchText ?? baseState.LastRecurringReference
+                : baseState.LastRecurringReference
         };
 
         // Phase 5: assemble explicit dataset statuses and run the sufficiency gate.

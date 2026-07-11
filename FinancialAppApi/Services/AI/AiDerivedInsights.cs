@@ -66,6 +66,44 @@ public partial class AiAssistantService
         return null;
     }
 
+    // Canonical wire form of a parsed threshold, the inverse of TryParseAmountThreshold. Stored in
+    // the conversation frame and re-appended verbatim to a later follow-up's query text, so it MUST
+    // round-trip: every string produced here is re-parsed by TryParseAmountThreshold to the same
+    // comparator/values. Trailing ".0" is trimmed so "over 100" stays "over 100", not "over 100.0".
+    internal static string FormatAmountThreshold(AmountThreshold threshold)
+    {
+        static string N(decimal value) => value.ToString("0.############", CultureInfo.InvariantCulture);
+        return threshold.Comparator switch
+        {
+            AmountComparator.GreaterThan => $"over {N(threshold.Low)}",
+            AmountComparator.GreaterOrEqual => $"at least {N(threshold.Low)}",
+            AmountComparator.LessThan => $"under {N(threshold.Low)}",
+            AmountComparator.LessOrEqual => $"at most {N(threshold.Low)}",
+            AmountComparator.Between => $"between {N(threshold.Low)} and {N(threshold.High ?? threshold.Low)}",
+            _ => $"over {N(threshold.Low)}"
+        };
+    }
+
+    // Wire (AiAmountThreshold, on the conversation frame) <-> internal (AmountThreshold). Validates
+    // the comparator name and amount ranges; returns null on anything malformed so untrusted client
+    // state can never inject a bad comparison.
+    internal static AmountThreshold? ToInternalThreshold(AiAmountThreshold? wire)
+    {
+        if (wire == null) return null;
+        if (!Enum.TryParse<AmountComparator>(wire.Comparator, ignoreCase: true, out var comparator)) return null;
+        if (wire.Low is < 0m or > 1_000_000_000m) return null;
+        if (wire.High is < 0m or > 1_000_000_000m) return null;
+        if (comparator == AmountComparator.Between && wire.High == null) return null;
+        return new AmountThreshold(comparator, wire.Low, wire.High);
+    }
+
+    internal static AiAmountThreshold ToWireThreshold(AmountThreshold threshold) =>
+        new(threshold.Comparator.ToString(), threshold.Low, threshold.High);
+
+    // Canonical display text from the typed wire threshold (used only when expanding a follow-up).
+    internal static string? FormatAmountThreshold(AiAmountThreshold? wire) =>
+        ToInternalThreshold(wire) is { } threshold ? FormatAmountThreshold(threshold) : null;
+
     private static bool MatchesThreshold(decimal magnitude, AmountThreshold threshold) => threshold.Comparator switch
     {
         AmountComparator.GreaterThan => magnitude > threshold.Low,
@@ -108,6 +146,45 @@ public partial class AiAssistantService
                 amount = x.Magnitude
             }).ToList()
         };
+    }
+
+    // ---------- relative-to-prior-cycle references ----------
+
+    private static readonly Regex CycleBeforeSignal = new(
+        @"\b(?:the\s+)?(?:(?:cycle|month|one)\s+)?before\s+(?:that|this|it|the\s+last\s+one)\b|\b(?:the\s+)?(?:previous|prior)\s+one\b|\bone\s+before\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex CycleAfterSignal = new(
+        @"\b(?:the\s+)?(?:(?:cycle|month|one)\s+)?after\s+(?:that|this|it)\b|\b(?:the\s+)?next\s+one\b|\bone\s+after\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // "the one before/after that" is a CYCLE reference, not a transaction reference -- even though
+    // it contains "that". Used to stop such a follow-up from being read as pointing at prior
+    // matched-transaction ids (which would otherwise trigger an edit/reference resolution).
+    internal static bool IsRelativeCyclePhrase(string? message) =>
+        !string.IsNullOrWhiteSpace(message) && (CycleBeforeSignal.IsMatch(message) || CycleAfterSignal.IsMatch(message));
+
+    // Resolves a follow-up that references the previous turn's cycle rather than the active cycle:
+    // "the one before that", "the cycle after that", "the previous one". Steps from the FIRST
+    // (primary) cycle the last turn resolved -- so a chain "this cycle" -> "last cycle" -> "the one
+    // before that" walks Jun -> May -> Apr, which stepping from the active cycle each time could
+    // never do. Returns null when there is no prior resolved cycle or no relative wording.
+    internal static CycleKey? TryResolveRelativeToPriorCycle(string? message, IReadOnlyList<string>? priorCycleKeys)
+    {
+        // Require a SINGLE anchor cycle. If the prior turn resolved a range/comparison (e.g. "March
+        // to May"), "the one before that" has no unambiguous endpoint, so we decline to guess and
+        // let the normal resolution / a clarifying reply take over.
+        if (string.IsNullOrWhiteSpace(message) || priorCycleKeys is not { Count: 1 }) return null;
+        var anchor = ParseCycleKey(priorCycleKeys[0]);
+        if (anchor == null) return null;
+
+        int? direction = CycleBeforeSignal.IsMatch(message) ? -1
+            : CycleAfterSignal.IsMatch(message) ? 1
+            : null;
+        if (direction == null) return null;
+
+        var stepped = AddMonths(anchor.Year, anchor.MonthIndex, direction.Value);
+        return new CycleKey(stepped.Year, stepped.MonthIndex);
     }
 
     // ---------- generic ledger-balance target forecast ----------
