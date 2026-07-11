@@ -46,6 +46,7 @@ steps:
   # mode (6543 -> 5432) internally when --migrate is set -- which is why the runtime
   # image can now be chiseled (shell-free).
   - name: 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api:$COMMIT_SHA'
+    dir: '/app'
     args:
       - '--migrate'
       - '--seed-database'
