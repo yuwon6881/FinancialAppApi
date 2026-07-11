@@ -24,7 +24,7 @@ steps:
           --cache-from "$$IMAGE:build-cache" \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
           -t "$$IMAGE:build-cache" \
-          -f FinancialAppApi/Dockerfile FinancialAppApi
+          -f FinancialAppApi/Dockerfile .
         # Build the final runtime image, reusing the build stage from local cache.
         docker build \
           --cache-from "$$IMAGE:build-cache" \
@@ -32,7 +32,7 @@ steps:
           --build-arg BUILDKIT_INLINE_CACHE=1 \
           -t "$$IMAGE:$COMMIT_SHA" \
           -t "$$IMAGE:latest" \
-          -f FinancialAppApi/Dockerfile FinancialAppApi
+          -f FinancialAppApi/Dockerfile .
         docker push "$$IMAGE:build-cache"
         docker push "$$IMAGE:latest"
         docker push "$$IMAGE:$COMMIT_SHA"

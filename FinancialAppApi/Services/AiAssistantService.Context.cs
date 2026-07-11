@@ -102,156 +102,25 @@ public partial class AiAssistantService
                 false);
         }
 
-        object recurringContext = Array.Empty<object>();
-        var recurringRows = new List<AiRecurringRow>();
-        if (queryPlan.NeedsRecurring)
-        {
-            recurringRows = await LoadRecurringRowsAsync(cancellationToken);
-            recurringRows = DetectRecurringStatus(queryPlan.QueryText) switch
-            {
-                "active" => recurringRows.Where(r => r.Active).ToList(),
-                "inactive" => recurringRows.Where(r => !r.Active).ToList(),
-                _ => recurringRows
-            };
-            recurringContext = sensitiveMode
-                ? recurringRows.Select(r => new
-                {
-                    r.Id, r.Name, r.Category, r.LedgerCategory,
-                    r.StartDate, r.EndDate, r.DueDate, r.Active, r.Frequency, r.NextDueDate
-                }).ToList()
-                : recurringRows;
-        }
+        var referenceDomains = await LoadReferenceDomainContextAsync(queryPlan, sensitiveMode, cancellationToken);
+        var recurringContext = referenceDomains.RecurringContext;
+        var recurringRows = referenceDomains.RecurringRows;
+        var wishlistContext = referenceDomains.WishlistContext;
+        var wishlistRows = referenceDomains.WishlistRows;
 
-        object wishlistContext = Array.Empty<object>();
-        var wishlistRows = new List<AiWishlistRow>();
-        if (queryPlan.NeedsWishlist)
-        {
-            var wishlist = await LoadWishlistRowsAsync(queryPlan.WishlistItemId, cancellationToken);
-            wishlist = DetectWishlistStatus(queryPlan.QueryText) switch
-            {
-                "active" => wishlist.Where(w => w.IsActive && !w.IsPurchased).ToList(),
-                "inactive" => wishlist.Where(w => !w.IsActive && !w.IsPurchased).ToList(),
-                "purchased" => wishlist.Where(w => w.IsPurchased).ToList(),
-                "unpurchased" => wishlist.Where(w => !w.IsPurchased).ToList(),
-                _ => wishlist
-            };
-            wishlistRows = wishlist;
-            wishlistContext = sensitiveMode
-                ? wishlist.Select(w => new
-                {
-                    w.Id, w.Name, w.Priority, w.IsActive, w.IsPurchased, w.CreatedAt, w.PurchasedAt
-                }).ToList()
-                : wishlist;
-        }
-
-        var allTransactions = new List<AiTransactionRow>();
-        var scopeTruncated = false;
-        int? exactMatchCount = null;
-        if (queryPlan.NeedsTransactionDetail || queryPlan.NeedsCycleSummary)
-        {
-            if (targetSelection.Cycles.Count > 0)
-            {
-                var seenIds = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var range in MergeCycleRanges(targetSelection.Cycles, cycleDay))
-                {
-                    if (queryPlan.TransactionData == TransactionDataLevel.MatchingRows && !string.IsNullOrWhiteSpace(queryPlan.SearchText))
-                    {
-                        exactMatchCount = (exactMatchCount ?? 0) + await CountTransactionsAsync(range.Start, range.End, queryPlan.SearchText, queryPlan.TransactionIds, cancellationToken);
-                    }
-                    var rows = await QueryTransactionsAsync(
-                        range.Start,
-                        range.End,
-                        queryPlan.TransactionData == TransactionDataLevel.MatchingRows ? queryPlan.SearchText : null,
-                        queryPlan.TransactionIds,
-                        cancellationToken);
-                    // QueryTransactionsAsync fetches one row beyond the cap: if it comes back we
-                    // KNOW the range genuinely exceeded the cap (so aggregates are partial). This
-                    // distinguishes exactly MaxTransactionsPerRange rows (complete) from more than
-                    // that (truncated) -- the extra row is dropped and never surfaced.
-                    if (rows.Count > MaxTransactionsPerRange)
-                    {
-                        scopeTruncated = true;
-                        rows = rows.Take(MaxTransactionsPerRange).ToList();
-                    }
-                    foreach (var row in rows)
-                    {
-                        if (seenIds.Add(row.Id)) allTransactions.Add(row);
-                    }
-                }
-            }
-            else
-            {
-                // A detail request with no cycle clue (for example, "find Grab") keeps a
-                // bounded recent fallback. Explicit/relative cycle requests never use it.
-                var rows = await LoadRecentFallbackTransactionsAsync(
-                    queryPlan.TransactionData == TransactionDataLevel.MatchingRows ? queryPlan.SearchText : null,
-                    queryPlan.TransactionIds,
-                    cancellationToken);
-                allTransactions.AddRange(rows);
-            }
-        }
-
-        allTransactions = allTransactions
-            .OrderByDescending(t => t.Timestamp)
-            .ThenByDescending(t => t.Id)
-            .ToList();
-
-        if (exactDate.HasValue)
-        {
-            allTransactions = allTransactions
-                .Where(t => DateOnly.FromDateTime(t.Timestamp) == exactDate.Value)
-                .ToList();
-            if (exactMatchCount.HasValue) exactMatchCount = allTransactions.Count;
-        }
-
-        // Phase 2: enforce scope exclusions deterministically before any aggregate, detail
-        // sample, or derived metric is built -- "excluding rent" / "without transfers" must
-        // remove those rows from every downstream number, not just be hinted to the model.
+        var transactionDomain = await LoadTransactionDomainContextAsync(
+            intentPlan, targetSelection, cycleDay, exactDate, categories, cancellationToken);
+        var allTransactions = transactionDomain.Transactions;
+        var scopeTruncated = transactionDomain.ScopeTruncated;
+        var exactMatchCount = transactionDomain.ExactMatchCount;
         var constraints = intentPlan.Constraints;
-        var (excludedCategories, excludedLedgerCategories) = ResolveConstraintCategories(
-            constraints.ExcludedCategories, categories, LedgerCategories);
-        var (includedCategories, includedLedgerCategories) = ResolveConstraintCategories(
-            constraints.IncludedCategories, categories, LedgerCategories);
-        if (constraints.ExcludeTransfers || excludedCategories.Count > 0 || excludedLedgerCategories.Count > 0)
-        {
-            allTransactions = allTransactions.Where(t =>
-                    !(constraints.ExcludeTransfers && IsTransfer(t)) &&
-                    !excludedCategories.Contains(t.Category, StringComparer.OrdinalIgnoreCase) &&
-                    !excludedLedgerCategories.Contains(t.LedgerCategory, StringComparer.OrdinalIgnoreCase))
-                .ToList();
-        }
-        if (includedCategories.Count > 0 || includedLedgerCategories.Count > 0)
-        {
-            allTransactions = allTransactions.Where(t =>
-                    includedCategories.Contains(t.Category, StringComparer.OrdinalIgnoreCase) ||
-                    includedLedgerCategories.Contains(t.LedgerCategory, StringComparer.OrdinalIgnoreCase))
-                .ToList();
-        }
-        var requestedTransactionType = DetectTransactionType(queryPlan.QueryText);
-        var scopeFacets = DetectQueryFacets(queryPlan.QueryText);
-        var appliesTransactionTypeFilter = requestedTransactionType != null &&
-            !scopeFacets.Contains("daily_extreme", StringComparer.Ordinal) &&
-            (scopeFacets.Contains("list", StringComparer.Ordinal) || scopeFacets.Contains("activity_count", StringComparer.Ordinal));
-        if (appliesTransactionTypeFilter)
-        {
-            allTransactions = allTransactions.Where(t => requestedTransactionType switch
-            {
-                "inflow" => t.Amount > 0 && !IsTransfer(t),
-                "outflow" => t.Amount < 0 && !IsTransfer(t),
-                "transfer" => IsTransfer(t),
-                _ => true
-            }).ToList();
-            if (exactMatchCount.HasValue) exactMatchCount = allTransactions.Count;
-        }
-
-        // Whether an exact cycle total is even eligible to be recovered: SumOutflowAsync cannot
-        // express category exclusions, so an "exact" figure that ignored them would lie.
-        var cycleTotalRecoverable = targetSelection.Cycles.Count > 0
-            && excludedCategories.Count == 0
-            && excludedLedgerCategories.Count == 0
-            && includedCategories.Count == 0
-            && includedLedgerCategories.Count == 0
-            && (!appliesTransactionTypeFilter || requestedTransactionType == "outflow");
+        var excludedCategories = transactionDomain.ExcludedCategories;
+        var excludedLedgerCategories = transactionDomain.ExcludedLedgerCategories;
+        var includedCategories = transactionDomain.IncludedCategories;
+        var includedLedgerCategories = transactionDomain.IncludedLedgerCategories;
+        var requestedTransactionType = transactionDomain.RequestedTransactionType;
+        var appliesTransactionTypeFilter = transactionDomain.AppliesTransactionTypeFilter;
+        var cycleTotalRecoverable = transactionDomain.CycleTotalRecoverable;
 
         object recentTransactions;
         if (!queryPlan.NeedsTransactionDetail)
@@ -284,92 +153,22 @@ public partial class AiAssistantService
             }).ToList();
         }
 
-        var activeCycleStart = CategoryAttributionService.GetCycleRange(selectedYear, selectedMonthIndex, cycleDay).start;
-        var wishlistReference = intentPlan.QueryPlan.SearchText
-            ?? intentPlan.ConversationState.LastWishlistReference;
-        // Ledger balances derived from the opening balance at the active cycle start plus this
-        // cycle's per-ledger net -- mirrors the dashboard/Wishlist page. Computed once and reused
-        // for: the wishlist forecast's "remaining" (Rewards balance), the affordable-item count,
-        // and stability-fund progress. Only when a question actually needs it, and never in
-        // sensitive mode (all three are amount-based, which sensitive mode refuses anyway).
-        var wantsAffordableCount = queryPlan.NeedsWishlist &&
-            Regex.IsMatch(queryPlan.QueryText, @"\b(how many|afford|can i (?:buy|afford|get))\b", RegexOptions.IgnoreCase);
-        var wantsStabilityProgress = Regex.IsMatch(queryPlan.QueryText,
-            @"\bstability\b.{0,40}\b(fund|goal|target|on track|progress|reach(?:ed)?|close|there yet|percent)\b|\b(goal|target|on track|progress|reach(?:ed)?|percent)\b.{0,40}\bstability\b",
-            RegexOptions.IgnoreCase);
-        decimal rewardsBalance = 0m;
-        object? stabilityProgress = null;
-        int? affordableWishlistCount = null;
-        object? ledgerBalanceForecast = null;
-        // Balance/forecast math must run over UNFILTERED cycle transactions. The primary load may
-        // be narrowed to a merchant/activity search (e.g. "how many wishlist items can I afford"
-        // leaks a bogus searchText), which would zero out every ledger balance. When the load was
-        // filtered, re-fetch the needed cycles unfiltered; otherwise reuse allTransactions as-is.
-        var needsLedgerTxs = !sensitiveMode && (queryPlan.NeedsWishlistForecast || wantsAffordableCount || wantsStabilityProgress || ledgerForecastRequest != null);
-        var transactionsWereFiltered = queryPlan.TransactionData == TransactionDataLevel.MatchingRows &&
-            !string.IsNullOrWhiteSpace(queryPlan.SearchText) || appliesTransactionTypeFilter ||
-            excludedCategories.Count > 0 || excludedLedgerCategories.Count > 0 ||
-            includedCategories.Count > 0 || includedLedgerCategories.Count > 0;
-        var ledgerTransactions = allTransactions;
-        if (needsLedgerTxs && transactionsWereFiltered && targetSelection.Cycles.Count > 0)
-        {
-            ledgerTransactions = await LoadUnfilteredCycleTransactionsAsync(targetSelection.Cycles, cycleDay, cancellationToken);
-        }
-        if (needsLedgerTxs)
-        {
-            var opening = await new CycleBalanceService(_context).GetOpeningBalanceAsync(selectedYear, selectedMonthIndex, cycleDay);
-            var activeCycleTxs = ledgerTransactions
-                .Where(t => IsInCycle(t, new CycleKey(selectedYear, selectedMonthIndex), cycleDay))
-                .ToList();
-            decimal LedgerNet(string ledgerCategory) => activeCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(new Models.Transaction
-            {
-                Amount = t.Amount,
-                LedgerCategory = t.LedgerCategory
-            }, ledgerCategory));
-            rewardsBalance = opening.rewards + LedgerNet("Rewards");
-            if (wantsStabilityProgress)
-            {
-                var stabilityBalance = opening.stability + LedgerNet("Stability");
-                var target = setting?.TargetStabilityFund ?? 0m;
-                stabilityProgress = new
-                {
-                    currentStabilityBalance = stabilityBalance,
-                    targetStabilityFund = target,
-                    percentReached = target > 0 ? Math.Round(stabilityBalance / target * 100m, 1) : (decimal?)null,
-                    remaining = target > 0 ? Math.Max(0m, target - stabilityBalance) : (decimal?)null
-                };
-            }
-            if (wantsAffordableCount)
-            {
-                affordableWishlistCount = wishlistRows.Count(w => !w.IsPurchased && rewardsBalance >= w.Price);
-            }
-            if (ledgerForecastRequest is { } forecast)
-            {
-                var openingFor = forecast.Ledger switch
-                {
-                    "Essentials" => opening.essentials,
-                    "Growth" => opening.growth,
-                    "Stability" => opening.stability,
-                    "Rewards" => opening.rewards,
-                    _ => 0m
-                };
-                var currentBalance = openingFor + LedgerNet(forecast.Ledger);
-                ledgerBalanceForecast = BuildLedgerBalanceForecast(ComputeLedgerBalanceForecast(
-                    forecast.Ledger, forecast.Target, currentBalance,
-                    ledgerTransactions, targetSelection.Cycles, cycleDay, DateTime.Now));
-            }
-        }
-        var wishlistForecast = queryPlan.NeedsWishlistForecast && !sensitiveMode
-            ? BuildWishlistForecast(new WishlistForecastPolicy(
-                    wishlistRows,
-                    ledgerTransactions,
-                    targetSelection.Cycles,
-                    cycleDay,
-                    activeCycleStart,
-                    DateTime.Now,
-                    wishlistReference,
-                    rewardsBalance))
-            : null;
+        var ledgerDomain = await BuildLedgerDomainContextAsync(
+            intentPlan,
+            setting,
+            transactionDomain,
+            targetSelection,
+            wishlistRows,
+            selectedYear,
+            selectedMonthIndex,
+            cycleDay,
+            sensitiveMode,
+            ledgerForecastRequest,
+            cancellationToken);
+        var stabilityProgress = ledgerDomain.StabilityProgress;
+        var affordableWishlistCount = ledgerDomain.AffordableWishlistCount;
+        var ledgerBalanceForecast = ledgerDomain.LedgerBalanceForecast;
+        var wishlistForecast = ledgerDomain.WishlistForecast;
 
         // The user's allocation goals: fractions of income per ledger category plus the
         // stability-fund target. Actuals live in cycleSummaries.ledgerNet -- these targets are
@@ -569,72 +368,13 @@ public partial class AiAssistantService
         var cycleSummaries = queryPlan.NeedsCycleSummary
             ? BuildCycleSummaries(allTransactions, targetSelection.Cycles, cycleDay, !sensitiveMode, perCycleRecoveredOutflow)
             : new List<object>();
-        object? balanceSnapshot = null;
-        if (!sensitiveMode && Regex.IsMatch(queryPlan.QueryText, @"\b(wallet balance|ledger (?:category )?(?:balance|balances)|most balance|highest balance|balance right now)\b", RegexOptions.IgnoreCase))
-        {
-            var opening = await new CycleBalanceService(_context).GetOpeningBalanceAsync(selectedYear, selectedMonthIndex, cycleDay);
-            var activeTransactions = allTransactions.Where(t => IsInCycle(t, new CycleKey(selectedYear, selectedMonthIndex), cycleDay)).ToList();
-            decimal Net(string category) => activeTransactions.Sum(t => CategoryAttributionService.GetCategoryAmount(new Models.Transaction
-            {
-                Amount = t.Amount,
-                LedgerCategory = t.LedgerCategory
-            }, category));
-            var balances = new[]
-            {
-                new { ledgerCategory = "Essentials", balance = opening.essentials + Net("Essentials") },
-                new { ledgerCategory = "Growth", balance = opening.growth + Net("Growth") },
-                new { ledgerCategory = "Stability", balance = opening.stability + Net("Stability") },
-                new { ledgerCategory = "Rewards", balance = opening.rewards + Net("Rewards") }
-            };
-            balanceSnapshot = new
-            {
-                walletBalance = balances.Where(b => b.ledgerCategory != "Growth").Sum(b => b.balance),
-                ledgerBalances = balances,
-                highestLedgerBalance = balances.OrderByDescending(b => b.balance).First()
-            };
-        }
-        // Per-cycle bill status (Paid/Pending/Discarded) -- the only path that sees discarded
-        // recurring charges, which every other loader excludes. Triggered when a recurring
-        // question also mentions a status word ("discarded", "skipped", "unpaid", "paid",
-        // "pending"). Scoped to the requested cycles, defaulting to the active cycle.
-        object? recurringBillStatus = null;
-        if (queryPlan.NeedsRecurring &&
-            Regex.IsMatch(queryPlan.QueryText, @"\b(discard|discarded|skip|skipped|unpaid|not paid|missed|paid|pending|overdue|due|status)\b", RegexOptions.IgnoreCase))
-        {
-            var statusCycles = targetSelection.Cycles.Count > 0
-                ? targetSelection.Cycles
-                : [new CycleKey(selectedYear, selectedMonthIndex)];
-            var statuses = await LoadRecurringBillStatusesAsync(statusCycles, cycleDay, cancellationToken);
-            recurringBillStatus = statuses
-                .Select(s => sensitiveMode
-                    ? (object)new { s.Id, s.Name, s.Category, s.LedgerCategory, s.DueDate, s.Status }
-                    : new { s.Id, s.Name, s.Category, s.LedgerCategory, s.DueDate, s.Status, s.Amount })
-                .ToList();
-        }
-
-        // Upcoming bills: the recurring.upcoming intent declared this metric but nothing produced
-        // it. Active payments sorted by their stored NextDueDate so "when is my next bill / what's
-        // coming up" is answerable, including each bill's frequency.
-        object? recurringUpcoming = null;
-        if (queryPlan.Metrics.Contains(DerivedMetric.RecurringUpcoming) && recurringRows.Count > 0)
-        {
-            recurringUpcoming = recurringRows
-                .Where(r => r.Active)
-                .OrderBy(r => DateTime.TryParse(r.NextDueDate, out var due) ? due : DateTime.MaxValue)
-                .Take(10)
-                .Select(r => sensitiveMode
-                    ? (object)new { r.Name, r.Category, r.LedgerCategory, r.Frequency, nextDueDate = r.NextDueDate }
-                    : new { r.Name, r.Category, r.LedgerCategory, r.Frequency, nextDueDate = r.NextDueDate, amount = Math.Abs(r.Amount) })
-                .ToList();
-        }
-
-        // Frequency-normalized recurring cost ("how much do subscriptions cost me a month/year").
-        // Amount-based, so only outside sensitive mode.
-        object? recurringCostSummary = null;
-        if (queryPlan.NeedsRecurring && !sensitiveMode && recurringRows.Count > 0 && WantsRecurringCostSummary(queryPlan.QueryText))
-        {
-            recurringCostSummary = BuildRecurringCostSummary(recurringRows);
-        }
+        var balanceSnapshot = await BuildBalanceSnapshotAsync(
+            queryPlan, allTransactions, selectedYear, selectedMonthIndex, cycleDay, sensitiveMode);
+        var recurringInsights = await BuildRecurringDomainInsightsAsync(
+            queryPlan, recurringRows, targetSelection, selectedYear, selectedMonthIndex, cycleDay, sensitiveMode, cancellationToken);
+        var recurringBillStatus = recurringInsights.BillStatus;
+        var recurringUpcoming = recurringInsights.Upcoming;
+        var recurringCostSummary = recurringInsights.CostSummary;
 
         var extraMetrics = new Dictionary<string, object?>();
         if (recurringUpcoming != null) extraMetrics["upcomingBills"] = recurringUpcoming;

@@ -1,13 +1,17 @@
 # Build stage
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
-COPY ["FinancialAppApi.csproj", "./"]
+# The build context is the backend solution dir (see cloudbuild.yaml `-f ... .`). Copy the
+# Central Package Management + shared build props FIRST: they hold every <PackageVersion>,
+# so without them the version-less <PackageReference>s in the csproj fail restore with NU1015.
+COPY ["Directory.Packages.props", "Directory.Build.props", "./"]
+COPY ["FinancialAppApi/FinancialAppApi.csproj", "FinancialAppApi/"]
 # Restore for the target runtime so ReadyToRun (crossgen) can precompile for linux-x64.
-RUN dotnet restore "FinancialAppApi.csproj" -r linux-x64
+RUN dotnet restore "FinancialAppApi/FinancialAppApi.csproj" -r linux-x64
 COPY . .
 # ReadyToRun ahead-of-time compilation cuts JIT work on the cold-start path.
 # --self-contained false keeps the image small (framework lives in the runtime image).
-RUN dotnet publish "FinancialAppApi.csproj" \
+RUN dotnet publish "FinancialAppApi/FinancialAppApi.csproj" \
     -c Release \
     -r linux-x64 \
     --self-contained false \

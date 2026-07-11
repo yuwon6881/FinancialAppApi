@@ -1,0 +1,36 @@
+# The build context is the backend solution dir (cloudbuild.yaml builds with `-f
+# FinancialAppApi/Dockerfile .`). Keep it small: without this, `COPY . .` drags every
+# project's bin/ + obj/ output (100+ MB) plus local VCS state into the context on every
+# commit, bloating the upload to the daemon and constantly invalidating the source layer.
+
+# Build output from every project (API + Tests), at any depth.
+**/bin/
+**/obj/
+**/publish/
+
+# The Tests project is never shipped in the runtime image, and publishing the API
+# project doesn't reference it.
+FinancialAppApi.Tests/
+
+# Local-only VCS / tooling / IDE state that never belongs in the image.
+.git/
+.github/
+.idea/
+.vs/
+*.user
+
+# Secrets and env-specific config must not be baked into the image; they arrive via
+# Cloud Run env vars / Secret Manager at runtime.
+**/appsettings.Development.json
+**/appsettings.Local.json
+**/appsettings.*.Local.json
+
+# Local SQLite dev databases must not leak into the image.
+**/*.db
+
+# The Dockerfile builds the image; it doesn't need to be inside the context.
+FinancialAppApi/Dockerfile
+**/.dockerignore
+
+# Docs / design notes have no place in the runtime image.
+**/*.md
