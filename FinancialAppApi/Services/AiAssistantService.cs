@@ -213,7 +213,7 @@ public partial class AiAssistantService
                     Temperature: 0.15,
                     MaxOutputTokens: intentPlan.QueryPlan.NeedsCycleComparison ? 1100 : 800,
                     SystemInstruction: systemInstruction,
-                    ResponseJsonSchema: AiResponseSchemas.Chat,
+                    ResponseJsonSchema: AiResponseSchemas.Chat(context.Categories),
                     ThinkingLevel: intentPlan.QueryPlan.NeedsCycleComparison ? "medium" : "low",
                     ModelConfigurationKey: "AiModels:Chat"),
                 cancellationToken);

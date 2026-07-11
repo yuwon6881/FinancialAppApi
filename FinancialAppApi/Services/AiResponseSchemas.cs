@@ -2,7 +2,11 @@ namespace FinancialAppApi.Services;
 
 internal static class AiResponseSchemas
 {
-    public static readonly object Chat = Obj(
+    // Category is enum-constrained to the user's actual categories (like Receipt / CategorySuggestions)
+    // so the model is forced to emit a real category name for add/edit drafts and ledger filters --
+    // otherwise a free-string guess that doesn't match gets the whole action dropped in
+    // AiAssistantService.IsActionSafe. Falls back to a plain string when the caller has no categories.
+    public static object Chat(IReadOnlyList<string> categories) => Obj(
         new Dictionary<string, object>
         {
             ["reply"] = Str("Concise user-facing reply."),
@@ -20,7 +24,7 @@ internal static class AiResponseSchemas
                         "requestPurchaseWishlist", "requestUnpurchaseWishlist", "toggleRecurring",
                         "openLedgerExport"
                     ]),
-                    ["payload"] = ActionPayload()
+                    ["payload"] = ActionPayload(categories)
                 },
                 ["type", "payload"]), maxItems: 3)
         },
@@ -124,14 +128,14 @@ internal static class AiResponseSchemas
         },
         ["description", "amount", "date", "category", "ledgerCategory", "confidence"]);
 
-    private static object ActionPayload() => Obj(new Dictionary<string, object>
+    private static object ActionPayload(IReadOnlyList<string> categories) => Obj(new Dictionary<string, object>
     {
         ["id"] = Str(),
         ["month"] = Str(),
         ["year"] = Int(),
         ["allCycles"] = Bool(),
         ["range"] = Str(enums: ["monthly", "3month", "6month", "yearly"]),
-        ["category"] = Str(),
+        ["category"] = Str("Single most fitting category; copy exactly from the App context categories.", enums: categories),
         ["ledgerCategory"] = Str(),
         ["txType"] = Str(enums: ["inflow", "outflow", "transfer"]),
         ["transferSource"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
@@ -150,7 +154,8 @@ internal static class AiResponseSchemas
         ["changes"] = Obj(new Dictionary<string, object>
         {
             ["description"] = Str(), ["name"] = Str(), ["amount"] = Num(), ["price"] = Num(),
-            ["category"] = Str(), ["ledgerCategory"] = Str(), ["txType"] = Str(), ["date"] = Str(),
+            ["category"] = Str("Single most fitting category; copy exactly from the App context categories.", enums: categories),
+            ["ledgerCategory"] = Str(), ["txType"] = Str(), ["date"] = Str(),
             ["transferSource"] = Str(), ["transferTarget"] = Str(),
             ["priority"] = Str(), ["isActive"] = Bool(), ["startDate"] = Str(), ["endDate"] = Str()
         })
