@@ -160,14 +160,15 @@ Available categories JSON array: {categoriesJson}";
                     Feature: "category-suggestion",
                     Temperature: 0,
                     // Thinking tokens count against MaxOutputTokens on Gemini 3, so a tight budget
-                    // let the "low" thinking pass starve the JSON output and trip MAX_TOKENS --
-                    // which the client treats as a hard failure, silently yielding zero
-                    // suggestions. This is a trivial enum classification, so drop thinking and
-                    // leave ample room for the small JSON payload.
+                    // lets the thinking pass starve the JSON output and trip MAX_TOKENS -- which the
+                    // client treats as a hard failure, silently yielding zero suggestions. Keep
+                    // thinking at its minimum ("low") and leave ample room for both it and the
+                    // small JSON payload. (Omitting thinkingConfig entirely is worse: the model
+                    // then defaults to a larger, dynamic thinking budget.)
                     MaxOutputTokens: 512,
                     SystemInstruction: SuggestSystemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.CategorySuggestions(categoryNames),
-                    ThinkingLevel: null,
+                    ThinkingLevel: "low",
                     ModelConfigurationKey: "AiModels:CategorySuggestion"),
                 cancellationToken);
         }
@@ -223,12 +224,12 @@ Recent description examples JSON array: {JsonSerializer.Serialize(history)}";
                 new AiGenerationOptions(
                     Feature: "note-suggestion",
                     Temperature: 0.2,
-                    // Same MAX_TOKENS starvation risk as category-suggestion: give the JSON room
-                    // so a truncated response doesn't collapse to zero notes.
-                    MaxOutputTokens: 400,
+                    // Same MAX_TOKENS starvation risk as category-suggestion, and notes emit more
+                    // text (3 notes + reasons), so give even more headroom on top of "low" thinking.
+                    MaxOutputTokens: 640,
                     SystemInstruction: SuggestNotesSystemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.NoteSuggestions,
-                    ThinkingLevel: null,
+                    ThinkingLevel: "low",
                     ModelConfigurationKey: "AiModels:NoteSuggestion"),
                 cancellationToken);
         }
