@@ -282,14 +282,17 @@ public partial class AiAssistantService
         var constraints = ParseConstraints(queryText);
         var lower = queryText.ToLowerInvariant();
         var s = ComputeSignalNeeds(lower, constraints);
+        var mutationVerb = Regex.IsMatch(lower, @"\b(delete|remove|erase|purchase|buy|claim|unpurchase|undo purchase|mark (?:as )?paid|confirm (?:as )?paid|discard|skip|enable|disable|turn on|turn off|activate|deactivate|toggle)\b");
+        var deleteVerb = Regex.IsMatch(lower, @"\b(delete|remove|erase)\b");
 
         var intents = new List<AiIntent>();
         if (LooksLikeLedgerEditCommand(message)) intents.Add(AiIntent.LedgerEdit);
+        if (deleteVerb && !s.NeedsWishlist && !s.NeedsRecurring && TransactionDetailSignal.IsMatch(lower)) intents.Add(AiIntent.LedgerEdit);
         if (Regex.IsMatch(lower, @"\b(add|create|record|log|enter)\b") && TransactionDetailSignal.IsMatch(lower)) intents.Add(AiIntent.LedgerAdd);
-        if (s.NeedsWishlist && Regex.IsMatch(lower, @"\b(add|create|edit|update|change|modify)\b"))
-            intents.Add(Regex.IsMatch(lower, @"\b(edit|update|change|modify)\b") ? AiIntent.WishlistEdit : AiIntent.WishlistAdd);
-        if (s.NeedsRecurring && Regex.IsMatch(lower, @"\b(add|create|edit|update|change|modify)\b"))
-            intents.Add(Regex.IsMatch(lower, @"\b(edit|update|change|modify)\b") ? AiIntent.RecurringEdit : AiIntent.RecurringAdd);
+        if (s.NeedsWishlist && (Regex.IsMatch(lower, @"\b(add|create|edit|update|change|modify)\b") || mutationVerb))
+            intents.Add(Regex.IsMatch(lower, @"\b(add|create)\b") && !mutationVerb ? AiIntent.WishlistAdd : AiIntent.WishlistEdit);
+        if (s.NeedsRecurring && (Regex.IsMatch(lower, @"\b(add|create|edit|update|change|modify)\b") || mutationVerb))
+            intents.Add(Regex.IsMatch(lower, @"\b(add|create)\b") && !mutationVerb ? AiIntent.RecurringAdd : AiIntent.RecurringEdit);
         if (CountQuestionSignal.IsMatch(lower)) intents.Add(AiIntent.LedgerActivityCount);
         // An amount-threshold question ("which transaction exceeded 100", "purchases over 200") is a
         // request for the matching individual rows, so it is a transaction-list intent. Detecting it
@@ -332,7 +335,7 @@ public partial class AiAssistantService
         // Keep aggregate questions aggregate-only even though incidental wording such as "did I"
         // may also add LedgerTransactionList. A genuine list follow-up carries the canonical word
         // "transactions", so ComputeSignalNeeds already raises detail for it.
-        var needsTransactionDetail = s.NeedsTransactionDetail || distinct.Contains(AiIntent.LedgerMerchantSearch);
+        var needsTransactionDetail = s.NeedsTransactionDetail || distinct.Contains(AiIntent.LedgerMerchantSearch) || distinct.Contains(AiIntent.LedgerEdit);
 
         var intentNames = distinct.Select(ToIntentName).ToList();
         // A short follow-up carries no real search term of its own -- discard noise extractions

@@ -12,9 +12,13 @@ internal static class AiResponseSchemas
                 {
                     ["type"] = Str(enums:
                     [
-                        "openLedger", "openDashboard", "openRecurring", "openWishlist", "openSettings",
+                        "openLedger", "openDashboard", "openRecurring", "openWishlist",
                         "openAddLedgerDraft", "openAddRecurringDraft", "openAddWishlistDraft",
-                        "openEditLedgerDraft", "openEditRecurringDraft", "openEditWishlistDraft"
+                        "openEditLedgerDraft", "openEditRecurringDraft", "openEditWishlistDraft",
+                        "requestDeleteLedger", "requestDeleteRecurring", "requestDeleteWishlist",
+                        "requestConfirmRecurringBill", "requestDiscardRecurringBill",
+                        "requestPurchaseWishlist", "requestUnpurchaseWishlist", "toggleRecurring",
+                        "openLedgerExport"
                     ]),
                     ["payload"] = ActionPayload()
                 },
@@ -126,9 +130,13 @@ internal static class AiResponseSchemas
         ["month"] = Str(),
         ["year"] = Int(),
         ["allCycles"] = Bool(),
+        ["range"] = Str(enums: ["monthly", "3month", "6month", "yearly"]),
         ["category"] = Str(),
         ["ledgerCategory"] = Str(),
         ["txType"] = Str(enums: ["inflow", "outflow", "transfer"]),
+        ["transferSource"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
+        ["transferTarget"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
+        ["active"] = Bool(),
         ["search"] = Str(),
         ["date"] = Str(),
         ["description"] = Str(),
@@ -143,6 +151,7 @@ internal static class AiResponseSchemas
         {
             ["description"] = Str(), ["name"] = Str(), ["amount"] = Num(), ["price"] = Num(),
             ["category"] = Str(), ["ledgerCategory"] = Str(), ["txType"] = Str(), ["date"] = Str(),
+            ["transferSource"] = Str(), ["transferTarget"] = Str(),
             ["priority"] = Str(), ["isActive"] = Bool(), ["startDate"] = Str(), ["endDate"] = Str()
         })
     });

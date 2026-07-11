@@ -1,6 +1,7 @@
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using System.Text.Json;
 
 namespace FinancialAppApi.Controllers;
@@ -8,6 +9,7 @@ namespace FinancialAppApi.Controllers;
 [ApiController]
 [Route("api/ai")]
 [AuthorizeToken]
+[EnableRateLimiting("ai")]
 public class AiController : ControllerBase
 {
     private readonly AiAssistantService _aiAssistantService;

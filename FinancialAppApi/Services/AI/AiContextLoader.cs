@@ -61,7 +61,7 @@ public partial class AiAssistantService
             .ToListAsync(cancellationToken);
 
     private sealed record AiRecurringStatusRow(
-        string Name, string Category, string LedgerCategory, string DueDate, string Status, decimal Amount);
+        string Id, string Name, string Category, string LedgerCategory, string DueDate, string Status, decimal Amount);
 
     // Per-cycle bill status (Paid / Pending / Discarded) for each active recurring payment whose
     // billing date lands in the requested cycle(s). Mirrors FinancialService.BuildActiveRecurringList
@@ -105,7 +105,7 @@ public partial class AiAssistantService
                     var isDiscarded = paidTx != null && string.Equals(paidTx.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase);
                     var isPaid = paidTx != null && !isDiscarded;
                     results.Add(new AiRecurringStatusRow(
-                        rp.Name, rp.Category, rp.LedgerCategory,
+                        rp.Id, rp.Name, rp.Category, rp.LedgerCategory,
                         billingDate.ToString("yyyy-MM-dd"),
                         isDiscarded ? "Discarded" : isPaid ? "Paid" : "Pending",
                         Math.Abs(rp.Amount)));

@@ -47,20 +47,39 @@ public class AiAssistantServiceTests
         Assert.Contains("too long", outcome.Response.Reply);
     }
 
-    [Theory]
-    [InlineData("delete my coffee transaction")]
-    [InlineData("please remove that record")]
-    [InlineData("can you erase this entry")]
-    public async Task ChatAsync_DeleteCommand_RefusesWithoutCallingModel(string message)
+    [Fact]
+    public async Task ChatAsync_DeleteCommand_ReturnsConfirmationRequestForKnownRecord()
     {
-        await using var context = NewContextWithSettings();
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        context.Transactions.Add(Txn("coffee", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "Coffee", -8));
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "I'll open the delete confirmation.",
+            actionsJson: "[{\"type\":\"requestDeleteLedger\",\"payload\":{\"id\":\"coffee\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("delete my coffee transaction", []));
+
+        Assert.True(handler.CallCount >= 1);
+        var action = Assert.Single(outcome.Response.Actions);
+        Assert.Equal("requestDeleteLedger", action.Type);
+        Assert.Equal("coffee", action.Payload["id"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ChatAsync_DeleteCommand_IsBlockedInSensitiveModeWithoutCallingModel()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: true);
+        context.Transactions.Add(Txn("coffee", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "Coffee", -8));
+        await context.SaveChangesAsync();
         var handler = new ScriptedAiHandler();
         var service = NewService(context, handler);
 
-        var outcome = await service.ChatAsync(new AiChatRequest(message, []));
+        var outcome = await service.ChatAsync(new AiChatRequest("delete my coffee transaction", []));
 
         Assert.Equal(0, handler.CallCount);
-        Assert.Contains("unable to delete", outcome.Response.Reply);
+        Assert.Empty(outcome.Response.Actions);
+        Assert.Contains("Sensitive mode", outcome.Response.Reply);
     }
 
     [Fact]
@@ -74,7 +93,7 @@ public class AiAssistantServiceTests
         var outcome = await service.ChatAsync(new AiChatRequest("What should I delete to save money?", []));
 
         Assert.True(handler.CallCount >= 1);
-        Assert.DoesNotContain("unable to delete", outcome.Response.Reply);
+        Assert.Equal("Here is some advice.", outcome.Response.Reply);
     }
 
     [Fact]
@@ -299,6 +318,91 @@ public class AiAssistantServiceTests
         var outcome = await service.ChatAsync(new AiChatRequest("open the dashboard", []));
 
         Assert.Empty(outcome.Response.Actions);
+    }
+
+    [Fact]
+    public async Task ChatAsync_SettingsNavigation_IsAlwaysFilteredOut()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        var handler = new ScriptedAiHandler(
+            ScriptedAiHandler.Chat("Opening settings.", actionsJson: "[{\"type\":\"openSettings\",\"payload\":{}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("open settings", []));
+
+        Assert.Empty(outcome.Response.Actions);
+    }
+
+    [Fact]
+    public async Task ChatAsync_SensitiveMode_FiltersProviderMutationAction()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: true);
+        context.Transactions.Add(Txn("coffee", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "Coffee", -8));
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Deleting.", actionsJson: "[{\"type\":\"requestDeleteLedger\",\"payload\":{\"id\":\"coffee\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("show my coffee transaction", []));
+
+        Assert.Empty(outcome.Response.Actions);
+    }
+
+    [Fact]
+    public async Task ChatAsync_RecurringToggle_RequiresKnownIdAndExplicitState()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "netflix", Name = "Netflix", Amount = 20, Frequency = "Monthly",
+            Category = "Food", LedgerCategory = "Essentials", NextDueDate = "2026-07-15",
+            DueDate = 15, StartDate = "2026-01-15", Active = true
+        });
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Turning it off.", actionsJson: "[{\"type\":\"toggleRecurring\",\"payload\":{\"id\":\"netflix\",\"active\":false}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("turn off my Netflix subscription", []));
+
+        var action = Assert.Single(outcome.Response.Actions);
+        Assert.Equal("toggleRecurring", action.Type);
+        Assert.Equal("netflix", action.Payload["id"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ChatAsync_TransferDraft_RequiresExplicitDistinctBuckets()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Opening transfer draft.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Move funds\",\"amount\":100,\"txType\":\"transfer\",\"transferSource\":\"Growth\",\"transferTarget\":\"Stability\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("transfer 100 from Growth to Stability", []));
+
+        var action = Assert.Single(outcome.Response.Actions);
+        Assert.Equal("Growth", action.Payload["transferSource"]?.ToString());
+        Assert.Equal("Stability", action.Payload["transferTarget"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ChatAsync_WishlistPurchaseAction_RequiresAnUnpurchasedKnownItem()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        context.WishlistItems.Add(new WishlistItem
+        {
+            Id = 7, Name = "Headphones", Price = 200, Priority = "Medium",
+            IsPurchased = false, IsActive = true, CreatedAt = DateTime.UtcNow
+        });
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Opening confirmation.", actionsJson: "[{\"type\":\"requestPurchaseWishlist\",\"payload\":{\"id\":\"7\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("claim my Headphones wishlist item", []));
+
+        Assert.Equal("requestPurchaseWishlist", Assert.Single(outcome.Response.Actions).Type);
     }
 
     [Fact]

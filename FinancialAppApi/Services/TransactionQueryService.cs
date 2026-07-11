@@ -224,9 +224,11 @@ public class TransactionQueryService
         if (!string.IsNullOrWhiteSpace(txType))
         {
             if (txType == "inflow")
-                query = query.Where(t => t.Amount > 0);
+                query = query.Where(t => t.Amount > 0 && t.Category != "Transfer" && !t.LedgerCategory.StartsWith("Transfer:"));
             else if (txType == "outflow")
                 query = query.Where(t => t.Amount < 0);
+            else if (txType == "transfer")
+                query = query.Where(t => t.Category == "Transfer" || t.LedgerCategory.StartsWith("Transfer:"));
         }
 
         return query;
