@@ -89,10 +89,13 @@ public class TransactionCategoriesController : ControllerBase
         {
             return BadRequest(new { message = "Description is required." });
         }
+        // Only guard against genuinely abusive payloads here. Individual history
+        // entries (blank, overly long, or more than the model needs) are normalized
+        // by SuggestNotesAsync itself, so rejecting on them would needlessly fail a
+        // valid request -- e.g. a user with more than 10 past transactions.
         if (request.Description.Length > 300 || request.Category?.Length > 100 ||
             request.LedgerCategory?.Length > 50 || request.TxType?.Length > 20 ||
-            request.HistoryDescriptions?.Count > 10 ||
-            request.HistoryDescriptions?.Any(description => string.IsNullOrWhiteSpace(description) || description.Length > 150) == true)
+            request.HistoryDescriptions?.Count > 200)
         {
             return BadRequest(new { message = "Suggestion input is too long." });
         }
