@@ -39,6 +39,24 @@ public class TransactionQueryServiceTests
         Assert.Contains("Coffee", csv);
     }
 
+    [Fact]
+    public async Task GetAutocompleteSuggestionsAsync_ExcludesGeneratedIncomeSplits()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("income-1", "Salary", "Salary", "Income", 1000m),
+            NewTransaction("income-1-split-0", "Salary - Essentials Split", "Salary", "Essentials", 400m),
+            NewTransaction("income-1-split-1", "Salary - Growth Split", "Salary", "Growth", 300m));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var suggestions = await service.GetAutocompleteSuggestionsAsync();
+
+        var suggestion = Assert.Single(suggestions);
+        Assert.Equal("Salary", suggestion.Description);
+        Assert.Equal("Income", suggestion.LedgerCategory);
+    }
+
     private static Transaction NewTransaction(string id, string description, string category, string ledgerCategory, decimal amount)
     {
         return new Transaction
