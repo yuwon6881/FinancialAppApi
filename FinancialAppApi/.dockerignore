@@ -1,0 +1,24 @@
+# Keep the Docker build context tiny. Without this, `COPY . .` drags the local
+# bin/ + obj/ output (100+ MB) into the build context on every commit, bloating the
+# upload to the daemon and invalidating the source COPY layer's cache constantly.
+bin/
+obj/
+publish/
+
+# Local-only tooling / IDE state that never belongs in the image.
+.idea/
+.vs/
+*.user
+
+# Secrets and env-specific config must not be baked into the image; they arrive
+# via Cloud Run env vars / Secret Manager at runtime.
+appsettings.Development.json
+appsettings.Local.json
+appsettings.*.Local.json
+
+# The Dockerfile builds the image; it doesn't need to be inside the context.
+Dockerfile
+.dockerignore
+
+# Docs / design notes have no place in the runtime image.
+*.md

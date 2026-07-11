@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.ResponseCompression;
 using System.IO.Compression;
+using System.Threading.RateLimiting;
 using System.Text.Json.Serialization;
 using Npgsql;
 using FinancialAppApi.Database;
@@ -9,6 +10,11 @@ using FinancialAppApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 var seedDatabase = args.Contains("--seed-database", StringComparer.OrdinalIgnoreCase);
+// --migrate makes this process a one-shot migrator: it applies pending EF Core
+// migrations (and seeds, if --seed-database is also passed) then exits without
+// serving. The Cloud Build "Migrate" step runs the image this way. Keeping it a
+// plain CLI flag means the deploy pipeline no longer needs a shell in the image.
+var migrateOnly = args.Contains("--migrate", StringComparer.OrdinalIgnoreCase);
 
 // Cloud Run (and most container PaaS) tell the app which port to listen on
 // via the PORT env var. Bind to it when present; otherwise fall back to the
@@ -29,6 +35,37 @@ builder.Services.AddControllers()
     {
         o.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
     });
+
+// Ask AI can make up to two provider calls (intent classification + answer), so protect the
+// shared provider quota per authenticated bearer token. The action's custom auth filter still
+// validates the token; this middleware only uses it as an opaque partition key.
+var aiRequestsPerMinute = builder.Configuration.GetValue("Ai:RequestsPerMinute", 20);
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddPolicy("ai", httpContext =>
+    {
+        var authorization = httpContext.Request.Headers.Authorization.ToString();
+        var partitionKey = string.IsNullOrWhiteSpace(authorization)
+            ? httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous"
+            : authorization;
+        return RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = Math.Max(1, aiRequestsPerMinute),
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        });
+    });
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        await context.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            reply = "Ask AI is receiving too many requests. Please wait a moment and try again.",
+            actions = Array.Empty<object>()
+        }, cancellationToken);
+    };
+});
 
 // In-process cache for reference/aggregate data that changes rarely relative to
 // how often it is read (transaction categories, cycle balance snapshots). Avoids
@@ -82,6 +119,16 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 if (string.IsNullOrWhiteSpace(connectionString))
 {
     throw new InvalidOperationException("ConnectionStrings:DefaultConnection must be configured.");
+}
+
+// EF Core migrations take a session-scoped advisory lock that Supabase's transaction-mode
+// pooler (port 6543) drops between statements, so migrations must run against session mode
+// (port 5432). When this process is the one-shot migrator, rewrite the pooler port here in
+// code. This used to be a bash string-substitution in cloudbuild.yaml -- moving it into the
+// app removes the only reason the deploy pipeline needed a shell-capable image.
+if (migrateOnly && connectionString.Contains("Port=6543", StringComparison.OrdinalIgnoreCase))
+{
+    connectionString = connectionString.Replace("Port=6543", "Port=5432", StringComparison.OrdinalIgnoreCase);
 }
 
 // Free-tier Postgres (Supabase) has a very low concurrent-connection ceiling, and
@@ -177,6 +224,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowFrontend");
+app.UseRateLimiter();
 
 app.UseAuthorization();
 
@@ -189,7 +237,7 @@ app.MapControllers();
 // briefly slow during the revision health check.
 var migrateOnStartup = app.Configuration.GetValue("Database:MigrateOnStartup", false);
 var seedOnStartup = app.Configuration.GetValue("Database:SeedOnStartup", false);
-if (migrateOnStartup || seedOnStartup || seedDatabase)
+if (migrateOnStartup || seedOnStartup || seedDatabase || migrateOnly)
 {
     using (var scope = app.Services.CreateScope())
     {
@@ -197,26 +245,13 @@ if (migrateOnStartup || seedOnStartup || seedDatabase)
         try
         {
             var context = services.GetRequiredService<AppDbContext>();
-            if (migrateOnStartup)
+            if (migrateOnStartup || migrateOnly)
             {
+                // Applies pending migrations only. The Date->timestamptz conversion and the
+                // wishlist<->transaction link columns/indexes that used to be patched in with
+                // raw SQL here now live in real migrations (StoreTransactionTimestamp and
+                // EnsureWishlistPurchaseLinkColumns), so Migrate() is the single source of truth.
                 context.Database.Migrate();
-                context.Database.ExecuteSqlRaw("""
-                    ALTER TABLE "Transactions"
-                    ALTER COLUMN "Date" TYPE timestamp with time zone
-                    USING ("Date"::timestamp AT TIME ZONE 'UTC');
-
-                    ALTER TABLE "Transactions"
-                    ADD COLUMN IF NOT EXISTS "WishlistItemId" integer;
-
-                    ALTER TABLE "WishlistItems"
-                    ADD COLUMN IF NOT EXISTS "PurchaseTransactionId" text;
-
-                    CREATE INDEX IF NOT EXISTS "IX_Transactions_WishlistItemId"
-                    ON "Transactions" ("WishlistItemId");
-
-                    CREATE INDEX IF NOT EXISTS "IX_WishlistItems_PurchaseTransactionId"
-                    ON "WishlistItems" ("PurchaseTransactionId");
-                    """);
             }
 
             if (seedOnStartup || seedDatabase)
@@ -234,7 +269,8 @@ if (migrateOnStartup || seedOnStartup || seedDatabase)
         }
     }
 
-    if (seedDatabase)
+    // One-shot invocations (the deploy pipeline's migrate/seed job) exit without serving.
+    if (seedDatabase || migrateOnly)
     {
         return;
     }

@@ -1,39 +1,56 @@
 steps:
-  # Build the image from the nested project dir and push it -- one step, so the
-  # image is compiled and pushed without a separate push step or an end-of-build
-  # re-push from the images: block. $PROJECT_ID/$COMMIT_SHA are Cloud Build
-  # substitutions; $$IMAGE is escaped so bash (not Cloud Build) expands it.
+  # Build the image and push it. BuildKit inline cache + two pull-through cache tags
+  # let a fresh Cloud Build VM reuse layers from the previous build:
+  #   * :build-cache holds the SDK restore+publish stage -- the expensive part. It is
+  #     reused whenever FinancialAppApi.csproj is unchanged (i.e. most commits), so
+  #     `dotnet restore` + ReadyToRun publish don't re-run from scratch.
+  #   * :latest holds the final runtime image layers.
+  # $PROJECT_ID/$COMMIT_SHA are Cloud Build substitutions; $$IMAGE is escaped so bash
+  # (not Cloud Build) expands it.
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: bash
+    env:
+      - 'DOCKER_BUILDKIT=1'
     args:
       - '-c'
       - |
         set -euo pipefail
-        IMAGE="asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api:$COMMIT_SHA"
-        docker build -t "$$IMAGE" -f FinancialAppApi/Dockerfile FinancialAppApi
-        docker push "$$IMAGE"
+        IMAGE="asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api"
+        # Warm the local cache from the previous build (ignored on the very first run).
+        docker pull "$$IMAGE:build-cache" || true
+        docker pull "$$IMAGE:latest" || true
+        # Build + publish the SDK stage, tagged as the restore/publish cache.
+        docker build --target build \
+          --cache-from "$$IMAGE:build-cache" \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          -t "$$IMAGE:build-cache" \
+          -f FinancialAppApi/Dockerfile FinancialAppApi
+        # Build the final runtime image, reusing the build stage from local cache.
+        docker build \
+          --cache-from "$$IMAGE:build-cache" \
+          --cache-from "$$IMAGE:latest" \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          -t "$$IMAGE:$COMMIT_SHA" \
+          -t "$$IMAGE:latest" \
+          -f FinancialAppApi/Dockerfile FinancialAppApi
+        docker push "$$IMAGE:build-cache"
+        docker push "$$IMAGE:latest"
+        docker push "$$IMAGE:$COMMIT_SHA"
     id: BuildPush
 
-  # Apply EF Core migrations + seed by running the ALREADY-BUILT image, so the
-  # project is compiled exactly once (in the Docker Build step above). The app
-  # applies pending migrations via Database.Migrate() when MigrateOnStartup is
-  # set, and --seed-database seeds idempotently then exits without serving.
+  # Apply EF Core migrations + seed by running the ALREADY-BUILT image as a one-shot
+  # job, so the project is compiled exactly once (in BuildPush). `--migrate` tells the
+  # app to apply pending migrations and exit; `--seed-database` seeds idempotently.
+  # No shell/entrypoint override is needed: the image's default entrypoint is
+  # `dotnet FinancialAppApi.dll`, and Program.cs rewrites the pooler port to session
+  # mode (6543 -> 5432) internally when --migrate is set -- which is why the runtime
+  # image can now be chiseled (shell-free).
   - name: 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api:$COMMIT_SHA'
-    entrypoint: bash
-    env:
-      - 'Database__MigrateOnStartup=true'
-    secretEnv:
-      - 'DB_CONNECTION'
     args:
-      - '-c'
-      - |
-        set -euo pipefail
-        # The runtime secret targets the transaction pooler (port 6543), but EF Core
-        # migrations take a session-scoped advisory lock that transaction pooling drops
-        # between statements -- so run migrations against session mode (port 5432).
-        export ConnectionStrings__DefaultConnection="$${DB_CONNECTION/Port=6543/Port=5432}"
-        cd /app
-        dotnet FinancialAppApi.dll --seed-database
+      - '--migrate'
+      - '--seed-database'
+    secretEnv:
+      - 'ConnectionStrings__DefaultConnection'
     id: Migrate
     waitFor:
       - BuildPush
@@ -56,8 +73,13 @@ steps:
 
 options:
   logging: CLOUD_LOGGING_ONLY
+  # More vCPUs cut wall-clock on the ReadyToRun (crossgen) publish, which parallelizes well.
+  machineType: 'E2_HIGHCPU_8'
 
 availableSecrets:
   secretManager:
+    # Injected directly as the config key the app reads (ConnectionStrings:DefaultConnection),
+    # so the migrate step needs no shell to rename it. The secret targets the transaction
+    # pooler (port 6543); Program.cs swaps it to session mode (5432) under --migrate.
     - versionName: projects/$PROJECT_ID/secrets/financialapp-db/versions/latest
-      env: 'DB_CONNECTION'
+      env: 'ConnectionStrings__DefaultConnection'

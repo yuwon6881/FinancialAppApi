@@ -15,14 +15,15 @@ RUN dotnet publish "FinancialAppApi.csproj" \
     -p:UseAppHost=false \
     -o /app/publish
 
-# Runtime stage. NOTE: keep a shell-capable image (not *-chiseled/distroless): the
-# cloudbuild.yaml migrate step runs this image with `entrypoint: bash` to derive the
-# session-mode connection string, which fails on a chiseled image ("bash: not found").
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+# Runtime stage. Chiseled: no shell, no package manager, non-root by default -- a
+# smaller image (faster Cloud Run cold-pull) with a much smaller CVE surface. This is
+# viable because the migrate path no longer needs a shell: the cloudbuild.yaml migrate
+# step runs `dotnet FinancialAppApi.dll --migrate` (the session-mode port swap moved
+# into Program.cs), and no Kerberos/GSS is used, so the old libgssapi-krb5-2 apt install
+# is gone. The chiseled base already ships ICU + tzdata, which InvariantGlobalization=false
+# requires. If a future dependency needs Kerberos, switch to the `-noble-chiseled-extra` tag.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS final
 WORKDIR /app
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
-    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/publish .
 EXPOSE 8080
 ENV ASPNETCORE_URLS=http://+:8080
