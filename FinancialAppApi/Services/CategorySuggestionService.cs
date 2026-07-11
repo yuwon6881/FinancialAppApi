@@ -159,10 +159,15 @@ Available categories JSON array: {categoriesJson}";
                 new AiGenerationOptions(
                     Feature: "category-suggestion",
                     Temperature: 0,
-                    MaxOutputTokens: 160,
+                    // Thinking tokens count against MaxOutputTokens on Gemini 3, so a tight budget
+                    // let the "low" thinking pass starve the JSON output and trip MAX_TOKENS --
+                    // which the client treats as a hard failure, silently yielding zero
+                    // suggestions. This is a trivial enum classification, so drop thinking and
+                    // leave ample room for the small JSON payload.
+                    MaxOutputTokens: 512,
                     SystemInstruction: SuggestSystemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.CategorySuggestions(categoryNames),
-                    ThinkingLevel: "low",
+                    ThinkingLevel: null,
                     ModelConfigurationKey: "AiModels:CategorySuggestion"),
                 cancellationToken);
         }
@@ -218,10 +223,12 @@ Recent description examples JSON array: {JsonSerializer.Serialize(history)}";
                 new AiGenerationOptions(
                     Feature: "note-suggestion",
                     Temperature: 0.2,
-                    MaxOutputTokens: 220,
+                    // Same MAX_TOKENS starvation risk as category-suggestion: give the JSON room
+                    // so a truncated response doesn't collapse to zero notes.
+                    MaxOutputTokens: 400,
                     SystemInstruction: SuggestNotesSystemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.NoteSuggestions,
-                    ThinkingLevel: "low",
+                    ThinkingLevel: null,
                     ModelConfigurationKey: "AiModels:NoteSuggestion"),
                 cancellationToken);
         }
@@ -233,13 +240,13 @@ Recent description examples JSON array: {JsonSerializer.Serialize(history)}";
         return AiOperationResult<IReadOnlyList<TransactionNoteSuggestion>>.Ok(ParseNoteSuggestions(text));
     }
 
-    private const string SuggestNotesSystemInstruction = @"Return exactly 3 concise, useful transaction-description alternatives.
+    private const string SuggestNotesSystemInstruction = @"Return up to 3 concise, useful transaction-description alternatives.
 Rules:
 - Do not invent details like people, locations, receipt numbers, or dates.
 - Preserve merchant/product words if present.
 - Keep each note under 70 characters.
 - Use title case only when it looks natural for a merchant or proper name.
-- The three notes should be meaningfully different: cleaned, shorter, and more specific if possible.";
+- Offer as many distinct alternatives as the input reasonably allows (e.g. a cleaned version and a shorter version). It is fine to return only 1 or 2 when the description is already short and clean -- do not pad with near-duplicates just to reach 3.";
 
     public async Task<AiOperationResult<CategoryCleanupReview>> ReviewCategoryCleanupAsync(CancellationToken cancellationToken = default)
     {

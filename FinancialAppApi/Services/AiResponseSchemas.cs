@@ -85,7 +85,7 @@ internal static class AiResponseSchemas
                     ["note"] = Str("Clean transaction description, at most 70 characters."),
                     ["reason"] = Str("Very short reason for this alternative.")
                 },
-                ["note", "reason"]), minItems: 3, maxItems: 3)
+                ["note", "reason"]), minItems: 1, maxItems: 3)
         },
         ["notes"]);
 
