@@ -34,7 +34,7 @@ public partial class AiAssistantService
     // clear ("show everything", "no filters") or an explicit transfer re-inclusion ("include
     // transfers again", "with transfers").
     private static readonly Regex ClearFiltersSignal = new(
-        @"\b(?:include everything|all transactions|no filters?|remove (?:the )?filters?|without (?:any )?(?:exclusions|filters)|show (?:me )?everything|reset filters?|clear filters?)\b",
+        @"\b(?:include everything|include all categor(?:y|ies)|all transactions|all categor(?:y|ies)|any categor(?:y|ies)|regardless of categor(?:y|ies)|no filters?|remove (?:the )?filters?|without (?:any )?(?:exclusions|filters)|show (?:me )?everything|reset filters?|clear filters?)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex IncludeTransfersSignal = new(
@@ -48,13 +48,13 @@ public partial class AiAssistantService
 
     // Term(s) following an exclusion marker: "excluding rent", "without groceries", "except food".
     private static readonly Regex ExclusionTermSignal = new(
-        @"\b(?:excluding|except(?:\s+for)?|without|not including|don'?t count|don'?t include|ignore|ignoring|other than)\s+(?<term>[\p{L}][\p{L}\p{N}\s&'-]{0,40}?)(?=\b(?:and|but|from|in|on|for|last|this|previous|current|per|each)\b|[?.!,]|$)",
+        @"\b(?:excluding|except(?:\s+for)?|without|not including|don'?t count|don'?t include|ignore|ignoring|other than)\s+(?<term>[\p{L}][\p{L}\p{N}\s&'-]{0,40}?)(?=\b(?:and|but|from|in|on|for|last|this|previous|current|per|each|instead|please|too|again)\b|[?.!,]|$)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // "only <x>" / "just <x>" restrict scope to x -- but "just tell me" is a filler, not a
     // category, so a following verb/filler token is dropped.
     private static readonly Regex InclusionTermSignal = new(
-        @"\b(?:only|just)\s+(?<term>[\p{L}][\p{L}\p{N}\s&'-]{0,40}?)(?=\b(?:and|but|from|in|on|for|last|this|previous|current|per|each)\b|[?.!,]|$)",
+        @"\b(?:only|just)\s+(?<term>[\p{L}][\p{L}\p{N}\s&'-]{0,40}?)(?=\b(?:and|but|from|in|on|for|last|this|previous|current|per|each|instead|please|too|again)\b|[?.!,]|$)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex HypotheticalSignal = new(

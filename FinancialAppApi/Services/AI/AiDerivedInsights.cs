@@ -151,12 +151,33 @@ public partial class AiAssistantService
     // ---------- relative-to-prior-cycle references ----------
 
     private static readonly Regex CycleBeforeSignal = new(
-        @"\b(?:the\s+)?(?:(?:cycle|month|one)\s+)?before\s+(?:that|this|it|the\s+last\s+one)\b|\b(?:the\s+)?(?:previous|prior)\s+one\b|\bone\s+before\b",
+        @"\b(?:the\s+)?(?:(?:\d{1,2}|one|two|three|four|five|six|a)\s+)?(?:(?:cycles?|months?|one)\s+)?before\s+(?:that|this|it|the\s+last\s+one)\b" +
+        @"|\b(?:the\s+)?(?:previous|prior)\s+one\b|\bone\s+before\b|\b(?:a|one)\s+(?:cycle|month)\s+earlier\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex CycleAfterSignal = new(
-        @"\b(?:the\s+)?(?:(?:cycle|month|one)\s+)?after\s+(?:that|this|it)\b|\b(?:the\s+)?next\s+one\b|\bone\s+after\b",
+        @"\b(?:the\s+)?(?:(?:\d{1,2}|one|two|three|four|five|six|a)\s+)?(?:(?:cycles?|months?|one)\s+)?after\s+(?:that|this|it)\b" +
+        @"|\b(?:the\s+)?next\s+(?:one|cycle|month)\b|\bone\s+after\b|\b(?:a|one)\s+(?:cycle|month)\s+later\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static int RelativeCycleDistance(string message)
+    {
+        var match = Regex.Match(message,
+            @"\b(?<count>\d{1,2}|one|two|three|four|five|six|a)\s+(?:cycles?|months?|one)\s+(?:before|after|earlier|later)\b",
+            RegexOptions.IgnoreCase);
+        if (!match.Success) return 1;
+        return match.Groups["count"].Value.ToLowerInvariant() switch
+        {
+            "two" => 2,
+            "three" => 3,
+            "four" => 4,
+            "five" => 5,
+            "six" => 6,
+            "one" or "a" => 1,
+            var value when int.TryParse(value, out var count) => Math.Clamp(count, 1, 24),
+            _ => 1
+        };
+    }
 
     // "the one before/after that" is a CYCLE reference, not a transaction reference -- even though
     // it contains "that". Used to stop such a follow-up from being read as pointing at prior
@@ -183,7 +204,7 @@ public partial class AiAssistantService
             : null;
         if (direction == null) return null;
 
-        var stepped = AddMonths(anchor.Year, anchor.MonthIndex, direction.Value);
+        var stepped = AddMonths(anchor.Year, anchor.MonthIndex, direction.Value * RelativeCycleDistance(message));
         return new CycleKey(stepped.Year, stepped.MonthIndex);
     }
 

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace FinancialAppApi.Services;
@@ -45,15 +46,21 @@ public partial class AiAssistantService
     {
         if (WishlistSignal.IsMatch(message)) return QueryFamily.Wishlist;
         if (RecurringSignal.IsMatch(message)) return QueryFamily.Recurring;
-        // An explicit transactional cue in the message ("last cycle", "over 200", a transaction
-        // word) forces the transactional family even if the prior turn was wishlist/recurring --
-        // otherwise "how about last cycle" after a wishlist question would wrongly stay on wishlist.
-        if (MessageMentionsCycle(message) || TryParseAmountThreshold(message) != null || TransactionDetailSignal.IsMatch(message))
+        // A real transaction/amount cue wins. A cycle by itself does not: recurring bill status is
+        // cycle-scoped too, so "discarded bills this cycle" -> "previous cycle" must stay recurring.
+        if (TryParseAmountThreshold(message) != null || ExplicitTransactionDomainSignal.IsMatch(message))
             return QueryFamily.Transactional;
-        if (NeedsHistoryContext(message) && priorState?.LastIntent is { } intent)
+        if (NeedsHistoryContext(message) && priorState != null)
         {
-            if (intent.StartsWith("wishlist", StringComparison.Ordinal)) return QueryFamily.Wishlist;
-            if (intent.StartsWith("recurring", StringComparison.Ordinal)) return QueryFamily.Recurring;
+            var topic = priorState.LastTopic;
+            var intents = priorState.LastIntents ?? (priorState.LastIntent == null ? [] : [priorState.LastIntent]);
+            if (topic == RecurringTopic || intents.Any(i => i.StartsWith("recurring", StringComparison.Ordinal)))
+                return QueryFamily.Recurring;
+            // Wishlist data has no cycle dimension in this app. Preserve the existing, useful
+            // behavior where a cycle-only request after wishlist returns to the transaction frame.
+            if (!MessageMentionsCycle(message) &&
+                (topic == WishlistTopic || intents.Any(i => i.StartsWith("wishlist", StringComparison.Ordinal))))
+                return QueryFamily.Wishlist;
         }
         return QueryFamily.Transactional;
     }
@@ -94,7 +101,11 @@ public partial class AiAssistantService
         @"|\b(all|every|each)\s+(cycles?|months?)\b|\b(across|over|through(?:out)?|in)\s+all\b|\ball[- ]?time\b" +
         @"|\b(?:in|during|for|year)\s+(?:19|20)\d{2}\b" +                                 // in 2023
         @"|\b(last|previous|this|current)\s+year\b" +
-        $@"|(?:\b(?:cycle|month|in|for|about)\s+)(?:{MonthNamePattern})\b",                // cycle March
+        @"|\b(?:same|corresponding)\s+(?:period|cycle|month|range)\b" +
+        @"|\b(?:next|following)\s+(?:cycle|month)\b" +
+        @"|\b(?:q[1-4]|(?:first|second|third|fourth) quarter)(?:\s+(?:19|20)\d{2})?\b" +
+        $@"|(?:\b(?:cycle|month|in|for|about|during|and|vs\.?|versus|with|against)\s+)(?:{MonthNamePattern})\b" + // cycle March / and May
+        $@"|^\s*(?:(?:and|also|then|now|what about|how about|instead|just)\s+)?(?:{MonthNamePattern})(?:\s+(?:19|20)\d{{2}})?(?:\s+(?:instead|too|as well))?\s*[?!.]*\s*$", // bare "May?"
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static bool MessageMentionsCycle(string message) => MessageMentionsCycleSignal.IsMatch(message);
@@ -102,6 +113,7 @@ public partial class AiAssistantService
     private static bool MessageMentionsSearch(string message)
     {
         var extracted = ExtractLikelySearchText(message, LedgerSearchIntentNames);
+        extracted ??= ExtractStandaloneFollowUpSearchText(message);
         return !string.IsNullOrWhiteSpace(extracted) && !IsNoiseSearchTerm(extracted)
             && !LooksLikeCycleOrAmountPhrase(extracted);
     }
@@ -119,68 +131,69 @@ public partial class AiAssistantService
         var family = ResolveContinuationFamily(message, priorState);
 
         var clauses = new List<string> { message };
+        clauses.AddRange(InheritedFacetClauses(message, priorState, family));
 
-        // Wishlist/recurring continuations inherit only their own reference term, never transaction
-        // cycle/threshold/exclusions.
+        // Wishlist continuations inherit only wishlist operation/reference state, never transaction
+        // cycle/threshold/exclusions. Add the topic explicitly so an inherited wishlist intent also
+        // turns on the wishlist loader in the deterministic path.
         if (family == QueryFamily.Wishlist)
         {
+            if (!WishlistSignal.IsMatch(message)) clauses.Add("wishlist");
             if (!MessageMentionsSearch(message) && !string.IsNullOrWhiteSpace(priorState.LastWishlistReference))
                 clauses.Add(priorState.LastWishlistReference);
+            if (DetectWishlistStatus(message) == null && !string.IsNullOrWhiteSpace(priorState.LastWishlistStatus))
+                clauses.Add($"{priorState.LastWishlistStatus} wishlist items");
             return string.Join(" ", clauses);
         }
         if (family == QueryFamily.Recurring)
         {
+            if (!RecurringSignal.IsMatch(message)) clauses.Add("recurring subscriptions");
             if (!MessageMentionsSearch(message) && !string.IsNullOrWhiteSpace(priorState.LastRecurringReference))
                 clauses.Add(priorState.LastRecurringReference);
+            if (DetectRecurringStatus(message) == null && !string.IsNullOrWhiteSpace(priorState.LastRecurringStatus))
+                clauses.Add($"{priorState.LastRecurringStatus} bill status");
+            AppendCycleAndDateContext(clauses, message, priorState);
             return string.Join(" ", clauses);
         }
 
         // Transactional continuation: inherit each dimension the message doesn't name, in canonical
         // form. Cycle is resolved to a concrete yyyy-MM key so the expanded text never contains both
         // a relative word and a key.
-        if (!MessageMentionsCycle(message))
-        {
-            var relative = TryResolveRelativeToPriorCycle(message, priorState.LastResolvedCycleKeys);
-            if (relative != null)
-            {
-                clauses.Add(FormatCycleKey(relative));
-            }
-            else if (priorState.LastResolvedCycleKeys is { Count: > 0 } cycleKeys)
-            {
-                clauses.AddRange(cycleKeys.Where(IsValidCycleKey));
-            }
-            else if (!string.IsNullOrWhiteSpace(priorState.LastCycleHint))
-            {
-                // Backward-compat fallback for state that predates the resolved-cycle keys (an
-                // old client, or a turn that only produced a hint): the hint is a single relative
-                // phrase ("last cycle") resolved against the active cycle downstream -- still one
-                // unambiguous reference, since the message named no cycle of its own.
-                clauses.Add(priorState.LastCycleHint);
-            }
-        }
+        AppendCycleAndDateContext(clauses, message, priorState);
 
-        if (TryParseAmountThreshold(message) == null && FormatAmountThreshold(priorState.LastAmountThreshold) is { } thresholdText)
+        if (!WantsClearAmountFilter(message) && TryParseAmountThreshold(message) == null && FormatAmountThreshold(priorState.LastAmountThreshold) is { } thresholdText)
         {
             clauses.Add(thresholdText);
         }
 
-        if (!MessageMentionsSearch(message) && !string.IsNullOrWhiteSpace(priorState.LastSearchText))
+        if (!WantsClearSearch(message) && !MessageMentionsSearch(message) && !string.IsNullOrWhiteSpace(priorState.LastSearchText))
         {
             clauses.Add(priorState.LastSearchText);
         }
 
+        if (DetectLedgerCategory(message) == null && !string.IsNullOrWhiteSpace(priorState.LastLedgerCategory))
+            clauses.Add($"{priorState.LastLedgerCategory} ledger");
+        if (!MessageMentionsTransactionType(message) && !string.IsNullOrWhiteSpace(priorState.LastTransactionType))
+            clauses.Add(CanonicalTransactionType(priorState.LastTransactionType));
+        if (priorState.LastTargetAmount is > 0m &&
+            priorState.LastQueryFacets?.Contains("ledger_forecast", StringComparer.Ordinal) == true &&
+            !Regex.IsMatch(message, @"[\p{Sc}$]?\d[\d,]*(?:\.\d+)?"))
+            clauses.Add($"target {priorState.LastTargetAmount.Value.ToString(CultureInfo.InvariantCulture)}");
+
         // Don't re-apply a prior filter the user is now lifting ("include transfers again", "show
         // everything").
         var clearsFilters = WantsClearFilters(message);
+        var currentConstraints = ParseConstraints(message);
+        var replacesFilters = WantsReplaceFilters(message);
         if (!ExcludeTransfersSignal.IsMatch(message) && priorState.LastExcludeTransfers && !WantsIncludeTransfers(message))
         {
             clauses.Add("without transfers");
         }
-        if (!clearsFilters && priorState.LastExcludedCategories is { Count: > 0 } excluded)
+        if (!clearsFilters && !replacesFilters && priorState.LastExcludedCategories is { Count: > 0 } excluded)
         {
             clauses.AddRange(excluded.Select(category => $"excluding {category}"));
         }
-        if (!clearsFilters && priorState.LastIncludedCategories is { Count: > 0 } included)
+        if (!clearsFilters && currentConstraints.IncludedCategories.Count == 0 && priorState.LastIncludedCategories is { Count: > 0 } included)
         {
             clauses.AddRange(included.Select(category => $"only {category}"));
         }
@@ -196,7 +209,7 @@ public partial class AiAssistantService
         && ResolveContinuationFamily(message, priorState) == QueryFamily.Transactional;
 
     private static readonly Regex TransactionStateReferenceSignal = new(
-        @"\b(those|these|them|that one|this one|the one|the highest one|the previous one|the (?:first|second|third|last|pure|only) one|all of those|which of those|those ones|it|that|alone|only that|just that)\b",
+        @"\b(those|these|them|that one|this one|the one|the highest one|the previous one|the (?:first|second|third|fourth|last|former|latter|largest|biggest|smallest|cheapest|latest|earliest|most expensive|pure|only) one|all of those|both of those|either of those|which of those|those ones|it|that|alone|only that|just that|the former|the latter)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static bool UsesPriorTransactionState(string message) =>
@@ -316,6 +329,9 @@ public partial class AiAssistantService
             (distinct.Count == 1 && !distinct.Contains(AiIntent.LedgerTransactionList) ? 0.9 : 0.78);
 
         // A merchant search always needs the matching rows even if the phrasing looked aggregate.
+        // Keep aggregate questions aggregate-only even though incidental wording such as "did I"
+        // may also add LedgerTransactionList. A genuine list follow-up carries the canonical word
+        // "transactions", so ComputeSignalNeeds already raises detail for it.
         var needsTransactionDetail = s.NeedsTransactionDetail || distinct.Contains(AiIntent.LedgerMerchantSearch);
 
         var intentNames = distinct.Select(ToIntentName).ToList();
@@ -325,21 +341,28 @@ public partial class AiAssistantService
         // appended by BuildQueryText ("over 100", a yyyy-MM key) must never be recaptured as a
         // merchant/activity term. Inherited search is supplied explicitly below from the frame.
         var extractedSearch = ExtractLikelySearchText(message, intentNames);
+        if (InheritsTransactionalContext(message, priorState))
+            extractedSearch ??= ExtractStandaloneFollowUpSearchText(message);
         if (IsNoiseSearchTerm(extractedSearch) || LooksLikeCycleOrAmountPhrase(extractedSearch)) extractedSearch = null;
         // Inherit prior search/cycle only on a transactional follow-up -- a wishlist/recurring turn
         // must not drag the previous transaction search or cycle in.
         var inheritsTxn = InheritsTransactionalContext(message, priorState);
-        var searchText = extractedSearch ?? (inheritsTxn ? priorState?.LastSearchText : null);
+        var searchText = extractedSearch ?? (inheritsTxn && !WantsClearSearch(message) ? priorState?.LastSearchText : null);
         var cycleHint = ExtractConversationCycle(queryText) ?? (inheritsTxn ? priorState?.LastCycleHint : null);
         var transactionIds = UsesPriorTransactionState(message) ? priorState?.LastMatchedTransactionIds : null;
-        var wishlistItemId = s.NeedsWishlist || UsesPriorTransactionState(message) ? priorState?.LastWishlistItemId : null;
+        var needsWishlist = s.NeedsWishlist || distinct.Any(i => i is AiIntent.WishlistList or AiIntent.WishlistForecast or AiIntent.WishlistAdd or AiIntent.WishlistEdit);
+        var needsRecurring = s.NeedsRecurring || distinct.Any(i => i is AiIntent.RecurringList or AiIntent.RecurringUpcoming or AiIntent.RecurringAdd or AiIntent.RecurringEdit);
+        var needsCycleSummary = s.NeedsCycleSummary || distinct.Any(i => i is AiIntent.LedgerActivityCount or AiIntent.LedgerSpendingTotal or AiIntent.LedgerComparison or AiIntent.LedgerAnomaly or AiIntent.LedgerDuplicates or AiIntent.AllocationBalance or AiIntent.AllocationPerformance);
+        var needsBudgetTargets = s.NeedsBudgetTargets || distinct.Any(i => i is AiIntent.AllocationBalance or AiIntent.AllocationPerformance or AiIntent.WishlistForecast);
+        var needsWishlistForecast = s.NeedsWishlistForecast || distinct.Contains(AiIntent.WishlistForecast);
+        var wishlistItemId = needsWishlist || UsesPriorTransactionState(message) ? priorState?.LastWishlistItemId : null;
         // A bare continuation of a comparison ("and last cycle", "the one before that") keeps the
         // comparison scope so the follow-up is still rendered side-by-side.
         var needsCycleComparison = s.NeedsCycleComparison || (inheritsTxn && priorState?.LastComparison == true);
 
         var plan = BuildQueryPlan(
-            distinct, needsTransactionDetail, s.NeedsCycleSummary, needsCycleComparison,
-            s.NeedsWishlist, s.NeedsWishlistForecast, s.NeedsRecurring, s.NeedsBudgetTargets,
+            distinct, needsTransactionDetail, needsCycleSummary, needsCycleComparison,
+            needsWishlist, needsWishlistForecast, needsRecurring, needsBudgetTargets,
             searchText, cycleHint, queryText, transactionIds, wishlistItemId);
         return new AiIntentPlan(
             distinct,
