@@ -44,7 +44,11 @@ public sealed record AiConversationState(
     string? LastTransactionType = null,
     string? LastExactDate = null,
     bool LastComparison = false,
-    string? LastRecurringReference = null);
+    string? LastRecurringReference = null,
+    // The full resolved intent set of the prior turn. LastIntent keeps just the primary intent for
+    // back-compat; this list lets a modifier-only follow-up ("how about previous cycle") re-run the
+    // same analysis (e.g. anomaly/duplicate detection) rather than collapsing to a plain total.
+    IReadOnlyList<string>? LastIntents = null);
 
 public sealed record AiChatMessage(string Role, string Content);
 public sealed record AiChatRequest(string Message, IReadOnlyList<AiChatMessage>? History, AiConversationState? State = null);
@@ -488,7 +492,13 @@ public partial class AiAssistantService
             priorState?.LastTransactionType,
             priorState?.LastExactDate,
             priorState?.LastComparison ?? false,
-            priorState?.LastRecurringReference);
+            priorState?.LastRecurringReference,
+            // This turn's resolved intents become the frame's intent set (BuildContextAsync leaves
+            // this as-is); a non-general set here is what a later follow-up inherits its analysis
+            // from.
+            intents.Where(i => !i.Equals("general", StringComparison.OrdinalIgnoreCase)).ToList() is { Count: > 0 } resolvedIntents
+                ? resolvedIntents
+                : priorState?.LastIntents);
     }
 
     private static string? ExtractConversationCycle(string? text)
@@ -589,6 +599,12 @@ public partial class AiAssistantService
         var exactDate = DateOnly.TryParseExact(state.LastExactDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _)
             ? state.LastExactDate
             : null;
+        var intents = state.LastIntents?
+            .Where(i => !string.IsNullOrWhiteSpace(i) && KnownIntents.Contains(i))
+            .Select(i => i.ToLowerInvariant())
+            .Distinct()
+            .Take(6)
+            .ToList();
         return new AiConversationState(
             intent,
             Clamp(state.LastSearchText),
@@ -607,7 +623,8 @@ public partial class AiAssistantService
             transactionType,
             exactDate,
             state.LastComparison,
-            Clamp(state.LastRecurringReference));
+            Clamp(state.LastRecurringReference),
+            intents is { Count: > 0 } ? intents : null);
     }
 
     private static readonly Regex CycleKeyPattern = new(@"^\d{4}-(0[1-9]|1[0-2])$", RegexOptions.Compiled);

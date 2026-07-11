@@ -58,6 +58,25 @@ public partial class AiAssistantService
         return QueryFamily.Transactional;
     }
 
+    // "Special analysis" intents whose result is the kind of question being asked (not a default
+    // total/list). A modifier-only follow-up ("how about previous cycle") must keep running these.
+    private static bool IsAnalyticalIntent(AiIntent intent) => intent is
+        AiIntent.LedgerAnomaly or AiIntent.LedgerDuplicates or AiIntent.LedgerActivityCount or
+        AiIntent.LedgerComparison or AiIntent.AllocationPerformance;
+
+    // On a transactional continuation that introduced no analysis of its own, re-apply the prior
+    // turn's analytical intents to the new scope (fixes "unusual spending this cycle" -> "how about
+    // previous cycle" collapsing to a plain outflow total).
+    private static List<AiIntent> CarryAnalyticalIntents(List<AiIntent> current, string message, AiConversationState? priorState)
+    {
+        if (!InheritsTransactionalContext(message, priorState) || priorState?.LastIntents is not { } priorIntentNames)
+            return current;
+        if (current.Any(IsAnalyticalIntent)) return current;
+        var carried = ParseIntents(priorIntentNames).Where(IsAnalyticalIntent).ToList();
+        if (carried.Count == 0) return current;
+        return current.Concat(carried).Distinct().ToList();
+    }
+
     private static readonly string[] LedgerSearchIntentNames =
         ["ledger.merchant_search", "ledger.activity_count", "ledger.spending_total", "ledger.transaction_list"];
 
@@ -292,6 +311,7 @@ public partial class AiAssistantService
                 distinct = inheritedIntents.ToList();
             }
         }
+        distinct = CarryAnalyticalIntents(distinct, message, priorState);
         var confidence = distinct.Contains(AiIntent.General) ? 0.2 :
             (distinct.Count == 1 && !distinct.Contains(AiIntent.LedgerTransactionList) ? 0.9 : 0.78);
 
@@ -359,7 +379,7 @@ public partial class AiAssistantService
         };
         var s = ComputeSignalNeeds(baseQueryText.ToLowerInvariant(), constraints);
 
-        var typedIntents = ParseIntents(classification.Intents);
+        var typedIntents = CarryAnalyticalIntents(ParseIntents(classification.Intents).ToList(), message, priorState);
         bool Has(AiIntent i) => typedIntents.Contains(i);
         var queryText = string.Join(" ", new[] { baseQueryText, classification.SearchText, classification.CycleHint,
                 classification.Date?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) }
@@ -391,7 +411,7 @@ public partial class AiAssistantService
             classification.Confidence,
             true,
             plan,
-            ResolveConversationState(message, classification.Intents, classification.SearchText, classification.CycleHint, priorState),
+            ResolveConversationState(message, typedIntents.Select(ToIntentName).ToList(), classification.SearchText, classification.CycleHint, priorState),
             constraints,
             new AiIntentEntities(searchText, cycleHint, classification.Date, classification.Category,
                 classification.LedgerCategory, classification.Amount, wishlistItemId, classification.WishlistReference,

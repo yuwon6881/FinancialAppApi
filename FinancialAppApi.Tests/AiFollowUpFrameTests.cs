@@ -356,6 +356,38 @@ public class AiFollowUpFrameTests
         Assert.Null(t2.Response.State!.LastExcludedCategories);
     }
 
+    [Fact]
+    public async Task AnalysisTypeCarriesToNextCycle_UnusualSpendingFollowUp()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        // Both cycles: a cluster of small spends plus one clear outlier, so anomaly detection fires.
+        context.Transactions.AddRange(
+            Tx("j1", new DateTime(2026, 7, 2, 12, 0, 0, DateTimeKind.Utc), "Coffee", -10),
+            Tx("j2", new DateTime(2026, 7, 3, 12, 0, 0, DateTimeKind.Utc), "Lunch", -12),
+            Tx("j3", new DateTime(2026, 7, 4, 12, 0, 0, DateTimeKind.Utc), "Snack", -8),
+            Tx("j4", new DateTime(2026, 7, 5, 12, 0, 0, DateTimeKind.Utc), "Bus", -9),
+            Tx("j-out", new DateTime(2026, 7, 6, 12, 0, 0, DateTimeKind.Utc), "Jul Splurge", -200),
+            Tx("m1", new DateTime(2026, 6, 2, 12, 0, 0, DateTimeKind.Utc), "Coffee", -11),
+            Tx("m2", new DateTime(2026, 6, 3, 12, 0, 0, DateTimeKind.Utc), "Lunch", -13),
+            Tx("m3", new DateTime(2026, 6, 4, 12, 0, 0, DateTimeKind.Utc), "Snack", -7),
+            Tx("m4", new DateTime(2026, 6, 5, 12, 0, 0, DateTimeKind.Utc), "Bus", -10),
+            Tx("m-out", new DateTime(2026, 6, 6, 12, 0, 0, DateTimeKind.Utc), "Jun Splurge", -300));
+        await context.SaveChangesAsync();
+        var (service, handler) = NewService(context);
+
+        var t1 = await service.ChatAsync(new AiChatRequest("What unusual spending happened this cycle?", []));
+        Assert.Contains("anomalies", handler.UserContent);
+
+        // The follow-up only changes the cycle -> the anomaly analysis must re-run on June, not
+        // collapse into a plain outflow total.
+        var t2 = await service.ChatAsync(new AiChatRequest("how about previous cycle", [], t1.Response.State));
+
+        Assert.Contains("anomalies", handler.UserContent);
+        Assert.Contains("\"month\":\"Jun\"", handler.UserContent);
+        Assert.Contains("Jun Splurge", handler.UserContent);
+    }
+
     private static (AiAssistantService Service, CapturingHandler Handler) NewService(AppDbContext context)
     {
         var handler = new CapturingHandler();
