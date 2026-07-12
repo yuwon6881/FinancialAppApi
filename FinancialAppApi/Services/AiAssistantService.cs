@@ -211,7 +211,11 @@ public partial class AiAssistantService
                 new AiGenerationOptions(
                     Feature: "chat",
                     Temperature: 0.15,
-                    MaxOutputTokens: intentPlan.QueryPlan.NeedsCycleComparison ? 1100 : 800,
+                    // Gemini 3 thinking tokens are drawn from this same budget, so a low ceiling
+                    // let a normal analytic reply plus its thinking overflow into MAX_TOKENS (a 503
+                    // "response too long and got cut off"). Give the visible JSON reply real
+                    // headroom above the thinking it competes with.
+                    MaxOutputTokens: intentPlan.QueryPlan.NeedsCycleComparison ? 1600 : 1200,
                     SystemInstruction: systemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.Chat(context.Categories),
                     ThinkingLevel: intentPlan.QueryPlan.NeedsCycleComparison ? "medium" : "low",

@@ -148,6 +148,75 @@ public partial class AiAssistantService
         };
     }
 
+    // ---------- superlative "biggest/smallest transaction" ----------
+
+    // A superlative extreme question about a single record ("biggest transaction", "largest
+    // spending", "most expensive purchase", "smallest/cheapest charge", "biggest deposit"). These
+    // words also live in TransactionDetailSignal so they already raise the detail sample; this
+    // signal is what turns on the exact server-side ranking below.
+    private static readonly Regex SuperlativeExtremeSignal = new(
+        @"\b(biggest|largest|highest|greatest|top|most expensive|priciest|dearest|smallest|cheapest|lowest|least expensive)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // "smallest / cheapest / lowest" flips the ranking order from largest-first to smallest-first.
+    private static readonly Regex SmallestExtremeSignal = new(
+        @"\b(smallest|cheapest|lowest|least expensive)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Words that make the question about income rather than spending, so the primary direction hint
+    // is "inflow". Absent these, a bare "biggest transaction" defaults to spending (outflow), which
+    // is what users almost always mean.
+    private static readonly Regex InflowDirectionSignal = new(
+        @"\b(income|incomes|earning|earnings|earned|deposit|deposits|deposited|paycheck|paychecks|salary|salaries|inflow|inflows|received|revenue)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    internal static bool WantsTopTransactions(string? text) =>
+        !string.IsNullOrWhiteSpace(text) && SuperlativeExtremeSignal.IsMatch(text);
+
+    // Exact server-side ranking of the loaded rows so a superlative question is answered from a
+    // single authoritative record rather than the model eyeballing a mixed sample. Transfers are
+    // excluded (they are neither spending nor income); outflows (spending) and inflows (income) are
+    // ranked separately so "biggest spending" can never surface an inflow or a transfer, and amount
+    // is the magnitude. Suppressed in sensitive mode by the caller, like every other amount metric.
+    internal static object BuildTopTransactions(IReadOnlyList<AiTransactionRow> transactions, string queryText)
+    {
+        var smallest = SmallestExtremeSignal.IsMatch(queryText);
+
+        List<object> Rank(Func<AiTransactionRow, bool> filter)
+        {
+            var ranked = transactions
+                .Where(t => !IsTransfer(t))
+                .Where(filter)
+                .Select(t => new { Row = t, Magnitude = Math.Abs(t.Amount) });
+            ranked = smallest
+                ? ranked.OrderBy(x => x.Magnitude)
+                : ranked.OrderByDescending(x => x.Magnitude);
+            return ranked
+                .Take(10)
+                .Select(x => (object)new
+                {
+                    x.Row.Id,
+                    x.Row.Date,
+                    x.Row.Description,
+                    x.Row.Category,
+                    x.Row.LedgerCategory,
+                    amount = x.Magnitude
+                })
+                .ToList();
+        }
+
+        return new
+        {
+            direction = InflowDirectionSignal.IsMatch(queryText) ? "inflow" : "outflow",
+            order = smallest ? "smallest" : "largest",
+            note = "Transfers excluded. outflows are spending, inflows are income, amount is the magnitude. " +
+                "Use outflows for spending/expense/purchase/\"most expensive\" questions (outflows[0] is the answer) " +
+                "and inflows for income/deposit questions. Never report an inflow or a transfer as spending.",
+            outflows = Rank(t => t.Amount < 0),
+            inflows = Rank(t => t.Amount > 0)
+        };
+    }
+
     // ---------- relative-to-prior-cycle references ----------
 
     private static readonly Regex CycleBeforeSignal = new(

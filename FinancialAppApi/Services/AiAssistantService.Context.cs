@@ -510,6 +510,17 @@ public partial class AiAssistantService
             metrics["thresholdMatches"] = BuildThresholdMatches(
                 transactions, threshold, sampleWasComplete: transactions.Count < MaxTransactionsPerRange);
         }
+        // Superlative single-record ranking ("biggest transaction", "largest spending", "smallest
+        // purchase", "biggest deposit"). Exact over the loaded rows, transfers excluded, spending
+        // and income ranked separately -- so the model never has to eyeball a mixed sample (which
+        // let a transfer or inflow surface as the "biggest spending"). Amount-based, so suppressed
+        // in sensitive mode like the other magnitude metrics.
+        if (!sensitiveMode
+            && (queryPlan.NeedsTransactionDetail || queryPlan.NeedsCycleSummary)
+            && WantsTopTransactions(queryPlan.QueryText))
+        {
+            metrics["topTransactions"] = BuildTopTransactions(transactions, queryPlan.QueryText);
+        }
         if (Regex.IsMatch(queryPlan.QueryText, @"\b(which|what) day\b.*\b(most|highest|largest)\b|\bmost\b.*\b(day|daily)\b", RegexOptions.IgnoreCase))
         {
             var daily = transactions.Where(t => !IsTransfer(t))
