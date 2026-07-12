@@ -38,6 +38,23 @@ public class TransactionCategoryServiceTests
     }
 
     [Fact]
+    public async Task CreateCategoryAsync_DedupesReplayOnClientId()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.TransactionCategories.Add(new TransactionCategory { Id = "cat-fixed", Name = "Groceries" });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        // Replay of the same offline create (same client id) resolves to the existing row as
+        // success rather than a duplicate-name failure for the client's own pending write.
+        var result = await service.CreateCategoryAsync(new TransactionCategory { Id = "cat-fixed", Name = "Groceries" });
+
+        Assert.Equal(CreateTransactionCategoryStatus.Existing, result.Status);
+        Assert.Equal("cat-fixed", result.Category!.Id);
+        Assert.Equal(1, await context.TransactionCategories.CountAsync());
+    }
+
+    [Fact]
     public async Task CreateCategoryAsync_RejectsDuplicateName()
     {
         await using var context = TestHelpers.NewInMemoryContext();

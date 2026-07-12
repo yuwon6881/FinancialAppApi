@@ -35,7 +35,59 @@ public class RecurringPaymentServiceTests
     }
 
     [Fact]
+    public async Task CreateRecurringPaymentAsync_DedupesReplayOnClientId()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        await context.SaveChangesAsync();
+        var service = new RecurringPaymentService(context);
+
+        var first = await service.CreateRecurringPaymentAsync(NewPayment("rec-1", "Internet"));
+        // Replay of the same offline create (e.g. lost-response retry): same client id must
+        // return the existing row as success, not throw a duplicate-PK 500.
+        var second = await service.CreateRecurringPaymentAsync(NewPayment("rec-1", "Internet"));
+
+        Assert.Equal(CreateRecurringPaymentStatus.Created, first.Status);
+        Assert.Equal(CreateRecurringPaymentStatus.Existing, second.Status);
+        Assert.Equal(1, await context.RecurringPayments.CountAsync());
+    }
+
+    [Fact]
     public async Task ToggleActiveAsync_TogglesExistingPayment()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", "Internet", active: true));
+        await context.SaveChangesAsync();
+        var service = new RecurringPaymentService(context);
+
+        var payment = await service.ToggleActiveAsync("rec-1");
+
+        Assert.NotNull(payment);
+        Assert.False(payment.Active);
+    }
+
+    [Fact]
+    public async Task ToggleActiveAsync_SetsAbsoluteStateIdempotently()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", "Internet", active: true));
+        await context.SaveChangesAsync();
+        var service = new RecurringPaymentService(context);
+
+        // The offline outbox coalesces multiple toggles into one op carrying the final desired
+        // state and may replay it on retry. Sending the absolute state must be idempotent: two
+        // calls with active:false leave it false (a relative flip would have flipped it back on).
+        var first = await service.ToggleActiveAsync("rec-1", active: false);
+        var second = await service.ToggleActiveAsync("rec-1", active: false);
+
+        Assert.NotNull(first);
+        Assert.False(first.Active);
+        Assert.NotNull(second);
+        Assert.False(second.Active);
+    }
+
+    [Fact]
+    public async Task ToggleActiveAsync_FallsBackToRelativeFlipWithoutState()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.RecurringPayments.Add(NewPayment("rec-1", "Internet", active: true));

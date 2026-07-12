@@ -108,7 +108,8 @@ public class WishlistController : ControllerBase
             PurchasedAt = dto.PurchasedAt,
             PurchaseTransactionId = dto.PurchaseTransactionId,
             CreatedAt = dto.CreatedAt == default ? DateTime.UtcNow : dto.CreatedAt,
-            IsActive = dto.IsActive
+            IsActive = dto.IsActive,
+            ClientKey = dto.ClientKey
         };
     }
 
@@ -150,6 +151,7 @@ public class WishlistItemMutationDto
     public string? PurchaseTransactionId { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public bool IsActive { get; set; }
+    public string? ClientKey { get; set; }
 }
 
 public class WishlistItemDto

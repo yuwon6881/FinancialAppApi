@@ -46,6 +46,18 @@ public class WishlistService
 
     public async Task<WishlistItemResult> CreateWishlistItemAsync(WishlistItem item)
     {
+        // Idempotency: the offline outbox may replay a create on retry (e.g. the write committed
+        // but the response was lost). The int PK is server-generated, so dedupe on the client-supplied
+        // key instead — returning the already-created row rather than inserting a duplicate.
+        if (!string.IsNullOrWhiteSpace(item.ClientKey))
+        {
+            var existing = await _context.WishlistItems.FirstOrDefaultAsync(w => w.ClientKey == item.ClientKey);
+            if (existing != null)
+            {
+                return new WishlistItemResult(WishlistMutationStatus.Success, existing);
+            }
+        }
+
         var validation = ValidateItem(item);
         if (validation != null)
         {

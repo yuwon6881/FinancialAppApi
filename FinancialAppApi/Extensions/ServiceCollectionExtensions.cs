@@ -57,30 +57,58 @@ public static class ServiceCollectionExtensions
         IConfiguration configuration)
     {
         var requestsPerMinute = configuration.GetValue("Ai:RequestsPerMinute", 20);
+        // OCR receipt scans each trigger a Gemini vision call (pricier than a chat turn) and write
+        // ~13 MB of base64 to Postgres, so cap them harder than chat by default.
+        var ocrRequestsPerMinute = configuration.GetValue("Ocr:RequestsPerMinute", 10);
         services.AddRateLimiter(options =>
         {
-            options.AddPolicy("ai", httpContext =>
+            static string PartitionKeyFor(HttpContext httpContext)
             {
                 var authorization = httpContext.Request.Headers.Authorization.ToString();
-                var partitionKey = string.IsNullOrWhiteSpace(authorization)
+                return string.IsNullOrWhiteSpace(authorization)
                     ? httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous"
                     : authorization;
-                return RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ => new FixedWindowRateLimiterOptions
+            }
+
+            options.AddPolicy("ai", httpContext =>
+                RateLimitPartition.GetFixedWindowLimiter(PartitionKeyFor(httpContext), _ => new FixedWindowRateLimiterOptions
                 {
                     PermitLimit = Math.Max(1, requestsPerMinute),
                     Window = TimeSpan.FromMinutes(1),
                     QueueLimit = 0,
                     AutoReplenishment = true
-                });
-            });
+                }));
+
+            // Partition on "ocr:"+key so an OCR burst doesn't consume the same window as chat.
+            options.AddPolicy("ocr", httpContext =>
+                RateLimitPartition.GetFixedWindowLimiter("ocr:" + PartitionKeyFor(httpContext), _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = Math.Max(1, ocrRequestsPerMinute),
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                    AutoReplenishment = true
+                }));
+
             options.OnRejected = async (context, cancellationToken) =>
             {
                 context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
-                await context.HttpContext.Response.WriteAsJsonAsync(new
+                // The AI chat client expects a {reply, actions} shape even on rejection; other
+                // endpoints (OCR) get a plain {message}.
+                if (context.HttpContext.Request.Path.StartsWithSegments("/api/ai"))
                 {
-                    reply = "Ask AI is receiving too many requests. Please wait a moment and try again.",
-                    actions = Array.Empty<object>()
-                }, cancellationToken);
+                    await context.HttpContext.Response.WriteAsJsonAsync(new
+                    {
+                        reply = "Ask AI is receiving too many requests. Please wait a moment and try again.",
+                        actions = Array.Empty<object>()
+                    }, cancellationToken);
+                }
+                else
+                {
+                    await context.HttpContext.Response.WriteAsJsonAsync(new
+                    {
+                        message = "Too many requests. Please wait a moment and try again."
+                    }, cancellationToken);
+                }
             };
         });
 
