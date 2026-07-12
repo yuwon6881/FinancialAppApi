@@ -42,6 +42,7 @@ if (app.Environment.IsDevelopment())
 app.UseCors("AllowFrontend");
 app.UseRateLimiter();
 app.UseAuthorization();
+app.MapGet("/api/ping", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
 app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
 {
     Predicate = _ => false
