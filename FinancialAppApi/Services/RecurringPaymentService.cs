@@ -19,6 +19,7 @@ public sealed record UpdateRecurringPaymentResult(
 public enum CreateRecurringPaymentStatus
 {
     Created,
+    Existing,
     InvalidCategory
 }
 
@@ -43,6 +44,19 @@ public class RecurringPaymentService
 
     public async Task<CreateRecurringPaymentResult> CreateRecurringPaymentAsync(RecurringPayment payment)
     {
+        // Idempotency: the offline outbox sends a client-generated id ("rec-...") and may replay
+        // the same create on retry (e.g. the write committed but the response was lost during a
+        // Cloud Run cold start). Return the existing row instead of inserting a duplicate PK
+        // (which would 500) so a lost-response retry resolves as success rather than a false failure.
+        if (!string.IsNullOrWhiteSpace(payment.Id))
+        {
+            var existing = await _context.RecurringPayments.FirstOrDefaultAsync(p => p.Id == payment.Id);
+            if (existing != null)
+            {
+                return new CreateRecurringPaymentResult(CreateRecurringPaymentStatus.Existing, existing);
+            }
+        }
+
         if (!await CategoryExistsAsync(payment.Category))
         {
             return new CreateRecurringPaymentResult(
@@ -55,7 +69,7 @@ public class RecurringPaymentService
         return new CreateRecurringPaymentResult(CreateRecurringPaymentStatus.Created, payment);
     }
 
-    public async Task<RecurringPayment?> ToggleActiveAsync(string id)
+    public async Task<RecurringPayment?> ToggleActiveAsync(string id, bool? active = null)
     {
         var payment = await _context.RecurringPayments.FindAsync(id);
         if (payment == null)
@@ -63,8 +77,17 @@ public class RecurringPaymentService
             return null;
         }
 
-        payment.Active = !payment.Active;
-        await _context.SaveChangesAsync();
+        // Prefer the absolute desired state sent by the client. The offline outbox coalesces
+        // multiple toggles into a single op carrying the final {active} value and may replay it
+        // on retry, so a relative flip here would drift the persisted state (even-count coalescing
+        // or a lost-response retry would land on the wrong value). Fall back to a relative flip only
+        // for legacy callers that send no body.
+        var desired = active ?? !payment.Active;
+        if (payment.Active != desired)
+        {
+            payment.Active = desired;
+            await _context.SaveChangesAsync();
+        }
 
         return payment;
     }

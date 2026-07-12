@@ -35,6 +35,28 @@ public class WishlistServiceTests
     }
 
     [Fact]
+    public async Task CreateWishlistItemAsync_DedupesReplayOnClientKey()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = NewService(context);
+
+        var first = NewItem(0, "Camera", active: false);
+        first.ClientKey = "op-abc";
+        var firstResult = await service.CreateWishlistItemAsync(first);
+
+        // Replay of the same offline create (e.g. lost-response retry): same client key must
+        // resolve to the already-created row, not insert a duplicate.
+        var second = NewItem(0, "Camera", active: false);
+        second.ClientKey = "op-abc";
+        var secondResult = await service.CreateWishlistItemAsync(second);
+
+        Assert.Equal(WishlistMutationStatus.Success, firstResult.Status);
+        Assert.Equal(WishlistMutationStatus.Success, secondResult.Status);
+        Assert.Equal(firstResult.Item!.Id, secondResult.Item!.Id);
+        Assert.Equal(1, await context.WishlistItems.CountAsync());
+    }
+
+    [Fact]
     public async Task UpdateWishlistItemAsync_ActivatesItemAndDeactivatesOtherItems()
     {
         await using var context = TestHelpers.NewInMemoryContext();

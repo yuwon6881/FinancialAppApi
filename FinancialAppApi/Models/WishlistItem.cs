@@ -30,5 +30,11 @@ namespace FinancialAppApi.Models
 
         [Required]
         public bool IsActive { get; set; } = false; // To track the single main active wishlist item
+
+        // Client-supplied idempotency key for offline creates. The int PK is server-generated,
+        // so (unlike transactions) there is no client id to dedupe on; this stable key lets a
+        // lost-response retry resolve to the already-created row instead of inserting a duplicate.
+        [StringLength(64)]
+        public string? ClientKey { get; set; }
     }
 }

@@ -8,6 +8,7 @@ namespace FinancialAppApi.Services;
 public enum CreateTransactionCategoryStatus
 {
     Created,
+    Existing,
     NameRequired,
     DuplicateName,
     ReservedName
@@ -71,6 +72,19 @@ public class TransactionCategoryService
             return new CreateTransactionCategoryResult(
                 CreateTransactionCategoryStatus.NameRequired,
                 Message: "Category name is required.");
+        }
+
+        // Idempotency: the offline outbox sends a client-generated id ("cat-...") and may replay
+        // the same create on retry. If that exact row already exists, return it as success rather
+        // than reporting a duplicate-name failure for the client's own not-yet-acknowledged write.
+        if (!string.IsNullOrWhiteSpace(category.Id))
+        {
+            var existingById = await _context.TransactionCategories
+                .FirstOrDefaultAsync(c => c.Id == category.Id);
+            if (existingById != null)
+            {
+                return new CreateTransactionCategoryResult(CreateTransactionCategoryStatus.Existing, existingById);
+            }
         }
 
         var exists = await _context.TransactionCategories

@@ -50,15 +50,20 @@ public class RecurringPaymentsController : ControllerBase
         {
             return BadRequest(new { message = result.Message });
         }
+        if (result.Status == CreateRecurringPaymentStatus.Existing)
+        {
+            // Idempotent replay of an already-committed create — return the stored row as success.
+            return Ok(MapToDto(result.Payment!));
+        }
 
         return CreatedAtAction(nameof(GetRecurringPayments), new { id = payment.Id }, MapToDto(payment));
     }
 
     // PUT: api/recurring-payments/{id}/toggle
     [HttpPut("{id}/toggle")]
-    public async Task<IActionResult> ToggleActive(string id)
+    public async Task<IActionResult> ToggleActive(string id, [FromBody] ToggleActiveDto? dto = null)
     {
-        var payment = await _recurringPaymentService.ToggleActiveAsync(id);
+        var payment = await _recurringPaymentService.ToggleActiveAsync(id, dto?.Active);
         if (payment == null)
         {
             return NotFound();
@@ -134,6 +139,11 @@ public class RecurringPaymentsController : ControllerBase
             EndDate = rp.EndDate
         };
     }
+}
+
+public class ToggleActiveDto
+{
+    public bool? Active { get; set; }
 }
 
 public class RecurringPaymentDto

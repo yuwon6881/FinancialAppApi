@@ -1,6 +1,7 @@
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace FinancialAppApi.Controllers;
 
@@ -29,6 +30,7 @@ public class OcrController : ControllerBase
     }
 
     [AuthorizeToken]
+    [EnableRateLimiting("ocr")]
     [HttpPost("scan-receipt/jobs")]
     [RequestSizeLimit(10 * 1024 * 1024)]
     public async Task<IActionResult> CreateScanJobEndpoint(IFormFile? image)

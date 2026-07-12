@@ -96,6 +96,11 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
             entity.Property(e => e.IsActive).HasDefaultValue(false);
             entity.HasIndex(e => e.PurchaseTransactionId);
+            // Unique when present so a replayed offline create dedupes to the same row; the
+            // filter keeps pre-existing rows (null ClientKey) exempt from the uniqueness constraint.
+            entity.HasIndex(e => e.ClientKey)
+                .IsUnique()
+                .HasFilter("\"ClientKey\" IS NOT NULL");
         });
 
         modelBuilder.Entity<ReceiptScanJob>(entity =>

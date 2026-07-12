@@ -38,6 +38,11 @@ public class TransactionCategoriesController : ControllerBase
     public async Task<ActionResult<TransactionCategory>> PostCategory(TransactionCategory category)
     {
         var result = await _categoryService.CreateCategoryAsync(category);
+        if (result.Status == CreateTransactionCategoryStatus.Existing)
+        {
+            // Idempotent replay of an already-committed create — return the stored row as success.
+            return Ok(result.Category);
+        }
         if (result.Status != CreateTransactionCategoryStatus.Created)
         {
             return BadRequest(new { message = result.Message });
