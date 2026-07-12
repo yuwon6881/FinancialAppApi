@@ -6,8 +6,18 @@ using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
 
+public sealed record TransactionProjection(
+    string Id,
+    DateTime Date,
+    string Description,
+    string Category,
+    string LedgerCategory,
+    decimal Amount,
+    string? RecurringPaymentId,
+    int? WishlistItemId);
+
 public sealed record TransactionListResult(
-    IReadOnlyList<Transaction> Items,
+    IReadOnlyList<TransactionProjection> Items,
     int? Total = null,
     int? Page = null,
     int? PageSize = null);
@@ -34,7 +44,8 @@ public class TransactionQueryService
         string? category = null,
         string? txType = null,
         string? startDate = null,
-        string? endDate = null)
+        string? endDate = null,
+        CancellationToken cancellationToken = default)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 500);
@@ -42,26 +53,46 @@ public class TransactionQueryService
         if (all)
         {
             var query = ApplyAllFilters(_context.Transactions.AsNoTracking(), search, ledgerCategory, category, txType, startDate, endDate);
-            var total = await query.CountAsync();
+            var total = await query.CountAsync(cancellationToken);
 
             var txs = await query
                 .OrderByDescending(t => t.Date)
                 .ThenByDescending(t => t.Id)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
-                .ToListAsync();
+                .Select(t => new TransactionProjection(
+                    t.Id,
+                    t.Date,
+                    t.Description,
+                    t.Category,
+                    t.LedgerCategory,
+                    t.Amount,
+                    t.RecurringPaymentId,
+                    t.WishlistItemId
+                ))
+                .ToListAsync(cancellationToken);
 
             return new TransactionListResult(txs, total, page, pageSize);
         }
 
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
         if (setting == null)
         {
             var txs = await _context.Transactions
                 .AsNoTracking()
                 .OrderByDescending(t => t.Date)
                 .ThenByDescending(t => t.Id)
-                .ToListAsync();
+                .Select(t => new TransactionProjection(
+                    t.Id,
+                    t.Date,
+                    t.Description,
+                    t.Category,
+                    t.LedgerCategory,
+                    t.Amount,
+                    t.RecurringPaymentId,
+                    t.WishlistItemId
+                ))
+                .ToListAsync(cancellationToken);
             return new TransactionListResult(txs);
         }
 
@@ -80,19 +111,29 @@ public class TransactionQueryService
             .Where(t => t.LedgerCategory.ToUpper() != "DISCARDED" && t.Date >= cycleStartDate && t.Date < cycleEndExclusive)
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.Id)
-            .ToListAsync();
+            .Select(t => new TransactionProjection(
+                t.Id,
+                t.Date,
+                t.Description,
+                t.Category,
+                t.LedgerCategory,
+                t.Amount,
+                t.RecurringPaymentId,
+                t.WishlistItemId
+            ))
+            .ToListAsync(cancellationToken);
 
         return new TransactionListResult(filtered);
     }
 
-    public async Task<Transaction?> GetTransactionByIdAsync(string id)
+    public async Task<Transaction?> GetTransactionByIdAsync(string id, CancellationToken cancellationToken = default)
     {
         return await _context.Transactions
             .AsNoTracking()
-            .FirstOrDefaultAsync(t => t.Id == id && t.LedgerCategory != "Discarded");
+            .FirstOrDefaultAsync(t => t.Id == id && t.LedgerCategory != "Discarded", cancellationToken);
     }
 
-    public async Task<List<AutocompleteSuggestion>> GetAutocompleteSuggestionsAsync()
+    public async Task<List<AutocompleteSuggestion>> GetAutocompleteSuggestionsAsync(CancellationToken cancellationToken = default)
     {
         var recentTxs = await _context.Transactions
             .Where(t => t.LedgerCategory != "Discarded"
@@ -102,7 +143,7 @@ public class TransactionQueryService
             .ThenByDescending(t => t.Id)
             .Take(1000)
             .Select(t => new { t.Description, t.Category, t.LedgerCategory, t.Amount })
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         var suggestions = new List<AutocompleteSuggestion>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -134,14 +175,15 @@ public class TransactionQueryService
         string? category = null,
         string? txType = null,
         string? startDate = null,
-        string? endDate = null)
+        string? endDate = null,
+        CancellationToken cancellationToken = default)
     {
         var query = ApplyAllFilters(_context.Transactions.AsNoTracking(), search, ledgerCategory, category, txType, startDate, endDate);
         var rows = await query
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.Id)
             .Select(t => new { t.Date, t.Description, t.Category, t.LedgerCategory, t.Amount })
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         var sb = new StringBuilder();
         sb.AppendLine("Date,Description,Category,Ledger Category,Debit (Outflow),Credit (Inflow)");

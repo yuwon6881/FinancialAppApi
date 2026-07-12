@@ -11,10 +11,12 @@ namespace FinancialAppApi.Controllers;
 public class WebAuthnController : ControllerBase
 {
     private readonly WebAuthnService _webAuthnService;
+    private readonly AuthCookieService _authCookieService;
 
-    public WebAuthnController(WebAuthnService webAuthnService)
+    public WebAuthnController(WebAuthnService webAuthnService, AuthCookieService authCookieService)
     {
         _webAuthnService = webAuthnService;
+        _authCookieService = authCookieService;
     }
 
     private string? Username => HttpContext.Items["Username"] as string;
@@ -61,8 +63,9 @@ public class WebAuthnController : ControllerBase
 
     // POST api/auth/webauthn/login/verify
     [HttpPost("login/verify")]
-    public async Task<IActionResult> LoginVerify([FromBody] LoginVerifyRequest request) =>
-        await _webAuthnService.LoginVerifyAsync(
+    public async Task<IActionResult> LoginVerify([FromBody] LoginVerifyRequest request)
+    {
+        var result = await _webAuthnService.LoginVerifyAsync(
             request.ChallengeId,
             request.Credential,
             request.DeviceId,
@@ -71,6 +74,19 @@ public class WebAuthnController : ControllerBase
             Request.Headers["User-Agent"].ToString(),
             RequestOrigin,
             FallbackOrigin);
+
+        if (result is OkObjectResult okResult && okResult.Value is not null)
+        {
+            var value = okResult.Value;
+            var tokenProp = value.GetType().GetProperty("token")?.GetValue(value) as string;
+            if (!string.IsNullOrEmpty(tokenProp))
+            {
+                if (!Request.IsNativeClient()) _authCookieService.IssueSessionCookies(Response, tokenProp);
+            }
+        }
+
+        return result;
+    }
 
     // POST api/auth/webauthn/assert/options
     [AuthorizeToken]

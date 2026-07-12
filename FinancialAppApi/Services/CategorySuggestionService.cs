@@ -5,6 +5,7 @@ using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using FinancialAppApi.Diagnostics;
 
 namespace FinancialAppApi.Services;
 
@@ -118,8 +119,10 @@ public sealed class CategorySuggestionService
         ]);
         if (_cache.TryGetValue(cacheKey, out IReadOnlyList<CategorySuggestion>? cached) && cached != null)
         {
+            Telemetry.CacheHitsCounter.Add(1, new KeyValuePair<string, object?>("cache_type", "ai-category-suggest"));
             return AiOperationResult<IReadOnlyList<CategorySuggestion>>.Ok(cached);
         }
+        Telemetry.CacheMissesCounter.Add(1, new KeyValuePair<string, object?>("cache_type", "ai-category-suggest"));
 
         var normalizedDescription = description.Trim().ToLowerInvariant();
         var historicalCategories = await _context.Transactions
@@ -297,8 +300,10 @@ Recent usage JSON array: {JsonSerializer.Serialize(usage)}";
         var cleanupCacheKey = CleanupCachePrefix + cacheHash;
         if (_cache.TryGetValue(cleanupCacheKey, out CategoryCleanupReview? cachedReview) && cachedReview != null)
         {
+            Telemetry.CacheHitsCounter.Add(1, new KeyValuePair<string, object?>("cache_type", "ai-category-cleanup"));
             return AiOperationResult<CategoryCleanupReview>.Ok(cachedReview);
         }
+        Telemetry.CacheMissesCounter.Add(1, new KeyValuePair<string, object?>("cache_type", "ai-category-cleanup"));
 
         var deterministicSuggestions = usage
             .Where(item => item.count == 0)

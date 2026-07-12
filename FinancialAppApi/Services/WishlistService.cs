@@ -25,6 +25,17 @@ public sealed record WishlistPurchaseResult(
     Transaction? Transaction = null,
     string? Message = null);
 
+public sealed record WishlistItemProjection(
+    int Id,
+    string Name,
+    decimal Price,
+    string Priority,
+    bool IsPurchased,
+    DateTime? PurchasedAt,
+    string? PurchaseTransactionId,
+    DateTime CreatedAt,
+    bool IsActive);
+
 public class WishlistService
 {
     private readonly AppDbContext _context;
@@ -36,7 +47,7 @@ public class WishlistService
         _cycleBalanceService = cycleBalanceService;
     }
 
-    public async Task<List<WishlistItem>> GetWishlistAsync()
+    public async Task<List<WishlistItemProjection>> GetWishlistAsync(CancellationToken cancellationToken = default)
     {
         // Read-only: the controller maps these to DTOs and never mutates them, so skip change
         // tracking.
@@ -44,17 +55,28 @@ public class WishlistService
             .AsNoTracking()
             .OrderByDescending(w => w.IsActive)
             .ThenByDescending(w => w.CreatedAt)
-            .ToListAsync();
+            .Select(w => new WishlistItemProjection(
+                w.Id,
+                w.Name,
+                w.Price,
+                w.Priority,
+                w.IsPurchased,
+                w.PurchasedAt,
+                w.PurchaseTransactionId,
+                w.CreatedAt,
+                w.IsActive
+            ))
+            .ToListAsync(cancellationToken);
     }
 
-    public async Task<WishlistItemResult> CreateWishlistItemAsync(WishlistItem item)
+    public async Task<WishlistItemResult> CreateWishlistItemAsync(WishlistItem item, CancellationToken cancellationToken = default)
     {
         // Idempotency: the offline outbox may replay a create on retry (e.g. the write committed
         // but the response was lost). The int PK is server-generated, so dedupe on the client-supplied
         // key instead — returning the already-created row rather than inserting a duplicate.
         if (!string.IsNullOrWhiteSpace(item.ClientKey))
         {
-            var existing = await _context.WishlistItems.FirstOrDefaultAsync(w => w.ClientKey == item.ClientKey);
+            var existing = await _context.WishlistItems.FirstOrDefaultAsync(w => w.ClientKey == item.ClientKey, cancellationToken);
             if (existing != null)
             {
                 return new WishlistItemResult(WishlistMutationStatus.Success, existing);
@@ -74,7 +96,7 @@ public class WishlistService
 
         if (item.IsActive)
         {
-            var activeItems = await _context.WishlistItems.Where(w => w.IsActive).ToListAsync();
+            var activeItems = await _context.WishlistItems.Where(w => w.IsActive).ToListAsync(cancellationToken);
             foreach (var activeItem in activeItems)
             {
                 activeItem.IsActive = false;
@@ -82,7 +104,7 @@ public class WishlistService
         }
         else
         {
-            var hasAny = await _context.WishlistItems.AnyAsync();
+            var hasAny = await _context.WishlistItems.AnyAsync(cancellationToken);
             if (!hasAny)
             {
                 item.IsActive = true;
@@ -90,19 +112,19 @@ public class WishlistService
         }
 
         _context.WishlistItems.Add(item);
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
         return new WishlistItemResult(WishlistMutationStatus.Success, item);
     }
 
-    public async Task<WishlistItemResult> UpdateWishlistItemAsync(int id, WishlistItem updatedItem)
+    public async Task<WishlistItemResult> UpdateWishlistItemAsync(int id, WishlistItem updatedItem, CancellationToken cancellationToken = default)
     {
         if (id != updatedItem.Id)
         {
             return new WishlistItemResult(WishlistMutationStatus.IdMismatch, Message: "ID mismatch.");
         }
 
-        var item = await _context.WishlistItems.FindAsync(id);
+        var item = await _context.WishlistItems.FindAsync([id], cancellationToken);
         if (item == null)
         {
             return new WishlistItemResult(WishlistMutationStatus.NotFound);
@@ -120,7 +142,7 @@ public class WishlistService
 
         if (updatedItem.IsActive && !item.IsActive)
         {
-            var activeItems = await _context.WishlistItems.Where(w => w.IsActive && w.Id != id).ToListAsync();
+            var activeItems = await _context.WishlistItems.Where(w => w.IsActive && w.Id != id).ToListAsync(cancellationToken);
             foreach (var activeItem in activeItems)
             {
                 activeItem.IsActive = false;
@@ -132,13 +154,13 @@ public class WishlistService
             item.IsActive = false;
         }
 
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
         return new WishlistItemResult(WishlistMutationStatus.Success, item);
     }
 
-    public async Task<WishlistMutationStatus> DeleteWishlistItemAsync(int id)
+    public async Task<WishlistMutationStatus> DeleteWishlistItemAsync(int id, CancellationToken cancellationToken = default)
     {
-        var item = await _context.WishlistItems.FindAsync(id);
+        var item = await _context.WishlistItems.FindAsync([id], cancellationToken);
         if (item == null)
         {
             return WishlistMutationStatus.NotFound;
@@ -147,26 +169,26 @@ public class WishlistService
         bool wasActive = item.IsActive;
 
         _context.WishlistItems.Remove(item);
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
         if (wasActive)
         {
             var nextItem = await _context.WishlistItems
                 .OrderByDescending(w => w.CreatedAt)
-                .FirstOrDefaultAsync();
+                .FirstOrDefaultAsync(cancellationToken);
             if (nextItem != null)
             {
                 nextItem.IsActive = true;
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(cancellationToken);
             }
         }
 
         return WishlistMutationStatus.Success;
     }
 
-    public async Task<WishlistPurchaseResult> PurchaseWishlistItemAsync(int id)
+    public async Task<WishlistPurchaseResult> PurchaseWishlistItemAsync(int id, CancellationToken cancellationToken = default)
     {
-        var item = await _context.WishlistItems.FindAsync(id);
+        var item = await _context.WishlistItems.FindAsync([id], cancellationToken);
         if (item == null)
         {
             return new WishlistPurchaseResult(WishlistMutationStatus.NotFound);
@@ -197,35 +219,35 @@ public class WishlistService
         var strategy = _context.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
-            await using var dbTransaction = await _context.Database.BeginTransactionAsync();
-            await _context.SaveChangesAsync();
+            await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken);
 
-            var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+            var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
             if (setting != null)
             {
                 var (cycleYear, cycleMonthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(tx.Date), setting.CycleDay);
                 await _cycleBalanceService.InvalidateFromAsync(cycleYear, cycleMonthIndex);
             }
 
-            await dbTransaction.CommitAsync();
+            await dbTransaction.CommitAsync(cancellationToken);
         });
 
         var nextItem = await _context.WishlistItems
             .Where(w => !w.IsPurchased)
             .OrderByDescending(w => w.CreatedAt)
-            .FirstOrDefaultAsync();
+            .FirstOrDefaultAsync(cancellationToken);
         if (nextItem != null)
         {
             nextItem.IsActive = true;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
 
         return new WishlistPurchaseResult(WishlistMutationStatus.Success, item, tx);
     }
 
-    public async Task<WishlistPurchaseResult> UnpurchaseWishlistItemAsync(int id)
+    public async Task<WishlistPurchaseResult> UnpurchaseWishlistItemAsync(int id, CancellationToken cancellationToken = default)
     {
-        var item = await _context.WishlistItems.FindAsync(id);
+        var item = await _context.WishlistItems.FindAsync([id], cancellationToken);
         if (item == null)
         {
             return new WishlistPurchaseResult(WishlistMutationStatus.NotFound);
@@ -233,7 +255,7 @@ public class WishlistService
 
         var purchaseTransactionId = item.PurchaseTransactionId;
         var transaction = !string.IsNullOrWhiteSpace(purchaseTransactionId)
-            ? await _context.Transactions.FindAsync(purchaseTransactionId)
+            ? await _context.Transactions.FindAsync([purchaseTransactionId], cancellationToken)
             : null;
 
         DateTime? affectedDate = transaction?.Date;
@@ -243,7 +265,7 @@ public class WishlistService
         item.PurchaseTransactionId = null;
 
         var hasActiveUnpurchased = await _context.WishlistItems
-            .AnyAsync(w => w.Id != item.Id && !w.IsPurchased && w.IsActive);
+            .AnyAsync(w => w.Id != item.Id && !w.IsPurchased && w.IsActive, cancellationToken);
         if (!hasActiveUnpurchased)
         {
             item.IsActive = true;
@@ -253,7 +275,7 @@ public class WishlistService
         {
             var splits = await _context.Transactions
                 .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
             _context.Transactions.RemoveRange(splits);
             _context.Transactions.Remove(transaction);
         }
@@ -261,12 +283,12 @@ public class WishlistService
         var strategy = _context.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
-            await using var dbTransaction = await _context.Database.BeginTransactionAsync();
-            await _context.SaveChangesAsync();
+            await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken);
 
             if (affectedDate.HasValue)
             {
-                var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+                var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
                 if (setting != null)
                 {
                     var (cycleYear, cycleMonthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(affectedDate.Value), setting.CycleDay);
@@ -274,7 +296,7 @@ public class WishlistService
                 }
             }
 
-            await dbTransaction.CommitAsync();
+            await dbTransaction.CommitAsync(cancellationToken);
         });
 
         return new WishlistPurchaseResult(WishlistMutationStatus.Success, item, transaction);

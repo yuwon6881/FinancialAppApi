@@ -48,7 +48,8 @@ public class TransactionsController : ControllerBase
             category,
             txType,
             startDate,
-            endDate);
+            endDate,
+            HttpContext.RequestAborted);
 
         if (result.Total.HasValue)
         {
@@ -68,14 +69,14 @@ public class TransactionsController : ControllerBase
     [HttpGet("autocomplete")]
     public async Task<IActionResult> GetAutocompleteSuggestions()
     {
-        return Ok(await _transactionQueryService.GetAutocompleteSuggestionsAsync());
+        return Ok(await _transactionQueryService.GetAutocompleteSuggestionsAsync(HttpContext.RequestAborted));
     }
 
     // GET: api/transactions/{id}
     [HttpGet("{id}")]
     public async Task<ActionResult<TransactionDto>> GetTransaction(string id)
     {
-        var transaction = await _transactionQueryService.GetTransactionByIdAsync(id);
+        var transaction = await _transactionQueryService.GetTransactionByIdAsync(id, HttpContext.RequestAborted);
         if (transaction == null)
         {
             return NotFound();
@@ -94,7 +95,7 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "startDate")] string? startDate = null,
         [FromQuery(Name = "endDate")] string? endDate = null)
     {
-        var export = await _transactionQueryService.ExportTransactionsAsync(search, ledgerCategory, category, txType, startDate, endDate);
+        var export = await _transactionQueryService.ExportTransactionsAsync(search, ledgerCategory, category, txType, startDate, endDate, HttpContext.RequestAborted);
         return File(export.Bytes, "text/csv", export.FileName);
     }
 
@@ -182,6 +183,21 @@ public class TransactionsController : ControllerBase
         };
     }
 
+    public static TransactionDto MapToDto(TransactionProjection t)
+    {
+        return new TransactionDto
+        {
+            Id = t.Id,
+            Date = TransactionDate.ToDateOnly(t.Date).ToString("yyyy-MM-dd"),
+            PostedAt = t.Date.ToUniversalTime().ToString("O"),
+            Description = t.Description,
+            Category = t.Category,
+            LedgerCategory = t.LedgerCategory,
+            Amount = ObfuscationHelper.Obfuscate(t.Amount),
+            RecurringPaymentId = t.RecurringPaymentId,
+            WishlistItemId = t.WishlistItemId
+        };
+    }
 }
 
 public class TransactionDto

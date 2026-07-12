@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Diagnostics;
 using System.Text.Json;
+using FinancialAppApi.Diagnostics;
 
 namespace FinancialAppApi.Services;
 
@@ -50,6 +51,12 @@ public class AiClient
         AiGenerationOptions options,
         CancellationToken cancellationToken = default)
     {
+        using var activity = Telemetry.ActivitySource.StartActivity("AiClient.GenerateText");
+        activity?.SetTag("ai.feature", options.Feature);
+        activity?.SetTag("ai.model", options.ModelConfigurationKey);
+
+        Telemetry.AiActionsCounter.Add(1, new KeyValuePair<string, object?>("feature", options.Feature));
+
         var apiKey = _configuration["AiApiKey"];
         if (string.IsNullOrWhiteSpace(apiKey))
         {

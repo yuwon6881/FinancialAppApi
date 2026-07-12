@@ -28,6 +28,19 @@ public sealed record CreateRecurringPaymentResult(
     RecurringPayment? Payment = null,
     string? Message = null);
 
+public sealed record RecurringPaymentProjection(
+    string Id,
+    string Name,
+    decimal Amount,
+    string Frequency,
+    string Category,
+    string LedgerCategory,
+    string NextDueDate,
+    int DueDate,
+    string StartDate,
+    bool Active,
+    string? EndDate);
+
 public class RecurringPaymentService
 {
     private readonly AppDbContext _context;
@@ -37,7 +50,7 @@ public class RecurringPaymentService
         _context = context;
     }
 
-    public async Task<List<RecurringPayment>> GetRecurringPaymentsAsync()
+    public async Task<List<RecurringPaymentProjection>> GetRecurringPaymentsAsync(CancellationToken cancellationToken = default)
     {
         // Read-only: results are mapped to DTOs by the controller and never mutated, so skip
         // change tracking. Recurring payments are inherently bounded (a handful per user), so no
@@ -45,10 +58,23 @@ public class RecurringPaymentService
         return await _context.RecurringPayments
             .AsNoTracking()
             .OrderBy(p => p.Name)
-            .ToListAsync();
+            .Select(p => new RecurringPaymentProjection(
+                p.Id,
+                p.Name,
+                p.Amount,
+                p.Frequency,
+                p.Category,
+                p.LedgerCategory,
+                p.NextDueDate,
+                p.DueDate,
+                p.StartDate,
+                p.Active,
+                p.EndDate
+            ))
+            .ToListAsync(cancellationToken);
     }
 
-    public async Task<CreateRecurringPaymentResult> CreateRecurringPaymentAsync(RecurringPayment payment)
+    public async Task<CreateRecurringPaymentResult> CreateRecurringPaymentAsync(RecurringPayment payment, CancellationToken cancellationToken = default)
     {
         // Idempotency: the offline outbox sends a client-generated id ("rec-...") and may replay
         // the same create on retry (e.g. the write committed but the response was lost during a
@@ -56,14 +82,14 @@ public class RecurringPaymentService
         // (which would 500) so a lost-response retry resolves as success rather than a false failure.
         if (!string.IsNullOrWhiteSpace(payment.Id))
         {
-            var existing = await _context.RecurringPayments.FirstOrDefaultAsync(p => p.Id == payment.Id);
+            var existing = await _context.RecurringPayments.FirstOrDefaultAsync(p => p.Id == payment.Id, cancellationToken);
             if (existing != null)
             {
                 return new CreateRecurringPaymentResult(CreateRecurringPaymentStatus.Existing, existing);
             }
         }
 
-        if (!await CategoryExistsAsync(payment.Category))
+        if (!await CategoryExistsAsync(payment.Category, cancellationToken))
         {
             return new CreateRecurringPaymentResult(
                 CreateRecurringPaymentStatus.InvalidCategory,
@@ -71,13 +97,13 @@ public class RecurringPaymentService
         }
 
         _context.RecurringPayments.Add(payment);
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
         return new CreateRecurringPaymentResult(CreateRecurringPaymentStatus.Created, payment);
     }
 
-    public async Task<RecurringPayment?> ToggleActiveAsync(string id, bool? active = null)
+    public async Task<RecurringPayment?> ToggleActiveAsync(string id, bool? active = null, CancellationToken cancellationToken = default)
     {
-        var payment = await _context.RecurringPayments.FindAsync(id);
+        var payment = await _context.RecurringPayments.FindAsync([id], cancellationToken);
         if (payment == null)
         {
             return null;
@@ -92,21 +118,21 @@ public class RecurringPaymentService
         if (payment.Active != desired)
         {
             payment.Active = desired;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
 
         return payment;
     }
 
-    public async Task<UpdateRecurringPaymentResult> UpdateRecurringPaymentAsync(string id, RecurringPayment updated)
+    public async Task<UpdateRecurringPaymentResult> UpdateRecurringPaymentAsync(string id, RecurringPayment updated, CancellationToken cancellationToken = default)
     {
-        var existing = await _context.RecurringPayments.FindAsync(id);
+        var existing = await _context.RecurringPayments.FindAsync([id], cancellationToken);
         if (existing == null)
         {
             return new UpdateRecurringPaymentResult(UpdateRecurringPaymentStatus.NotFound);
         }
 
-        if (!await CategoryExistsAsync(updated.Category))
+        if (!await CategoryExistsAsync(updated.Category, cancellationToken))
         {
             return new UpdateRecurringPaymentResult(
                 UpdateRecurringPaymentStatus.InvalidCategory,
@@ -126,11 +152,11 @@ public class RecurringPaymentService
 
         try
         {
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
         catch (DbUpdateConcurrencyException)
         {
-            if (!await _context.RecurringPayments.AnyAsync(e => e.Id == id))
+            if (!await _context.RecurringPayments.AnyAsync(e => e.Id == id, cancellationToken))
             {
                 return new UpdateRecurringPaymentResult(UpdateRecurringPaymentStatus.NotFound);
             }
@@ -141,21 +167,21 @@ public class RecurringPaymentService
         return new UpdateRecurringPaymentResult(UpdateRecurringPaymentStatus.Updated, existing);
     }
 
-    public async Task<bool> DeleteRecurringPaymentAsync(string id)
+    public async Task<bool> DeleteRecurringPaymentAsync(string id, CancellationToken cancellationToken = default)
     {
-        var payment = await _context.RecurringPayments.FindAsync(id);
+        var payment = await _context.RecurringPayments.FindAsync([id], cancellationToken);
         if (payment == null)
         {
             return false;
         }
 
         _context.RecurringPayments.Remove(payment);
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
         return true;
     }
 
-    private async Task<bool> CategoryExistsAsync(string category)
+    private async Task<bool> CategoryExistsAsync(string category, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(category))
         {
@@ -167,6 +193,6 @@ public class RecurringPaymentService
             return true;
         }
 
-        return await _context.TransactionCategories.AnyAsync(c => c.Name.ToLower() == category.Trim().ToLower());
+        return await _context.TransactionCategories.AnyAsync(c => c.Name.ToLower() == category.Trim().ToLower(), cancellationToken);
     }
 }

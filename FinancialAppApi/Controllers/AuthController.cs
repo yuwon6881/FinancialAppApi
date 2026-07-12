@@ -11,11 +11,16 @@ public class AuthController : ControllerBase
 {
     private readonly AuthAccountService _authAccountService;
     private readonly AuthSessionService _authSessionService;
+    private readonly AuthCookieService _authCookieService;
 
-    public AuthController(AuthAccountService authAccountService, AuthSessionService authSessionService)
+    public AuthController(
+        AuthAccountService authAccountService,
+        AuthSessionService authSessionService,
+        AuthCookieService authCookieService)
     {
         _authAccountService = authAccountService;
         _authSessionService = authSessionService;
+        _authCookieService = authCookieService;
     }
 
     private static string? GetClientIp(HttpContext context)
@@ -39,10 +44,18 @@ public class AuthController : ControllerBase
     public async Task<IActionResult> Register([FromBody] RegisterRequest request) =>
         await _authAccountService.RegisterAsync(request.Username, request.Password);
 
+    private void SetAuthCookie(string token)
+    {
+        if (!Request.IsNativeClient()) _authCookieService.IssueSessionCookies(Response, token);
+    }
+
+    private void ClearAuthCookie() => _authCookieService.ClearSessionCookies(Response);
+
     // POST: api/auth/login
     [HttpPost("login")]
-    public async Task<IActionResult> Login([FromBody] LoginRequest request) =>
-        await _authAccountService.LoginAsync(
+    public async Task<IActionResult> Login([FromBody] LoginRequest request)
+    {
+        var result = await _authAccountService.LoginAsync(
             request.Username,
             request.Password,
             request.DeviceId,
@@ -50,14 +63,53 @@ public class AuthController : ControllerBase
             GetClientIp(HttpContext),
             HttpContext.Request.Headers["User-Agent"].ToString());
 
+        if (result is OkObjectResult okResult && okResult.Value is not null)
+        {
+            var value = okResult.Value;
+            var tokenProp = value.GetType().GetProperty("token")?.GetValue(value) as string;
+            if (!string.IsNullOrEmpty(tokenProp))
+            {
+                SetAuthCookie(tokenProp);
+            }
+        }
+
+        return result;
+    }
+
     // POST: api/auth/login/2fa
     [HttpPost("login/2fa")]
-    public async Task<IActionResult> LoginTwoFactor([FromBody] TwoFactorLoginRequest request) =>
-        await _authAccountService.LoginTwoFactorAsync(
+    public async Task<IActionResult> LoginTwoFactor([FromBody] TwoFactorLoginRequest request)
+    {
+        var result = await _authAccountService.LoginTwoFactorAsync(
             request.PendingToken,
             request.Code,
             GetClientIp(HttpContext),
             HttpContext.Request.Headers["User-Agent"].ToString());
+
+        if (result is OkObjectResult okResult && okResult.Value is not null)
+        {
+            var value = okResult.Value;
+            var tokenProp = value.GetType().GetProperty("token")?.GetValue(value) as string;
+            if (!string.IsNullOrEmpty(tokenProp))
+            {
+                SetAuthCookie(tokenProp);
+            }
+        }
+
+        return result;
+    }
+
+    // GET: api/auth/csrf
+    // A cross-origin SPA cannot read a cookie scoped to the API host. It obtains the
+    // double-submit value from this CORS-protected response header after a page reload.
+    [AuthorizeToken]
+    [HttpGet("csrf")]
+    public IActionResult RefreshCsrf()
+    {
+        if (Request.IsNativeClient()) return NoContent();
+        _authCookieService.RefreshCsrfCookie(Response);
+        return NoContent();
+    }
 
     // POST: api/auth/logout
     [HttpPost("logout")]
@@ -67,6 +119,7 @@ public class AuthController : ControllerBase
         {
             await _authSessionService.LogoutAsync(token);
         }
+        ClearAuthCookie();
         return Ok(new { message = "Logged out successfully" });
     }
 

@@ -1,6 +1,8 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
+using System.Diagnostics;
+using FinancialAppApi.Diagnostics;
 
 namespace FinancialAppApi.Services;
 
@@ -56,6 +58,9 @@ public class FinancialService
 
     public async Task<object> GetDashboardDataAsync(string? queryMonth = null, int? queryYear = null)
     {
+        var stopwatch = Stopwatch.StartNew();
+        using var activity = Telemetry.ActivitySource.StartActivity("FinancialService.GetDashboardData");
+
         var (setting, cycleDay, _, activeYear, activeMonthIndex) =
             await ResolveCycleContextAsync(queryMonth, queryYear, persist: true);
 
@@ -136,7 +141,7 @@ public class FinancialService
             ? trendPointsList.GetRange(trendPointsList.Count - 3, 3)
             : trendPointsList.ToList();
 
-        return new
+        var result = new
         {
             setting = new
             {
@@ -172,6 +177,11 @@ public class FinancialService
             pendingNotifications,
             monthlyCategoryBreakdown = ObfuscateBreakdown(monthlyCategoryBreakdown)
         };
+
+        stopwatch.Stop();
+        Telemetry.DashboardLoadDuration.Record(stopwatch.ElapsedMilliseconds);
+
+        return result;
     }
 
     // Historical aggregates (yearly/last-3/last-6 category breakdowns, past-rewards average) split

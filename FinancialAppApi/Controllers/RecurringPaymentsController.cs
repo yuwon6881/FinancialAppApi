@@ -22,7 +22,7 @@ public class RecurringPaymentsController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<IEnumerable<RecurringPaymentDto>>> GetRecurringPayments()
     {
-        var list = await _recurringPaymentService.GetRecurringPaymentsAsync();
+        var list = await _recurringPaymentService.GetRecurringPaymentsAsync(HttpContext.RequestAborted);
         return Ok(list.Select(MapToDto).ToList());
     }
 
@@ -45,7 +45,7 @@ public class RecurringPaymentsController : ControllerBase
             EndDate = dto.EndDate
         };
 
-        var result = await _recurringPaymentService.CreateRecurringPaymentAsync(payment);
+        var result = await _recurringPaymentService.CreateRecurringPaymentAsync(payment, HttpContext.RequestAborted);
         if (result.Status == CreateRecurringPaymentStatus.InvalidCategory)
         {
             return BadRequest(new { message = result.Message });
@@ -63,7 +63,7 @@ public class RecurringPaymentsController : ControllerBase
     [HttpPut("{id}/toggle")]
     public async Task<IActionResult> ToggleActive(string id, [FromBody] ToggleActiveDto? dto = null)
     {
-        var payment = await _recurringPaymentService.ToggleActiveAsync(id, dto?.Active);
+        var payment = await _recurringPaymentService.ToggleActiveAsync(id, dto?.Active, HttpContext.RequestAborted);
         if (payment == null)
         {
             return NotFound();
@@ -96,7 +96,7 @@ public class RecurringPaymentsController : ControllerBase
             Active = dto.Active
         };
 
-        var result = await _recurringPaymentService.UpdateRecurringPaymentAsync(id, updated);
+        var result = await _recurringPaymentService.UpdateRecurringPaymentAsync(id, updated, HttpContext.RequestAborted);
         if (result.Status == UpdateRecurringPaymentStatus.NotFound)
         {
             return NotFound();
@@ -113,7 +113,7 @@ public class RecurringPaymentsController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteRecurringPayment(string id)
     {
-        var deleted = await _recurringPaymentService.DeleteRecurringPaymentAsync(id);
+        var deleted = await _recurringPaymentService.DeleteRecurringPaymentAsync(id, HttpContext.RequestAborted);
         if (!deleted)
         {
             return NotFound();
@@ -123,6 +123,24 @@ public class RecurringPaymentsController : ControllerBase
     }
 
     private static RecurringPaymentDto MapToDto(RecurringPayment rp)
+    {
+        return new RecurringPaymentDto
+        {
+            Id = rp.Id,
+            Name = rp.Name,
+            Amount = ObfuscationHelper.Obfuscate(rp.Amount),
+            Frequency = rp.Frequency,
+            Category = rp.Category,
+            LedgerCategory = rp.LedgerCategory,
+            NextDueDate = rp.NextDueDate,
+            DueDate = rp.DueDate,
+            StartDate = rp.StartDate,
+            Active = rp.Active,
+            EndDate = rp.EndDate
+        };
+    }
+
+    private static RecurringPaymentDto MapToDto(RecurringPaymentProjection rp)
     {
         return new RecurringPaymentDto
         {

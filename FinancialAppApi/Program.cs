@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Extensions;
+using FinancialAppApi.Middleware;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -13,7 +14,7 @@ if (!string.IsNullOrEmpty(port))
 }
 
 builder.Services
-    .AddApiInfrastructure(builder.Configuration)
+    .AddApiInfrastructure(builder.Configuration, builder.Environment)
     .AddAiServices(builder.Configuration)
     .AddAuthServices()
     .AddPersistence(builder.Configuration, migrateOnly);
@@ -40,6 +41,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowFrontend");
+app.UseMiddleware<CsrfProtectionMiddleware>();
 app.UseRateLimiter();
 app.UseAuthorization();
 app.MapGet("/api/ping", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));

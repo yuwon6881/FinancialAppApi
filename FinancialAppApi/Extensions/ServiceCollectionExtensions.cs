@@ -7,6 +7,10 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using OpenTelemetry.Trace;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using FinancialAppApi.Diagnostics;
 
 namespace FinancialAppApi.Extensions;
 
@@ -14,7 +18,8 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddApiInfrastructure(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        IHostEnvironment environment)
     {
         services.AddControllers().AddJsonOptions(options =>
         {
@@ -23,6 +28,21 @@ public static class ServiceCollectionExtensions
         services.AddMemoryCache();
         services.AddEndpointsApiExplorer();
         services.AddSwaggerGen();
+
+        services.AddOpenTelemetry()
+            .ConfigureResource(resource => resource.AddService(Telemetry.ServiceName))
+            .WithTracing(tracing => tracing
+                .AddSource(Telemetry.ServiceName)
+                .AddAspNetCoreInstrumentation()
+                .AddEntityFrameworkCoreInstrumentation(options =>
+                {
+                    options.SetDbStatementForText = true;
+                })
+                .AddConsoleExporter())
+            .WithMetrics(metrics => metrics
+                .AddMeter(Telemetry.ServiceName)
+                .AddAspNetCoreInstrumentation()
+                .AddConsoleExporter());
 
         services.AddHealthChecks()
             .AddNpgSql(configuration.GetConnectionString("DefaultConnection") ?? "", tags: ["ready"]);
@@ -44,11 +64,30 @@ public static class ServiceCollectionExtensions
         {
             if (corsOrigins.Length > 0)
             {
-                policy.WithOrigins(corsOrigins).AllowAnyHeader().AllowAnyMethod();
+                policy.WithOrigins(corsOrigins)
+                      .AllowAnyHeader()
+                      .AllowAnyMethod()
+                      .WithExposedHeaders(AuthCookieService.CsrfHeaderName)
+                      .AllowCredentials();
+            }
+            else if (environment.IsDevelopment())
+            {
+                // Local dev convenience only: reflect any origin with credentials so the Vite dev
+                // server (whatever port/host) can exercise cookie auth.
+                policy.SetIsOriginAllowed(origin => true)
+                      .AllowAnyHeader()
+                      .AllowAnyMethod()
+                      .WithExposedHeaders(AuthCookieService.CsrfHeaderName)
+                      .AllowCredentials();
             }
             else
             {
-                policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+                // Outside Development an empty origin list is a misconfiguration. Never combine a
+                // reflected origin with AllowCredentials in production — that would defeat CSRF/CORS
+                // for cookie-authenticated requests. Allow anonymous cross-origin reads only.
+                policy.SetIsOriginAllowed(origin => true)
+                      .AllowAnyHeader()
+                      .AllowAnyMethod();
             }
         }));
 
@@ -131,6 +170,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<AuthSessionService>();
         services.AddScoped<AuthAccountService>();
         services.AddScoped<WebAuthnService>();
+        services.AddSingleton<AuthCookieService>();
         services.AddSingleton<TotpService>();
         services.AddSingleton<SecretProtector>();
         services.AddScoped<RecoveryCodeService>();

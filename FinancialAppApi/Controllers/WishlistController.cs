@@ -23,7 +23,7 @@ public class WishlistController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<IEnumerable<WishlistItemDto>>> GetWishlist()
     {
-        var items = await _wishlistService.GetWishlistAsync();
+        var items = await _wishlistService.GetWishlistAsync(HttpContext.RequestAborted);
         return Ok(items.Select(MapToDto).ToList());
     }
 
@@ -32,7 +32,7 @@ public class WishlistController : ControllerBase
     public async Task<ActionResult<WishlistItemDto>> PostWishlistItem(WishlistItemMutationDto dto)
     {
         var item = ToWishlistItem(dto);
-        var result = await _wishlistService.CreateWishlistItemAsync(item);
+        var result = await _wishlistService.CreateWishlistItemAsync(item, HttpContext.RequestAborted);
         if (result.Status == WishlistMutationStatus.NameRequired ||
             result.Status == WishlistMutationStatus.PriceInvalid)
         {
@@ -47,7 +47,7 @@ public class WishlistController : ControllerBase
     public async Task<IActionResult> PutWishlistItem(int id, WishlistItemMutationDto dto)
     {
         var updatedItem = ToWishlistItem(dto);
-        var result = await _wishlistService.UpdateWishlistItemAsync(id, updatedItem);
+        var result = await _wishlistService.UpdateWishlistItemAsync(id, updatedItem, HttpContext.RequestAborted);
         return result.Status switch
         {
             WishlistMutationStatus.IdMismatch => BadRequest(new { message = result.Message }),
@@ -61,7 +61,7 @@ public class WishlistController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteWishlistItem(int id)
     {
-        var result = await _wishlistService.DeleteWishlistItemAsync(id);
+        var result = await _wishlistService.DeleteWishlistItemAsync(id, HttpContext.RequestAborted);
         if (result == WishlistMutationStatus.NotFound)
         {
             return NotFound();
@@ -74,7 +74,7 @@ public class WishlistController : ControllerBase
     [HttpPost("{id}/purchase")]
     public async Task<IActionResult> PurchaseWishlistItem(int id)
     {
-        var result = await _wishlistService.PurchaseWishlistItemAsync(id);
+        var result = await _wishlistService.PurchaseWishlistItemAsync(id, HttpContext.RequestAborted);
         return result.Status switch
         {
             WishlistMutationStatus.NotFound => NotFound(),
@@ -87,7 +87,7 @@ public class WishlistController : ControllerBase
     [HttpDelete("{id}/purchase")]
     public async Task<IActionResult> UnpurchaseWishlistItem(int id)
     {
-        var result = await _wishlistService.UnpurchaseWishlistItemAsync(id);
+        var result = await _wishlistService.UnpurchaseWishlistItemAsync(id, HttpContext.RequestAborted);
         if (result.Status == WishlistMutationStatus.NotFound)
         {
             return NotFound();
@@ -114,6 +114,22 @@ public class WishlistController : ControllerBase
     }
 
     private static WishlistItemDto MapToDto(WishlistItem item)
+    {
+        return new WishlistItemDto
+        {
+            Id = item.Id,
+            Name = item.Name,
+            Price = ObfuscationHelper.Obfuscate(item.Price),
+            Priority = item.Priority,
+            IsPurchased = item.IsPurchased,
+            PurchasedAt = item.PurchasedAt,
+            PurchaseTransactionId = item.PurchaseTransactionId,
+            CreatedAt = item.CreatedAt,
+            IsActive = item.IsActive
+        };
+    }
+
+    private static WishlistItemDto MapToDto(WishlistItemProjection item)
     {
         return new WishlistItemDto
         {

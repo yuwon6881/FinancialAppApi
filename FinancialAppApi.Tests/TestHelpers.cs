@@ -48,7 +48,8 @@ public static class TestHelpers
                 protector,
                 new RecoveryCodeService(context),
                 authSessionService),
-            authSessionService);
+            authSessionService,
+            new AuthCookieService());
 
         controller.ControllerContext = new ControllerContext
         {

@@ -13,18 +13,27 @@ public static class BearerTokenExtensions
     {
         token = string.Empty;
 
-        if (!request.Headers.TryGetValue("Authorization", out var authHeaderValues))
+        if (request.Headers.TryGetValue("Authorization", out var authHeaderValues))
         {
-            return BearerTokenResult.Missing;
+            var authHeader = authHeaderValues.ToString();
+            if (string.IsNullOrWhiteSpace(authHeader) || !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                return BearerTokenResult.Malformed;
+            }
+
+            token = authHeader.Substring("Bearer ".Length).Trim();
+            return BearerTokenResult.Ok;
         }
 
-        var authHeader = authHeaderValues.ToString();
-        if (string.IsNullOrWhiteSpace(authHeader) || !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        if (request.Cookies.TryGetValue("auth_token", out var cookieValue))
         {
-            return BearerTokenResult.Malformed;
+            if (!string.IsNullOrWhiteSpace(cookieValue))
+            {
+                token = cookieValue.Trim();
+                return BearerTokenResult.Ok;
+            }
         }
 
-        token = authHeader.Substring("Bearer ".Length).Trim();
-        return BearerTokenResult.Ok;
+        return BearerTokenResult.Missing;
     }
 }
