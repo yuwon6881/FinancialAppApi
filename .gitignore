@@ -7,3 +7,4 @@ FinancialAppApi/publish/
 *.db-wal
 FinancialAppApi/appsettings.Local.json
 FinancialAppApi/appsettings.*.Local.json
+TestResults/

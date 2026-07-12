@@ -59,7 +59,7 @@ public class FinancialService
         var (setting, cycleDay, _, activeYear, activeMonthIndex) =
             await ResolveCycleContextAsync(queryMonth, queryYear, persist: true);
 
-        var allRecurring = await _context.RecurringPayments.ToListAsync();
+        var allRecurring = await _context.RecurringPayments.AsNoTracking().ToListAsync();
 
         var year = activeYear;
 
@@ -67,6 +67,7 @@ public class FinancialService
         var activeRangeStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(activeRange.start));
         var activeRangeEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(activeRange.end));
         var activeCycleTxs = await _context.Transactions
+            .AsNoTracking()
             .Where(t => t.Date >= activeRangeStartDate && t.Date < activeRangeEndExclusive)
             .ToListAsync();
 
@@ -87,6 +88,7 @@ public class FinancialService
 
         await _cycleBalanceService.EnsureComputedThroughAsync(year, activeMonthIndex, cycleDay);
         var trendRows = await _context.CycleBalances
+            .AsNoTracking()
             .Where(b => b.Year == activeYear && b.MonthIndex <= activeMonthIndex)
             .OrderBy(b => b.MonthIndex)
             .ToListAsync();
@@ -190,6 +192,7 @@ public class FinancialService
         var yearStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(CategoryAttributionService.GetCycleRange(activeYear, 1, cycleDay).start));
         var yearEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(CategoryAttributionService.GetCycleRange(activeYear, 12, cycleDay).end));
         var yearlyTxs = await _context.Transactions
+            .AsNoTracking()
             .Where(t => t.Date >= yearStartDate && t.Date < yearEndExclusive)
             .ToListAsync();
         var yearlyCategoryBreakdown = BuildBreakdown(yearlyTxs);
@@ -199,6 +202,7 @@ public class FinancialService
         var last6StartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(GetCycleStartNCyclesBack(activeYear, activeMonthIndex, cycleDay, 6)));
         var last3StartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(GetCycleStartNCyclesBack(activeYear, activeMonthIndex, cycleDay, 3)));
         var last6Txs = await _context.Transactions
+            .AsNoTracking()
             .Where(t => t.Date >= last6StartDate && t.Date < activeCycleEndExclusive)
             .ToListAsync();
         var last6CategoryBreakdown = BuildBreakdown(last6Txs);
@@ -372,6 +376,7 @@ public class FinancialService
         var startDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(start));
         var endExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(end));
         return await _context.Transactions
+            .AsNoTracking()
             .Where(t => t.Date >= startDate && t.Date < endExclusive)
             .ToListAsync();
     }

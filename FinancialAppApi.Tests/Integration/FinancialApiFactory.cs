@@ -1,0 +1,74 @@
+using FinancialAppApi.Database;
+using FinancialAppApi.Services;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+namespace FinancialAppApi.Tests.Integration;
+
+/// <summary>
+/// Boots the real API (Program.cs, full middleware pipeline, routing, JSON serialization,
+/// custom bearer-token auth) but swaps PostgreSQL for an isolated EF Core InMemory store and
+/// removes the OCR background worker so no test ever reaches Google Gemini.
+///
+/// Each factory instance gets its own InMemory database name, and each xUnit test gets its own
+/// factory (see <see cref="IntegrationTestBase"/>), so tests are fully isolated from one another.
+/// </summary>
+public sealed class FinancialApiFactory : WebApplicationFactory<Program>
+{
+    private readonly string _databaseName = "it-" + Guid.NewGuid().ToString("N");
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Testing");
+
+        // AddPersistence() throws if no connection string is present, and it runs before our
+        // ConfigureTestServices override, so supply a dummy one to get past the guard.
+        builder.UseSetting("ConnectionStrings:DefaultConnection",
+            "Host=localhost;Database=unused;Username=unused;Password=unused");
+
+        builder.ConfigureTestServices(services =>
+        {
+            // Drop the Npgsql AppDbContext registration (options + context + pooling internals).
+            var toRemove = services
+                .Where(d =>
+                    d.ServiceType == typeof(DbContextOptions<AppDbContext>) ||
+                    d.ServiceType == typeof(DbContextOptions) ||
+                    d.ServiceType == typeof(AppDbContext) ||
+                    (d.ServiceType.FullName?.Contains("DbContextOptions") ?? false))
+                .ToList();
+            foreach (var descriptor in toRemove)
+            {
+                services.Remove(descriptor);
+            }
+
+            services.AddDbContext<AppDbContext>(options =>
+            {
+                options.UseInMemoryDatabase(_databaseName)
+                    .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning));
+            });
+
+            // The receipt-scan background worker would drain the queue and call Gemini for real.
+            // Remove it so OCR tests stay hermetic; jobs simply remain "queued".
+            var hostedService = services.FirstOrDefault(d =>
+                d.ServiceType == typeof(IHostedService) &&
+                d.ImplementationType == typeof(ReceiptScanBackgroundService));
+            if (hostedService is not null)
+            {
+                services.Remove(hostedService);
+            }
+        });
+    }
+
+    /// <summary>Runs an action against a fresh DB scope (for seeding / assertions).</summary>
+    public async Task WithDbContextAsync(Func<AppDbContext, Task> action)
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await action(db);
+    }
+}

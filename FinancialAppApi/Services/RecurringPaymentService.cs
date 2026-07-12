@@ -39,7 +39,13 @@ public class RecurringPaymentService
 
     public async Task<List<RecurringPayment>> GetRecurringPaymentsAsync()
     {
-        return await _context.RecurringPayments.ToListAsync();
+        // Read-only: results are mapped to DTOs by the controller and never mutated, so skip
+        // change tracking. Recurring payments are inherently bounded (a handful per user), so no
+        // pagination is applied here.
+        return await _context.RecurringPayments
+            .AsNoTracking()
+            .OrderBy(p => p.Name)
+            .ToListAsync();
     }
 
     public async Task<CreateRecurringPaymentResult> CreateRecurringPaymentAsync(RecurringPayment payment)

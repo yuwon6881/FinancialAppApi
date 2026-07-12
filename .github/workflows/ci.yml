@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  push:
+    branches: [master, deployment]
   pull_request:
     branches: [master]
 
@@ -8,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  build-test:
+  backend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,3 +20,6 @@ jobs:
       - run: dotnet restore
       - run: dotnet build --no-restore --configuration Release
       - run: dotnet test --no-build --configuration Release
+      - run: |
+          dotnet tool install --global dotnet-ef
+          dotnet ef migrations list --project FinancialAppApi --startup-project FinancialAppApi

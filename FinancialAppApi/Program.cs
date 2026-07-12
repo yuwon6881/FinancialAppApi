@@ -18,7 +18,19 @@ builder.Services
     .AddAuthServices()
     .AddPersistence(builder.Configuration, migrateOnly);
 
+builder.Services.AddProblemDetails();
+
 var app = builder.Build();
+
+app.UseExceptionHandler();
+
+app.Use(async (context, next) =>
+{
+    var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault() ?? Guid.NewGuid().ToString();
+    context.Response.Headers["X-Correlation-ID"] = correlationId;
+    using var scope = app.Logger.BeginScope(new Dictionary<string, object> { ["CorrelationId"] = correlationId });
+    await next();
+});
 
 app.UseResponseCompression();
 if (app.Environment.IsDevelopment())
@@ -30,7 +42,14 @@ if (app.Environment.IsDevelopment())
 app.UseCors("AllowFrontend");
 app.UseRateLimiter();
 app.UseAuthorization();
-app.MapGet("/api/ping", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
+app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    Predicate = _ => false
+});
+app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
 app.MapControllers();
 
 var migrateOnStartup = app.Configuration.GetValue("Database:MigrateOnStartup", false);
@@ -65,3 +84,7 @@ if (migrateOnStartup || seedOnStartup || seedDatabase || migrateOnly)
 }
 
 app.Run();
+
+// Exposed so integration tests can boot the real app via WebApplicationFactory<Program>.
+// Program is otherwise an implicitly-internal top-level-statements class.
+public partial class Program;

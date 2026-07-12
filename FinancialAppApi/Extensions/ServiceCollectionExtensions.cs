@@ -24,6 +24,9 @@ public static class ServiceCollectionExtensions
         services.AddEndpointsApiExplorer();
         services.AddSwaggerGen();
 
+        services.AddHealthChecks()
+            .AddNpgSql(configuration.GetConnectionString("DefaultConnection") ?? "", tags: ["ready"]);
+
         services.AddResponseCompression(options =>
         {
             options.EnableForHttps = true;

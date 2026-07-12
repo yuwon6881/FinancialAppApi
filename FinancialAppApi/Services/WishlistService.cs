@@ -38,7 +38,10 @@ public class WishlistService
 
     public async Task<List<WishlistItem>> GetWishlistAsync()
     {
+        // Read-only: the controller maps these to DTOs and never mutates them, so skip change
+        // tracking.
         return await _context.WishlistItems
+            .AsNoTracking()
             .OrderByDescending(w => w.IsActive)
             .ThenByDescending(w => w.CreatedAt)
             .ToListAsync();
