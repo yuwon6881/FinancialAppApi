@@ -31,18 +31,34 @@ public static class ServiceCollectionExtensions
 
         services.AddOpenTelemetry()
             .ConfigureResource(resource => resource.AddService(Telemetry.ServiceName))
-            .WithTracing(tracing => tracing
-                .AddSource(Telemetry.ServiceName)
-                .AddAspNetCoreInstrumentation()
-                .AddEntityFrameworkCoreInstrumentation(options =>
+            .WithTracing(tracing =>
+            {
+                tracing
+                    .AddSource(Telemetry.ServiceName)
+                    .AddAspNetCoreInstrumentation()
+                    .AddEntityFrameworkCoreInstrumentation(options =>
+                    {
+                        options.SetDbStatementForText = true;
+                    });
+
+                // The console exporter dumps every span to stdout; it's a local-dev aid.
+                // In production (Cloud Run) it floods Cloud Logging and inflates ingestion cost.
+                if (environment.IsDevelopment())
                 {
-                    options.SetDbStatementForText = true;
-                })
-                .AddConsoleExporter())
-            .WithMetrics(metrics => metrics
-                .AddMeter(Telemetry.ServiceName)
-                .AddAspNetCoreInstrumentation()
-                .AddConsoleExporter());
+                    tracing.AddConsoleExporter();
+                }
+            })
+            .WithMetrics(metrics =>
+            {
+                metrics
+                    .AddMeter(Telemetry.ServiceName)
+                    .AddAspNetCoreInstrumentation();
+
+                if (environment.IsDevelopment())
+                {
+                    metrics.AddConsoleExporter();
+                }
+            });
 
         services.AddHealthChecks()
             .AddNpgSql(configuration.GetConnectionString("DefaultConnection") ?? "", tags: ["ready"]);
