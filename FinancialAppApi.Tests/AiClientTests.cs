@@ -51,7 +51,7 @@ public class AiClientTests
             .GetProperty("payload")
             .GetProperty("properties");
 
-        Assert.Equal(50, actions.GetProperty("maxItems").GetInt32());
+        Assert.Equal(AiResponseSchemas.MaxChatActions, actions.GetProperty("maxItems").GetInt32());
         Assert.False(payloadProperties.TryGetProperty("transactions", out _));
         Assert.Equal("boolean", payloadProperties.GetProperty("ledgerCategorySpecified").GetProperty("type").GetString());
     }

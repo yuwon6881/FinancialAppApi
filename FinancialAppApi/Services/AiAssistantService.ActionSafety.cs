@@ -17,13 +17,16 @@ public partial class AiAssistantService
         var actions = new List<AiUiAction>();
         if (root.TryGetProperty("actions", out var actionsProp) && actionsProp.ValueKind == JsonValueKind.Array)
         {
-            var returnedActions = actionsProp.EnumerateArray().Take(50).ToList();
+            // Ledger-add is the only intent allowed to return more than one action (one flat draft
+            // per record). Its ceiling is MaxChatActions, which is bounded by what the chat model's
+            // structured-output budget accepts -- see AiResponseSchemas.MaxChatActions.
+            var returnedActions = actionsProp.EnumerateArray().Take(AiResponseSchemas.MaxChatActions).ToList();
             var containsOnlyLedgerDrafts = returnedActions.Count > 0 && returnedActions.All(actionEl =>
                 actionEl.ValueKind == JsonValueKind.Object &&
                 actionEl.TryGetProperty("type", out var actionType) &&
                 actionType.ValueKind == JsonValueKind.String &&
                 actionType.GetString()?.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase) == true);
-            var actionLimit = containsOnlyLedgerDrafts ? 50 : 3;
+            var actionLimit = containsOnlyLedgerDrafts ? AiResponseSchemas.MaxChatActions : 3;
 
             foreach (var actionEl in returnedActions.Take(actionLimit))
             {

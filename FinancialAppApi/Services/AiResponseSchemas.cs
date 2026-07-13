@@ -2,6 +2,24 @@ namespace FinancialAppApi.Services;
 
 internal static class AiResponseSchemas
 {
+    // Max number of actions the chat model may return in one turn -- also the effective ceiling
+    // on a batched ledger-add (one flat openAddLedgerDraft action per record).
+    //
+    // WHY 4 (and not 50): gemini-3.1-flash-lite has a small structured-output (responseJsonSchema)
+    // complexity budget. Because the actions array items are the full ActionPayload union, Gemini
+    // rejects the whole request with 400 INVALID_ARGUMENT once maxItems exceeds ~4. This was
+    // measured directly against the live API: full payload passes at maxItems=4 and fails at 5+,
+    // and even stripping the payload down does not get a large array under the limit -- the model's
+    // budget is the wall. See AiChatSchemaLiveProbe (removed) / commit history for the measurements.
+    //
+    // TO RAISE THIS: only safe on a model with a larger structured-output budget (a non-lite
+    // Gemini tier, or a future model). If AiModels:Chat is pointed at such a model, re-run a schema
+    // probe to find the true ceiling, then bump this constant. Do NOT raise it blindly on a lite
+    // model -- it silently breaks every chat turn with a 400. When you change it, also update the
+    // matching "no more than N ledger draft actions" number in AiAssistantService.BuildSystemInstruction
+    // (that prompt is a fixed non-interpolated string, so it can't reference this constant directly).
+    internal const int MaxChatActions = 4;
+
     // Category is enum-constrained to the user's actual categories (like Receipt / CategorySuggestions)
     // so the model is forced to emit a real category name for add/edit drafts and ledger filters --
     // otherwise a free-string guess that doesn't match gets the whole action dropped in
@@ -26,7 +44,7 @@ internal static class AiResponseSchemas
                     ]),
                     ["payload"] = ActionPayload(categories)
                 },
-                ["type", "payload"]), maxItems: 50)
+                ["type", "payload"]), maxItems: MaxChatActions)
         },
         ["reply", "closeChat", "actions"]);
 
