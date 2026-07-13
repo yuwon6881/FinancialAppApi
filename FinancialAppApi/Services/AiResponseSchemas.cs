@@ -151,6 +151,7 @@ internal static class AiResponseSchemas
         ["isActive"] = Bool(),
         ["startDate"] = Str(),
         ["endDate"] = Str(),
+        ["transactions"] = Arr(LedgerDraftItem(categories), minItems: 1, maxItems: 50),
         ["changes"] = Obj(new Dictionary<string, object>
         {
             ["description"] = Str(), ["name"] = Str(), ["amount"] = Num(), ["price"] = Num(),
@@ -160,6 +161,25 @@ internal static class AiResponseSchemas
             ["priority"] = Str(), ["isActive"] = Bool(), ["startDate"] = Str(), ["endDate"] = Str()
         })
     });
+
+    private static object LedgerDraftItem(IReadOnlyList<string> categories)
+    {
+        var allowedCategories = categories
+            .Where(category => !category.Equals("Adjustment", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return Obj(new Dictionary<string, object>
+        {
+            ["description"] = Str("Transaction description copied from the user's record."),
+            ["amount"] = Num("Positive transaction magnitude."),
+            ["txType"] = Str(enums: ["inflow", "outflow", "transfer"]),
+            ["category"] = Str("Transfer for transfers; otherwise the explicit or single most likely normal category.", enums: allowedCategories),
+            ["ledgerCategory"] = Str("Essentials unless the user explicitly requests another ledger category.", enums: ["Essentials", "Growth", "Stability", "Rewards"]),
+            ["ledgerCategorySpecified"] = Bool(),
+            ["transferSource"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
+            ["transferTarget"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
+            ["date"] = Str("Posting date in YYYY-MM-DD when the user supplied one.")
+        }, ["description", "amount", "txType", "category", "ledgerCategory", "ledgerCategorySpecified"]);
+    }
 
     private static Dictionary<string, object> Obj(Dictionary<string, object> properties, string[]? required = null)
     {

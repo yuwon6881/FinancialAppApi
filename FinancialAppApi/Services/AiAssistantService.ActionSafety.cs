@@ -77,7 +77,7 @@ public partial class AiAssistantService
 
     private static readonly HashSet<string> MutationActionTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        "openEditLedgerDraft", "openEditRecurringDraft", "openEditWishlistDraft",
+        "openAddLedgerDraft", "openEditLedgerDraft", "openEditRecurringDraft", "openEditWishlistDraft",
         "requestDeleteLedger", "requestDeleteRecurring", "requestDeleteWishlist",
         "requestConfirmRecurringBill", "requestDiscardRecurringBill",
         "requestPurchaseWishlist", "requestUnpurchaseWishlist", "toggleRecurring"
@@ -170,12 +170,9 @@ public partial class AiAssistantService
             }
         }
 
-        if (type.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase) &&
-            ReadPayloadString(payload, "txType")?.Equals("transfer", StringComparison.OrdinalIgnoreCase) == true)
+        if (type.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase))
         {
-            var source = ReadPayloadString(payload, "transferSource");
-            var target = ReadPayloadString(payload, "transferTarget");
-            if (source == null || target == null || source.Equals(target, StringComparison.OrdinalIgnoreCase)) return false;
+            return HasValidLedgerDraftPayload(payload, context);
         }
 
         if (type.Equals("toggleRecurring", StringComparison.OrdinalIgnoreCase) && !HasBoolean(payload, "active")) return false;
@@ -207,6 +204,75 @@ public partial class AiAssistantService
             return HasKnownId(payload, "id", context.RecentTransactions);
         }
         return true;
+    }
+
+    private static bool HasValidLedgerDraftPayload(Dictionary<string, object?> payload, AiContext context)
+    {
+        if (payload.TryGetValue("transactions", out var transactionsValue))
+        {
+            if (transactionsValue is not JsonElement transactions || transactions.ValueKind != JsonValueKind.Array) return false;
+            var items = transactions.EnumerateArray().ToList();
+            if (items.Count is < 1 or > 50) return false;
+            return items.All(item =>
+            {
+                if (item.ValueKind != JsonValueKind.Object) return false;
+                var record = JsonSerializer.Deserialize<Dictionary<string, object?>>(item.GetRawText());
+                return record != null && IsValidLedgerDraftRecord(record, context, requireLedgerCategorySpecified: true);
+            });
+        }
+
+        // Backward compatibility for an older client/model response containing one record at
+        // the payload root. New responses always use payload.transactions.
+        return IsValidLedgerDraftRecord(payload, context, requireLedgerCategorySpecified: false);
+    }
+
+    private static bool IsValidLedgerDraftRecord(
+        IReadOnlyDictionary<string, object?> record,
+        AiContext context,
+        bool requireLedgerCategorySpecified)
+    {
+        var description = ReadPayloadString(record, "description");
+        var txType = ReadPayloadString(record, "txType");
+        if (string.IsNullOrWhiteSpace(description) || description.Length > 300 ||
+            txType == null || !new[] { "inflow", "outflow", "transfer" }.Contains(txType, StringComparer.OrdinalIgnoreCase) ||
+            !HasRequiredPositiveNumber(record, "amount") ||
+            !HasValidOptionalIsoDate(record, "date")) return false;
+
+        if (requireLedgerCategorySpecified && !HasBoolean(record, "ledgerCategorySpecified")) return false;
+
+        if (txType.Equals("transfer", StringComparison.OrdinalIgnoreCase))
+        {
+            var source = ReadPayloadString(record, "transferSource");
+            var target = ReadPayloadString(record, "transferTarget");
+            return source != null && target != null &&
+                new[] { "Essentials", "Growth", "Stability", "Rewards" }.Contains(source, StringComparer.OrdinalIgnoreCase) &&
+                new[] { "Essentials", "Growth", "Stability", "Rewards" }.Contains(target, StringComparer.OrdinalIgnoreCase) &&
+                !source.Equals(target, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var normalCategories = context.Categories
+            .Where(category => !TransactionCategoryService.IsReservedName(category))
+            .ToList();
+        return !HasUnknownOrMissingString(record, "category", normalCategories) &&
+            !HasUnknownOrMissingString(record, "ledgerCategory", ["Essentials", "Growth", "Stability", "Rewards", "Income"]);
+    }
+
+    private static bool HasUnknownOrMissingString(
+        IReadOnlyDictionary<string, object?> payload,
+        string key,
+        IReadOnlyCollection<string> allowed)
+    {
+        var value = ReadPayloadString(payload, key);
+        return string.IsNullOrWhiteSpace(value) || !allowed.Contains(value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool HasRequiredPositiveNumber(IReadOnlyDictionary<string, object?> payload, string key)
+    {
+        if (!payload.ContainsKey(key) || !HasValidOptionalNonNegativeNumber(payload, key)) return false;
+        var value = payload[key];
+        if (value is JsonElement element && element.ValueKind == JsonValueKind.Number)
+            return element.TryGetDouble(out var jsonNumber) && jsonNumber > 0;
+        return double.TryParse(value?.ToString(), NumberStyles.Number, CultureInfo.InvariantCulture, out var number) && number > 0;
     }
 
     private static bool LooksLikeProtectedMutationCommand(string message)

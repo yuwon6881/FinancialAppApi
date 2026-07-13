@@ -387,6 +387,56 @@ public class AiAssistantServiceTests
     }
 
     [Fact]
+    public async Task ChatAsync_InflowDraft_KeepsInflowTypeAndNormalCategory()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Opening inflow draft.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Cashback\",\"amount\":25,\"txType\":\"inflow\",\"category\":\"Food\",\"ledgerCategory\":\"Income\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("add a 25 cashback inflow", []));
+
+        var action = Assert.Single(outcome.Response.Actions);
+        Assert.Equal("openAddLedgerDraft", action.Type);
+        Assert.Equal("inflow", action.Payload["txType"]?.ToString());
+        Assert.Equal("Food", action.Payload["category"]?.ToString());
+        Assert.Equal("Income", action.Payload["ledgerCategory"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ChatAsync_MultiRecordLedgerAdd_KeepsEveryDraftInOneAction()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Staging two drafts.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"transactions\":[{\"description\":\"Nasi Lemak\",\"amount\":12,\"txType\":\"outflow\",\"category\":\"Food\",\"ledgerCategory\":\"Essentials\",\"ledgerCategorySpecified\":false},{\"description\":\"Car Fuel\",\"amount\":30,\"txType\":\"outflow\",\"category\":\"Food\",\"ledgerCategory\":\"Growth\",\"ledgerCategorySpecified\":true}]}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("Nasi Lemak 12\nCar Fuel 30", []));
+
+        var action = Assert.Single(outcome.Response.Actions);
+        Assert.Equal("openAddLedgerDraft", action.Type);
+        var transactions = Assert.IsType<JsonElement>(action.Payload["transactions"]);
+        Assert.Equal(2, transactions.GetArrayLength());
+        Assert.Contains("ledger.add", handler.LastUserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_MultiRecordLedgerAdd_RejectsUnmarkedLedgerInference()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Staging a draft.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"transactions\":[{\"description\":\"Lunch\",\"amount\":12,\"txType\":\"outflow\",\"category\":\"Food\",\"ledgerCategory\":\"Growth\"}]}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("add lunch 12", []));
+
+        Assert.Empty(outcome.Response.Actions);
+    }
+
+    [Fact]
     public async Task ChatAsync_WishlistPurchaseAction_RequiresAnUnpurchasedKnownItem()
     {
         await using var context = NewContextWithSettings(hideSensitive: false);
@@ -465,7 +515,7 @@ public class AiAssistantServiceTests
     }
 
     [Fact]
-    public async Task ChatAsync_SensitiveMode_StripsAmountFromAddDraftPayload()
+    public async Task ChatAsync_SensitiveMode_BlocksLedgerDraftCreation()
     {
         await using var context = NewContextWithSettings(hideSensitive: true);
         await context.SaveChangesAsync();
@@ -477,9 +527,7 @@ public class AiAssistantServiceTests
 
         var outcome = await service.ChatAsync(new AiChatRequest("add a food transaction for lunch", []));
 
-        var action = Assert.Single(outcome.Response.Actions);
-        Assert.Equal("openAddLedgerDraft", action.Type);
-        Assert.False(action.Payload.ContainsKey("amount"));
+        Assert.Empty(outcome.Response.Actions);
     }
 
     // ---------- Layer: deterministic ledger-edit resolution (zero model calls) ----------

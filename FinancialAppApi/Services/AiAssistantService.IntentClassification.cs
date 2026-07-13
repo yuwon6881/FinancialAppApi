@@ -395,6 +395,20 @@ public partial class AiAssistantService
         @"\b(transaction|transactions|ledger|purchase|purchased|bought|paid|payment|receipt|charge|charged|expense|expenses|deposit|deposits|withdrawal|withdrawals|refund|refunds|debit|debits|credit|credits|find|search|when did|did i|edit|update|change|modify|delete|remove|erase|export|download|record|entry|merchant|cost me|how often|how frequently|frequency|largest|biggest|highest|lowest|smallest|most expensive|cheapest)\b",
         RegexOptions.Compiled);
 
+    private static bool LooksLikeLedgerDraftList(string message)
+    {
+        var lines = message
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToList();
+        if (lines.Count < 2 || lines.Count > 50) return false;
+
+        return lines.All(line => Regex.IsMatch(
+            line,
+            @"^.{1,160}?\s+(?:(?:rm|myr|usd|\$)\s*)?\d{1,9}(?:[.,]\d{1,2})?(?:\s+(?:inflow|outflow|expense|income|essentials?|growth|stability|rewards?))?$",
+            RegexOptions.IgnoreCase));
+    }
+
     // "how much / how many / total / average" questions are answered from the cycle summary
     // aggregates, so they never need the per-row detail block -- even though a phrase like
     // "how much did I spend" trips TransactionDetailSignal on the incidental "did i".

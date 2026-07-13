@@ -215,7 +215,9 @@ public partial class AiAssistantService
                     // let a normal analytic reply plus its thinking overflow into MAX_TOKENS (a 503
                     // "response too long and got cut off"). Give the visible JSON reply real
                     // headroom above the thinking it competes with.
-                    MaxOutputTokens: intentPlan.QueryPlan.NeedsCycleComparison ? 1600 : 1200,
+                    MaxOutputTokens: intentPlan.Intents.Contains(AiIntent.LedgerAdd)
+                        ? 3200
+                        : intentPlan.QueryPlan.NeedsCycleComparison ? 1600 : 1200,
                     SystemInstruction: systemInstruction,
                     ResponseJsonSchema: AiResponseSchemas.Chat(context.Categories),
                     ThinkingLevel: intentPlan.QueryPlan.NeedsCycleComparison ? "medium" : "low",

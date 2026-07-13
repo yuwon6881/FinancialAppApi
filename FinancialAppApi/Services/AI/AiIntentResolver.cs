@@ -288,7 +288,8 @@ public partial class AiAssistantService
         var intents = new List<AiIntent>();
         if (LooksLikeLedgerEditCommand(message)) intents.Add(AiIntent.LedgerEdit);
         if (deleteVerb && !s.NeedsWishlist && !s.NeedsRecurring && TransactionDetailSignal.IsMatch(lower)) intents.Add(AiIntent.LedgerEdit);
-        if (Regex.IsMatch(lower, @"\b(add|create|record|log|enter)\b") && TransactionDetailSignal.IsMatch(lower)) intents.Add(AiIntent.LedgerAdd);
+        if ((Regex.IsMatch(lower, @"\b(add|create|record|log|enter)\b") && TransactionDetailSignal.IsMatch(lower)) ||
+            LooksLikeLedgerDraftList(message)) intents.Add(AiIntent.LedgerAdd);
         if (s.NeedsWishlist && (Regex.IsMatch(lower, @"\b(add|create|edit|update|change|modify)\b") || mutationVerb))
             intents.Add(Regex.IsMatch(lower, @"\b(add|create)\b") && !mutationVerb ? AiIntent.WishlistAdd : AiIntent.WishlistEdit);
         if (s.NeedsRecurring && (Regex.IsMatch(lower, @"\b(add|create|edit|update|change|modify)\b") || mutationVerb))
