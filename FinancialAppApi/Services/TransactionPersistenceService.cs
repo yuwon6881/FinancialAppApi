@@ -213,21 +213,59 @@ public class TransactionPersistenceService
         if (parts.Length != 4) return;
 
         var categories = FinancialConstants.BudgetCategories;
-        for (int i = 0; i < 4; i++)
+        var percentages = new decimal[4];
+        for (var i = 0; i < parts.Length; i++)
         {
-            if (decimal.TryParse(parts[i], out var pct) && pct > 0)
+            if (!decimal.TryParse(
+                    parts[i],
+                    System.Globalization.NumberStyles.Number,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out percentages[i]) || percentages[i] < 0)
             {
-                var splitAmount = Math.Round(transaction.Amount * (pct / 100m), 2, MidpointRounding.AwayFromZero);
-                _context.Transactions.Add(new Transaction
-                {
-                    Id = $"{transaction.Id}-split-{categories[i]}",
-                    Date = transaction.Date,
-                    Description = $"[Split: {categories[i]}] {transaction.Description}",
-                    Category = "Transfer",
-                    LedgerCategory = $"Transfer:Income->{categories[i]}",
-                    Amount = splitAmount
-                });
+                return;
             }
+        }
+
+        var percentageTotal = percentages.Sum();
+        if (percentageTotal <= 0) return;
+
+        // Allocate in integer cents using the largest-remainder method. Rounding each bucket
+        // independently can make the generated rows differ from the salary by one or more cents.
+        var totalCents = decimal.ToInt64(transaction.Amount * 100m);
+        var allocations = percentages
+            .Select((percentage, index) =>
+            {
+                var exactCents = totalCents * percentage / percentageTotal;
+                var floorCents = decimal.ToInt64(decimal.Floor(exactCents));
+                return new { Index = index, Cents = floorCents, Fraction = exactCents - floorCents };
+            })
+            .ToArray();
+
+        var allocatedCents = allocations.Sum(allocation => allocation.Cents);
+        var remainingCents = totalCents - allocatedCents;
+        var remainderOrder = allocations
+            .OrderByDescending(allocation => allocation.Fraction)
+            .ThenBy(allocation => allocation.Index)
+            .Select(allocation => allocation.Index)
+            .ToArray();
+        var finalCents = allocations.Select(allocation => allocation.Cents).ToArray();
+        for (long i = 0; i < remainingCents; i++)
+        {
+            finalCents[remainderOrder[(int)(i % remainderOrder.Length)]]++;
+        }
+
+        for (var i = 0; i < finalCents.Length; i++)
+        {
+            if (finalCents[i] <= 0) continue;
+            _context.Transactions.Add(new Transaction
+            {
+                Id = $"{transaction.Id}-split-{categories[i]}",
+                Date = transaction.Date,
+                Description = $"[Split: {categories[i]}] {transaction.Description}",
+                Category = "Transfer",
+                LedgerCategory = $"Transfer:Income->{categories[i]}",
+                Amount = finalCents[i] / 100m
+            });
         }
     }
 

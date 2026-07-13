@@ -114,6 +114,25 @@ public class FinancialServiceDashboardTests
         Assert.Equal(2026, setting.SelectedYear);
     }
 
+    [Fact]
+    public async Task GetDashboardDataAsync_ExcludesLegacyNegativeTransfersFromExpenses()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.Transactions.AddRange(
+            Tx("food", 2026, 7, 9, "Food", -100m),
+            Tx("legacy-transfer", 2026, 7, 10, "Transfer", -50m, "Transfer:Rewards->Growth"));
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var response = await service.GetDashboardDataAsync("Jul", 2026);
+
+        Assert.Equal(new[] { ("Food", 100m) }, GetBreakdown(response, "monthlyCategoryBreakdown"));
+        var stats = response.GetType().GetProperty("stats")!.GetValue(response)!;
+        var expensesRaw = (string)stats.GetType().GetProperty("monthlyExpenses")!.GetValue(stats)!;
+        Assert.Equal(100m, ObfuscationHelper.Deobfuscate(expensesRaw));
+    }
+
     private static (string category, decimal amount)[] GetBreakdown(object response, string propertyName)
     {
         var raw = (System.Collections.IEnumerable)response.GetType().GetProperty(propertyName)!.GetValue(response)!;

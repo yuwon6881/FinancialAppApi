@@ -46,7 +46,7 @@ public class FinancialController : ControllerBase
     [HttpPut("settings")]
     public async Task<IActionResult> UpdateSettings([FromBody] UpdateSettingsDto updateDto)
     {
-        await _financialService.UpdateSettingsAsync(new FinancialSettingsUpdate(
+        var validationError = await _financialService.UpdateSettingsAsync(new FinancialSettingsUpdate(
             updateDto.TargetStabilityFund,
             updateDto.EssentialsAlloc,
             updateDto.GrowthAlloc,
@@ -58,6 +58,10 @@ public class FinancialController : ControllerBase
             updateDto.VibrationEnabled,
             updateDto.Currency,
             updateDto.StabilityOverflowRedirect));
+        if (validationError != null)
+        {
+            return BadRequest(new { message = validationError });
+        }
         return NoContent();
     }
 

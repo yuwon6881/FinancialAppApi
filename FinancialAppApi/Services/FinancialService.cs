@@ -117,8 +117,8 @@ public class FinancialService
         };
 
         var totalBalance = selectedRemEssentials + selectedRemStability + selectedRemRewards;
-        var monthlyInflow = activeCycleTxs.Where(t => t.Amount > 0 && !t.LedgerCategory.StartsWith("Transfer:")).Sum(t => t.Amount);
-        var monthlyOutflow = Math.Abs(activeCycleTxs.Where(t => t.Amount < 0).Sum(t => t.Amount));
+        var monthlyInflow = activeCycleTxs.Where(t => t.Amount > 0 && !IsTransfer(t)).Sum(t => t.Amount);
+        var monthlyOutflow = Math.Abs(activeCycleTxs.Where(t => t.Amount < 0 && !IsTransfer(t)).Sum(t => t.Amount));
         var activeRecurringTotal = Math.Abs(allRecurring.Where(r => r.Active).Sum(r => r.Amount));
         var growthPercentAchieved = selectedNetGrowth / (targetGrowth > 0 ? targetGrowth : 1m);
         var stabilityPercentReached = selectedRemStability / (setting.TargetStabilityFund > 0 ? setting.TargetStabilityFund : 1m);
@@ -236,8 +236,18 @@ public class FinancialService
         };
     }
 
-    public async Task UpdateSettingsAsync(FinancialSettingsUpdate update)
+    public async Task<string?> UpdateSettingsAsync(FinancialSettingsUpdate update)
     {
+        var allocations = new[] { update.EssentialsAlloc, update.GrowthAlloc, update.StabilityAlloc, update.RewardsAlloc };
+        if (allocations.Any(value => value < 0m || value > 1m))
+        {
+            return "Each income allocation must be between 0% and 100%.";
+        }
+        if (Math.Abs(allocations.Sum() - 1m) > 0.0001m)
+        {
+            return "Income allocations must total exactly 100%.";
+        }
+
         var setting = await GetOrCreateSettingAsync();
 
         setting.TargetStabilityFund = ObfuscationHelper.Deobfuscate(update.TargetStabilityFund);
@@ -277,6 +287,7 @@ public class FinancialService
             await _context.SaveChangesAsync();
             await dbTransaction.CommitAsync();
         });
+        return null;
     }
 
     public async Task UpdateDarkModeAsync(bool darkMode)
@@ -528,11 +539,15 @@ public class FinancialService
     }
 
     private static List<(string category, decimal amount)> BuildBreakdown(List<Transaction> txs) => txs
-        .Where(t => t.Amount < 0)
+        .Where(t => t.Amount < 0 && !IsTransfer(t))
         .GroupBy(t => string.IsNullOrWhiteSpace(t.Category) ? "Other" : t.Category)
         .Select(g => (category: g.Key, amount: Math.Abs(g.Sum(t => t.Amount))))
         .OrderByDescending(b => b.amount)
         .ToList();
+
+    private static bool IsTransfer(Transaction transaction) =>
+        string.Equals(transaction.Category, "Transfer", StringComparison.OrdinalIgnoreCase) ||
+        transaction.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase);
 
     private static List<object> ObfuscateTrendPoints(List<(string month, decimal balance)> points) =>
         points.Select(p => (object)new { month = p.month, balance = ObfuscationHelper.Obfuscate(p.balance) }).ToList();

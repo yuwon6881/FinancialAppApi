@@ -186,23 +186,25 @@ public class TransactionQueryService
             .ToListAsync(cancellationToken);
 
         var sb = new StringBuilder();
-        sb.AppendLine("Date,Description,Category,Ledger Category,Debit (Outflow),Credit (Inflow)");
+        sb.AppendLine("Date,Description,Category,Ledger Allocation,Debit (Outflow),Credit (Inflow),Internal Movement");
 
         foreach (var t in rows)
         {
             var isTransfer = t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase);
             var isOutflow = t.Amount < 0;
-            var debit = isTransfer ? FormatAmount(t.Amount) : (isOutflow ? FormatAmount(Math.Abs(t.Amount)) : "");
-            var credit = isTransfer ? FormatAmount(t.Amount) : (!isOutflow ? FormatAmount(t.Amount) : "");
+            var debit = !isTransfer && isOutflow ? FormatAmount(Math.Abs(t.Amount)) : "";
+            var credit = !isTransfer && !isOutflow ? FormatAmount(t.Amount) : "";
+            var movement = isTransfer ? FormatAmount(Math.Abs(t.Amount)) : "";
 
             sb.AppendLine(string.Join(",", new[]
             {
                 EscapeCsvField(TransactionDate.ToDateOnly(t.Date).ToString("yyyy-MM-dd")),
                 EscapeCsvField(t.Description),
                 EscapeCsvField(t.Category),
-                EscapeCsvField(DisplayLedgerCategory(t.LedgerCategory)),
+                EscapeCsvField(DisplayLedgerAllocation(t.LedgerCategory)),
                 EscapeCsvField(debit),
-                EscapeCsvField(credit)
+                EscapeCsvField(credit),
+                EscapeCsvField(movement)
             }));
         }
 
@@ -291,14 +293,11 @@ public class TransactionQueryService
         return amount.ToString("0.00", CultureInfo.InvariantCulture);
     }
 
-    private static string DisplayLedgerCategory(string ledgerCategory)
+    private static string DisplayLedgerAllocation(string ledgerCategory)
     {
         if (ledgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase)) return "Income";
-        if (ledgerCategory.StartsWith("Transfer:Income->", StringComparison.OrdinalIgnoreCase))
-        {
-            return ledgerCategory.Substring("Transfer:Income->".Length);
-        }
-        if (ledgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase)) return "Transfer";
+        if (ledgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
+            return ledgerCategory.Substring("Transfer:".Length).Replace("->", " -> ");
         return ledgerCategory;
     }
 }

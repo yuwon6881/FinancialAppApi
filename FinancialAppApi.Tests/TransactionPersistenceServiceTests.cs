@@ -31,6 +31,33 @@ public class TransactionPersistenceServiceTests
     }
 
     [Fact]
+    public async Task CreateTransactionAsync_IncomeSplitsReconcileExactlyToSalaryAfterRounding()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            EssentialsAlloc = 0.50m,
+            GrowthAlloc = 0.25m,
+            StabilityAlloc = 0.15m,
+            RewardsAlloc = 0.10m,
+            CycleDay = 1
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.CreateTransactionAsync(
+            NewRequest("salary-with-cents", ledgerCategory: "Income", amount: 1000.05m));
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        var splits = await context.Transactions
+            .Where(t => t.Id.StartsWith("salary-with-cents-split-"))
+            .ToListAsync();
+        Assert.Equal(4, splits.Count);
+        Assert.Equal(1000.05m, splits.Sum(t => t.Amount));
+    }
+
+    [Fact]
     public async Task CreateTransactionAsync_ReturnsExistingForIdempotentPost()
     {
         await using var context = TestHelpers.NewInMemoryContext();

@@ -66,6 +66,37 @@ public class FinancialServiceTests
         Assert.Empty(context.CycleBalances);
     }
 
+    [Fact]
+    public async Task UpdateSettingsAsync_RejectsAllocationsThatDoNotTotalOneHundredPercent()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            EssentialsAlloc = 0.50m,
+            GrowthAlloc = 0.25m,
+            StabilityAlloc = 0.15m,
+            RewardsAlloc = 0.10m
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var error = await service.UpdateSettingsAsync(new FinancialSettingsUpdate(
+            ObfuscationHelper.Obfuscate(1234.56m),
+            0.50m,
+            0.25m,
+            0.15m,
+            0.20m,
+            28,
+            null,
+            null,
+            null,
+            "USD",
+            null));
+
+        Assert.Equal("Income allocations must total exactly 100%.", error);
+        Assert.Equal(0.10m, context.FinancialSettings.Single().RewardsAlloc);
+    }
+
     private static FinancialService NewService(AppDbContext context)
     {
         return new FinancialService(

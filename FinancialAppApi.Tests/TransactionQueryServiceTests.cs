@@ -43,15 +43,18 @@ public class TransactionQueryServiceTests
     public async Task ExportTransactionsAsync_IncludesCsvHeaderAndRows()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        context.Transactions.Add(NewTransaction("tx-1", "Coffee", "Food", "Rewards", -10m));
+        context.Transactions.AddRange(
+            NewTransaction("tx-1", "Coffee", "Food", "Rewards", -10m),
+            NewTransaction("tx-2", "Move", "Transfer", "Transfer:Rewards->Growth", 25m));
         await context.SaveChangesAsync();
         var service = new TransactionQueryService(context);
 
         var result = await service.ExportTransactionsAsync();
 
         var csv = Encoding.UTF8.GetString(result.Bytes);
-        Assert.Contains("Date,Description,Category,Ledger Category,Debit (Outflow),Credit (Inflow)", csv);
+        Assert.Contains("Date,Description,Category,Ledger Allocation,Debit (Outflow),Credit (Inflow),Internal Movement", csv);
         Assert.Contains("Coffee", csv);
+        Assert.Contains("Move,Transfer,Rewards -> Growth,,,25.00", csv);
     }
 
     [Fact]
