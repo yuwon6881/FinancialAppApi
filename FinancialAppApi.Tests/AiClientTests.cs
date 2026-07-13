@@ -57,6 +57,25 @@ public class AiClientTests
     }
 
     [Fact]
+    public void LedgerDraftChatSchema_RequiresTwoCompleteFlatActionsForTwoLineInput()
+    {
+        var schema = JsonSerializer.SerializeToElement(AiResponseSchemas.LedgerDraftChat(["Food", "Bills"], 2));
+        var actions = schema.GetProperty("properties").GetProperty("actions");
+        var actionItem = actions.GetProperty("items");
+        var payload = actionItem.GetProperty("properties").GetProperty("payload");
+        var required = payload.GetProperty("required").EnumerateArray().Select(item => item.GetString()).ToList();
+
+        Assert.Equal(2, actions.GetProperty("minItems").GetInt32());
+        Assert.Equal(2, actions.GetProperty("maxItems").GetInt32());
+        Assert.Equal(["openAddLedgerDraft"], actionItem.GetProperty("properties").GetProperty("type").GetProperty("enum").EnumerateArray().Select(item => item.GetString()));
+        Assert.Contains("description", required);
+        Assert.Contains("amount", required);
+        Assert.Contains("category", required);
+        Assert.Contains("ledgerCategorySpecified", required);
+        Assert.False(payload.GetProperty("properties").TryGetProperty("transactions", out _));
+    }
+
+    [Fact]
     public async Task GenerateTextAsync_RetriesTransientFailureOnce()
     {
         var attempt = 0;

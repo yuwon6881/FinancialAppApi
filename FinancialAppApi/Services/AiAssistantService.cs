@@ -202,6 +202,8 @@ public partial class AiAssistantService
         var promptHistory = IsSemanticFollowUp(message) ? BoundedSemanticHistory(history) : [];
         var systemInstruction = BuildSystemInstruction();
         var userContent = BuildUserContent(message, promptHistory, context);
+        var isLedgerAdd = intentPlan.Intents.Contains(AiIntent.LedgerAdd);
+        var structuredLedgerDraftCount = isLedgerAdd ? CountLedgerDraftListRecords(message) : 0;
 
         string text;
         try
@@ -219,7 +221,9 @@ public partial class AiAssistantService
                         ? 3200
                         : intentPlan.QueryPlan.NeedsCycleComparison ? 1600 : 1200,
                     SystemInstruction: systemInstruction,
-                    ResponseJsonSchema: AiResponseSchemas.Chat(context.Categories),
+                    ResponseJsonSchema: isLedgerAdd
+                        ? AiResponseSchemas.LedgerDraftChat(context.Categories, structuredLedgerDraftCount)
+                        : AiResponseSchemas.Chat(context.Categories),
                     ThinkingLevel: intentPlan.QueryPlan.NeedsCycleComparison ? "medium" : "low",
                     ModelConfigurationKey: "AiModels:Chat"),
                 cancellationToken);

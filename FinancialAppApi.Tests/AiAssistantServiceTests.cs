@@ -420,6 +420,13 @@ public class AiAssistantServiceTests
         Assert.Equal("Nasi Lemak", outcome.Response.Actions[0].Payload["description"]?.ToString());
         Assert.Equal("Car Fuel", outcome.Response.Actions[1].Payload["description"]?.ToString());
         Assert.Contains("ledger.add", handler.LastUserContent);
+        using var request = JsonDocument.Parse(handler.RequestBodies[^1]);
+        var actionsSchema = request.RootElement.GetProperty("generationConfig")
+            .GetProperty("responseJsonSchema")
+            .GetProperty("properties")
+            .GetProperty("actions");
+        Assert.Equal(2, actionsSchema.GetProperty("minItems").GetInt32());
+        Assert.Equal(2, actionsSchema.GetProperty("maxItems").GetInt32());
     }
 
     [Fact]
@@ -428,7 +435,7 @@ public class AiAssistantServiceTests
         await using var context = NewContextWithSettings(hideSensitive: false);
         var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
             "Staging a draft.",
-            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Lunch\",\"amount\":12,\"txType\":\"outflow\",\"category\":\"Food\",\"ledgerCategory\":\"Growth\"}}]"));
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Lunch\",\"amount\":12,\"txType\":\"outflow\",\"category\":\"Food\",\"ledgerCategory\":\"Growth\",\"date\":\"\",\"transferSource\":\"\",\"price\":\"\"}}]"));
         var service = NewService(context, handler);
 
         var outcome = await service.ChatAsync(new AiChatRequest("add lunch 12", []));
@@ -1081,6 +1088,7 @@ public class AiAssistantServiceTests
     {
         private readonly Queue<string> _replies;
         public List<string> UserContents { get; } = new();
+        public List<string> RequestBodies { get; } = new();
         public int CallCount => UserContents.Count;
         public string LastUserContent => UserContents[^1];
         public HttpStatusCode? AlwaysFailWith { get; set; }
@@ -1099,6 +1107,7 @@ public class AiAssistantServiceTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            RequestBodies.Add(body);
             using var document = JsonDocument.Parse(body);
             UserContents.Add(document.RootElement
                 .GetProperty("contents")[0]

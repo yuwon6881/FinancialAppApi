@@ -143,6 +143,14 @@ public partial class AiAssistantService
 
     private static bool IsActionSafe(string type, Dictionary<string, object?> payload, AiContext context)
     {
+        // Ledger adds only create local drafts. Validate and normalize their dedicated payload
+        // before the broad union checks below, which include fields belonging to unrelated action
+        // types and can reject an otherwise valid draft when Gemini emits optional placeholders.
+        if (type.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase))
+        {
+            return HasValidLedgerDraftPayload(payload, context);
+        }
+
         if (!HasKnownOptionalString(payload, "category", context.Categories) ||
             !HasKnownOptionalString(payload, "ledgerCategory", context.LedgerCategories) ||
             !HasKnownOptionalString(payload, "txType", ["inflow", "outflow", "transfer"]) ||
@@ -179,11 +187,6 @@ public partial class AiAssistantService
             {
                 return false;
             }
-        }
-
-        if (type.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase))
-        {
-            return HasValidLedgerDraftPayload(payload, context);
         }
 
         if (type.Equals("toggleRecurring", StringComparison.OrdinalIgnoreCase) && !HasBoolean(payload, "active")) return false;
@@ -234,12 +237,25 @@ public partial class AiAssistantService
             });
         }
 
-        NormalizeFlatLedgerDraftDefaults(payload);
+        NormalizeFlatLedgerDraftDefaults(payload, context);
         return IsValidLedgerDraftRecord(payload, context, requireLedgerCategorySpecified: true);
     }
 
-    private static void NormalizeFlatLedgerDraftDefaults(Dictionary<string, object?> payload)
+    private static void NormalizeFlatLedgerDraftDefaults(Dictionary<string, object?> payload, AiContext context)
     {
+        var txType = ReadPayloadString(payload, "txType");
+        if (txType == null || !new[] { "inflow", "outflow", "transfer" }.Contains(txType, StringComparer.OrdinalIgnoreCase))
+        {
+            txType = "outflow";
+        }
+        else
+        {
+            txType = txType.ToLowerInvariant();
+        }
+        payload["txType"] = txType;
+
+        if (!HasValidOptionalIsoDate(payload, "date")) payload.Remove("date");
+
         var ledgerCategorySpecified = payload.TryGetValue("ledgerCategorySpecified", out var specifiedValue) &&
             specifiedValue switch
             {
@@ -251,11 +267,35 @@ public partial class AiAssistantService
         // ledgerCategorySpecified is an internal safety signal rather than user data. Gemini may
         // omit optional payload fields even when its reply says the draft was staged, so normalize
         // omission to the safe default instead of silently dropping the entire UI action.
+        var requestedLedger = ReadPayloadString(payload, "ledgerCategory");
+        var canonicalLedger = new[] { "Essentials", "Growth", "Stability", "Rewards" }
+            .FirstOrDefault(candidate => candidate.Equals(requestedLedger, StringComparison.OrdinalIgnoreCase));
+        if (ledgerCategorySpecified && canonicalLedger == null) ledgerCategorySpecified = false;
         payload["ledgerCategorySpecified"] = ledgerCategorySpecified;
-        var txType = ReadPayloadString(payload, "txType");
-        if (!ledgerCategorySpecified && !string.Equals(txType, "transfer", StringComparison.OrdinalIgnoreCase))
+
+        if (!ledgerCategorySpecified && !txType.Equals("transfer", StringComparison.OrdinalIgnoreCase))
         {
             payload["ledgerCategory"] = "Essentials";
+        }
+        else if (canonicalLedger != null)
+        {
+            payload["ledgerCategory"] = canonicalLedger;
+        }
+
+        if (!txType.Equals("transfer", StringComparison.OrdinalIgnoreCase))
+        {
+            payload.Remove("transferSource");
+            payload.Remove("transferTarget");
+            var normalCategories = context.Categories
+                .Where(category => !TransactionCategoryService.IsReservedName(category))
+                .ToList();
+            var requestedCategory = ReadPayloadString(payload, "category");
+            var canonicalCategory = normalCategories.FirstOrDefault(category =>
+                category.Equals(requestedCategory, StringComparison.OrdinalIgnoreCase));
+            canonicalCategory ??= normalCategories.FirstOrDefault(category =>
+                category.Equals("Other", StringComparison.OrdinalIgnoreCase));
+            canonicalCategory ??= normalCategories.FirstOrDefault();
+            if (canonicalCategory != null) payload["category"] = canonicalCategory;
         }
     }
 

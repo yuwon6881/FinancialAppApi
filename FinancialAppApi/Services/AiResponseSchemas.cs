@@ -48,6 +48,44 @@ internal static class AiResponseSchemas
         },
         ["reply", "closeChat", "actions"]);
 
+    // Ledger creation uses a dedicated schema instead of the large generic ActionPayload union.
+    // This keeps Gemini's structured-output grammar small while making every field needed to
+    // stage a local draft mandatory. For an unambiguous line-based list, expectedActionCount pins
+    // the response to exactly one action per input line (up to the model-supported ceiling).
+    public static object LedgerDraftChat(IReadOnlyList<string> categories, int expectedActionCount = 0)
+    {
+        var exactCount = expectedActionCount is > 0 and <= MaxChatActions ? expectedActionCount : (int?)null;
+        return Obj(
+            new Dictionary<string, object>
+            {
+                ["reply"] = Str("Concise user-facing reply confirming the drafts that will be staged."),
+                ["closeChat"] = Bool(),
+                ["actions"] = Arr(Obj(
+                    new Dictionary<string, object>
+                    {
+                        ["type"] = Str(enums: ["openAddLedgerDraft"]),
+                        ["payload"] = Obj(
+                            new Dictionary<string, object>
+                            {
+                                ["description"] = Str("Transaction description copied from the user's record."),
+                                ["amount"] = Num("Positive transaction magnitude."),
+                                ["txType"] = Str(enums: ["inflow", "outflow", "transfer"]),
+                                ["category"] = Str("Explicit or single most likely normal category.", enums: categories),
+                                ["ledgerCategory"] = Str("Essentials unless explicitly requested otherwise.", enums: ["Essentials", "Growth", "Stability", "Rewards"]),
+                                ["ledgerCategorySpecified"] = Bool(),
+                                ["transferSource"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
+                                ["transferTarget"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
+                                ["date"] = Str("Posting date in YYYY-MM-DD when supplied by the user.")
+                            },
+                            ["description", "amount", "txType", "category", "ledgerCategory", "ledgerCategorySpecified"])
+                    },
+                    ["type", "payload"]),
+                    minItems: exactCount,
+                    maxItems: exactCount ?? MaxChatActions)
+            },
+            ["reply", "closeChat", "actions"]);
+    }
+
     private static readonly IReadOnlyList<string> IntentEnum =
     [
         "ledger.activity_count", "ledger.merchant_search", "ledger.spending_total",

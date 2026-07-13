@@ -395,18 +395,21 @@ public partial class AiAssistantService
         @"\b(transaction|transactions|ledger|purchase|purchased|bought|paid|payment|receipt|charge|charged|expense|expenses|deposit|deposits|withdrawal|withdrawals|refund|refunds|debit|debits|credit|credits|find|search|when did|did i|edit|update|change|modify|delete|remove|erase|export|download|record|entry|merchant|cost me|how often|how frequently|frequency|largest|biggest|highest|lowest|smallest|most expensive|cheapest)\b",
         RegexOptions.Compiled);
 
-    private static bool LooksLikeLedgerDraftList(string message)
+    private static bool LooksLikeLedgerDraftList(string message) => CountLedgerDraftListRecords(message) > 0;
+
+    private static int CountLedgerDraftListRecords(string message)
     {
         var lines = message
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(line => !string.IsNullOrWhiteSpace(line))
             .ToList();
-        if (lines.Count < 2 || lines.Count > 50) return false;
+        if (lines.Count < 2 || lines.Count > 50) return 0;
 
-        return lines.All(line => Regex.IsMatch(
+        var everyLineIsADraft = lines.All(line => Regex.IsMatch(
             line,
             @"^.{1,160}?\s+(?:(?:rm|myr|usd|\$)\s*)?\d{1,9}(?:[.,]\d{1,2})?(?:\s+(?:inflow|outflow|expense|income|essentials?|growth|stability|rewards?))?$",
             RegexOptions.IgnoreCase));
+        return everyLineIsADraft ? Math.Min(lines.Count, AiResponseSchemas.MaxChatActions) : 0;
     }
 
     // "how much / how many / total / average" questions are answered from the cycle summary
