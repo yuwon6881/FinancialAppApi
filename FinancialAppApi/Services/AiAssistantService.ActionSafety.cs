@@ -234,7 +234,29 @@ public partial class AiAssistantService
             });
         }
 
+        NormalizeFlatLedgerDraftDefaults(payload);
         return IsValidLedgerDraftRecord(payload, context, requireLedgerCategorySpecified: true);
+    }
+
+    private static void NormalizeFlatLedgerDraftDefaults(Dictionary<string, object?> payload)
+    {
+        var ledgerCategorySpecified = payload.TryGetValue("ledgerCategorySpecified", out var specifiedValue) &&
+            specifiedValue switch
+            {
+                bool value => value,
+                JsonElement element when element.ValueKind is JsonValueKind.True or JsonValueKind.False => element.GetBoolean(),
+                _ => false
+            };
+
+        // ledgerCategorySpecified is an internal safety signal rather than user data. Gemini may
+        // omit optional payload fields even when its reply says the draft was staged, so normalize
+        // omission to the safe default instead of silently dropping the entire UI action.
+        payload["ledgerCategorySpecified"] = ledgerCategorySpecified;
+        var txType = ReadPayloadString(payload, "txType");
+        if (!ledgerCategorySpecified && !string.Equals(txType, "transfer", StringComparison.OrdinalIgnoreCase))
+        {
+            payload["ledgerCategory"] = "Essentials";
+        }
     }
 
     private static bool IsValidLedgerDraftRecord(

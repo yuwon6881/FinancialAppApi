@@ -401,7 +401,7 @@ public class AiAssistantServiceTests
         Assert.Equal("openAddLedgerDraft", action.Type);
         Assert.Equal("inflow", action.Payload["txType"]?.ToString());
         Assert.Equal("Food", action.Payload["category"]?.ToString());
-        Assert.Equal("Income", action.Payload["ledgerCategory"]?.ToString());
+        Assert.Equal("Essentials", action.Payload["ledgerCategory"]?.ToString());
     }
 
     [Fact]
@@ -423,7 +423,7 @@ public class AiAssistantServiceTests
     }
 
     [Fact]
-    public async Task ChatAsync_MultiRecordLedgerAdd_RejectsUnmarkedLedgerInference()
+    public async Task ChatAsync_LedgerAdd_DefaultsMissingLedgerMetadataToEssentials()
     {
         await using var context = NewContextWithSettings(hideSensitive: false);
         var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
@@ -433,7 +433,10 @@ public class AiAssistantServiceTests
 
         var outcome = await service.ChatAsync(new AiChatRequest("add lunch 12", []));
 
-        Assert.Empty(outcome.Response.Actions);
+        var action = Assert.Single(outcome.Response.Actions);
+        Assert.Equal("openAddLedgerDraft", action.Type);
+        Assert.Equal("Essentials", action.Payload["ledgerCategory"]?.ToString());
+        Assert.False(Assert.IsType<bool>(action.Payload["ledgerCategorySpecified"]));
     }
 
     [Fact]
