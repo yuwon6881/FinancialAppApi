@@ -1,0 +1,27 @@
+[
+  {
+    "name": "delete-old-financialapp-images",
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "tagState": "any",
+      "packageNamePrefixes": [
+        "financialapp-api"
+      ],
+      "olderThan": "1d"
+    }
+  },
+  {
+    "name": "keep-current-financialapp-image",
+    "action": {
+      "type": "Keep"
+    },
+    "mostRecentVersions": {
+      "packageNamePrefixes": [
+        "financialapp-api"
+      ],
+      "keepCount": 1
+    }
+  }
+]

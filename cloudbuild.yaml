@@ -1,10 +1,7 @@
 steps:
-  # Build the image and push it. BuildKit inline cache + two pull-through cache tags
-  # let a fresh Cloud Build VM reuse layers from the previous build:
-  #   * :build-cache holds the SDK restore+publish stage -- the expensive part. It is
-  #     reused whenever FinancialAppApi.csproj is unchanged (i.e. most commits), so
-  #     `dotnet restore` + ReadyToRun publish don't re-run from scratch.
-  #   * :latest holds the final runtime image layers.
+  # Build the image and push it. Do not persist intermediate build layers in Artifact
+  # Registry: the SDK/ReadyToRun cache is much larger than the runtime image and would
+  # by itself exceed Artifact Registry's free storage allowance.
   # $PROJECT_ID/$COMMIT_SHA are Cloud Build substitutions; $$IMAGE is escaped so bash
   # (not Cloud Build) expands it.
   - name: 'gcr.io/cloud-builders/docker'
@@ -16,24 +13,10 @@ steps:
       - |
         set -euo pipefail
         IMAGE="asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api"
-        # Warm the local cache from the previous build (ignored on the very first run).
-        docker pull "$$IMAGE:build-cache" || true
-        docker pull "$$IMAGE:latest" || true
-        # Build + publish the SDK stage, tagged as the restore/publish cache.
-        docker build --target build \
-          --cache-from "$$IMAGE:build-cache" \
-          --build-arg BUILDKIT_INLINE_CACHE=1 \
-          -t "$$IMAGE:build-cache" \
-          -f FinancialAppApi/Dockerfile .
-        # Build the final runtime image, reusing the build stage from local cache.
         docker build \
-          --cache-from "$$IMAGE:build-cache" \
-          --cache-from "$$IMAGE:latest" \
-          --build-arg BUILDKIT_INLINE_CACHE=1 \
           -t "$$IMAGE:$COMMIT_SHA" \
           -t "$$IMAGE:latest" \
           -f FinancialAppApi/Dockerfile .
-        docker push "$$IMAGE:build-cache"
         docker push "$$IMAGE:latest"
         docker push "$$IMAGE:$COMMIT_SHA"
     id: BuildPush
@@ -74,8 +57,8 @@ steps:
 
 options:
   logging: CLOUD_LOGGING_ONLY
-  # More vCPUs cut wall-clock on the ReadyToRun (crossgen) publish, which parallelizes well.
-  machineType: 'E2_HIGHCPU_8'
+  # E2_STANDARD_2 build minutes are eligible for Cloud Build's monthly free allowance.
+  machineType: 'E2_STANDARD_2'
 
 availableSecrets:
   secretManager:
