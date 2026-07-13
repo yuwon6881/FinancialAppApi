@@ -17,7 +17,15 @@ public partial class AiAssistantService
         var actions = new List<AiUiAction>();
         if (root.TryGetProperty("actions", out var actionsProp) && actionsProp.ValueKind == JsonValueKind.Array)
         {
-            foreach (var actionEl in actionsProp.EnumerateArray().Take(3))
+            var returnedActions = actionsProp.EnumerateArray().Take(50).ToList();
+            var containsOnlyLedgerDrafts = returnedActions.Count > 0 && returnedActions.All(actionEl =>
+                actionEl.ValueKind == JsonValueKind.Object &&
+                actionEl.TryGetProperty("type", out var actionType) &&
+                actionType.ValueKind == JsonValueKind.String &&
+                actionType.GetString()?.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase) == true);
+            var actionLimit = containsOnlyLedgerDrafts ? 50 : 3;
+
+            foreach (var actionEl in returnedActions.Take(actionLimit))
             {
                 if (!actionEl.TryGetProperty("type", out var typeProp)) continue;
                 var type = typeProp.GetString() ?? "";
@@ -208,6 +216,8 @@ public partial class AiAssistantService
 
     private static bool HasValidLedgerDraftPayload(Dictionary<string, object?> payload, AiContext context)
     {
+        // Keep accepting the briefly shipped nested contract so an in-flight response from an
+        // older deployment is harmless. New responses use one flat action per record.
         if (payload.TryGetValue("transactions", out var transactionsValue))
         {
             if (transactionsValue is not JsonElement transactions || transactions.ValueKind != JsonValueKind.Array) return false;
@@ -221,9 +231,7 @@ public partial class AiAssistantService
             });
         }
 
-        // Backward compatibility for an older client/model response containing one record at
-        // the payload root. New responses always use payload.transactions.
-        return IsValidLedgerDraftRecord(payload, context, requireLedgerCategorySpecified: false);
+        return IsValidLedgerDraftRecord(payload, context, requireLedgerCategorySpecified: true);
     }
 
     private static bool IsValidLedgerDraftRecord(

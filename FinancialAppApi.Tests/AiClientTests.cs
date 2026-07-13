@@ -42,6 +42,21 @@ public class AiClientTests
     }
 
     [Fact]
+    public void ChatSchema_KeepsLedgerDraftPayloadFlat()
+    {
+        var schema = JsonSerializer.SerializeToElement(AiResponseSchemas.Chat(["Food", "Transport"]));
+        var actions = schema.GetProperty("properties").GetProperty("actions");
+        var payloadProperties = actions.GetProperty("items")
+            .GetProperty("properties")
+            .GetProperty("payload")
+            .GetProperty("properties");
+
+        Assert.Equal(50, actions.GetProperty("maxItems").GetInt32());
+        Assert.False(payloadProperties.TryGetProperty("transactions", out _));
+        Assert.Equal("boolean", payloadProperties.GetProperty("ledgerCategorySpecified").GetProperty("type").GetString());
+    }
+
+    [Fact]
     public async Task GenerateTextAsync_RetriesTransientFailureOnce()
     {
         var attempt = 0;

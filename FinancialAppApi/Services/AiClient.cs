@@ -163,29 +163,40 @@ public class AiClient
 
         using (response)
         {
-            if (IsTransientProviderFailure(response.StatusCode))
-            {
-                _logger.LogWarning(
-                    "AI provider returned transient status {Status} for {Feature} using {Model}.",
-                    (int)response.StatusCode,
-                    feature,
-                    model);
-                throw new AiProviderUnavailableException();
-            }
-
-            if (response.StatusCode == HttpStatusCode.TooManyRequests)
-            {
-                _logger.LogWarning("AI provider rate limit reached for {Feature} using {Model}.", feature, model);
-                throw new AiClientException("AI service rate limit reached. Please wait a moment and try again.");
-            }
-
             if (!response.IsSuccessStatusCode)
             {
+                // Read the provider's error body: for a 400 it carries the actual reason
+                // (e.g. an INVALID_ARGUMENT naming the rejected field or an over-complex
+                // response schema). Without it a 400 is undiagnosable from logs alone.
+                var errorBody = await SafeReadErrorBodyAsync(response, cancellationToken);
+
+                if (IsTransientProviderFailure(response.StatusCode))
+                {
+                    _logger.LogWarning(
+                        "AI provider returned transient status {Status} for {Feature} using {Model}. Body: {Body}",
+                        (int)response.StatusCode,
+                        feature,
+                        model,
+                        errorBody);
+                    throw new AiProviderUnavailableException();
+                }
+
+                if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    _logger.LogWarning(
+                        "AI provider rate limit reached for {Feature} using {Model}. Body: {Body}",
+                        feature,
+                        model,
+                        errorBody);
+                    throw new AiClientException("AI service rate limit reached. Please wait a moment and try again.");
+                }
+
                 _logger.LogWarning(
-                    "AI provider returned status {Status} for {Feature} using {Model}.",
+                    "AI provider returned status {Status} for {Feature} using {Model}. Body: {Body}",
                     (int)response.StatusCode,
                     feature,
-                    model);
+                    model,
+                    errorBody);
                 throw new AiClientException("AI service returned an error. Please try again.");
             }
 
@@ -275,6 +286,20 @@ public class AiClient
     private static bool IsTransientProviderFailure(HttpStatusCode statusCode) =>
         statusCode is HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway or
             HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout;
+
+    private static async Task<string> SafeReadErrorBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            const int maxLength = 2000;
+            return body.Length <= maxLength ? body : string.Concat(body.AsSpan(0, maxLength), "...(truncated)");
+        }
+        catch (Exception ex)
+        {
+            return $"<failed to read error body: {ex.Message}>";
+        }
+    }
 
     private static string StripMarkdownFence(string text)
     {
