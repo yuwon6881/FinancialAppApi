@@ -407,7 +407,7 @@ public partial class AiAssistantService
 
         var everyLineIsADraft = lines.All(line => Regex.IsMatch(
             line,
-            @"^.{1,160}?\s+(?:(?:rm|myr|usd|\$)\s*)?\d{1,9}(?:[.,]\d{1,2})?(?:\s+(?:inflow|outflow|expense|income|essentials?|growth|stability|rewards?))?$",
+            @"^.{1,160}?\s+(?:(?:rm|myr|usd|\$)\s*)?\d{1,9}(?:[.,]\d{1,2})?(?:\s+[\p{L}][\p{L}\p{N}&' -]{0,60})?$",
             RegexOptions.IgnoreCase));
         return everyLineIsADraft ? Math.Min(lines.Count, AiResponseSchemas.MaxChatActions) : 0;
     }

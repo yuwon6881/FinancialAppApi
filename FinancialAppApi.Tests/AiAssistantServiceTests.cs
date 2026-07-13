@@ -461,6 +461,29 @@ public class AiAssistantServiceTests
     }
 
     [Fact]
+    public async Task ChatAsync_LedgerAdd_UsesDedicatedCategorySuggestionsAndExplicitLedgerHint()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        context.TransactionCategories.Add(new TransactionCategory { Id = "transport", Name = "Transport" });
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(
+            ScriptedAiHandler.Chat(
+                "Staging two drafts.",
+                actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Nasi Lemak\",\"amount\":12,\"txType\":\"outflow\",\"category\":\"Food\",\"ledgerCategory\":\"Essentials\",\"ledgerCategorySpecified\":false}},{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Car Fuel\",\"amount\":30,\"txType\":\"outflow\",\"category\":\"Food\",\"ledgerCategory\":\"Essentials\",\"ledgerCategorySpecified\":false}}]"),
+            "{\"suggestions\":[{\"category\":\"Food\",\"confidence\":0.99}]}");
+        var service = NewService(context, handler, withCategorySuggestions: true);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("Nasi Lemak 12\nCar Fuel 30 Transport Growth", []));
+
+        Assert.Equal(2, outcome.Response.Actions.Count);
+        Assert.Equal("Food", outcome.Response.Actions[0].Payload["category"]?.ToString());
+        Assert.Equal("Essentials", outcome.Response.Actions[0].Payload["ledgerCategory"]?.ToString());
+        Assert.Equal("Transport", outcome.Response.Actions[1].Payload["category"]?.ToString());
+        Assert.Equal("Growth", outcome.Response.Actions[1].Payload["ledgerCategory"]?.ToString());
+        Assert.True(Assert.IsType<bool>(outcome.Response.Actions[1].Payload["ledgerCategorySpecified"]));
+    }
+
+    [Fact]
     public async Task ChatAsync_WishlistPurchaseAction_RequiresAnUnpurchasedKnownItem()
     {
         await using var context = NewContextWithSettings(hideSensitive: false);
@@ -1060,14 +1083,21 @@ public class AiAssistantServiceTests
         return context;
     }
 
-    private static AiAssistantService NewService(AppDbContext context, ScriptedAiHandler handler)
+    private static AiAssistantService NewService(
+        AppDbContext context,
+        ScriptedAiHandler handler,
+        bool withCategorySuggestions = false)
     {
         var cache = new MemoryCache(new MemoryCacheOptions());
         var client = new AiClient(
             new HttpClient(handler),
             TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
             NullLogger<AiClient>.Instance);
-        return new AiAssistantService(client, context, new TransactionCategoryService(context, cache));
+        var categoryService = new TransactionCategoryService(context, cache);
+        var suggestions = withCategorySuggestions
+            ? new CategorySuggestionService(client, context, categoryService, cache)
+            : null;
+        return new AiAssistantService(client, context, categoryService, suggestions);
     }
 
     private static Transaction Txn(string id, DateTime date, string description, decimal amount) => new()

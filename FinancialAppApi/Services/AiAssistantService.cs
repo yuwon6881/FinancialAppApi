@@ -106,15 +106,18 @@ public partial class AiAssistantService
     private readonly AiClient _aiClient;
     private readonly AppDbContext _context;
     private readonly TransactionCategoryService _categoryService;
+    private readonly CategorySuggestionService? _categorySuggestionService;
 
     public AiAssistantService(
         AiClient aiClient,
         AppDbContext context,
-        TransactionCategoryService categoryService)
+        TransactionCategoryService categoryService,
+        CategorySuggestionService? categorySuggestionService = null)
     {
         _aiClient = aiClient;
         _context = context;
         _categoryService = categoryService;
+        _categorySuggestionService = categorySuggestionService;
     }
 
     public async Task<AiChatOutcome> ChatAsync(AiChatRequest request, CancellationToken cancellationToken = default)
@@ -237,6 +240,7 @@ public partial class AiAssistantService
         }
 
         var parsed = ParseAndValidateResponse(text, context, message, intentPlan.Constraints);
+        parsed = await EnrichLedgerDraftActionsAsync(parsed, message, context, cancellationToken);
         // Phase 5: an incomplete aggregate must never surface as a bare exact figure.
         parsed = parsed with { Reply = EnforceApproximateWording(parsed.Reply, contextResult.Sufficiency.Approximate) };
         // Round-trip the structured references so the client can echo them back on the next
