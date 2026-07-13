@@ -12,7 +12,8 @@ public enum TransactionMutationStatus
     Deleted,
     NotFound,
     InvalidDate,
-    InvalidCategory
+    InvalidCategory,
+    InvalidLedgerCategory
 }
 
 public sealed record TransactionMutationRequest(
@@ -62,14 +63,21 @@ public class TransactionPersistenceService
             return InvalidDate();
         }
 
+        var amount = Math.Round(ObfuscationHelper.Deobfuscate(request.Amount), 2, MidpointRounding.AwayFromZero);
+        var ledgerValidation = ValidateAndNormalizeLedgerCategory(request.Category, request.LedgerCategory, amount);
+        if (!ledgerValidation.IsValid)
+        {
+            return InvalidLedgerCategory(ledgerValidation.Message!);
+        }
+
         var transaction = new Transaction
         {
             Id = string.IsNullOrWhiteSpace(request.Id) ? $"tx-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}" : request.Id,
             Date = TransactionDate.FromInputDate(postDate),
             Description = request.Description,
-            Category = request.Category,
-            LedgerCategory = request.LedgerCategory,
-            Amount = Math.Round(ObfuscationHelper.Deobfuscate(request.Amount), 2, MidpointRounding.AwayFromZero),
+            Category = ledgerValidation.Category,
+            LedgerCategory = ledgerValidation.LedgerCategory,
+            Amount = amount,
             RecurringPaymentId = request.RecurringPaymentId,
             WishlistItemId = request.WishlistItemId
         };
@@ -103,6 +111,13 @@ public class TransactionPersistenceService
             return InvalidDate();
         }
 
+        var amount = Math.Round(ObfuscationHelper.Deobfuscate(request.Amount), 2, MidpointRounding.AwayFromZero);
+        var ledgerValidation = ValidateAndNormalizeLedgerCategory(request.Category, request.LedgerCategory, amount);
+        if (!ledgerValidation.IsValid)
+        {
+            return InvalidLedgerCategory(ledgerValidation.Message!);
+        }
+
         var originalDate = transaction.Date;
 
         var existingSplits = await _context.Transactions
@@ -112,9 +127,9 @@ public class TransactionPersistenceService
 
         transaction.Date = TransactionDate.PreserveTimeWhenSameDate(transaction.Date, putDate);
         transaction.Description = request.Description;
-        transaction.Category = request.Category;
-        transaction.LedgerCategory = request.LedgerCategory;
-        transaction.Amount = Math.Round(ObfuscationHelper.Deobfuscate(request.Amount), 2, MidpointRounding.AwayFromZero);
+        transaction.Category = ledgerValidation.Category;
+        transaction.LedgerCategory = ledgerValidation.LedgerCategory;
+        transaction.Amount = amount;
         transaction.RecurringPaymentId = request.RecurringPaymentId ?? transaction.RecurringPaymentId;
         transaction.WishlistItemId = request.WishlistItemId ?? transaction.WishlistItemId;
 
@@ -283,5 +298,111 @@ public class TransactionPersistenceService
         return new TransactionMutationResult(
             TransactionMutationStatus.InvalidCategory,
             Message: $"{name} does not exist.");
+    }
+
+    private static TransactionMutationResult InvalidLedgerCategory(string message)
+    {
+        return new TransactionMutationResult(
+            TransactionMutationStatus.InvalidLedgerCategory,
+            Message: message);
+    }
+
+    private static (bool IsValid, string Category, string LedgerCategory, string? Message)
+        ValidateAndNormalizeLedgerCategory(string category, string ledgerCategory, decimal amount)
+    {
+        var normalizedCategory = category.Trim();
+        var normalizedLedger = ledgerCategory?.Trim() ?? string.Empty;
+        var isTransferCategory = normalizedCategory.Equals("Transfer", StringComparison.OrdinalIgnoreCase);
+
+        if (normalizedLedger.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!isTransferCategory)
+            {
+                return (false, normalizedCategory, normalizedLedger,
+                    "A transfer ledger route must use the Transfer category.");
+            }
+
+            var route = normalizedLedger["Transfer:".Length..].Split("->", StringSplitOptions.None);
+            if (route.Length != 2)
+            {
+                return (false, normalizedCategory, normalizedLedger,
+                    "Transfer ledger category must use the format Transfer:Source->Target.");
+            }
+
+            var source = FinancialConstants.BudgetCategories.FirstOrDefault(bucket =>
+                bucket.Equals(route[0].Trim(), StringComparison.OrdinalIgnoreCase));
+            var target = FinancialConstants.BudgetCategories.FirstOrDefault(bucket =>
+                bucket.Equals(route[1].Trim(), StringComparison.OrdinalIgnoreCase));
+
+            if (source == null || target == null)
+            {
+                return (false, normalizedCategory, normalizedLedger,
+                    $"Transfer source and target must be one of: {string.Join(", ", FinancialConstants.BudgetCategories)}.");
+            }
+            if (source == target)
+            {
+                return (false, normalizedCategory, normalizedLedger,
+                    "Transfer source and target must be different.");
+            }
+            if (amount <= 0)
+            {
+                return (false, normalizedCategory, normalizedLedger,
+                    "Transfer amount must be greater than zero.");
+            }
+
+            return (true, "Transfer", $"Transfer:{source}->{target}", null);
+        }
+
+        if (isTransferCategory)
+        {
+            return (false, normalizedCategory, normalizedLedger,
+                "The Transfer category requires a valid Transfer:Source->Target ledger route.");
+        }
+
+        if (normalizedLedger.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = normalizedLedger["IncomeSplit:".Length..].Split(',');
+            var percentages = new decimal[4];
+            var validPercentages = parts.Length == 4;
+            for (var i = 0; validPercentages && i < parts.Length; i++)
+            {
+                validPercentages = decimal.TryParse(
+                    parts[i],
+                    System.Globalization.NumberStyles.Number,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out percentages[i]) && percentages[i] >= 0;
+            }
+            if (!validPercentages || Math.Abs(percentages.Sum() - 100m) > 0.01m)
+            {
+                return (false, normalizedCategory, normalizedLedger,
+                    "Income split must contain four non-negative percentages totaling 100.");
+            }
+            if (amount <= 0)
+            {
+                return (false, normalizedCategory, normalizedLedger,
+                    "Income amount must be greater than zero.");
+            }
+
+            return (true, normalizedCategory,
+                $"IncomeSplit:{string.Join(',', percentages.Select(value => value.ToString(System.Globalization.CultureInfo.InvariantCulture)))}", null);
+        }
+
+        var plainLedger = new[] { "Income", "Discarded" }
+            .Concat(FinancialConstants.BudgetCategories)
+            .FirstOrDefault(value => value.Equals(normalizedLedger, StringComparison.OrdinalIgnoreCase));
+        if (plainLedger == null)
+        {
+            return (false, normalizedCategory, normalizedLedger, "Ledger category is not recognized.");
+        }
+        if (plainLedger == "Income" && amount <= 0)
+        {
+            return (false, normalizedCategory, normalizedLedger, "Income amount must be greater than zero.");
+        }
+        if (plainLedger == "Discarded" && amount != 0)
+        {
+            return (false, normalizedCategory, normalizedLedger, "Discarded transactions must have a zero amount.");
+        }
+
+        return (true, normalizedCategory, plainLedger, null);
     }
 }

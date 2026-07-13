@@ -25,6 +25,21 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
+    public async Task GetTransactionsAsync_OutflowFilterExcludesTransfersEvenIfAmountIsNegative()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("expense", "Coffee", "Food", "Rewards", -10m),
+            NewTransaction("transfer", "Legacy transfer", "Transfer", "Transfer:Rewards->Growth", -10m));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var result = await service.GetTransactionsAsync(all: true, txType: "outflow");
+
+        Assert.Equal("expense", Assert.Single(result.Items).Id);
+    }
+
+    [Fact]
     public async Task ExportTransactionsAsync_IncludesCsvHeaderAndRows()
     {
         await using var context = TestHelpers.NewInMemoryContext();

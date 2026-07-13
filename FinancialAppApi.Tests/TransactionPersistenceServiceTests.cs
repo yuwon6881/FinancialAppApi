@@ -45,6 +45,60 @@ public class TransactionPersistenceServiceTests
         Assert.Equal("tx-1", result.Transaction!.Id);
     }
 
+    [Theory]
+    [InlineData("Transfer:Rewards->Rewards", 25, "Transfer source and target must be different.")]
+    [InlineData("Transfer:Rewards->Unknown", 25, "Transfer source and target must be one of")]
+    [InlineData("Transfer:Rewards", 25, "must use the format")]
+    [InlineData("Transfer:Rewards->Growth", -25, "Transfer amount must be greater than zero.")]
+    public async Task CreateTransactionAsync_RejectsInvalidTransferRoutes(
+        string ledgerCategory,
+        decimal amount,
+        string expectedMessage)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.CreateTransactionAsync(
+            NewRequest("tx-transfer", ledgerCategory, amount, "Transfer"));
+
+        Assert.Equal(TransactionMutationStatus.InvalidLedgerCategory, result.Status);
+        Assert.Contains(expectedMessage, result.Message);
+        Assert.Empty(context.Transactions);
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_CanonicalizesValidTransferRoute()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.CreateTransactionAsync(
+            NewRequest("tx-transfer", " transfer: rewards -> growth ", 25m, "transfer"));
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal("Transfer", result.Transaction!.Category);
+        Assert.Equal("Transfer:Rewards->Growth", result.Transaction.LedgerCategory);
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_RejectsTransferCategoryWithoutRoute()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.CreateTransactionAsync(
+            NewRequest("tx-transfer", "Rewards", 25m, "Transfer"));
+
+        Assert.Equal(TransactionMutationStatus.InvalidLedgerCategory, result.Status);
+        Assert.Contains("requires a valid", result.Message);
+    }
+
     [Fact]
     public async Task UpdateTransactionAsync_ReplacesExistingSplits()
     {
@@ -109,13 +163,14 @@ public class TransactionPersistenceServiceTests
     private static TransactionMutationRequest NewRequest(
         string id,
         string ledgerCategory = "Rewards",
-        decimal amount = -25m)
+        decimal amount = -25m,
+        string category = "Other")
     {
         return new TransactionMutationRequest(
             id,
             "2026-07-09",
             "Test transaction",
-            "Other",
+            category,
             ledgerCategory,
             ObfuscationHelper.Obfuscate(amount),
             null,

@@ -108,7 +108,7 @@ public class TransactionsController : ControllerBase
         {
             return BadRequest(new { message = result.Message });
         }
-        if (result.Status == TransactionMutationStatus.InvalidCategory)
+        if (result.Status is TransactionMutationStatus.InvalidCategory or TransactionMutationStatus.InvalidLedgerCategory)
         {
             return BadRequest(new { message = result.Message });
         }
@@ -133,7 +133,7 @@ public class TransactionsController : ControllerBase
         {
             return BadRequest(new { message = result.Message });
         }
-        if (result.Status == TransactionMutationStatus.InvalidCategory)
+        if (result.Status is TransactionMutationStatus.InvalidCategory or TransactionMutationStatus.InvalidLedgerCategory)
         {
             return BadRequest(new { message = result.Message });
         }
