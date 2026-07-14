@@ -37,6 +37,8 @@ public class AuthAccountService
 
     private int MaxFailedLoginAttempts => _configuration.GetValue("Auth:MaxFailedLoginAttempts", 5);
     private int LockoutMinutes => _configuration.GetValue("Auth:LockoutMinutes", 15);
+    private int MaxTwoFactorAttempts => _configuration.GetValue("Auth:MaxTwoFactorAttempts", MaxCodeAttempts);
+    private int TwoFactorLockoutMinutes => _configuration.GetValue("Auth:TwoFactorLockoutMinutes", LockoutMinutes);
 
     public async Task<IActionResult> GetStatusAsync()
     {
@@ -113,6 +115,19 @@ public class AuthAccountService
 
         if (user.TotpEnabled)
         {
+            await SweepExpiredPendingTwoFactorsAsync();
+            if (user.TwoFactorLockedUntil.HasValue && user.TwoFactorLockedUntil.Value > DateTime.UtcNow)
+            {
+                var minutesLeft = Math.Ceiling((user.TwoFactorLockedUntil.Value - DateTime.UtcNow).TotalMinutes);
+                await _context.SaveChangesAsync();
+                return new ObjectResult(new { message = $"Too many two-factor attempts. Try again in {minutesLeft} minute(s)." }) { StatusCode = 429 };
+            }
+
+            var existingPending = await _context.PendingTwoFactors
+                .Where(p => p.Username == user.Username)
+                .ToListAsync();
+            _context.PendingTwoFactors.RemoveRange(existingPending);
+
             var pending = new PendingTwoFactor
             {
                 Username = user.Username,
@@ -167,18 +182,31 @@ public class AuthAccountService
             return new UnauthorizedObjectResult(new { message = "Login session expired. Please log in again." });
         }
 
+        if (user.TwoFactorLockedUntil.HasValue && user.TwoFactorLockedUntil.Value > DateTime.UtcNow)
+        {
+            await RemovePendingTwoFactorsAsync(user.Username);
+            await _context.SaveChangesAsync();
+            var minutesLeft = Math.Ceiling((user.TwoFactorLockedUntil.Value - DateTime.UtcNow).TotalMinutes);
+            return new ObjectResult(new { message = $"Too many two-factor attempts. Try again in {minutesLeft} minute(s)." }) { StatusCode = 429 };
+        }
+
         var secret = _secretProtector.Unprotect(user.TotpSecret);
-        var validTotp = _totpService.ValidateCode(secret, code);
+        var validTotp = _totpService.ValidateCode(secret, code, out var timeStepMatched);
         var validRecovery = !validTotp && await _recoveryCodeService.TryConsumeAsync(user.Username, code);
 
         if (!validTotp && !validRecovery)
         {
-            pending.Attempts += 1;
-            await _context.SaveChangesAsync();
-            return new UnauthorizedObjectResult(new { message = "Invalid code" });
+            return await RecordTwoFactorFailureAsync(user, pending);
         }
 
-        _context.PendingTwoFactors.Remove(pending);
+        if (validTotp && !await TryClaimTotpTimeStepAsync(user, timeStepMatched))
+        {
+            return await RecordTwoFactorFailureAsync(user, pending, "Code has already been used");
+        }
+
+        user.TwoFactorFailedAttempts = 0;
+        user.TwoFactorLockedUntil = null;
+        await RemovePendingTwoFactorsAsync(user.Username);
         await _context.SaveChangesAsync();
 
         var session = await _authSessionService.CreateSessionAsync(user, pending.DeviceId, pending.DeviceName, ipAddress, userAgent);
@@ -296,7 +324,7 @@ public class AuthAccountService
         }
 
         var secret = _secretProtector.Unprotect(user.PendingTotpSecret);
-        if (!_totpService.ValidateCode(secret, code ?? string.Empty))
+        if (!_totpService.ValidateCode(secret, code ?? string.Empty, out var timeStepMatched))
         {
             return new BadRequestObjectResult(new { message = "Invalid code." });
         }
@@ -304,6 +332,9 @@ public class AuthAccountService
         user.TotpSecret = user.PendingTotpSecret;
         user.PendingTotpSecret = null;
         user.TotpEnabled = true;
+        user.LastTotpTimeStep = timeStepMatched;
+        user.TwoFactorFailedAttempts = 0;
+        user.TwoFactorLockedUntil = null;
 
         var recoveryCodes = await _recoveryCodeService.RegenerateAsync(username);
         await _authSessionService.RevokeOtherSessionsAsync(username, currentToken);
@@ -342,6 +373,9 @@ public class AuthAccountService
         user.TotpEnabled = false;
         user.TotpSecret = null;
         user.PendingTotpSecret = null;
+        user.LastTotpTimeStep = null;
+        user.TwoFactorFailedAttempts = 0;
+        user.TwoFactorLockedUntil = null;
         await _context.SaveChangesAsync();
         await _recoveryCodeService.DeleteAllAsync(username);
 
@@ -369,5 +403,66 @@ public class AuthAccountService
 
         var codes = await _recoveryCodeService.RegenerateAsync(username);
         return new OkObjectResult(new { recoveryCodes = codes });
+    }
+
+    private async Task<IActionResult> RecordTwoFactorFailureAsync(
+        AppUser user,
+        PendingTwoFactor pending,
+        string message = "Invalid code")
+    {
+        pending.Attempts += 1;
+        user.TwoFactorFailedAttempts += 1;
+        if (user.TwoFactorFailedAttempts >= MaxTwoFactorAttempts)
+        {
+            user.TwoFactorLockedUntil = DateTime.UtcNow.AddMinutes(TwoFactorLockoutMinutes);
+            user.TwoFactorFailedAttempts = 0;
+            await RemovePendingTwoFactorsAsync(user.Username);
+            await _context.SaveChangesAsync();
+            return new ObjectResult(new { message = "Too many two-factor attempts. Please try again later." }) { StatusCode = 429 };
+        }
+
+        await _context.SaveChangesAsync();
+        return new UnauthorizedObjectResult(new { message });
+    }
+
+    private async Task<bool> TryClaimTotpTimeStepAsync(AppUser user, long timeStep)
+    {
+        if (!_context.Database.IsRelational())
+        {
+            if (user.LastTotpTimeStep.HasValue && user.LastTotpTimeStep.Value >= timeStep)
+            {
+                return false;
+            }
+
+            user.LastTotpTimeStep = timeStep;
+            return true;
+        }
+
+        var claimed = await _context.AppUsers
+            .Where(u => u.Id == user.Id && (!u.LastTotpTimeStep.HasValue || u.LastTotpTimeStep.Value < timeStep))
+            .ExecuteUpdateAsync(setters => setters.SetProperty(u => u.LastTotpTimeStep, timeStep));
+        if (claimed == 1)
+        {
+            user.LastTotpTimeStep = timeStep;
+            return true;
+        }
+
+        return false;
+    }
+
+    private async Task SweepExpiredPendingTwoFactorsAsync()
+    {
+        var expired = await _context.PendingTwoFactors
+            .Where(p => p.ExpiresAt < DateTime.UtcNow)
+            .ToListAsync();
+        _context.PendingTwoFactors.RemoveRange(expired);
+    }
+
+    private async Task RemovePendingTwoFactorsAsync(string username)
+    {
+        var pending = await _context.PendingTwoFactors
+            .Where(p => p.Username == username)
+            .ToListAsync();
+        _context.PendingTwoFactors.RemoveRange(pending);
     }
 }

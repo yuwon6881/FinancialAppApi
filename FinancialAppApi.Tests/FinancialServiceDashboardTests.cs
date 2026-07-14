@@ -1,6 +1,7 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FinancialAppApi.Tests;
 
@@ -36,6 +37,7 @@ public class FinancialServiceDashboardTests
             Tx("jun-food", 2026, 6, 15, "Food", -50m),
             Tx("jun-reward", 2026, 6, 20, "Other", 30m, "Rewards"),
             Tx("jul", 2026, 7, 9, "Food", -100m),
+            Tx("jul-reward", 2026, 7, 10, "Other", 900m, "Rewards"),
             Tx("dec", 2026, 12, 15, "Stability", -7m));
         await context.SaveChangesAsync();
         var service = NewService(context);
@@ -133,6 +135,34 @@ public class FinancialServiceDashboardTests
         Assert.Equal(100m, ObfuscationHelper.Deobfuscate(expensesRaw));
     }
 
+    [Fact]
+    public async Task GetDashboardDataAsync_OnlyIncludesAnnualPaymentInItsBillingMonth()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "annual",
+            Name = "Insurance",
+            Amount = -120m,
+            Frequency = "Annually",
+            Category = "Bills",
+            LedgerCategory = "Essentials",
+            StartDate = "2024-02-20",
+            NextDueDate = "2024-02-20",
+            DueDate = 20,
+            Active = true
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var january = await service.GetDashboardDataAsync("Jan", 2026);
+        var february = await service.GetDashboardDataAsync("Feb", 2026);
+
+        Assert.Empty(GetObjects(january, "activeRecurringPayments"));
+        Assert.Single(GetObjects(february, "activeRecurringPayments"));
+    }
+
     private static (string category, decimal amount)[] GetBreakdown(object response, string propertyName)
     {
         var raw = (System.Collections.IEnumerable)response.GetType().GetProperty(propertyName)!.GetValue(response)!;
@@ -147,11 +177,18 @@ public class FinancialServiceDashboardTests
         return result.ToArray();
     }
 
+    private static object[] GetObjects(object response, string propertyName) =>
+        ((System.Collections.IEnumerable)response.GetType().GetProperty(propertyName)!.GetValue(response)!)
+        .Cast<object>()
+        .ToArray();
+
     private static FinancialService NewService(AppDbContext context)
     {
+        var occurrences = new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
         return new FinancialService(
             context,
             new CycleBalanceService(context),
-            new RecurringPaymentAlertService(context));
+            new RecurringPaymentAlertService(context, occurrences),
+            occurrences);
     }
 }

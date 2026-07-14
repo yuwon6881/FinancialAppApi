@@ -39,7 +39,15 @@ public class AuthorizeTokenAttribute : Attribute, IAsyncActionFilter
         {
             // Clean up expired session
             dbContext.UserSessions.Remove(session);
-            await dbContext.SaveChangesAsync();
+            try
+            {
+                await dbContext.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Another request pruned the same expired session first.
+                dbContext.Entry(session).State = EntityState.Detached;
+            }
 
             context.Result = new UnauthorizedObjectResult(new { message = "Token has expired" });
             return;

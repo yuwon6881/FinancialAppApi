@@ -101,7 +101,7 @@ public class AuthSessionService
         };
 
         _context.UserSessions.Add(session);
-        await _context.SaveChangesAsync();
+        await SaveSessionWithConcurrentPruneToleranceAsync();
 
         return session;
     }
@@ -153,7 +153,15 @@ public class AuthSessionService
         if (expired.Count > 0)
         {
             _context.UserSessions.RemoveRange(expired);
-            await _context.SaveChangesAsync();
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException exception)
+            {
+                foreach (var entry in exception.Entries.Where(e => e.State == EntityState.Deleted))
+                    entry.State = EntityState.Detached;
+            }
         }
 
         return await _context.UserSessions
@@ -200,6 +208,8 @@ public class AuthSessionService
 
     public async Task<int> RevokeAllSessionsAsync(string username, string? currentToken, bool keepCurrent)
     {
+        if (keepCurrent && string.IsNullOrWhiteSpace(currentToken)) return 0;
+
         var sessions = await _context.UserSessions
             .Where(s => s.Username == username && (!keepCurrent || s.Token != currentToken))
             .ToListAsync();
@@ -212,11 +222,28 @@ public class AuthSessionService
 
     public async Task<int> RevokeOtherSessionsAsync(string username, string? currentToken)
     {
+        if (string.IsNullOrWhiteSpace(currentToken)) return 0;
+
         var otherSessions = await _context.UserSessions
             .Where(s => s.Username == username && s.Token != currentToken)
             .ToListAsync();
         _context.UserSessions.RemoveRange(otherSessions);
         await _context.SaveChangesAsync();
         return otherSessions.Count;
+    }
+
+    private async Task SaveSessionWithConcurrentPruneToleranceAsync()
+    {
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException exception)
+        {
+            var deletedEntries = exception.Entries.Where(e => e.State == EntityState.Deleted).ToList();
+            if (deletedEntries.Count == 0) throw;
+            foreach (var entry in deletedEntries) entry.State = EntityState.Detached;
+            await _context.SaveChangesAsync();
+        }
     }
 }

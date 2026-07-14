@@ -1,6 +1,7 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FinancialAppApi.Tests;
 
@@ -99,9 +100,11 @@ public class FinancialServiceTests
 
     private static FinancialService NewService(AppDbContext context)
     {
+        var occurrences = new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
         return new FinancialService(
             context,
             new CycleBalanceService(context),
-            new RecurringPaymentAlertService(context));
+            new RecurringPaymentAlertService(context, occurrences),
+            occurrences);
     }
 }

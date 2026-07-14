@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
+using FinancialAppApi.Database;
 
 namespace FinancialAppApi.Controllers;
 
@@ -30,6 +31,8 @@ public class FinancialController : ControllerBase
         [FromQuery(Name = "month")] string? queryMonth = null,
         [FromQuery(Name = "year")] int? queryYear = null)
     {
+        if (!IsValidPeriod(queryMonth, queryYear))
+            return BadRequest(new { message = "Month must be a valid three-letter abbreviation and include a year." });
         return Ok(await _financialService.GetDashboardDataAsync(queryMonth, queryYear));
     }
 
@@ -39,6 +42,8 @@ public class FinancialController : ControllerBase
         [FromQuery(Name = "month")] string? queryMonth = null,
         [FromQuery(Name = "year")] int? queryYear = null)
     {
+        if (!IsValidPeriod(queryMonth, queryYear))
+            return BadRequest(new { message = "Month must be a valid three-letter abbreviation and include a year." });
         return Ok(await _financialService.GetDashboardInsightsAsync(queryMonth, queryYear));
     }
 
@@ -93,8 +98,17 @@ public class FinancialController : ControllerBase
     [HttpPost("select-period")]
     public async Task<IActionResult> SelectPeriod([FromBody] FinancialSetting periodDto)
     {
+        if (!IsValidPeriod(periodDto.SelectedMonth, periodDto.SelectedYear))
+            return BadRequest(new { message = "Month must be a valid three-letter abbreviation and include a year." });
         await _financialService.SelectPeriodAsync(periodDto.SelectedMonth, periodDto.SelectedYear);
         return NoContent();
+    }
+
+    private static bool IsValidPeriod(string? month, int? year)
+    {
+        if (month == null && year == null) return true;
+        return year.HasValue && year.Value > 0 && month != null &&
+            FinancialConstants.MonthAbbreviations.Contains(month, StringComparer.Ordinal);
     }
 }
 

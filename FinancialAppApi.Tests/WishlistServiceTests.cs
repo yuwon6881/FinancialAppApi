@@ -91,6 +91,20 @@ public class WishlistServiceTests
     }
 
     [Fact]
+    public async Task DeleteWishlistItemAsync_DoesNotPromotePurchasedItem()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var purchased = NewItem(2, "Already bought", active: false);
+        purchased.IsPurchased = true;
+        context.WishlistItems.AddRange(NewItem(1, "Current", active: true), purchased);
+        await context.SaveChangesAsync();
+
+        await NewService(context).DeleteWishlistItemAsync(1);
+
+        Assert.False((await context.WishlistItems.FindAsync(2))!.IsActive);
+    }
+
+    [Fact]
     public async Task PurchaseWishlistItemAsync_MarksPurchasedAndCreatesTransaction()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -105,6 +119,26 @@ public class WishlistServiceTests
         Assert.False(result.Item.IsActive);
         Assert.Equal(-80m, result.Transaction!.Amount);
         Assert.True(await context.Transactions.AnyAsync(t => t.WishlistItemId == 1));
+    }
+
+    [Fact]
+    public async Task PurchaseWishlistItemAsync_PromotesExactlyOneUnpurchasedItem()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var purchased = NewItem(3, "Purchased", active: true);
+        purchased.IsPurchased = true;
+        context.WishlistItems.AddRange(
+            NewItem(1, "Current", active: true),
+            NewItem(2, "Next", active: false, createdAt: DateTime.UtcNow.AddMinutes(1)),
+            purchased);
+        await context.SaveChangesAsync();
+
+        await NewService(context).PurchaseWishlistItemAsync(1);
+
+        var active = await context.WishlistItems.Where(w => w.IsActive).ToListAsync();
+        Assert.Single(active);
+        Assert.Equal(2, active[0].Id);
+        Assert.False(active[0].IsPurchased);
     }
 
     [Fact]

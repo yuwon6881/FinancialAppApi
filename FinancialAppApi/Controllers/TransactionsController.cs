@@ -37,6 +37,9 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "startDate")] string? startDate = null,
         [FromQuery(Name = "endDate")] string? endDate = null)
     {
+        if (queryMonth != null && !FinancialConstants.MonthAbbreviations.Contains(queryMonth, StringComparer.Ordinal))
+            return BadRequest(new { message = "Month must be a valid three-letter abbreviation." });
+
         var result = await _transactionQueryService.GetTransactionsAsync(
             queryMonth,
             queryYear,
@@ -104,7 +107,7 @@ public class TransactionsController : ControllerBase
     public async Task<ActionResult<TransactionDto>> PostTransaction(TransactionDto dto)
     {
         var result = await _transactionPersistenceService.CreateTransactionAsync(ToMutationRequest(dto));
-        if (result.Status == TransactionMutationStatus.InvalidDate)
+        if (result.Status is TransactionMutationStatus.InvalidDate or TransactionMutationStatus.InvalidAmount)
         {
             return BadRequest(new { message = result.Message });
         }
@@ -129,7 +132,7 @@ public class TransactionsController : ControllerBase
         {
             return NotFound();
         }
-        if (result.Status == TransactionMutationStatus.InvalidDate)
+        if (result.Status is TransactionMutationStatus.InvalidDate or TransactionMutationStatus.InvalidAmount)
         {
             return BadRequest(new { message = result.Message });
         }

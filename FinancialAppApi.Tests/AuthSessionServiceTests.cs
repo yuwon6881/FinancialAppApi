@@ -71,4 +71,24 @@ public class AuthSessionServiceTests
         await service.UnlockSessionAsync("token");
         Assert.False(context.UserSessions.Single().IsLocked);
     }
+
+    [Fact]
+    public async Task RevokeOtherSessionsAsync_WithMissingCurrentToken_IsANoOp()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.UserSessions.Add(new UserSession
+        {
+            Token = "only-session",
+            Username = "alice",
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(7)
+        });
+        await context.SaveChangesAsync();
+        var service = new AuthSessionService(context);
+
+        var revoked = await service.RevokeOtherSessionsAsync("alice", null);
+
+        Assert.Equal(0, revoked);
+        Assert.Single(context.UserSessions);
+    }
 }

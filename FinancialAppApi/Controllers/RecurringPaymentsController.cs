@@ -30,12 +30,21 @@ public class RecurringPaymentsController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<RecurringPaymentDto>> PostRecurringPayment(RecurringPaymentDto dto)
     {
+        if (!TryNormalizeFrequency(dto.Frequency, out var frequency))
+        {
+            return BadRequest(new { message = "Frequency must be Monthly or Annually." });
+        }
+        if (!ObfuscationHelper.TryDeobfuscate(dto.Amount, out var decodedAmount) || decodedAmount == 0m)
+        {
+            return BadRequest(new { message = "Amount must be a valid non-zero value." });
+        }
+
         var payment = new RecurringPayment
         {
             Id = string.IsNullOrWhiteSpace(dto.Id) ? $"rec-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}" : dto.Id,
             Name = dto.Name,
-            Amount = Math.Round(ObfuscationHelper.Deobfuscate(dto.Amount), 2, MidpointRounding.AwayFromZero),
-            Frequency = dto.Frequency,
+            Amount = Math.Round(decodedAmount, 2, MidpointRounding.AwayFromZero),
+            Frequency = frequency,
             Category = dto.Category,
             LedgerCategory = dto.LedgerCategory,
             NextDueDate = dto.NextDueDate,
@@ -81,12 +90,21 @@ public class RecurringPaymentsController : ControllerBase
             return BadRequest("ID mismatch");
         }
 
+        if (!TryNormalizeFrequency(dto.Frequency, out var frequency))
+        {
+            return BadRequest(new { message = "Frequency must be Monthly or Annually." });
+        }
+        if (!ObfuscationHelper.TryDeobfuscate(dto.Amount, out var decodedAmount) || decodedAmount == 0m)
+        {
+            return BadRequest(new { message = "Amount must be a valid non-zero value." });
+        }
+
         var updated = new RecurringPayment
         {
             Id = dto.Id,
             Name = dto.Name,
-            Amount = Math.Round(ObfuscationHelper.Deobfuscate(dto.Amount), 2, MidpointRounding.AwayFromZero),
-            Frequency = dto.Frequency,
+            Amount = Math.Round(decodedAmount, 2, MidpointRounding.AwayFromZero),
+            Frequency = frequency,
             Category = dto.Category,
             LedgerCategory = dto.LedgerCategory,
             NextDueDate = dto.NextDueDate,
@@ -138,6 +156,23 @@ public class RecurringPaymentsController : ControllerBase
             Active = rp.Active,
             EndDate = rp.EndDate
         };
+    }
+
+    private static bool TryNormalizeFrequency(string? value, out string frequency)
+    {
+        if (string.Equals(value, "Monthly", StringComparison.OrdinalIgnoreCase))
+        {
+            frequency = "Monthly";
+            return true;
+        }
+        if (string.Equals(value, "Annually", StringComparison.OrdinalIgnoreCase))
+        {
+            frequency = "Annually";
+            return true;
+        }
+
+        frequency = string.Empty;
+        return false;
     }
 
     private static RecurringPaymentDto MapToDto(RecurringPaymentProjection rp)

@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using FinancialAppApi.Database;
@@ -226,11 +227,36 @@ public static class ServiceCollectionExtensions
         {
             options.UseNpgsql(npgsqlConnectionString, npgsql => npgsql.EnableRetryOnFailure());
         });
-        services.AddDataProtection()
+        var dataProtection = services.AddDataProtection()
             .SetApplicationName("FinancialAppApi")
             .PersistKeysToDbContext<AppDbContext>();
 
+        var certificateBase64 = configuration["DataProtection:CertificateBase64"];
+        var certificatePath = configuration["DataProtection:CertificatePath"];
+        var certificatePassword = configuration["DataProtection:CertificatePassword"];
+        X509Certificate2? keyEncryptionCertificate = null;
+        if (!string.IsNullOrWhiteSpace(certificateBase64))
+        {
+            keyEncryptionCertificate = X509CertificateLoader.LoadPkcs12(
+                Convert.FromBase64String(certificateBase64),
+                certificatePassword,
+                X509KeyStorageFlags.EphemeralKeySet);
+        }
+        else if (!string.IsNullOrWhiteSpace(certificatePath))
+        {
+            keyEncryptionCertificate = X509CertificateLoader.LoadPkcs12FromFile(
+                certificatePath,
+                certificatePassword,
+                X509KeyStorageFlags.EphemeralKeySet);
+        }
+
+        if (keyEncryptionCertificate != null)
+        {
+            dataProtection.ProtectKeysWithCertificate(keyEncryptionCertificate);
+        }
+
         services.AddScoped<CycleBalanceService>();
+        services.AddScoped<RecurringOccurrenceService>();
         services.AddScoped<RecurringPaymentAlertService>();
         services.AddScoped<RecurringPaymentService>();
         services.AddScoped<TransactionCategoryService>();

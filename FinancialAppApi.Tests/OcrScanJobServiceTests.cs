@@ -3,7 +3,6 @@ using FinancialAppApi.Models;
 using FinancialAppApi.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FinancialAppApi.Tests;
 
@@ -38,7 +37,7 @@ public class OcrScanJobServiceTests
     }
 
     [Fact]
-    public async Task GetScanJobAsync_ReturnsJobAndDeletesTerminalResult()
+    public async Task GetScanJobAsync_ReturnsTerminalResultIdempotently()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.ReceiptScanJobs.Add(new ReceiptScanJob
@@ -55,10 +54,13 @@ public class OcrScanJobServiceTests
         var service = NewService(context);
 
         var result = await service.GetScanJobAsync("alice", "job-1");
+        var repeatedResult = await service.GetScanJobAsync("alice", "job-1");
 
         Assert.NotNull(result);
         Assert.Equal("completed", result.Status);
-        Assert.Null(await context.ReceiptScanJobs.FindAsync("job-1"));
+        Assert.NotNull(repeatedResult);
+        Assert.Equal("completed", repeatedResult.Status);
+        Assert.NotNull(await context.ReceiptScanJobs.FindAsync("job-1"));
     }
 
     [Fact]
@@ -96,7 +98,7 @@ public class OcrScanJobServiceTests
 
     private static OcrScanJobService NewService(Database.AppDbContext context)
     {
-        return new OcrScanJobService(context, NullLogger<OcrScanJobService>.Instance);
+        return new OcrScanJobService(context);
     }
 
     private static ReceiptScanJob NewJob(string id, string username)

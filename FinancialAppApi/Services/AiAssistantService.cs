@@ -1,4 +1,5 @@
 using FinancialAppApi.Database;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FinancialAppApi.Services;
 
@@ -107,17 +108,21 @@ public partial class AiAssistantService
     private readonly AppDbContext _context;
     private readonly TransactionCategoryService _categoryService;
     private readonly CategorySuggestionService? _categorySuggestionService;
+    private readonly RecurringOccurrenceService _recurringOccurrenceService;
 
     public AiAssistantService(
         AiClient aiClient,
         AppDbContext context,
         TransactionCategoryService categoryService,
-        CategorySuggestionService? categorySuggestionService = null)
+        CategorySuggestionService? categorySuggestionService = null,
+        RecurringOccurrenceService? recurringOccurrenceService = null)
     {
         _aiClient = aiClient;
         _context = context;
         _categoryService = categoryService;
         _categorySuggestionService = categorySuggestionService;
+        _recurringOccurrenceService = recurringOccurrenceService ??
+            new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
     }
 
     public async Task<AiChatOutcome> ChatAsync(AiChatRequest request, CancellationToken cancellationToken = default)

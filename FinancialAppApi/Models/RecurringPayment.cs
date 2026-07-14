@@ -14,7 +14,7 @@ public class RecurringPayment
     public decimal Amount { get; set; }
 
     [Required]
-    public string Frequency { get; set; } = string.Empty; // "Weekly" | "Monthly" | "Annually"
+    public string Frequency { get; set; } = string.Empty; // "Monthly" | "Annually"
 
     [Required]
     [StringLength(100)]

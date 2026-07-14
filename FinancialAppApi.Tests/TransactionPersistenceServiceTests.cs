@@ -72,6 +72,29 @@ public class TransactionPersistenceServiceTests
         Assert.Equal("tx-1", result.Transaction!.Id);
     }
 
+    [Fact]
+    public async Task CreateTransactionAsync_RejectsMalformedObfuscatedAmount()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+        var request = new TransactionMutationRequest(
+            "tx-invalid",
+            "2026-07-09",
+            "Invalid amount",
+            "Other",
+            "Rewards",
+            "not-base64-or-a-number",
+            null,
+            null);
+
+        var result = await service.CreateTransactionAsync(request);
+
+        Assert.Equal(TransactionMutationStatus.InvalidAmount, result.Status);
+        Assert.Empty(context.Transactions);
+    }
+
     [Theory]
     [InlineData("Transfer:Rewards->Rewards", 25, "Transfer source and target must be different.")]
     [InlineData("Transfer:Rewards->Unknown", 25, "Transfer source and target must be one of")]

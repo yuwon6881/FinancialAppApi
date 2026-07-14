@@ -10,7 +10,7 @@ namespace FinancialAppApi.Tests.Integration;
 /// <summary>
 /// Receipt-scan (OCR) job workflow through the full HTTP stack. The background worker that would
 /// call Gemini is removed by the test factory, so these tests drive validation, the queued-job
-/// contract, the destructive terminal-state read, and worker-key gating without any AI dependency.
+/// contract, idempotent terminal-state reads, explicit deletion, and worker-key gating without any AI dependency.
 /// </summary>
 public class OcrIntegrationTests : IntegrationTestBase
 {
@@ -48,7 +48,7 @@ public class OcrIntegrationTests : IntegrationTestBase
     }
 
     [Fact]
-    public async Task GetScanJob_ForCompletedJob_ReturnsResult_ThenIsConsumed()
+    public async Task GetScanJob_ForCompletedJob_IsIdempotentUntilExplicitlyDeleted()
     {
         var token = await SeedUserAndSessionAsync();
         var client = CreateAuthenticatedClient(token);
@@ -78,9 +78,15 @@ public class OcrIntegrationTests : IntegrationTestBase
         // Amount is obfuscated on the wire even in the OCR result.
         Assert.Equal(23.45m, ObfuscationHelper.Deobfuscate(result.GetProperty("amount").GetString()!));
 
-        // Reading a terminal job consumes it (best-effort delete), so a second read is 404.
+        // Polling is idempotent so a lost client response cannot consume the OCR result.
         var second = await client.GetAsync($"/api/ocr/scan-receipt/jobs/{jobId}");
-        Assert.Equal(HttpStatusCode.NotFound, second.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+
+        var deleted = await client.DeleteAsync($"/api/ocr/scan-receipt/jobs/{jobId}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        var afterDelete = await client.GetAsync($"/api/ocr/scan-receipt/jobs/{jobId}");
+        Assert.Equal(HttpStatusCode.NotFound, afterDelete.StatusCode);
     }
 
     [Fact]

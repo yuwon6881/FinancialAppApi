@@ -33,12 +33,10 @@ public class OcrScanJobService
     private const long MaxImageBytes = 10 * 1024 * 1024;
 
     private readonly AppDbContext _context;
-    private readonly ILogger<OcrScanJobService> _logger;
 
-    public OcrScanJobService(AppDbContext context, ILogger<OcrScanJobService> logger)
+    public OcrScanJobService(AppDbContext context)
     {
         _context = context;
-        _logger = logger;
     }
 
     public async Task<CreateScanJobResult> CreateScanJobAsync(string username, IFormFile? image)
@@ -96,7 +94,7 @@ public class OcrScanJobService
             result = ObfuscateReceiptScanAmount(job.ResultJson);
         }
 
-        var response = new ScanJobResponse(
+        return new ScanJobResponse(
             job.Id,
             job.Status,
             result,
@@ -104,13 +102,6 @@ public class OcrScanJobService
             job.CreatedAt,
             job.UpdatedAt,
             job.CompletedAt);
-
-        if (job.Status == "completed" || job.Status == "failed")
-        {
-            await DeleteJobBestEffortAsync(jobId);
-        }
-
-        return response;
     }
 
     public async Task DeleteScanJobAsync(string username, string jobId)
@@ -160,23 +151,6 @@ public class OcrScanJobService
 
         _context.ReceiptScanJobs.RemoveRange(oldJobs);
         await _context.SaveChangesAsync();
-    }
-
-    private async Task DeleteJobBestEffortAsync(string jobId)
-    {
-        try
-        {
-            var job = await _context.ReceiptScanJobs.FindAsync(jobId);
-            if (job != null)
-            {
-                _context.ReceiptScanJobs.Remove(job);
-                await _context.SaveChangesAsync();
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Could not delete receipt scan job {JobId} after delivering its result.", jobId);
-        }
     }
 
     private static string NormalizeMimeType(string? mimeType)

@@ -12,6 +12,7 @@ public enum TransactionMutationStatus
     Deleted,
     NotFound,
     InvalidDate,
+    InvalidAmount,
     InvalidCategory,
     InvalidLedgerCategory
 }
@@ -63,7 +64,8 @@ public class TransactionPersistenceService
             return InvalidDate();
         }
 
-        var amount = Math.Round(ObfuscationHelper.Deobfuscate(request.Amount), 2, MidpointRounding.AwayFromZero);
+        if (!ObfuscationHelper.TryDeobfuscate(request.Amount, out var decodedAmount)) return InvalidAmount();
+        var amount = Math.Round(decodedAmount, 2, MidpointRounding.AwayFromZero);
         var ledgerValidation = ValidateAndNormalizeLedgerCategory(request.Category, request.LedgerCategory, amount);
         if (!ledgerValidation.IsValid)
         {
@@ -111,7 +113,8 @@ public class TransactionPersistenceService
             return InvalidDate();
         }
 
-        var amount = Math.Round(ObfuscationHelper.Deobfuscate(request.Amount), 2, MidpointRounding.AwayFromZero);
+        if (!ObfuscationHelper.TryDeobfuscate(request.Amount, out var decodedAmount)) return InvalidAmount();
+        var amount = Math.Round(decodedAmount, 2, MidpointRounding.AwayFromZero);
         var ledgerValidation = ValidateAndNormalizeLedgerCategory(request.Category, request.LedgerCategory, amount);
         if (!ledgerValidation.IsValid)
         {
@@ -314,6 +317,10 @@ public class TransactionPersistenceService
             TransactionMutationStatus.InvalidDate,
             Message: "Date must be in yyyy-MM-dd format.");
     }
+
+    private static TransactionMutationResult InvalidAmount() => new(
+        TransactionMutationStatus.InvalidAmount,
+        Message: "Amount is malformed.");
 
     private async Task<bool> TransactionCategoryExistsAsync(string category)
     {

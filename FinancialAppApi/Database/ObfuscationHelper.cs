@@ -20,7 +20,13 @@ public static class ObfuscationHelper
 
     public static decimal Deobfuscate(string obfuscated)
     {
-        if (string.IsNullOrEmpty(obfuscated)) return 0;
+        return TryDeobfuscate(obfuscated, out var value) ? value : 0m;
+    }
+
+    public static bool TryDeobfuscate(string? obfuscated, out decimal value)
+    {
+        value = 0m;
+        if (string.IsNullOrEmpty(obfuscated)) return false;
         try
         {
             byte[] bytes = Convert.FromBase64String(obfuscated);
@@ -29,11 +35,11 @@ public static class ObfuscationHelper
                 bytes[i] = (byte)(bytes[i] ^ Key[i % Key.Length]);
             }
             string decrypted = Encoding.UTF8.GetString(bytes);
-            return decimal.Parse(decrypted, CultureInfo.InvariantCulture);
+            return decimal.TryParse(decrypted, NumberStyles.Number, CultureInfo.InvariantCulture, out value);
         }
         catch
         {
-            return 0;
+            return false;
         }
     }
 }

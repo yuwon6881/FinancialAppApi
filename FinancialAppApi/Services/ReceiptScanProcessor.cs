@@ -36,15 +36,35 @@ public class ReceiptScanProcessor
 
     public async Task ProcessAsync(string jobId)
     {
-        var job = await _context.ReceiptScanJobs.FirstOrDefaultAsync(j => j.Id == jobId);
+        ReceiptScanJob? job;
+        if (_context.Database.IsRelational())
+        {
+            var claimedAt = DateTime.UtcNow;
+            var claimed = await _context.ReceiptScanJobs
+                .Where(j => j.Id == jobId && j.Status == "queued")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(j => j.Status, "processing")
+                    .SetProperty(j => j.UpdatedAt, claimedAt));
+            if (claimed == 0) return;
+            job = await _context.ReceiptScanJobs.FirstOrDefaultAsync(j => j.Id == jobId);
+        }
+        else
+        {
+            job = await _context.ReceiptScanJobs.FirstOrDefaultAsync(j => j.Id == jobId);
+            if (job == null)
+            {
+                _logger.LogWarning("Receipt scan job {JobId} was not found.", jobId);
+                return;
+            }
+            if (job.Status != "queued") return;
+            job.Status = "processing";
+            job.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+        }
+
         if (job == null)
         {
             _logger.LogWarning("Receipt scan job {JobId} was not found.", jobId);
-            return;
-        }
-
-        if (job.Status == "completed" || job.Status == "failed")
-        {
             return;
         }
 
@@ -53,10 +73,6 @@ public class ReceiptScanProcessor
             await MarkFailed(job, "Receipt image was not available for processing.");
             return;
         }
-
-        job.Status = "processing";
-        job.UpdatedAt = DateTime.UtcNow;
-        await _context.SaveChangesAsync();
 
         try
         {

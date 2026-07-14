@@ -8,10 +8,14 @@ public class RecurringPaymentAlertService
     private static readonly string[] Months = FinancialConstants.MonthAbbreviations;
 
     private readonly AppDbContext _context;
+    private readonly RecurringOccurrenceService _occurrenceService;
 
-    public RecurringPaymentAlertService(AppDbContext context)
+    public RecurringPaymentAlertService(
+        AppDbContext context,
+        RecurringOccurrenceService occurrenceService)
     {
         _context = context;
+        _occurrenceService = occurrenceService;
     }
 
     public async Task<List<object>> GetSubscriptionAlertsAsync()
@@ -36,11 +40,6 @@ public class RecurringPaymentAlertService
         foreach (var rp in activeRecurring)
         {
             if (!DateTime.TryParse(rp.StartDate, out var startDate)) continue;
-            DateTime? endDate = null;
-            if (!string.IsNullOrEmpty(rp.EndDate) && DateTime.TryParse(rp.EndDate, out var parsedEndDate))
-            {
-                endDate = parsedEndDate;
-            }
 
             int startYear = Math.Min(2026, startDate.Year);
             for (int y = startYear; y <= todayYear; y++)
@@ -49,10 +48,9 @@ public class RecurringPaymentAlertService
                 for (int m = 1; m <= endMonthIdx; m++)
                 {
                     var (cycleStart, cycleEnd, cycleLabel) = CategoryAttributionService.GetCycleRange(y, m, cycleDay);
-                    var billingDate = CategoryAttributionService.GetBillingDateForCycle(cycleStart, cycleEnd, cycleDay, rp.DueDate);
-
-                    if (billingDate <= today && billingDate >= startDate && (endDate == null || billingDate <= endDate.Value))
+                    foreach (var billingDate in _occurrenceService.GetOccurrencesInRange(rp, cycleStart, cycleEnd, cycleDay))
                     {
+                        if (billingDate > today) continue;
                         var instanceId = $"{rp.Id}-{y}-{m}";
                         var isPaid = recurringTransactionDates.Any(t =>
                             t.RecurringPaymentId == rp.Id &&

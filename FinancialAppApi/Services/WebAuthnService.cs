@@ -187,7 +187,10 @@ public class WebAuthnService
 
         var storedCred = await _context.WebAuthnCredentials
             .FirstOrDefaultAsync(c => c.CredentialId == credential.RawId);
-        if (storedCred == null)
+        var user = storedCred == null
+            ? null
+            : await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == storedCred.Username);
+        if (storedCred == null || user == null || !string.Equals(challenge.Username, user.Username, StringComparison.Ordinal))
         {
             await _context.SaveChangesAsync();
             return new UnauthorizedObjectResult(new { message = "Unrecognized fingerprint credential." });
@@ -201,7 +204,7 @@ public class WebAuthnService
         }
 
         var session = await _authSessionService.CreateSessionAsync(
-            new AppUser { Username = storedCred.Username },
+            user,
             deviceId,
             deviceName,
             ipAddress,
@@ -370,20 +373,27 @@ public class WebAuthnService
         HashSet<string> origins;
         if (configuredOrigins.Length > 0)
         {
-            origins = configuredOrigins.ToHashSet();
+            origins = configuredOrigins.ToHashSet(StringComparer.Ordinal);
         }
         else if (!string.IsNullOrEmpty(requestOrigin))
         {
-            origins = new HashSet<string> { requestOrigin };
+            origins = new HashSet<string>(StringComparer.Ordinal) { requestOrigin };
         }
         else
         {
-            origins = new HashSet<string> { fallbackOrigin };
+            origins = new HashSet<string>(StringComparer.Ordinal) { fallbackOrigin };
         }
+
+        var configuredRpId = _config["WebAuthn:RpId"];
+        var rpId = !string.IsNullOrWhiteSpace(configuredRpId)
+            ? configuredRpId.Trim()
+            : origins.Select(origin => new Uri(origin).Host)
+                .OrderBy(host => host, StringComparer.Ordinal)
+                .First();
 
         return new Fido2(new Fido2Configuration
         {
-            ServerDomain = new Uri(origins.First()).Host,
+            ServerDomain = rpId,
             ServerName = "FinancialApp Ledger",
             Origins = origins
         });
@@ -395,7 +405,15 @@ public class WebAuthnService
         if (expired.Count > 0)
         {
             _context.WebAuthnChallenges.RemoveRange(expired);
-            await _context.SaveChangesAsync();
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException exception)
+            {
+                foreach (var entry in exception.Entries.Where(e => e.State == EntityState.Deleted))
+                    entry.State = EntityState.Detached;
+            }
         }
     }
 }

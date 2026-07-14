@@ -26,13 +26,17 @@ public class TotpService
     // Accepts the current time step and one step on either side to absorb clock drift
     // between the server and the user's device.
     public bool ValidateCode(string secret, string code)
+        => ValidateCode(secret, code, out _);
+
+    public bool ValidateCode(string secret, string code, out long timeStepMatched)
     {
+        timeStepMatched = 0;
         if (string.IsNullOrWhiteSpace(code))
         {
             return false;
         }
 
         var totp = new Totp(Base32Encoding.ToBytes(secret));
-        return totp.VerifyTotp(code.Trim(), out _, new VerificationWindow(previous: 1, future: 1));
+        return totp.VerifyTotp(code.Trim(), out timeStepMatched, new VerificationWindow(previous: 1, future: 1));
     }
 }

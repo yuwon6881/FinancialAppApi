@@ -174,10 +174,15 @@ public class WishlistService
         if (wasActive)
         {
             var nextItem = await _context.WishlistItems
+                .Where(w => w.Id != item.Id && !w.IsPurchased)
                 .OrderByDescending(w => w.CreatedAt)
                 .FirstOrDefaultAsync(cancellationToken);
             if (nextItem != null)
             {
+                var otherActiveItems = await _context.WishlistItems
+                    .Where(w => w.IsActive && w.Id != nextItem.Id)
+                    .ToListAsync(cancellationToken);
+                foreach (var activeItem in otherActiveItems) activeItem.IsActive = false;
                 nextItem.IsActive = true;
                 await _context.SaveChangesAsync(cancellationToken);
             }
@@ -220,6 +225,17 @@ public class WishlistService
         await strategy.ExecuteAsync(async () =>
         {
             await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+            var nextItem = await _context.WishlistItems
+                .Where(w => w.Id != item.Id && !w.IsPurchased)
+                .OrderByDescending(w => w.CreatedAt)
+                .FirstOrDefaultAsync(cancellationToken);
+            var activeItems = await _context.WishlistItems
+                .Where(w => w.IsActive && w.Id != item.Id)
+                .ToListAsync(cancellationToken);
+            foreach (var activeItem in activeItems) activeItem.IsActive = false;
+            if (nextItem != null) nextItem.IsActive = true;
+
             await _context.SaveChangesAsync(cancellationToken);
 
             var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
@@ -231,16 +247,6 @@ public class WishlistService
 
             await dbTransaction.CommitAsync(cancellationToken);
         });
-
-        var nextItem = await _context.WishlistItems
-            .Where(w => !w.IsPurchased)
-            .OrderByDescending(w => w.CreatedAt)
-            .FirstOrDefaultAsync(cancellationToken);
-        if (nextItem != null)
-        {
-            nextItem.IsActive = true;
-            await _context.SaveChangesAsync(cancellationToken);
-        }
 
         return new WishlistPurchaseResult(WishlistMutationStatus.Success, item, tx);
     }

@@ -100,7 +100,7 @@ public class TransactionQueryService
         int activeYear = queryYear ?? setting.SelectedYear;
 
         var activeMonthIndex = Array.IndexOf(FinancialConstants.MonthAbbreviations, activeMonth) + 1;
-        if (activeMonthIndex == 0) activeMonthIndex = 6;
+        if (activeMonthIndex == 0) throw new ArgumentException("Invalid month.", nameof(queryMonth));
 
         var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(activeYear, activeMonthIndex, setting.CycleDay);
         var cycleStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart));

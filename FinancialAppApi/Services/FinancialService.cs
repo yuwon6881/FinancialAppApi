@@ -26,15 +26,18 @@ public class FinancialService
     private readonly AppDbContext _context;
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly RecurringPaymentAlertService _recurringPaymentAlertService;
+    private readonly RecurringOccurrenceService _recurringOccurrenceService;
 
     public FinancialService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
-        RecurringPaymentAlertService recurringPaymentAlertService)
+        RecurringPaymentAlertService recurringPaymentAlertService,
+        RecurringOccurrenceService recurringOccurrenceService)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _recurringPaymentAlertService = recurringPaymentAlertService;
+        _recurringOccurrenceService = recurringOccurrenceService;
     }
 
     public async Task<object> GetWalletBalanceAsync()
@@ -220,9 +223,10 @@ public class FinancialService
         var last3Txs = last6Txs.Where(t => t.Date >= last3StartDate).ToList();
         var last3CategoryBreakdown = BuildBreakdown(last3Txs);
 
-        // Reuses last3Txs (already fetched above) instead of re-querying the same 3 cycles again.
+        // Use the three completed cycles before the active cycle; the current partial cycle would
+        // otherwise depress the savings-rate average early in the month.
         var (pastThreeMonthsRewardsAverage, hasRewardsHistory) =
-            CalculatePastRewardsAverageFromTxs(last3Txs, activeYear, activeMonthIndex, cycleDay);
+            CalculatePastRewardsAverageFromTxs(last6Txs, activeYear, activeMonthIndex, cycleDay);
         var availableYears = await GetAvailableYearsAsync();
 
         return new
@@ -238,6 +242,10 @@ public class FinancialService
 
     public async Task<string?> UpdateSettingsAsync(FinancialSettingsUpdate update)
     {
+        if (!ObfuscationHelper.TryDeobfuscate(update.TargetStabilityFund, out var targetStabilityFund) || targetStabilityFund < 0m)
+        {
+            return "Target stability fund is malformed.";
+        }
         var allocations = new[] { update.EssentialsAlloc, update.GrowthAlloc, update.StabilityAlloc, update.RewardsAlloc };
         if (allocations.Any(value => value < 0m || value > 1m))
         {
@@ -250,7 +258,7 @@ public class FinancialService
 
         var setting = await GetOrCreateSettingAsync();
 
-        setting.TargetStabilityFund = ObfuscationHelper.Deobfuscate(update.TargetStabilityFund);
+        setting.TargetStabilityFund = targetStabilityFund;
         setting.EssentialsAlloc = update.EssentialsAlloc;
         setting.GrowthAlloc = update.GrowthAlloc;
         setting.StabilityAlloc = update.StabilityAlloc;
@@ -386,7 +394,7 @@ public class FinancialService
         }
 
         var activeMonthIndex = Array.IndexOf(Months, activeMonth) + 1;
-        if (activeMonthIndex == 0) activeMonthIndex = 6;
+        if (activeMonthIndex == 0) throw new ArgumentException("Invalid month.", nameof(queryMonth));
 
         return (setting, cycleDay, activeMonth, activeYear, activeMonthIndex);
     }
@@ -402,7 +410,7 @@ public class FinancialService
             .ToListAsync();
     }
 
-    private static List<object> BuildActiveRecurringList(
+    private List<object> BuildActiveRecurringList(
         List<RecurringPayment> allRecurring,
         List<Transaction> activeCycleTxs,
         DateTime activeRangeStart,
@@ -415,16 +423,11 @@ public class FinancialService
         foreach (var rp in allRecurring)
         {
             if (!rp.Active) continue;
-            if (!DateTime.TryParse(rp.StartDate, out var rpStartDate)) continue;
-            DateTime? rpEndDate = null;
-            if (!string.IsNullOrEmpty(rp.EndDate) && DateTime.TryParse(rp.EndDate, out var parsedEndDate))
-            {
-                rpEndDate = parsedEndDate;
-            }
-
-            var billingDate = CategoryAttributionService.GetBillingDateForCycle(activeRangeStart, activeRangeEnd, cycleDay, rp.DueDate);
-
-            if (billingDate >= activeRangeStart && billingDate <= activeRangeEnd && billingDate >= rpStartDate && (rpEndDate == null || billingDate <= rpEndDate.Value))
+            foreach (var billingDate in _recurringOccurrenceService.GetOccurrencesInRange(
+                         rp,
+                         activeRangeStart,
+                         activeRangeEnd,
+                         cycleDay))
             {
                 var instanceId = $"{rp.Id}-{activeYear}-{activeMonthIndex}";
                 var paidTx = activeCycleTxs
@@ -479,6 +482,13 @@ public class FinancialService
         int activeMonthsCount = 0;
         int tempMonth = activeMonthIndex;
         int tempYear = activeYear;
+
+        tempMonth--;
+        if (tempMonth < 1)
+        {
+            tempMonth = 12;
+            tempYear--;
+        }
 
         for (int i = 0; i < 3; i++)
         {

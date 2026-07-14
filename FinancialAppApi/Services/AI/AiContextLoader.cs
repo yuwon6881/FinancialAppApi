@@ -88,13 +88,11 @@ public partial class AiAssistantService
             foreach (var rp in recurring)
             {
                 if (!rp.Active) continue;
-                if (!DateTime.TryParse(rp.StartDate, out var rpStartDate)) continue;
-                DateTime? rpEndDate = null;
-                if (!string.IsNullOrEmpty(rp.EndDate) && DateTime.TryParse(rp.EndDate, out var parsedEndDate)) rpEndDate = parsedEndDate;
-
-                var billingDate = CategoryAttributionService.GetBillingDateForCycle(range.start, range.end, cycleDay, rp.DueDate);
-                if (billingDate >= range.start && billingDate <= range.end && billingDate >= rpStartDate &&
-                    (rpEndDate == null || billingDate <= rpEndDate.Value))
+                foreach (var billingDate in _recurringOccurrenceService.GetOccurrencesInRange(
+                             rp,
+                             range.start,
+                             range.end,
+                             cycleDay))
                 {
                     var paidTx = cycleTxs
                         .Where(t => t.RecurringPaymentId == rp.Id)

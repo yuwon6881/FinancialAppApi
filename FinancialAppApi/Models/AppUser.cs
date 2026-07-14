@@ -26,4 +26,12 @@ public class AppUser
     public int FailedLoginAttempts { get; set; } = 0;
 
     public DateTime? LockedUntil { get; set; }
+
+    public int TwoFactorFailedAttempts { get; set; } = 0;
+
+    public DateTime? TwoFactorLockedUntil { get; set; }
+
+    // Highest successfully consumed RFC 6238 time step. Persisting it makes a TOTP
+    // code single-use even when two pending login tokens are submitted concurrently.
+    public long? LastTotpTimeStep { get; set; }
 }

@@ -592,6 +592,7 @@ public class AiAssistantHistoricalContextTests
             Amount = 15,
             Category = "Entertainment",
             LedgerCategory = "Rewards",
+            Frequency = "Monthly",
             StartDate = "2026-01-01",
             DueDate = 15,
             Active = true
