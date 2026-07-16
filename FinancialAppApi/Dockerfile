@@ -24,8 +24,9 @@ RUN dotnet publish "FinancialAppApi/FinancialAppApi.csproj" \
 # viable because the migrate path no longer needs a shell: the cloudbuild.yaml migrate
 # step runs `dotnet FinancialAppApi.dll --migrate` (the session-mode port swap moved
 # into Program.cs), and no Kerberos/GSS is used, so the old libgssapi-krb5-2 apt install
-# is gone. The chiseled base already ships ICU + tzdata, which InvariantGlobalization=false
-# requires. If a future dependency needs Kerberos, switch to the `-noble-chiseled-extra` tag.
+# is gone. This minimal image omits the system tzdata files; FinancialClock provides the
+# fixed UTC+8 Malaysia fallback used by the app. If configurable DST zones or a future
+# dependency needs OS timezone/Kerberos data, switch to the `-noble-chiseled-extra` tag.
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS final
 WORKDIR /app
 COPY --from=build /app/publish .

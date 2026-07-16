@@ -6,6 +6,12 @@ namespace FinancialAppApi.Services;
 /// </summary>
 public sealed class FinancialClock
 {
+    private static readonly HashSet<string> MalaysiaTimeZoneIds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Asia/Kuala_Lumpur",
+        "Malaysia Standard Time"
+    };
+
     private readonly TimeProvider _timeProvider;
 
     public FinancialClock(IConfiguration configuration, TimeProvider? timeProvider = null)
@@ -17,7 +23,7 @@ public sealed class FinancialClock
             throw new InvalidOperationException("Financial:TimeZoneId must be configured.");
         }
 
-        TimeZone = TimeZoneInfo.FindSystemTimeZoneById(configuredId.Trim());
+        TimeZone = ResolveTimeZone(configuredId.Trim());
     }
 
     private FinancialClock(TimeZoneInfo timeZone, TimeProvider timeProvider)
@@ -33,4 +39,27 @@ public sealed class FinancialClock
     public DateTime LocalNow => TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), TimeZone).DateTime;
 
     public DateOnly Today => DateOnly.FromDateTime(LocalNow);
+
+    internal static TimeZoneInfo ResolveTimeZone(
+        string id,
+        Func<string, TimeZoneInfo>? systemResolver = null)
+    {
+        try
+        {
+            return (systemResolver ?? TimeZoneInfo.FindSystemTimeZoneById)(id);
+        }
+        catch (Exception ex) when (
+            ex is TimeZoneNotFoundException or InvalidTimeZoneException &&
+            MalaysiaTimeZoneIds.Contains(id))
+        {
+            // The minimal .NET chiseled runtime intentionally omits /usr/share/zoneinfo.
+            // Malaysia has observed UTC+8 year-round since 1982, and this clock is used
+            // for current financial calendar behavior rather than historical conversion.
+            return TimeZoneInfo.CreateCustomTimeZone(
+                id,
+                TimeSpan.FromHours(8),
+                "(UTC+08:00) Kuala Lumpur",
+                "Malaysia Time");
+        }
+    }
 }
