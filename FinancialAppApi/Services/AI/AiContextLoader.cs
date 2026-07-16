@@ -43,6 +43,7 @@ public partial class AiAssistantService
         }
         return await query
             .OrderByDescending(t => t.Date)
+            .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
             .Select(t => new AiLedgerEditMatch(t.Id, t.Description, t.Date))
             .Take(4)
@@ -171,9 +172,10 @@ public partial class AiAssistantService
         if (transactionIds.Count > 0) query = query.Where(t => transactionIds.Contains(t.Id));
         var rows = await query
             .OrderByDescending(t => t.Date)
+            .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
             .Take(500)
-            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.Description, t.Category, t.LedgerCategory, t.Amount))
+            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.PostedAt, t.Description, t.Category, t.LedgerCategory, t.Amount))
             .ToListAsync(cancellationToken);
         return rows.Select(ToAiTransactionRow).ToList();
     }
@@ -207,11 +209,12 @@ public partial class AiAssistantService
         {
         var rows = await ScopedTransactions(start, end, searchText, transactionIds)
             .OrderByDescending(t => t.Date)
+            .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
             // One beyond the cap so the caller can tell "exactly at the cap" (complete) apart
             // from "over the cap" (truncated); the caller drops the sentinel row.
             .Take(MaxTransactionsPerRange + 1)
-            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.Description, t.Category, t.LedgerCategory, t.Amount))
+            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.PostedAt, t.Description, t.Category, t.LedgerCategory, t.Amount))
             .ToListAsync(cancellationToken);
         return rows.Select(ToAiTransactionRow).ToList();
     }
@@ -248,5 +251,6 @@ public partial class AiAssistantService
         row.Description,
         row.Category,
         row.LedgerCategory,
-        row.Amount);
+        row.Amount,
+        row.PostedAt);
 }

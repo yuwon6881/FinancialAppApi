@@ -40,11 +40,16 @@ public class WishlistService
 {
     private readonly AppDbContext _context;
     private readonly CycleBalanceService _cycleBalanceService;
+    private readonly FinancialClock _financialClock;
 
-    public WishlistService(AppDbContext context, CycleBalanceService cycleBalanceService)
+    public WishlistService(
+        AppDbContext context,
+        CycleBalanceService cycleBalanceService,
+        FinancialClock? financialClock = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
+        _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
     public async Task<List<WishlistItemProjection>> GetWishlistAsync(CancellationToken cancellationToken = default)
@@ -200,17 +205,26 @@ public class WishlistService
         }
         if (item.IsPurchased)
         {
-            return new WishlistPurchaseResult(WishlistMutationStatus.AlreadyPurchased, Message: "Item is already purchased.");
+            var existingTransaction = !string.IsNullOrWhiteSpace(item.PurchaseTransactionId)
+                ? await _context.Transactions.FindAsync([item.PurchaseTransactionId], cancellationToken)
+                : await _context.Transactions.FirstOrDefaultAsync(
+                    transaction => transaction.WishlistItemId == item.Id,
+                    cancellationToken);
+            return existingTransaction != null
+                ? new WishlistPurchaseResult(WishlistMutationStatus.Success, item, existingTransaction)
+                : new WishlistPurchaseResult(WishlistMutationStatus.AlreadyPurchased, Message: "Item is already purchased.");
         }
 
         item.IsPurchased = true;
-        item.PurchasedAt = DateTime.UtcNow;
+        var purchasedAt = DateTime.UtcNow;
+        item.PurchasedAt = purchasedAt;
         item.IsActive = false;
 
         var tx = new Transaction
         {
             Id = Guid.NewGuid().ToString("N"),
-            Date = DateTime.UtcNow,
+            Date = TransactionDate.StartOfDate(_financialClock.Today),
+            PostedAt = purchasedAt,
             Description = $"Purchased: {item.Name} (Wish List)",
             Category = "Other",
             LedgerCategory = "Rewards",
@@ -222,31 +236,53 @@ public class WishlistService
         _context.Transactions.Add(tx);
 
         var strategy = _context.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(async () =>
+        try
         {
-            await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
-
-            var nextItem = await _context.WishlistItems
-                .Where(w => w.Id != item.Id && !w.IsPurchased)
-                .OrderByDescending(w => w.CreatedAt)
-                .FirstOrDefaultAsync(cancellationToken);
-            var activeItems = await _context.WishlistItems
-                .Where(w => w.IsActive && w.Id != item.Id)
-                .ToListAsync(cancellationToken);
-            foreach (var activeItem in activeItems) activeItem.IsActive = false;
-            if (nextItem != null) nextItem.IsActive = true;
-
-            await _context.SaveChangesAsync(cancellationToken);
-
-            var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
-            if (setting != null)
+            await strategy.ExecuteAsync(async () =>
             {
-                var (cycleYear, cycleMonthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(tx.Date), setting.CycleDay);
-                await _cycleBalanceService.InvalidateFromAsync(cycleYear, cycleMonthIndex);
+                await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+                var nextItem = await _context.WishlistItems
+                    .Where(w => w.Id != item.Id && !w.IsPurchased)
+                    .OrderByDescending(w => w.CreatedAt)
+                    .FirstOrDefaultAsync(cancellationToken);
+                var activeItems = await _context.WishlistItems
+                    .Where(w => w.IsActive && w.Id != item.Id)
+                    .ToListAsync(cancellationToken);
+                foreach (var activeItem in activeItems) activeItem.IsActive = false;
+                if (nextItem != null) nextItem.IsActive = true;
+
+                await _context.SaveChangesAsync(cancellationToken);
+
+                var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
+                if (setting != null)
+                {
+                    var (cycleYear, cycleMonthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(tx.Date), setting.CycleDay);
+                    await _cycleBalanceService.InvalidateFromAsync(cycleYear, cycleMonthIndex);
+                }
+
+                await dbTransaction.CommitAsync(cancellationToken);
+            });
+        }
+        catch (DbUpdateException) when (_context.Database.IsRelational())
+        {
+            // IsPurchased is a concurrency token and WishlistItemId has a filtered unique
+            // index. The loser of a simultaneous purchase race returns the winner's
+            // persisted result, making network retries idempotent.
+            _context.ChangeTracker.Clear();
+            var purchasedItem = await _context.WishlistItems
+                .AsNoTracking()
+                .FirstOrDefaultAsync(candidate => candidate.Id == id, cancellationToken);
+            var existingTransaction = await _context.Transactions
+                .AsNoTracking()
+                .FirstOrDefaultAsync(candidate => candidate.WishlistItemId == id, cancellationToken);
+            if (purchasedItem?.IsPurchased == true && existingTransaction != null)
+            {
+                return new WishlistPurchaseResult(WishlistMutationStatus.Success, purchasedItem, existingTransaction);
             }
 
-            await dbTransaction.CommitAsync(cancellationToken);
-        });
+            throw;
+        }
 
         return new WishlistPurchaseResult(WishlistMutationStatus.Success, item, tx);
     }

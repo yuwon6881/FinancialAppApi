@@ -1,6 +1,7 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Extensions;
 using FinancialAppApi.Middleware;
+using FinancialAppApi.Services;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -70,7 +71,7 @@ if (migrateOnStartup || seedOnStartup || seedDatabase || migrateOnly)
         }
         if (seedOnStartup || seedDatabase)
         {
-            DbSeeder.Seed(context);
+            DbSeeder.Seed(context, services.GetRequiredService<FinancialClock>());
         }
     }
     catch (Exception exception)

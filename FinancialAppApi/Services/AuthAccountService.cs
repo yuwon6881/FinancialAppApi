@@ -67,7 +67,23 @@ public class AuthAccountService
         user.PasswordHash = _passwordHasher.HashPassword(user.Username, password);
 
         _context.AppUsers.Add(user);
-        await _context.SaveChangesAsync();
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateException)
+        {
+            // The unique SingletonKey index is the authoritative single-user guard.
+            // If another registration committed after our AnyAsync check, translate
+            // the collision into the same closed-registration response.
+            _context.Entry(user).State = EntityState.Detached;
+            if (await _context.AppUsers.AnyAsync())
+            {
+                return new BadRequestObjectResult(new { message = "Registration is closed. A user is already registered." });
+            }
+
+            throw;
+        }
 
         return new OkObjectResult(new { message = "Registration successful" });
     }
@@ -100,13 +116,7 @@ public class AuthAccountService
         var result = _passwordHasher.VerifyHashedPassword(user.Username, user.PasswordHash, password);
         if (result == PasswordVerificationResult.Failed)
         {
-            user.FailedLoginAttempts += 1;
-            if (user.FailedLoginAttempts >= MaxFailedLoginAttempts)
-            {
-                user.LockedUntil = DateTime.UtcNow.AddMinutes(LockoutMinutes);
-                user.FailedLoginAttempts = 0;
-            }
-            await _context.SaveChangesAsync();
+            await RecordPasswordFailureAsync(user);
             return new UnauthorizedObjectResult(new { message = "Invalid username or password" });
         }
 
@@ -202,6 +212,11 @@ public class AuthAccountService
         if (validTotp && !await TryClaimTotpTimeStepAsync(user, timeStepMatched))
         {
             return await RecordTwoFactorFailureAsync(user, pending, "Code has already been used");
+        }
+
+        if (!await TryConsumePendingTwoFactorAsync(pending))
+        {
+            return new UnauthorizedObjectResult(new { message = "Login session expired. Please log in again." });
         }
 
         user.TwoFactorFailedAttempts = 0;
@@ -410,6 +425,47 @@ public class AuthAccountService
         PendingTwoFactor pending,
         string message = "Invalid code")
     {
+        if (_context.Database.IsRelational())
+        {
+            var maxAttempts = Math.Max(1, MaxTwoFactorAttempts);
+            var now = DateTime.UtcNow;
+            var lockedUntil = now.AddMinutes(TwoFactorLockoutMinutes);
+
+            await _context.PendingTwoFactors
+                .Where(candidate => candidate.Id == pending.Id)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(candidate => candidate.Attempts, candidate => candidate.Attempts + 1));
+
+            await _context.AppUsers
+                .Where(candidate => candidate.Id == user.Id)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(
+                        candidate => candidate.TwoFactorLockedUntil,
+                        candidate => candidate.TwoFactorFailedAttempts + 1 >= maxAttempts
+                            ? lockedUntil
+                            : candidate.TwoFactorLockedUntil)
+                    .SetProperty(
+                        candidate => candidate.TwoFactorFailedAttempts,
+                        candidate => candidate.TwoFactorFailedAttempts + 1 >= maxAttempts
+                            ? 0
+                            : candidate.TwoFactorFailedAttempts + 1));
+
+            var lockState = await _context.AppUsers
+                .AsNoTracking()
+                .Where(candidate => candidate.Id == user.Id)
+                .Select(candidate => candidate.TwoFactorLockedUntil)
+                .SingleAsync();
+            if (lockState.HasValue && lockState.Value > now)
+            {
+                await _context.PendingTwoFactors
+                    .Where(candidate => candidate.Username == user.Username)
+                    .ExecuteDeleteAsync();
+                return new ObjectResult(new { message = "Too many two-factor attempts. Please try again later." }) { StatusCode = 429 };
+            }
+
+            return new UnauthorizedObjectResult(new { message });
+        }
+
         pending.Attempts += 1;
         user.TwoFactorFailedAttempts += 1;
         if (user.TwoFactorFailedAttempts >= MaxTwoFactorAttempts)
@@ -423,6 +479,52 @@ public class AuthAccountService
 
         await _context.SaveChangesAsync();
         return new UnauthorizedObjectResult(new { message });
+    }
+
+    private async Task RecordPasswordFailureAsync(AppUser user)
+    {
+        if (!_context.Database.IsRelational())
+        {
+            user.FailedLoginAttempts += 1;
+            if (user.FailedLoginAttempts >= Math.Max(1, MaxFailedLoginAttempts))
+            {
+                user.LockedUntil = DateTime.UtcNow.AddMinutes(LockoutMinutes);
+                user.FailedLoginAttempts = 0;
+            }
+            await _context.SaveChangesAsync();
+            return;
+        }
+
+        var maxAttempts = Math.Max(1, MaxFailedLoginAttempts);
+        var lockedUntil = DateTime.UtcNow.AddMinutes(LockoutMinutes);
+        await _context.AppUsers
+            .Where(candidate => candidate.Id == user.Id)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(
+                    candidate => candidate.LockedUntil,
+                    candidate => candidate.FailedLoginAttempts + 1 >= maxAttempts
+                        ? lockedUntil
+                        : candidate.LockedUntil)
+                .SetProperty(
+                    candidate => candidate.FailedLoginAttempts,
+                    candidate => candidate.FailedLoginAttempts + 1 >= maxAttempts
+                        ? 0
+                        : candidate.FailedLoginAttempts + 1));
+    }
+
+    private async Task<bool> TryConsumePendingTwoFactorAsync(PendingTwoFactor pending)
+    {
+        if (_context.Database.IsRelational())
+        {
+            return await _context.PendingTwoFactors
+                .Where(candidate => candidate.Id == pending.Id && candidate.ExpiresAt >= DateTime.UtcNow)
+                .ExecuteDeleteAsync() == 1;
+        }
+
+        if (_context.Entry(pending).State == EntityState.Deleted) return false;
+        _context.PendingTwoFactors.Remove(pending);
+        await _context.SaveChangesAsync();
+        return true;
     }
 
     private async Task<bool> TryClaimTotpTimeStepAsync(AppUser user, long timeStep)

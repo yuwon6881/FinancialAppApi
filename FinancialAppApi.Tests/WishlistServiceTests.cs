@@ -122,6 +122,22 @@ public class WishlistServiceTests
     }
 
     [Fact]
+    public async Task PurchaseWishlistItemAsync_ReplayReturnsTheOriginalTransaction()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.WishlistItems.Add(NewItem(1, "Headphones", active: true, price: 80m));
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var first = await service.PurchaseWishlistItemAsync(1);
+        var replay = await service.PurchaseWishlistItemAsync(1);
+
+        Assert.Equal(WishlistMutationStatus.Success, replay.Status);
+        Assert.Equal(first.Transaction!.Id, replay.Transaction!.Id);
+        Assert.Equal(1, await context.Transactions.CountAsync(t => t.WishlistItemId == 1));
+    }
+
+    [Fact]
     public async Task PurchaseWishlistItemAsync_PromotesExactlyOneUnpurchasedItem()
     {
         await using var context = TestHelpers.NewInMemoryContext();

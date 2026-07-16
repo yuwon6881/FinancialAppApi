@@ -83,13 +83,11 @@ public class WebAuthnService
             return new UnauthorizedObjectResult(new { message = "User not found in session" });
         }
 
-        var challenge = await _context.WebAuthnChallenges
-            .FirstOrDefaultAsync(c => c.Id == challengeId && c.Purpose == "register" && c.Username == username);
-        if (challenge == null || challenge.ExpiresAt < DateTime.UtcNow)
+        var challenge = await ClaimChallengeAsync(challengeId, "register", username);
+        if (challenge == null)
         {
             return new BadRequestObjectResult(new { message = "Registration challenge expired or invalid. Please try again." });
         }
-        _context.WebAuthnChallenges.Remove(challenge);
 
         var options = CredentialCreateOptions.FromJson(challenge.OptionsJson);
         var fido2 = BuildFido2(requestOrigin, fallbackOrigin);
@@ -109,7 +107,6 @@ public class WebAuthnService
         }
         catch (Exception e)
         {
-            await _context.SaveChangesAsync();
             return new BadRequestObjectResult(new { message = "Fingerprint registration failed: " + e.Message });
         }
 
@@ -177,13 +174,11 @@ public class WebAuthnService
         string? requestOrigin,
         string fallbackOrigin)
     {
-        var challenge = await _context.WebAuthnChallenges
-            .FirstOrDefaultAsync(c => c.Id == challengeId && c.Purpose == "login");
-        if (challenge == null || challenge.ExpiresAt < DateTime.UtcNow)
+        var challenge = await ClaimChallengeAsync(challengeId, "login");
+        if (challenge == null)
         {
             return new UnauthorizedObjectResult(new { message = "Login challenge expired or invalid. Please try again." });
         }
-        _context.WebAuthnChallenges.Remove(challenge);
 
         var storedCred = await _context.WebAuthnCredentials
             .FirstOrDefaultAsync(c => c.CredentialId == credential.RawId);
@@ -192,14 +187,12 @@ public class WebAuthnService
             : await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == storedCred.Username);
         if (storedCred == null || user == null || !string.Equals(challenge.Username, user.Username, StringComparison.Ordinal))
         {
-            await _context.SaveChangesAsync();
             return new UnauthorizedObjectResult(new { message = "Unrecognized fingerprint credential." });
         }
 
         var verifyResult = await VerifyAssertionAsync(storedCred, credential, challenge.OptionsJson, requestOrigin, fallbackOrigin);
         if (verifyResult != null)
         {
-            await _context.SaveChangesAsync();
             return verifyResult;
         }
 
@@ -268,26 +261,22 @@ public class WebAuthnService
             return new UnauthorizedObjectResult(new { message = "User not found in session" });
         }
 
-        var challenge = await _context.WebAuthnChallenges
-            .FirstOrDefaultAsync(c => c.Id == challengeId && c.Purpose == "assert" && c.Username == username);
-        if (challenge == null || challenge.ExpiresAt < DateTime.UtcNow)
+        var challenge = await ClaimChallengeAsync(challengeId, "assert", username);
+        if (challenge == null)
         {
             return new UnauthorizedObjectResult(new { message = "Verification challenge expired or invalid. Please try again." });
         }
-        _context.WebAuthnChallenges.Remove(challenge);
 
         var storedCred = await _context.WebAuthnCredentials
             .FirstOrDefaultAsync(c => c.CredentialId == credential.RawId && c.Username == username);
         if (storedCred == null)
         {
-            await _context.SaveChangesAsync();
             return new UnauthorizedObjectResult(new { message = "Unrecognized fingerprint credential." });
         }
 
         var verifyResult = await VerifyAssertionAsync(storedCred, credential, challenge.OptionsJson, requestOrigin, fallbackOrigin);
         if (verifyResult != null)
         {
-            await _context.SaveChangesAsync();
             return verifyResult;
         }
 
@@ -397,6 +386,35 @@ public class WebAuthnService
             ServerName = "FinancialApp Ledger",
             Origins = origins
         });
+    }
+
+    private async Task<WebAuthnChallenge?> ClaimChallengeAsync(
+        string challengeId,
+        string purpose,
+        string? username = null)
+    {
+        var now = DateTime.UtcNow;
+        var query = _context.WebAuthnChallenges
+            .Where(challenge => challenge.Id == challengeId && challenge.Purpose == purpose);
+        if (username != null)
+        {
+            query = query.Where(challenge => challenge.Username == username);
+        }
+
+        var challenge = await query.AsNoTracking().FirstOrDefaultAsync();
+        if (challenge == null || challenge.ExpiresAt < now) return null;
+
+        if (_context.Database.IsRelational())
+        {
+            var claimed = await query
+                .Where(candidate => candidate.ExpiresAt >= now)
+                .ExecuteDeleteAsync();
+            return claimed == 1 ? challenge : null;
+        }
+
+        _context.WebAuthnChallenges.Remove(challenge);
+        await _context.SaveChangesAsync();
+        return challenge;
     }
 
     private async Task CleanupExpiredChallengesAsync()

@@ -15,8 +15,17 @@ public record ReceiptScanResult(
     string TxType,
     double Confidence);
 
+public enum ReceiptScanProcessStatus
+{
+    Processed,
+    AlreadyFinished,
+    InProgress,
+    NotFound
+}
+
 public class ReceiptScanProcessor
 {
+    public static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(2);
     private readonly AiClient _aiClient;
     private readonly AppDbContext _context;
     private readonly TransactionCategoryService _categoryService;
@@ -34,18 +43,33 @@ public class ReceiptScanProcessor
         _logger = logger;
     }
 
-    public async Task ProcessAsync(string jobId)
+    public async Task<ReceiptScanProcessStatus> ProcessAsync(string jobId)
     {
         ReceiptScanJob? job;
         if (_context.Database.IsRelational())
         {
             var claimedAt = DateTime.UtcNow;
+            var staleBefore = claimedAt - ProcessingLease;
             var claimed = await _context.ReceiptScanJobs
-                .Where(j => j.Id == jobId && j.Status == "queued")
+                .Where(j => j.Id == jobId &&
+                    (j.Status == "queued" || (j.Status == "processing" && j.UpdatedAt < staleBefore)))
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(j => j.Status, "processing")
                     .SetProperty(j => j.UpdatedAt, claimedAt));
-            if (claimed == 0) return;
+            if (claimed == 0)
+            {
+                var existingStatus = await _context.ReceiptScanJobs
+                    .AsNoTracking()
+                    .Where(j => j.Id == jobId)
+                    .Select(j => j.Status)
+                    .FirstOrDefaultAsync();
+                return existingStatus switch
+                {
+                    null => ReceiptScanProcessStatus.NotFound,
+                    "completed" or "failed" => ReceiptScanProcessStatus.AlreadyFinished,
+                    _ => ReceiptScanProcessStatus.InProgress
+                };
+            }
             job = await _context.ReceiptScanJobs.FirstOrDefaultAsync(j => j.Id == jobId);
         }
         else
@@ -54,9 +78,13 @@ public class ReceiptScanProcessor
             if (job == null)
             {
                 _logger.LogWarning("Receipt scan job {JobId} was not found.", jobId);
-                return;
+                return ReceiptScanProcessStatus.NotFound;
             }
-            if (job.Status != "queued") return;
+            if (job.Status is "completed" or "failed") return ReceiptScanProcessStatus.AlreadyFinished;
+            if (job.Status == "processing" && job.UpdatedAt >= DateTime.UtcNow - ProcessingLease)
+                return ReceiptScanProcessStatus.InProgress;
+            if (job.Status != "queued" && job.Status != "processing")
+                return ReceiptScanProcessStatus.InProgress;
             job.Status = "processing";
             job.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
@@ -65,13 +93,13 @@ public class ReceiptScanProcessor
         if (job == null)
         {
             _logger.LogWarning("Receipt scan job {JobId} was not found.", jobId);
-            return;
+            return ReceiptScanProcessStatus.NotFound;
         }
 
         if (string.IsNullOrWhiteSpace(job.ImageBase64))
         {
             await MarkFailed(job, "Receipt image was not available for processing.");
-            return;
+            return ReceiptScanProcessStatus.Processed;
         }
 
         try
@@ -81,7 +109,7 @@ public class ReceiptScanProcessor
             {
                 _logger.LogWarning("Receipt scan job {JobId} failed with user-facing error: {Message}", jobId, outcome.ErrorMessage);
                 await MarkFailed(job, outcome.ErrorMessage);
-                return;
+                return ReceiptScanProcessStatus.Processed;
             }
 
             job.Status = "completed";
@@ -110,6 +138,8 @@ public class ReceiptScanProcessor
             _logger.LogError(ex, "Unexpected error while processing receipt scan job {JobId}.", jobId);
             await MarkFailed(job, "An unexpected error occurred. Please try again.");
         }
+
+        return ReceiptScanProcessStatus.Processed;
     }
 
     private async Task MarkFailed(ReceiptScanJob job, string message)

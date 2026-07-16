@@ -5,21 +5,10 @@ namespace FinancialAppApi.Database;
 public static class TransactionDate
 {
     public static DateTime FromInputDate(DateOnly date)
-    {
-        var now = DateTime.UtcNow;
-        return DateTime.SpecifyKind(date.ToDateTime(TimeOnly.FromTimeSpan(now.TimeOfDay)), DateTimeKind.Utc);
-    }
+        => StartOfDate(date);
 
     public static DateTime PreserveTimeWhenSameDate(DateTime existing, DateOnly date)
-    {
-        var currentDate = DateOnly.FromDateTime(existing);
-        if (currentDate == date)
-        {
-            return DateTime.SpecifyKind(existing, DateTimeKind.Utc);
-        }
-
-        return FromInputDate(date);
-    }
+        => StartOfDate(date);
 
     public static DateOnly ToDateOnly(DateTime timestamp) => DateOnly.FromDateTime(timestamp);
 

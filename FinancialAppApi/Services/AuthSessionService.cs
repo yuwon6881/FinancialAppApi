@@ -240,8 +240,10 @@ public class AuthSessionService
         }
         catch (DbUpdateConcurrencyException exception)
         {
-            var deletedEntries = exception.Entries.Where(e => e.State == EntityState.Deleted).ToList();
-            if (deletedEntries.Count == 0) throw;
+            var deletedEntries = exception.Entries
+                .Where(e => e.State == EntityState.Deleted && e.Metadata.ClrType == typeof(UserSession))
+                .ToList();
+            if (deletedEntries.Count == 0 || deletedEntries.Count != exception.Entries.Count) throw;
             foreach (var entry in deletedEntries) entry.State = EntityState.Detached;
             await _context.SaveChangesAsync();
         }

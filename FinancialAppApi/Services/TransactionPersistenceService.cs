@@ -20,6 +20,7 @@ public enum TransactionMutationStatus
 public sealed record TransactionMutationRequest(
     string? Id,
     string? Date,
+    string? PostedAt,
     string Description,
     string Category,
     string LedgerCategory,
@@ -76,6 +77,7 @@ public class TransactionPersistenceService
         {
             Id = string.IsNullOrWhiteSpace(request.Id) ? $"tx-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}" : request.Id,
             Date = TransactionDate.FromInputDate(postDate),
+            PostedAt = ResolvePostedAt(request.PostedAt),
             Description = request.Description,
             Category = ledgerValidation.Category,
             LedgerCategory = ledgerValidation.LedgerCategory,
@@ -264,6 +266,7 @@ public class TransactionPersistenceService
             {
                 Id = $"{transaction.Id}-split-{categories[i]}",
                 Date = transaction.Date,
+                PostedAt = transaction.PostedAt,
                 Description = $"[Split: {categories[i]}] {transaction.Description}",
                 Category = "Transfer",
                 LedgerCategory = $"Transfer:Income->{categories[i]}",
@@ -316,6 +319,24 @@ public class TransactionPersistenceService
         return new TransactionMutationResult(
             TransactionMutationStatus.InvalidDate,
             Message: "Date must be in yyyy-MM-dd format.");
+    }
+
+    private static DateTime ResolvePostedAt(string? value)
+    {
+        if (DateTimeOffset.TryParse(
+                value,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+        {
+            var utc = parsed.UtcDateTime;
+            if (utc >= DateTime.UnixEpoch && utc <= DateTime.UtcNow.AddDays(1))
+            {
+                return utc;
+            }
+        }
+
+        return DateTime.UtcNow;
     }
 
     private static TransactionMutationResult InvalidAmount() => new(

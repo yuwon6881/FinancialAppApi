@@ -255,6 +255,7 @@ public static class ServiceCollectionExtensions
             dataProtection.ProtectKeysWithCertificate(keyEncryptionCertificate);
         }
 
+        services.AddSingleton<FinancialClock>();
         services.AddScoped<CycleBalanceService>();
         services.AddScoped<RecurringOccurrenceService>();
         services.AddScoped<RecurringPaymentAlertService>();

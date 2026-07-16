@@ -161,6 +161,34 @@ public class FinancialServiceDashboardTests
 
         Assert.Empty(GetObjects(january, "activeRecurringPayments"));
         Assert.Single(GetObjects(february, "activeRecurringPayments"));
+        Assert.Equal(10m, GetStat(january, "activeRecurringTotal"));
+        Assert.Equal(10m, GetStat(february, "activeRecurringTotal"));
+    }
+
+    [Fact]
+    public async Task GetDashboardDataAsync_ExcludesExpiredPaymentsFromMonthlyRecurringTotal()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "expired",
+            Name = "Old subscription",
+            Amount = -30m,
+            Frequency = "Monthly",
+            Category = "Bills",
+            LedgerCategory = "Essentials",
+            StartDate = "2025-01-01",
+            EndDate = "2025-12-31",
+            NextDueDate = "2025-12-01",
+            DueDate = 1,
+            Active = true
+        });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context).GetDashboardDataAsync("Jul", 2026);
+
+        Assert.Equal(0m, GetStat(response, "activeRecurringTotal"));
     }
 
     private static (string category, decimal amount)[] GetBreakdown(object response, string propertyName)
@@ -181,6 +209,13 @@ public class FinancialServiceDashboardTests
         ((System.Collections.IEnumerable)response.GetType().GetProperty(propertyName)!.GetValue(response)!)
         .Cast<object>()
         .ToArray();
+
+    private static decimal GetStat(object response, string propertyName)
+    {
+        var stats = response.GetType().GetProperty("stats")!.GetValue(response)!;
+        var raw = (string)stats.GetType().GetProperty(propertyName)!.GetValue(stats)!;
+        return ObfuscationHelper.Deobfuscate(raw);
+    }
 
     private static FinancialService NewService(AppDbContext context)
     {

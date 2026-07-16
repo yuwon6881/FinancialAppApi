@@ -109,13 +109,15 @@ public partial class AiAssistantService
     private readonly TransactionCategoryService _categoryService;
     private readonly CategorySuggestionService? _categorySuggestionService;
     private readonly RecurringOccurrenceService _recurringOccurrenceService;
+    private readonly FinancialClock _financialClock;
 
     public AiAssistantService(
         AiClient aiClient,
         AppDbContext context,
         TransactionCategoryService categoryService,
         CategorySuggestionService? categorySuggestionService = null,
-        RecurringOccurrenceService? recurringOccurrenceService = null)
+        RecurringOccurrenceService? recurringOccurrenceService = null,
+        FinancialClock? financialClock = null)
     {
         _aiClient = aiClient;
         _context = context;
@@ -123,6 +125,7 @@ public partial class AiAssistantService
         _categorySuggestionService = categorySuggestionService;
         _recurringOccurrenceService = recurringOccurrenceService ??
             new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
+        _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
     public async Task<AiChatOutcome> ChatAsync(AiChatRequest request, CancellationToken cancellationToken = default)

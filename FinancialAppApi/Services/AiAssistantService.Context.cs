@@ -34,10 +34,12 @@ public partial class AiAssistantService
         string Description,
         string Category,
         string LedgerCategory,
-        decimal Amount);
+        decimal Amount,
+        DateTime? PostedAt = null);
     private sealed record AiTransactionDbRow(
         string Id,
         DateTime Date,
+        DateTime PostedAt,
         string Description,
         string Category,
         string LedgerCategory,
@@ -61,10 +63,10 @@ public partial class AiAssistantService
         var queryPlan = intentPlan.QueryPlan;
         var setting = await LoadFinancialSettingAsync(cancellationToken);
         var cycleDay = setting?.CycleDay ?? 28;
-        var selectedMonth = setting?.SelectedMonth ?? DateTime.Now.ToString("MMM");
-        var selectedYear = setting?.SelectedYear ?? DateTime.Now.Year;
+        var selectedMonth = setting?.SelectedMonth ?? _financialClock.LocalNow.ToString("MMM");
+        var selectedYear = setting?.SelectedYear ?? _financialClock.LocalNow.Year;
         var selectedMonthIndex = Array.IndexOf(FinancialConstants.MonthAbbreviations, selectedMonth) + 1;
-        if (selectedMonthIndex <= 0) selectedMonthIndex = DateTime.Now.Month;
+        if (selectedMonthIndex <= 0) selectedMonthIndex = _financialClock.LocalNow.Month;
 
         var categories = (await _categoryService.GetCategoriesAsync())
             .Select(c => c.Name)
@@ -387,7 +389,7 @@ public partial class AiAssistantService
 
         var context = new AiContext(
             Currency: setting?.Currency ?? "USD",
-            Today: DateTime.Now.ToString("yyyy-MM-dd"),
+            Today: _financialClock.Today.ToString("yyyy-MM-dd"),
             SensitiveMode: sensitiveMode,
             ActiveCycle: new
             {
@@ -650,6 +652,7 @@ public partial class AiAssistantService
                         .ToList(),
                     recentTransactions = txs
                         .OrderByDescending(t => t.Timestamp)
+                        .ThenByDescending(t => t.PostedAt ?? t.Timestamp)
                         .Take(12)
                         .Select(t => new
                         {

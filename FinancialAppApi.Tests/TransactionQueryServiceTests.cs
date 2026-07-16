@@ -40,6 +40,50 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
+    public async Task GetTransactionsAsync_AppliesDateAmountAndRecurringFiltersTogether()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("matching", "Rent", "Housing", "Essentials", -1250m,
+                date: new DateOnly(2026, 7, 10), recurringPaymentId: "rent-plan"),
+            NewTransaction("too-small", "Streaming", "Entertainment", "Rewards", -20m,
+                date: new DateOnly(2026, 7, 10), recurringPaymentId: "streaming-plan"),
+            NewTransaction("not-recurring", "Furniture", "Home", "Essentials", -1250m,
+                date: new DateOnly(2026, 7, 10)),
+            NewTransaction("outside-range", "Old rent", "Housing", "Essentials", -1250m,
+                date: new DateOnly(2026, 6, 10), recurringPaymentId: "rent-plan"));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var result = await service.GetTransactionsAsync(
+            all: true,
+            startDate: "2026-07-01",
+            endDate: "2026-07-31",
+            minAmount: 100m,
+            maxAmount: 1500m,
+            recurringOnly: true);
+
+        Assert.Equal("matching", Assert.Single(result.Items).Id);
+    }
+
+    [Fact]
+    public async Task GetTransactionsAsync_OrdersSameDayRowsByCreationTimestamp()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("older", "AI entry", "Other", "Essentials", -10m,
+                postedAt: new DateTime(2026, 7, 9, 1, 0, 0, DateTimeKind.Utc)),
+            NewTransaction("newer", "Manual entry", "Other", "Essentials", -20m,
+                postedAt: new DateTime(2026, 7, 9, 15, 0, 0, DateTimeKind.Utc)));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var result = await service.GetTransactionsAsync(all: true);
+
+        Assert.Equal(["newer", "older"], result.Items.Select(item => item.Id));
+    }
+
+    [Fact]
     public async Task ExportTransactionsAsync_IncludesCsvHeaderAndRows()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -75,16 +119,26 @@ public class TransactionQueryServiceTests
         Assert.Equal("Income", suggestion.LedgerCategory);
     }
 
-    private static Transaction NewTransaction(string id, string description, string category, string ledgerCategory, decimal amount)
+    private static Transaction NewTransaction(
+        string id,
+        string description,
+        string category,
+        string ledgerCategory,
+        decimal amount,
+        DateTime? postedAt = null,
+        DateOnly? date = null,
+        string? recurringPaymentId = null)
     {
         return new Transaction
         {
             Id = id,
-            Date = TransactionDate.FromInputDate(new DateOnly(2026, 7, 9)),
+            Date = TransactionDate.FromInputDate(date ?? new DateOnly(2026, 7, 9)),
+            PostedAt = postedAt ?? new DateTime(2026, 7, 9, 12, 0, 0, DateTimeKind.Utc),
             Description = description,
             Category = category,
             LedgerCategory = ledgerCategory,
-            Amount = amount
+            Amount = amount,
+            RecurringPaymentId = recurringPaymentId
         };
     }
 }

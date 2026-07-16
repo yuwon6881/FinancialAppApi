@@ -35,7 +35,10 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "category")] string? category = null,
         [FromQuery(Name = "txType")] string? txType = null,
         [FromQuery(Name = "startDate")] string? startDate = null,
-        [FromQuery(Name = "endDate")] string? endDate = null)
+        [FromQuery(Name = "endDate")] string? endDate = null,
+        [FromQuery(Name = "minAmount")] decimal? minAmount = null,
+        [FromQuery(Name = "maxAmount")] decimal? maxAmount = null,
+        [FromQuery(Name = "recurringOnly")] bool recurringOnly = false)
     {
         if (queryMonth != null && !FinancialConstants.MonthAbbreviations.Contains(queryMonth, StringComparer.Ordinal))
             return BadRequest(new { message = "Month must be a valid three-letter abbreviation." });
@@ -52,6 +55,9 @@ public class TransactionsController : ControllerBase
             txType,
             startDate,
             endDate,
+            minAmount,
+            maxAmount,
+            recurringOnly,
             HttpContext.RequestAborted);
 
         if (result.Total.HasValue)
@@ -96,9 +102,22 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "category")] string? category = null,
         [FromQuery(Name = "txType")] string? txType = null,
         [FromQuery(Name = "startDate")] string? startDate = null,
-        [FromQuery(Name = "endDate")] string? endDate = null)
+        [FromQuery(Name = "endDate")] string? endDate = null,
+        [FromQuery(Name = "minAmount")] decimal? minAmount = null,
+        [FromQuery(Name = "maxAmount")] decimal? maxAmount = null,
+        [FromQuery(Name = "recurringOnly")] bool recurringOnly = false)
     {
-        var export = await _transactionQueryService.ExportTransactionsAsync(search, ledgerCategory, category, txType, startDate, endDate, HttpContext.RequestAborted);
+        var export = await _transactionQueryService.ExportTransactionsAsync(
+            search,
+            ledgerCategory,
+            category,
+            txType,
+            startDate,
+            endDate,
+            minAmount,
+            maxAmount,
+            recurringOnly,
+            HttpContext.RequestAborted);
         return File(export.Bytes, "text/csv", export.FileName);
     }
 
@@ -162,6 +181,7 @@ public class TransactionsController : ControllerBase
         return new TransactionMutationRequest(
             dto.Id,
             dto.Date,
+            dto.PostedAt,
             dto.Description,
             dto.Category,
             dto.LedgerCategory,
@@ -176,7 +196,7 @@ public class TransactionsController : ControllerBase
         {
             Id = t.Id,
             Date = TransactionDate.ToDateOnly(t.Date).ToString("yyyy-MM-dd"),
-            PostedAt = t.Date.ToUniversalTime().ToString("O"),
+            PostedAt = t.PostedAt.ToUniversalTime().ToString("O"),
             Description = t.Description,
             Category = t.Category,
             LedgerCategory = t.LedgerCategory,
@@ -192,7 +212,7 @@ public class TransactionsController : ControllerBase
         {
             Id = t.Id,
             Date = TransactionDate.ToDateOnly(t.Date).ToString("yyyy-MM-dd"),
-            PostedAt = t.Date.ToUniversalTime().ToString("O"),
+            PostedAt = t.PostedAt.ToUniversalTime().ToString("O"),
             Description = t.Description,
             Category = t.Category,
             LedgerCategory = t.LedgerCategory,

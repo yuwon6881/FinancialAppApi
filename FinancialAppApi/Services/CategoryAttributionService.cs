@@ -20,7 +20,13 @@ public static class CategoryAttributionService
         {
             var startDayActual = Math.Min(cycleDay, DateTime.DaysInMonth(year, monthIndex));
             var startDate = new DateTime(year, monthIndex, startDayActual);
-            var endDate = startDate.AddMonths(1).AddDays(-1);
+            // The end is the day before the NEXT cycle's clamped start, so consecutive
+            // cycles tile with no gaps or overlaps. Deriving it from this month's start
+            // (start.AddMonths(1).AddDays(-1)) drops days whenever cycleDay > 28 and the
+            // two months clamp to different day counts (e.g. May 30 falling into no cycle).
+            var nextMonth = new DateTime(year, monthIndex, 1).AddMonths(1);
+            var nextStartDay = Math.Min(cycleDay, DateTime.DaysInMonth(nextMonth.Year, nextMonth.Month));
+            var endDate = new DateTime(nextMonth.Year, nextMonth.Month, nextStartDay).AddDays(-1);
             var lbl = $"{startDate:MMM} {GetDayWithSuffix(startDate.Day)} ~ {endDate:MMM} {GetDayWithSuffix(endDate.Day)}, {startDate.Year}";
             return (startDate, endDate, lbl);
         }
@@ -37,7 +43,12 @@ public static class CategoryAttributionService
         int year = date.Year;
         int monthIdx = date.Month;
 
-        if (cycleDay > 1 && date.Day < cycleDay)
+        // Compare against the cycle start clamped to THIS month's length, matching
+        // GetCycleRange. A raw "date.Day < cycleDay" would, for cycleDay > 28,
+        // attribute a clamped last-of-month day (e.g. Feb 28 with cycleDay 31) to the
+        // previous cycle even though GetCycleRange places it in the current one.
+        var clampedStart = Math.Min(cycleDay, DateTime.DaysInMonth(year, monthIdx));
+        if (cycleDay > 1 && date.Day < clampedStart)
         {
             monthIdx--;
             if (monthIdx < 1)
@@ -71,10 +82,14 @@ public static class CategoryAttributionService
             if (parts.Length == 4)
             {
                 decimal pct = 0;
-                if (categoryName.Equals("Essentials", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[0], out pct);
-                else if (categoryName.Equals("Growth", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[1], out pct);
-                else if (categoryName.Equals("Stability", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[2], out pct);
-                else if (categoryName.Equals("Rewards", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[3], out pct);
+                // Percentages are written with InvariantCulture (TransactionPersistenceService);
+                // parse them the same way so hosts with a comma decimal separator don't read
+                // "12.5" as 125.
+                var ci = System.Globalization.CultureInfo.InvariantCulture;
+                if (categoryName.Equals("Essentials", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[0], System.Globalization.NumberStyles.Any, ci, out pct);
+                else if (categoryName.Equals("Growth", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[1], System.Globalization.NumberStyles.Any, ci, out pct);
+                else if (categoryName.Equals("Stability", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[2], System.Globalization.NumberStyles.Any, ci, out pct);
+                else if (categoryName.Equals("Rewards", StringComparison.OrdinalIgnoreCase)) decimal.TryParse(parts[3], System.Globalization.NumberStyles.Any, ci, out pct);
 
                 return t.Amount * (pct / 100m);
             }

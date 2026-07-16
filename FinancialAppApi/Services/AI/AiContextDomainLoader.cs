@@ -118,7 +118,11 @@ public partial class AiAssistantService
             }
         }
 
-        transactions = transactions.OrderByDescending(row => row.Timestamp).ThenByDescending(row => row.Id).ToList();
+        transactions = transactions
+            .OrderByDescending(row => row.Timestamp)
+            .ThenByDescending(row => row.PostedAt ?? row.Timestamp)
+            .ThenByDescending(row => row.Id)
+            .ToList();
         if (exactDate.HasValue)
         {
             transactions = transactions.Where(row => DateOnly.FromDateTime(row.Timestamp) == exactDate.Value).ToList();
@@ -269,7 +273,7 @@ public partial class AiAssistantService
                     ledgerTransactions,
                     targetSelection.Cycles,
                     cycleDay,
-                    DateTime.Now));
+                    _financialClock.LocalNow));
             }
         }
 
@@ -282,7 +286,7 @@ public partial class AiAssistantService
                 targetSelection.Cycles,
                 cycleDay,
                 activeCycleStart,
-                DateTime.Now,
+                _financialClock.LocalNow,
                 wishlistReference,
                 rewardsBalance))
             : null;

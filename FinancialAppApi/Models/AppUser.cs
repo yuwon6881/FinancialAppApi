@@ -7,6 +7,11 @@ public class AppUser
     [Key]
     public string Id { get; set; } = string.Empty;
 
+    // Every row deliberately carries the same value. A unique database index on this
+    // column enforces the application's single-user invariant even when two initial
+    // registration requests race each other.
+    public int SingletonKey { get; set; } = 1;
+
     [Required]
     public string Username { get; set; } = string.Empty;
 

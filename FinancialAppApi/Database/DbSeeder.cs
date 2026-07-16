@@ -1,22 +1,23 @@
 using FinancialAppApi.Models;
+using FinancialAppApi.Services;
 
 namespace FinancialAppApi.Database;
 
 public static class DbSeeder
 {
-    public static void Seed(AppDbContext context)
+    public static void Seed(AppDbContext context, FinancialClock? financialClock = null)
     {
-        SeedFinancialSettings(context);
+        SeedFinancialSettings(context, financialClock ?? FinancialClock.Utc);
     }
 
-    private static void SeedFinancialSettings(AppDbContext context)
+    private static void SeedFinancialSettings(AppDbContext context, FinancialClock financialClock)
     {
         if (context.FinancialSettings.Any())
         {
             return;
         }
 
-        var now = DateTime.Now;
+        var now = financialClock.LocalNow;
         context.FinancialSettings.Add(new FinancialSetting
         {
             TargetStabilityFund = 10000.00m,

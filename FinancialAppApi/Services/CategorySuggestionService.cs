@@ -272,6 +272,7 @@ Rules:
             .AsNoTracking()
             .Where(t => t.LedgerCategory != "Discarded")
             .OrderByDescending(t => t.Date)
+            .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
             .Take(1000)
             .Select(t => new CategoryReviewTransaction(t.Id, t.Description, t.Category, t.LedgerCategory))

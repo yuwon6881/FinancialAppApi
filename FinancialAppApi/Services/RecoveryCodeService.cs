@@ -59,6 +59,15 @@ public class RecoveryCodeService
             var result = _hasher.VerifyHashedPassword(username, candidate.CodeHash, code.Trim());
             if (result != PasswordVerificationResult.Failed)
             {
+                if (_context.Database.IsRelational())
+                {
+                    var claimed = await _context.RecoveryCodes
+                        .Where(item => item.Id == candidate.Id && !item.Used)
+                        .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.Used, true));
+                    if (claimed == 1) return true;
+                    continue;
+                }
+
                 candidate.Used = true;
                 await _context.SaveChangesAsync();
                 return true;

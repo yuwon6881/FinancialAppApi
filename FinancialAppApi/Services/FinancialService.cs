@@ -27,17 +27,20 @@ public class FinancialService
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly RecurringPaymentAlertService _recurringPaymentAlertService;
     private readonly RecurringOccurrenceService _recurringOccurrenceService;
+    private readonly FinancialClock _financialClock;
 
     public FinancialService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
         RecurringPaymentAlertService recurringPaymentAlertService,
-        RecurringOccurrenceService recurringOccurrenceService)
+        RecurringOccurrenceService recurringOccurrenceService,
+        FinancialClock? financialClock = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _recurringPaymentAlertService = recurringPaymentAlertService;
         _recurringOccurrenceService = recurringOccurrenceService;
+        _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
     public async Task<object> GetWalletBalanceAsync()
@@ -45,7 +48,7 @@ public class FinancialService
         var setting = await GetOrCreateSettingAsync();
         var cycleDay = setting.CycleDay;
 
-        var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(DateOnly.FromDateTime(DateTime.Now), cycleDay);
+        var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(_financialClock.Today, cycleDay);
         var currentCycleTxs = await GetTransactionsForCycleAsync(year, monthIndex, cycleDay);
 
         var (budgetEssentials, _, budgetStability, budgetRewards) =
@@ -122,7 +125,9 @@ public class FinancialService
         var totalBalance = selectedRemEssentials + selectedRemStability + selectedRemRewards;
         var monthlyInflow = activeCycleTxs.Where(t => t.Amount > 0 && !IsTransfer(t)).Sum(t => t.Amount);
         var monthlyOutflow = Math.Abs(activeCycleTxs.Where(t => t.Amount < 0 && !IsTransfer(t)).Sum(t => t.Amount));
-        var activeRecurringTotal = Math.Abs(allRecurring.Where(r => r.Active).Sum(r => r.Amount));
+        var activeRecurringTotal = allRecurring
+            .Where(payment => IsActiveInRange(payment, activeRange.start, activeRange.end))
+            .Sum(payment => Math.Abs(MonthlyEquivalent(payment)));
         var growthPercentAchieved = selectedNetGrowth / (targetGrowth > 0 ? targetGrowth : 1m);
         var stabilityPercentReached = selectedRemStability / (setting.TargetStabilityFund > 0 ? setting.TargetStabilityFund : 1m);
 
@@ -352,7 +357,7 @@ public class FinancialService
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
         if (setting == null)
         {
-            var now = DateTime.Now;
+            var now = _financialClock.LocalNow;
             setting = new FinancialSetting
             {
                 TargetStabilityFund = 10000.00m,
@@ -376,7 +381,7 @@ public class FinancialService
 
         if (string.IsNullOrEmpty(queryMonth) || queryYear == null)
         {
-            var detected = CategoryAttributionService.GetCycleMonthAndYearForDate(DateTime.Now, cycleDay);
+            var detected = CategoryAttributionService.GetCycleMonthAndYearForDate(_financialClock.LocalNow, cycleDay);
             activeMonth = detected.month;
             activeYear = detected.year;
         }
@@ -535,7 +540,7 @@ public class FinancialService
             .OrderByDescending(t => t.Date)
             .Select(t => t.Date.Year)
             .FirstOrDefaultAsync();
-        var currentYear = DateTime.Now.Year;
+        var currentYear = _financialClock.LocalNow.Year;
 
         if (minYear == 0 || maxYear == 0)
         {
@@ -558,6 +563,25 @@ public class FinancialService
     private static bool IsTransfer(Transaction transaction) =>
         string.Equals(transaction.Category, "Transfer", StringComparison.OrdinalIgnoreCase) ||
         transaction.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsActiveInRange(RecurringPayment payment, DateTime rangeStart, DateTime rangeEnd)
+    {
+        if (!payment.Active ||
+            !DateOnly.TryParseExact(payment.StartDate, "yyyy-MM-dd", out var startDate))
+        {
+            return false;
+        }
+
+        if (startDate > DateOnly.FromDateTime(rangeEnd)) return false;
+        if (string.IsNullOrWhiteSpace(payment.EndDate)) return true;
+        return DateOnly.TryParseExact(payment.EndDate, "yyyy-MM-dd", out var endDate) &&
+            endDate >= DateOnly.FromDateTime(rangeStart);
+    }
+
+    private static decimal MonthlyEquivalent(RecurringPayment payment) =>
+        string.Equals(payment.Frequency, "Annually", StringComparison.OrdinalIgnoreCase)
+            ? payment.Amount / 12m
+            : payment.Amount;
 
     private static List<object> ObfuscateTrendPoints(List<(string month, decimal balance)> points) =>
         points.Select(p => (object)new { month = p.month, balance = ObfuscationHelper.Obfuscate(p.balance) }).ToList();

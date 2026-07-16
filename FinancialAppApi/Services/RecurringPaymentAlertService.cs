@@ -9,13 +9,16 @@ public class RecurringPaymentAlertService
 
     private readonly AppDbContext _context;
     private readonly RecurringOccurrenceService _occurrenceService;
+    private readonly FinancialClock _financialClock;
 
     public RecurringPaymentAlertService(
         AppDbContext context,
-        RecurringOccurrenceService occurrenceService)
+        RecurringOccurrenceService occurrenceService,
+        FinancialClock? financialClock = null)
     {
         _context = context;
         _occurrenceService = occurrenceService;
+        _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
     public async Task<List<object>> GetSubscriptionAlertsAsync()
@@ -31,7 +34,7 @@ public class RecurringPaymentAlertService
             .Where(t => t.RecurringPaymentId != null)
             .Select(t => new { t.RecurringPaymentId, t.Date })
             .ToListAsync();
-        var today = DateTime.Today;
+        var today = _financialClock.LocalNow.Date;
         var (todayMonth, todayYear) = CategoryAttributionService.GetCycleMonthAndYearForDate(today, cycleDay);
         var todayMonthIdx = Array.IndexOf(Months, todayMonth) + 1;
 

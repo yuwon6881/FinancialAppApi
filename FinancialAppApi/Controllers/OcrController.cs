@@ -121,8 +121,15 @@ public class OcrController : ControllerBase
             return Unauthorized(new { message = "Invalid worker key." });
         }
 
-        await _processor.ProcessAsync(jobId);
-        return Ok(new { status = "processed" });
+        var status = await _processor.ProcessAsync(jobId);
+        return status switch
+        {
+            ReceiptScanProcessStatus.NotFound => NotFound(new { message = "Receipt scan job was not found." }),
+            // A previous worker may have died after claiming the job. Returning 503 keeps
+            // Cloud Tasks retrying until the short processing lease can be reclaimed.
+            ReceiptScanProcessStatus.InProgress => StatusCode(503, new { message = "Receipt scan is still processing." }),
+            _ => Ok(new { status = "processed" })
+        };
     }
 
     private string? GetUsername()

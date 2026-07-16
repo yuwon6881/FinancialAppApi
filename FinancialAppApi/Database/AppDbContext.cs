@@ -35,12 +35,19 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             // fixed/smaller on-disk, which matters against the 500MB free storage ceiling.
             entity.Property(e => e.Amount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.Date).HasColumnType("timestamp with time zone");
-            // Composite (Date DESC, LedgerCategory): ledger listings order by Date desc and
-            // filter by ledger bucket, so this covers both without a second index. Date leads,
-            // so it stays append-friendly for the insert-heavy workload.
-            entity.HasIndex(e => new { e.Date, e.LedgerCategory })
-                .IsDescending(true, false);
-            entity.HasIndex(e => e.WishlistItemId);
+            entity.Property(e => e.PostedAt).HasColumnType("timestamp with time zone");
+            // Calendar date is primary; PostedAt resolves the order of records on that date.
+            entity.HasIndex(e => new { e.Date, e.PostedAt, e.LedgerCategory })
+                .IsDescending(true, true, false);
+            entity.HasIndex(e => e.WishlistItemId)
+                .IsUnique()
+                .HasFilter("\"WishlistItemId\" IS NOT NULL");
+        });
+
+        modelBuilder.Entity<AppUser>(entity =>
+        {
+            entity.Property(e => e.SingletonKey).HasDefaultValue(1);
+            entity.HasIndex(e => e.SingletonKey).IsUnique();
         });
 
         modelBuilder.Entity<RecurringPayment>(entity =>
@@ -96,6 +103,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
             entity.Property(e => e.IsActive).HasDefaultValue(false);
             entity.HasIndex(e => e.PurchaseTransactionId);
+            entity.Property(e => e.IsPurchased).IsConcurrencyToken();
             // Unique when present so a replayed offline create dedupes to the same row; the
             // filter keeps pre-existing rows (null ClientKey) exempt from the uniqueness constraint.
             entity.HasIndex(e => e.ClientKey)

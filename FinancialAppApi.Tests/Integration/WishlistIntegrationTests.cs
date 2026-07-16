@@ -81,7 +81,7 @@ public class WishlistIntegrationTests : IntegrationTestBase
     }
 
     [Fact]
-    public async Task PurchaseWishlistItem_Twice_Returns400()
+    public async Task PurchaseWishlistItem_Twice_ReturnsSameSuccessfulPurchase()
     {
         var client = await CreateSignedInClientAsync();
         var id = await CreateItemAsync(client, "Monitor", 300m);
@@ -89,7 +89,12 @@ public class WishlistIntegrationTests : IntegrationTestBase
 
         var second = await client.PostAsync($"/api/wishlist/{id}/purchase", null);
 
-        Assert.Equal(HttpStatusCode.BadRequest, second.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+
+        var transactions = await client.GetFromJsonAsync<JsonElement>("/api/transactions?all=true&pageSize=500");
+        var linked = transactions.GetProperty("items").EnumerateArray()
+            .Count(transaction => transaction.TryGetProperty("wishlistItemId", out var itemId) && itemId.GetInt32() == id);
+        Assert.Equal(1, linked);
     }
 
     [Fact]

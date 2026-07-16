@@ -6,6 +6,17 @@ namespace FinancialAppApi.Tests;
 public class CategoryAttributionServiceTests
 {
     [Fact]
+    public void GetCycleRange_ClampsAdjacentStartsWithoutLeavingGaps()
+    {
+        var february = CategoryAttributionService.GetCycleRange(2026, 2, 31);
+        var march = CategoryAttributionService.GetCycleRange(2026, 3, 31);
+
+        Assert.Equal(new DateTime(2026, 2, 28), february.start);
+        Assert.Equal(new DateTime(2026, 3, 30), february.end);
+        Assert.Equal(february.end.AddDays(1), march.start);
+    }
+
+    [Fact]
     public void GetCategoryAmount_ReturnsAmountForPlainCategoryMatch()
     {
         var tx = new Transaction { LedgerCategory = "Essentials", Amount = -25.50m };

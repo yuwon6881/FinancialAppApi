@@ -82,6 +82,7 @@ public class TransactionPersistenceServiceTests
         var request = new TransactionMutationRequest(
             "tx-invalid",
             "2026-07-09",
+            null,
             "Invalid amount",
             "Other",
             "Rewards",
@@ -93,6 +94,22 @@ public class TransactionPersistenceServiceTests
 
         Assert.Equal(TransactionMutationStatus.InvalidAmount, result.Status);
         Assert.Empty(context.Transactions);
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_SeparatesCalendarDateFromClientCreationTimestamp()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+        var postedAt = "2026-07-09T15:00:00.123Z";
+
+        var result = await service.CreateTransactionAsync(NewRequest("tx-timestamp", postedAt: postedAt));
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal(new DateTime(2026, 7, 9, 0, 0, 0, DateTimeKind.Utc), result.Transaction!.Date);
+        Assert.Equal(DateTime.Parse(postedAt).ToUniversalTime(), result.Transaction.PostedAt);
     }
 
     [Theory]
@@ -214,11 +231,13 @@ public class TransactionPersistenceServiceTests
         string id,
         string ledgerCategory = "Rewards",
         decimal amount = -25m,
-        string category = "Other")
+        string category = "Other",
+        string? postedAt = null)
     {
         return new TransactionMutationRequest(
             id,
             "2026-07-09",
+            postedAt,
             "Test transaction",
             category,
             ledgerCategory,

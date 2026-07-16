@@ -9,6 +9,8 @@ public class Transaction
 
     public DateTime Date { get; set; }
 
+    public DateTime PostedAt { get; set; } = DateTime.UtcNow;
+
     [Required]
     public string Description { get; set; } = string.Empty;
 

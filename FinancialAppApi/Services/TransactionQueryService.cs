@@ -9,6 +9,7 @@ namespace FinancialAppApi.Services;
 public sealed record TransactionProjection(
     string Id,
     DateTime Date,
+    DateTime PostedAt,
     string Description,
     string Category,
     string LedgerCategory,
@@ -27,10 +28,12 @@ public sealed record CsvExportResult(byte[] Bytes, string FileName);
 public class TransactionQueryService
 {
     private readonly AppDbContext _context;
+    private readonly FinancialClock _financialClock;
 
-    public TransactionQueryService(AppDbContext context)
+    public TransactionQueryService(AppDbContext context, FinancialClock? financialClock = null)
     {
         _context = context;
+        _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
     public async Task<TransactionListResult> GetTransactionsAsync(
@@ -45,6 +48,9 @@ public class TransactionQueryService
         string? txType = null,
         string? startDate = null,
         string? endDate = null,
+        decimal? minAmount = null,
+        decimal? maxAmount = null,
+        bool recurringOnly = false,
         CancellationToken cancellationToken = default)
     {
         page = Math.Max(1, page);
@@ -52,17 +58,29 @@ public class TransactionQueryService
 
         if (all)
         {
-            var query = ApplyAllFilters(_context.Transactions.AsNoTracking(), search, ledgerCategory, category, txType, startDate, endDate);
+            var query = ApplyAllFilters(
+                _context.Transactions.AsNoTracking(),
+                search,
+                ledgerCategory,
+                category,
+                txType,
+                startDate,
+                endDate,
+                minAmount,
+                maxAmount,
+                recurringOnly);
             var total = await query.CountAsync(cancellationToken);
 
             var txs = await query
                 .OrderByDescending(t => t.Date)
+                .ThenByDescending(t => t.PostedAt)
                 .ThenByDescending(t => t.Id)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .Select(t => new TransactionProjection(
                     t.Id,
                     t.Date,
+                    t.PostedAt,
                     t.Description,
                     t.Category,
                     t.LedgerCategory,
@@ -81,10 +99,12 @@ public class TransactionQueryService
             var txs = await _context.Transactions
                 .AsNoTracking()
                 .OrderByDescending(t => t.Date)
+                .ThenByDescending(t => t.PostedAt)
                 .ThenByDescending(t => t.Id)
                 .Select(t => new TransactionProjection(
                     t.Id,
                     t.Date,
+                    t.PostedAt,
                     t.Description,
                     t.Category,
                     t.LedgerCategory,
@@ -110,10 +130,12 @@ public class TransactionQueryService
             .AsNoTracking()
             .Where(t => t.LedgerCategory.ToUpper() != "DISCARDED" && t.Date >= cycleStartDate && t.Date < cycleEndExclusive)
             .OrderByDescending(t => t.Date)
+            .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
             .Select(t => new TransactionProjection(
                 t.Id,
                 t.Date,
+                t.PostedAt,
                 t.Description,
                 t.Category,
                 t.LedgerCategory,
@@ -140,6 +162,7 @@ public class TransactionQueryService
                 && !t.Id.Contains("-split-")
                 && !t.LedgerCategory.StartsWith("Transfer:Income->"))
             .OrderByDescending(t => t.Date)
+            .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
             .Take(1000)
             .Select(t => new { t.Description, t.Category, t.LedgerCategory, t.Amount })
@@ -176,11 +199,25 @@ public class TransactionQueryService
         string? txType = null,
         string? startDate = null,
         string? endDate = null,
+        decimal? minAmount = null,
+        decimal? maxAmount = null,
+        bool recurringOnly = false,
         CancellationToken cancellationToken = default)
     {
-        var query = ApplyAllFilters(_context.Transactions.AsNoTracking(), search, ledgerCategory, category, txType, startDate, endDate);
+        var query = ApplyAllFilters(
+            _context.Transactions.AsNoTracking(),
+            search,
+            ledgerCategory,
+            category,
+            txType,
+            startDate,
+            endDate,
+            minAmount,
+            maxAmount,
+            recurringOnly);
         var rows = await query
             .OrderByDescending(t => t.Date)
+            .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
             .Select(t => new { t.Date, t.Description, t.Category, t.LedgerCategory, t.Amount })
             .ToListAsync(cancellationToken);
@@ -214,7 +251,7 @@ public class TransactionQueryService
         Buffer.BlockCopy(preamble, 0, output, 0, preamble.Length);
         Buffer.BlockCopy(csvBytes, 0, output, preamble.Length, csvBytes.Length);
 
-        return new CsvExportResult(output, $"financial_ledger_{DateTime.Now:yyyy-MM-dd}.csv");
+        return new CsvExportResult(output, $"financial_ledger_{_financialClock.Today:yyyy-MM-dd}.csv");
     }
 
     private static IQueryable<Transaction> ApplyAllFilters(
@@ -224,7 +261,10 @@ public class TransactionQueryService
         string? category,
         string? txType,
         string? startDate,
-        string? endDate)
+        string? endDate,
+        decimal? minAmount,
+        decimal? maxAmount,
+        bool recurringOnly)
     {
         query = query.Where(t => t.LedgerCategory != "Discarded");
 
@@ -235,6 +275,20 @@ public class TransactionQueryService
         if (TransactionDate.TryParseInputDate(endDate, out var endDateOnly))
         {
             query = query.Where(t => t.Date < TransactionDate.ExclusiveEndOfDate(endDateOnly));
+        }
+
+        if (minAmount is >= 0)
+        {
+            query = query.Where(t => Math.Abs(t.Amount) >= minAmount.Value);
+        }
+        if (maxAmount is >= 0)
+        {
+            query = query.Where(t => Math.Abs(t.Amount) <= maxAmount.Value);
+        }
+
+        if (recurringOnly)
+        {
+            query = query.Where(t => t.RecurringPaymentId != null && t.RecurringPaymentId != "");
         }
 
         if (!string.IsNullOrWhiteSpace(search))
