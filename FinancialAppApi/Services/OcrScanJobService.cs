@@ -9,7 +9,9 @@ public enum CreateScanJobStatus
 {
     Created,
     NoImage,
-    ImageTooLarge
+    ImageTooLarge,
+    UnsupportedImageType,
+    TooManyOutstandingJobs
 }
 
 public sealed record CreateScanJobResult(
@@ -28,15 +30,17 @@ public sealed record ScanJobResponse(
 
 public class OcrScanJobService
 {
-    private static readonly TimeSpan CompletedJobTtl = TimeSpan.FromHours(24);
-    private static readonly TimeSpan StaleInProgressJobTtl = TimeSpan.FromHours(2);
     private const long MaxImageBytes = 10 * 1024 * 1024;
 
     private readonly AppDbContext _context;
+    private readonly ReceiptScanRetentionPolicy _retentionPolicy;
 
-    public OcrScanJobService(AppDbContext context)
+    public OcrScanJobService(
+        AppDbContext context,
+        ReceiptScanRetentionPolicy retentionPolicy)
     {
         _context = context;
+        _retentionPolicy = retentionPolicy;
     }
 
     public async Task<CreateScanJobResult> CreateScanJobAsync(string username, IFormFile? image)
@@ -51,13 +55,29 @@ public class OcrScanJobService
             return new CreateScanJobResult(CreateScanJobStatus.ImageTooLarge, Message: "Receipt image is too large. Please use an image under 10 MB.");
         }
 
-        await PruneOldScanJobsAsync();
+        var outstandingJobs = await _context.ReceiptScanJobs.CountAsync(job =>
+            job.Username == username &&
+            (job.Status == "queued" || job.Status == "processing"));
+        if (outstandingJobs >= _retentionPolicy.MaxOutstandingJobsPerUser)
+        {
+            return new CreateScanJobResult(
+                CreateScanJobStatus.TooManyOutstandingJobs,
+                Message: "Too many receipt scans are already in progress. Please wait for one to finish.");
+        }
 
-        string base64Image;
+        byte[] imageData;
         await using (var ms = new MemoryStream())
         {
             await image.CopyToAsync(ms);
-            base64Image = Convert.ToBase64String(ms.ToArray());
+            imageData = ms.ToArray();
+        }
+
+        var mimeType = DetectSupportedMimeType(imageData);
+        if (mimeType == null)
+        {
+            return new CreateScanJobResult(
+                CreateScanJobStatus.UnsupportedImageType,
+                Message: "Unsupported receipt image. Please use JPEG, PNG, WebP, HEIC, or HEIF.");
         }
 
         var now = DateTime.UtcNow;
@@ -66,8 +86,8 @@ public class OcrScanJobService
             Id = $"ocr-{Guid.NewGuid():N}",
             Username = username,
             Status = "queued",
-            MimeType = NormalizeMimeType(image.ContentType),
-            ImageBase64 = base64Image,
+            MimeType = mimeType,
+            ImageData = imageData,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -125,43 +145,50 @@ public class OcrScanJobService
         }
 
         job.Status = "failed";
-        job.ImageBase64 = null;
+        job.ImageData = null;
         job.ErrorMessage = "Could not start receipt scan. Please try again.";
         job.CompletedAt = DateTime.UtcNow;
         job.UpdatedAt = DateTime.UtcNow;
         await _context.SaveChangesAsync();
     }
 
-    private async Task PruneOldScanJobsAsync()
+    private static string? DetectSupportedMimeType(ReadOnlySpan<byte> data)
     {
-        var now = DateTime.UtcNow;
-        var completedCutoff = now - CompletedJobTtl;
-        var staleCutoff = now - StaleInProgressJobTtl;
-
-        var oldJobs = await _context.ReceiptScanJobs
-            .Where(j =>
-                ((j.Status == "completed" || j.Status == "failed") && j.UpdatedAt < completedCutoff) ||
-                ((j.Status == "queued" || j.Status == "processing") && j.UpdatedAt < staleCutoff))
-            .ToListAsync();
-
-        if (oldJobs.Count == 0)
+        if (data.Length >= 3 &&
+            data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF)
         {
-            return;
+            return "image/jpeg";
         }
 
-        _context.ReceiptScanJobs.RemoveRange(oldJobs);
-        await _context.SaveChangesAsync();
-    }
-
-    private static string NormalizeMimeType(string? mimeType)
-    {
-        return mimeType switch
+        ReadOnlySpan<byte> pngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        if (data.StartsWith(pngSignature))
         {
-            "image/png" => "image/png",
-            "image/webp" => "image/webp",
-            "image/gif" => "image/gif",
-            _ => "image/jpeg"
-        };
+            return "image/png";
+        }
+
+        if (data.Length >= 12 &&
+            data[..4].SequenceEqual("RIFF"u8) &&
+            data.Slice(8, 4).SequenceEqual("WEBP"u8))
+        {
+            return "image/webp";
+        }
+
+        if (data.Length >= 12 && data.Slice(4, 4).SequenceEqual("ftyp"u8))
+        {
+            var brand = data.Slice(8, 4);
+            if (brand.SequenceEqual("heic"u8) || brand.SequenceEqual("heix"u8) ||
+                brand.SequenceEqual("hevc"u8) || brand.SequenceEqual("hevx"u8))
+            {
+                return "image/heic";
+            }
+            if (brand.SequenceEqual("heif"u8) || brand.SequenceEqual("mif1"u8) ||
+                brand.SequenceEqual("msf1"u8))
+            {
+                return "image/heif";
+            }
+        }
+
+        return null;
     }
 
     private static object? ObfuscateReceiptScanAmount(string resultJson)

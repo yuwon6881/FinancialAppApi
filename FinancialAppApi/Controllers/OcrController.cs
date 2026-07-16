@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -32,7 +34,8 @@ public class OcrController : ControllerBase
     [AuthorizeToken]
     [EnableRateLimiting("ocr")]
     [HttpPost("scan-receipt/jobs")]
-    [RequestSizeLimit(10 * 1024 * 1024)]
+    // Leave room for multipart framing around the 10 MiB file enforced by the service.
+    [RequestSizeLimit(11 * 1024 * 1024)]
     public async Task<IActionResult> CreateScanJobEndpoint(IFormFile? image)
     {
         var username = GetUsername();
@@ -42,6 +45,10 @@ public class OcrController : ControllerBase
         }
 
         var created = await _scanJobService.CreateScanJobAsync(username, image);
+        if (created.Status == CreateScanJobStatus.TooManyOutstandingJobs)
+        {
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = created.Message });
+        }
         if (created.Status != CreateScanJobStatus.Created)
         {
             return BadRequest(new { message = created.Message });
@@ -116,7 +123,7 @@ public class OcrController : ControllerBase
         }
 
         if (!Request.Headers.TryGetValue("X-Ocr-Worker-Key", out var providedKey) ||
-            providedKey.ToString() != expectedKey)
+            !SecureEquals(providedKey.ToString(), expectedKey))
         {
             return Unauthorized(new { message = "Invalid worker key." });
         }
@@ -124,7 +131,9 @@ public class OcrController : ControllerBase
         var status = await _processor.ProcessAsync(jobId);
         return status switch
         {
-            ReceiptScanProcessStatus.NotFound => NotFound(new { message = "Receipt scan job was not found." }),
+            // A missing job is permanent (explicitly deleted or expired by retention).
+            // Acknowledge it so Cloud Tasks removes the task instead of retrying forever.
+            ReceiptScanProcessStatus.NotFound => Ok(new { status = "gone" }),
             // A previous worker may have died after claiming the job. Returning 503 keeps
             // Cloud Tasks retrying until the short processing lease can be reclaimed.
             ReceiptScanProcessStatus.InProgress => StatusCode(503, new { message = "Receipt scan is still processing." }),
@@ -135,5 +144,13 @@ public class OcrController : ControllerBase
     private string? GetUsername()
     {
         return HttpContext.Items.TryGetValue("Username", out var value) ? value as string : null;
+    }
+
+    private static bool SecureEquals(string provided, string expected)
+    {
+        var providedBytes = Encoding.UTF8.GetBytes(provided);
+        var expectedBytes = Encoding.UTF8.GetBytes(expected);
+        return providedBytes.Length == expectedBytes.Length &&
+            CryptographicOperations.FixedTimeEquals(providedBytes, expectedBytes);
     }
 }

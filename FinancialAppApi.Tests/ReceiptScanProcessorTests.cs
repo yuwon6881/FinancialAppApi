@@ -19,7 +19,7 @@ public class ReceiptScanProcessorTests
             Id = "scan-1",
             Username = "alice",
             Status = status,
-            ImageBase64 = "unchanged",
+            ImageData = "unchanged"u8.ToArray(),
             MimeType = "image/jpeg"
         });
         await context.SaveChangesAsync();
@@ -39,7 +39,7 @@ public class ReceiptScanProcessorTests
             status == "processing" ? ReceiptScanProcessStatus.InProgress : ReceiptScanProcessStatus.AlreadyFinished,
             result);
         Assert.Equal(status, job.Status);
-        Assert.Equal("unchanged", job.ImageBase64);
+        Assert.Equal("unchanged"u8.ToArray(), job.ImageData);
     }
 
     [Fact]
@@ -51,7 +51,7 @@ public class ReceiptScanProcessorTests
             Id = "scan-1",
             Username = "alice",
             Status = "processing",
-            ImageBase64 = "receipt-image",
+            ImageData = "receipt-image"u8.ToArray(),
             MimeType = "image/jpeg",
             UpdatedAt = DateTime.UtcNow - ReceiptScanProcessor.ProcessingLease - TimeSpan.FromMinutes(1)
         });
@@ -70,7 +70,7 @@ public class ReceiptScanProcessorTests
         var job = context.ReceiptScanJobs.Single();
         Assert.Equal(ReceiptScanProcessStatus.Processed, result);
         Assert.Equal("failed", job.Status);
-        Assert.Null(job.ImageBase64);
+        Assert.Null(job.ImageData);
         Assert.Contains("not configured", job.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
 }

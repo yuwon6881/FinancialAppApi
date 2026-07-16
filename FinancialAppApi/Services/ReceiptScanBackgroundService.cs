@@ -28,14 +28,22 @@ public class ReceiptScanBackgroundService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // The non-Cloud-Tasks fallback queue is in memory, but its payload is durable in
-        // Postgres. Recover queued jobs (and expired processing leases) whenever a new
-        // container starts so an instance restart cannot strand an accepted scan forever.
-        if (!HasCloudTasksConfig())
+        if (HasCloudTasksConfig())
         {
-            await RecoverPersistedJobsAsync(stoppingToken);
+            // Cloud Tasks invokes the HTTP worker; the local channel is intentionally unused.
+            await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
+            return;
         }
 
+        // Run recovery alongside the single consumer. Polling once per lease also recovers
+        // a job whose processor failed without requiring the whole container to restart.
+        await Task.WhenAll(
+            ProcessQueueAsync(stoppingToken),
+            RecoverPersistedJobsLoopAsync(stoppingToken));
+    }
+
+    private async Task ProcessQueueAsync(CancellationToken stoppingToken)
+    {
         await foreach (var jobId in _queue.Reader.ReadAllAsync(stoppingToken))
         {
             try
@@ -48,6 +56,34 @@ public class ReceiptScanBackgroundService : BackgroundService
             {
                 // A single failed job must not tear down the consumer loop.
                 _logger.LogError(ex, "Fallback receipt scan processor failed for job {JobId}.", jobId);
+            }
+        }
+    }
+
+    private async Task RecoverPersistedJobsLoopAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await RecoverPersistedJobsAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Could not recover persisted receipt scan jobs; retrying after the lease interval.");
+            }
+
+            try
+            {
+                await Task.Delay(ReceiptScanProcessor.ProcessingLease, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
             }
         }
     }

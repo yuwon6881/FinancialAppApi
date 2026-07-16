@@ -115,7 +115,8 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.Property(e => e.Status).HasDefaultValue("queued");
             entity.Property(e => e.MimeType).HasDefaultValue("image/jpeg");
-            entity.HasIndex(e => new { e.Username, e.Status, e.CreatedAt });
+            // Supports lease recovery and retention cleanup without scanning image/result data.
+            entity.HasIndex(e => new { e.Status, e.UpdatedAt });
         });
 
         modelBuilder.Entity<CycleBalance>(entity =>

@@ -96,7 +96,7 @@ public class ReceiptScanProcessor
             return ReceiptScanProcessStatus.NotFound;
         }
 
-        if (string.IsNullOrWhiteSpace(job.ImageBase64))
+        if (job.ImageData is not { Length: > 0 })
         {
             await MarkFailed(job, "Receipt image was not available for processing.");
             return ReceiptScanProcessStatus.Processed;
@@ -104,7 +104,7 @@ public class ReceiptScanProcessor
 
         try
         {
-            var outcome = await ScanImageAsync(job.ImageBase64, job.MimeType);
+            var outcome = await ScanImageAsync(Convert.ToBase64String(job.ImageData), job.MimeType);
             if (outcome.ErrorMessage != null)
             {
                 _logger.LogWarning("Receipt scan job {JobId} failed with user-facing error: {Message}", jobId, outcome.ErrorMessage);
@@ -118,7 +118,7 @@ public class ReceiptScanProcessor
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             });
             job.ErrorMessage = null;
-            job.ImageBase64 = null;
+            job.ImageData = null;
             job.CompletedAt = DateTime.UtcNow;
             job.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
@@ -146,7 +146,7 @@ public class ReceiptScanProcessor
     {
         job.Status = "failed";
         job.ErrorMessage = message;
-        job.ImageBase64 = null;
+        job.ImageData = null;
         job.CompletedAt = DateTime.UtcNow;
         job.UpdatedAt = DateTime.UtcNow;
         await _context.SaveChangesAsync();

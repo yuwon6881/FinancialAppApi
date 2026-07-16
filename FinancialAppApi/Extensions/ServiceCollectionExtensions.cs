@@ -173,11 +173,14 @@ public static class ServiceCollectionExtensions
 
         services.AddHttpClient<AiClient>(client => client.Timeout = TimeSpan.FromSeconds(30));
         services.AddHttpClient<ReceiptScanTaskDispatcher>(client => client.Timeout = TimeSpan.FromSeconds(15));
+        services.AddSingleton<ReceiptScanRetentionPolicy>();
         services.AddScoped<ReceiptScanProcessor>();
+        services.AddScoped<ReceiptScanJobCleanupService>();
         services.AddScoped<CategorySuggestionService>();
         services.AddScoped<AiAssistantService>();
         services.AddSingleton<ReceiptScanQueue>();
         services.AddHostedService<ReceiptScanBackgroundService>();
+        services.AddHostedService<ReceiptScanCleanupBackgroundService>();
         services.AddScoped<OcrScanJobService>();
         return services;
     }
