@@ -25,7 +25,7 @@ public class CategorySuggestionServiceTests
         using var cache = new MemoryCache(new MemoryCacheOptions());
         var categoryService = new TransactionCategoryService(context, cache);
         var aiClient = new AiClient(new HttpClient(), TestHelpers.NewConfiguration(), NullLogger<AiClient>.Instance);
-        var service = new CategorySuggestionService(aiClient, context, categoryService, cache);
+        var service = new CategorySuggestionService(aiClient, context, categoryService, cache, new CategoryCleanupApplier(context));
 
         var result = await service.SuggestAsync("village grocer", "outflow", ["Food"]);
 
@@ -44,7 +44,7 @@ public class CategorySuggestionServiceTests
         using var cache = new MemoryCache(new MemoryCacheOptions());
         var categoryService = new TransactionCategoryService(context, cache);
         var aiClient = new AiClient(new HttpClient(), TestHelpers.NewConfiguration(), NullLogger<AiClient>.Instance);
-        var service = new CategorySuggestionService(aiClient, context, categoryService, cache);
+        var service = new CategorySuggestionService(aiClient, context, categoryService, cache, new CategoryCleanupApplier(context));
 
         var result = await service.ReviewCategoryCleanupAsync();
 

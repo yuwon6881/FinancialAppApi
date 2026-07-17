@@ -1095,7 +1095,7 @@ public class AiAssistantServiceTests
             NullLogger<AiClient>.Instance);
         var categoryService = new TransactionCategoryService(context, cache);
         var suggestions = withCategorySuggestions
-            ? new CategorySuggestionService(client, context, categoryService, cache)
+            ? new CategorySuggestionService(client, context, categoryService, cache, new CategoryCleanupApplier(context))
             : null;
         return new AiAssistantService(client, context, categoryService, suggestions);
     }

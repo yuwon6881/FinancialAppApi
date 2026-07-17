@@ -200,6 +200,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ReceiptScanRetentionPolicy>();
         services.AddScoped<ReceiptScanProcessor>();
         services.AddScoped<ReceiptScanJobCleanupService>();
+        services.AddScoped<CategoryCleanupApplier>();
         services.AddScoped<CategorySuggestionService>();
         services.AddScoped<AiAssistantService>();
         services.AddSingleton<ReceiptScanQueue>();
