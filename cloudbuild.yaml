@@ -53,7 +53,12 @@ steps:
       # Startup CPU boost only bills during instance startup under request-based
       # billing, so it stays free-tier eligible while cutting cold-start latency.
       - '--cpu-boost'
-      - '--update-env-vars=Database__MigrateOnStartup=false,Database__SeedOnStartup=false'
+      # CloudTasks__* switches ReceiptScanTaskDispatcher from the in-process queue
+      # (which CPU throttling can stall after the 202 response) to a Cloud Tasks HTTP
+      # callback, so OCR work always runs inside a billed request. All four keys plus
+      # OcrWorkerKey must be non-empty or the dispatcher silently keeps the fallback.
+      - '--update-env-vars=Database__MigrateOnStartup=false,Database__SeedOnStartup=false,CloudTasks__ProjectId=$PROJECT_ID,CloudTasks__LocationId=asia-southeast1,CloudTasks__QueueId=receipt-scan,CloudTasks__WorkerBaseUrl=https://financialapp-api-i47taxhzba-as.a.run.app'
+      - '--update-secrets=OcrWorkerKey=financialapp-ocr-worker-key:latest'
     id: Deploy
     waitFor:
       - Migrate
