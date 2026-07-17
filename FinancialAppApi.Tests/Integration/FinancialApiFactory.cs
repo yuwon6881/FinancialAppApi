@@ -31,6 +31,10 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("ConnectionStrings:DefaultConnection",
             "Host=localhost;Database=unused;Username=unused;Password=unused");
 
+        // Pin the registration cap so HTTP registration-gating tests stay deterministic
+        // regardless of the shipped appsettings default (which product config may change).
+        builder.UseSetting("Auth:MaxUsers", "1");
+
         builder.ConfigureTestServices(services =>
         {
             // Drop the Npgsql AppDbContext registration (options + context + pooling internals).

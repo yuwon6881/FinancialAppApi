@@ -368,7 +368,7 @@ public class FinancialService
                 StabilityAlloc = 0.15m,
                 RewardsAlloc = 0.10m,
                 CycleDay = 28,
-                HideSensitive = true
+                HideSensitive = false
             };
             _context.FinancialSettings.Add(setting);
             await _context.SaveChangesAsync();
