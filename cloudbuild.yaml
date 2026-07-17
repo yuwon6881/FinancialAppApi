@@ -50,6 +50,9 @@ steps:
       - '--region=asia-southeast1'
       - '--platform=managed'
       - '--memory=1Gi'
+      # Startup CPU boost only bills during instance startup under request-based
+      # billing, so it stays free-tier eligible while cutting cold-start latency.
+      - '--cpu-boost'
       - '--update-env-vars=Database__MigrateOnStartup=false,Database__SeedOnStartup=false'
     id: Deploy
     waitFor:

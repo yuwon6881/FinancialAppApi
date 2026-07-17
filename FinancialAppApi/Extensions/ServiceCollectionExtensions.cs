@@ -27,8 +27,14 @@ public static class ServiceCollectionExtensions
             options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
         });
         services.AddMemoryCache();
-        services.AddEndpointsApiExplorer();
-        services.AddSwaggerGen();
+
+        // Swagger UI is only mapped in Development (Program.cs); skip the generator's
+        // assembly load + ApiExplorer model build on production cold starts.
+        if (environment.IsDevelopment())
+        {
+            services.AddEndpointsApiExplorer();
+            services.AddSwaggerGen();
+        }
 
         services.AddOpenTelemetry()
             .ConfigureResource(resource => resource.AddService(Telemetry.ServiceName))
