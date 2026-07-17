@@ -49,22 +49,25 @@ public static class DbSeeder
             });
         }
 
-        var existingNames = context.TransactionCategories
+        // Bootstrap the default categories only for a user who has none yet (i.e. a brand-new
+        // account). We deliberately do NOT top up individual missing names: a re-seed on every
+        // deployment would otherwise resurrect defaults the user intentionally deleted, since a
+        // hard-deleted category is indistinguishable from one that was never created. Seeding
+        // is a one-time provisioning step, mirroring the FinancialSettings block above.
+        var hasCategories = context.TransactionCategories
             .IgnoreQueryFilters()
-            .Where(category => category.UserId == userId)
-            .Select(category => category.Name)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        for (var index = 0; index < DefaultCategoryNames.Length; index++)
+            .Any(category => category.UserId == userId);
+        if (!hasCategories)
         {
-            var name = DefaultCategoryNames[index];
-            if (existingNames.Contains(name)) continue;
-
-            context.TransactionCategories.Add(new TransactionCategory
+            for (var index = 0; index < DefaultCategoryNames.Length; index++)
             {
-                Id = $"cat-{userId}-{index + 1}",
-                UserId = userId,
-                Name = name
-            });
+                context.TransactionCategories.Add(new TransactionCategory
+                {
+                    Id = $"cat-{userId}-{index + 1}",
+                    UserId = userId,
+                    Name = DefaultCategoryNames[index]
+                });
+            }
         }
     }
 }
