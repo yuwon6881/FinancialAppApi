@@ -32,8 +32,9 @@ public class AuthSessionService
         string? userAgent,
         byte[]? credentialId = null)
     {
+        _context.SetCurrentUser(user.Id);
         var expiredSessions = await _context.UserSessions
-            .Where(s => s.ExpiresAt < DateTime.UtcNow)
+            .Where(s => s.UserId == user.Id && s.ExpiresAt < DateTime.UtcNow)
             .ToListAsync();
         if (expiredSessions.Count > 0)
         {
@@ -43,7 +44,7 @@ public class AuthSessionService
         if (credentialId != null)
         {
             var priorSessionsForCredential = await _context.UserSessions
-                .Where(s => s.CredentialId != null && s.CredentialId == credentialId)
+                .Where(s => s.UserId == user.Id && s.CredentialId != null && s.CredentialId == credentialId)
                 .ToListAsync();
             if (priorSessionsForCredential.Count > 0)
             {
@@ -54,7 +55,7 @@ public class AuthSessionService
         if (!string.IsNullOrEmpty(deviceId))
         {
             var deviceSessions = await _context.UserSessions
-                .Where(s => s.Username == user.Username && s.DeviceId == deviceId)
+                .Where(s => s.UserId == user.Id && s.DeviceId == deviceId)
                 .ToListAsync();
             if (deviceSessions.Count > 0)
             {
@@ -64,7 +65,7 @@ public class AuthSessionService
         else if (credentialId == null)
         {
             var oldPasswordSessions = await _context.UserSessions
-                .Where(s => s.Username == user.Username && s.CredentialId == null)
+                .Where(s => s.UserId == user.Id && s.CredentialId == null)
                 .ToListAsync();
             if (oldPasswordSessions.Count > 0)
             {
@@ -73,7 +74,7 @@ public class AuthSessionService
         }
 
         var activeSessions = await _context.UserSessions
-            .Where(s => s.Username == user.Username)
+            .Where(s => s.UserId == user.Id)
             .ToListAsync();
         var orderedByActivity = activeSessions
             .OrderByDescending(s => s.LastActiveAt ?? s.CreatedAt)
@@ -89,6 +90,7 @@ public class AuthSessionService
         var session = new UserSession
         {
             Token = token,
+            UserId = user.Id,
             Username = user.Username,
             CreatedAt = now,
             ExpiresAt = now.AddDays(7),
@@ -147,8 +149,9 @@ public class AuthSessionService
 
     public async Task<List<SessionSummary>> GetSessionsAsync(string username, string? currentToken)
     {
+        var userId = _context.RequireCurrentUserId();
         var expired = await _context.UserSessions
-            .Where(s => s.Username == username && s.ExpiresAt < DateTime.UtcNow)
+            .Where(s => s.UserId == userId && s.ExpiresAt < DateTime.UtcNow)
             .ToListAsync();
         if (expired.Count > 0)
         {
@@ -165,7 +168,7 @@ public class AuthSessionService
         }
 
         return await _context.UserSessions
-            .Where(s => s.Username == username)
+            .Where(s => s.UserId == userId)
             .OrderByDescending(s => s.CreatedAt)
             .Select(s => new SessionSummary(
                 s.Id,
@@ -196,8 +199,9 @@ public class AuthSessionService
 
     public async Task RevokeSessionAsync(string username, Guid id)
     {
+        var userId = _context.RequireCurrentUserId();
         var session = await _context.UserSessions
-            .FirstOrDefaultAsync(s => s.Id == id && s.Username == username);
+            .FirstOrDefaultAsync(s => s.Id == id && s.UserId == userId);
 
         if (session != null)
         {
@@ -210,8 +214,9 @@ public class AuthSessionService
     {
         if (keepCurrent && string.IsNullOrWhiteSpace(currentToken)) return 0;
 
+        var userId = _context.RequireCurrentUserId();
         var sessions = await _context.UserSessions
-            .Where(s => s.Username == username && (!keepCurrent || s.Token != currentToken))
+            .Where(s => s.UserId == userId && (!keepCurrent || s.Token != currentToken))
             .ToListAsync();
 
         _context.UserSessions.RemoveRange(sessions);
@@ -224,8 +229,9 @@ public class AuthSessionService
     {
         if (string.IsNullOrWhiteSpace(currentToken)) return 0;
 
+        var userId = _context.RequireCurrentUserId();
         var otherSessions = await _context.UserSessions
-            .Where(s => s.Username == username && s.Token != currentToken)
+            .Where(s => s.UserId == userId && s.Token != currentToken)
             .ToListAsync();
         _context.UserSessions.RemoveRange(otherSessions);
         await _context.SaveChangesAsync();

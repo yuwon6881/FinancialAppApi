@@ -50,8 +50,8 @@ public class WebAuthnController : ControllerBase
 
     // POST api/auth/webauthn/login/options
     [HttpPost("login/options")]
-    public async Task<IActionResult> LoginOptions() =>
-        await _webAuthnService.LoginOptionsAsync(RequestOrigin, FallbackOrigin);
+    public async Task<IActionResult> LoginOptions([FromQuery] string? username = null) =>
+        await _webAuthnService.LoginOptionsAsync(RequestOrigin, FallbackOrigin, username);
 
     public class LoginVerifyRequest
     {

@@ -11,13 +11,20 @@ namespace FinancialAppApi.Tests;
 
 public static class TestHelpers
 {
-    public static AppDbContext NewInMemoryContext()
+    public const string DefaultUserId = "test-user";
+
+    public static AppDbContext NewInMemoryContext(string? currentUserId = DefaultUserId)
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
             .Options;
-        return new AppDbContext(options);
+        var context = new AppDbContext(options);
+        if (currentUserId != null)
+        {
+            context.SetCurrentUser(currentUserId);
+        }
+        return context;
     }
 
     public static IConfiguration NewConfiguration(params (string Key, string Value)[] overrides)

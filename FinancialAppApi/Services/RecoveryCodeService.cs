@@ -19,9 +19,10 @@ public class RecoveryCodeService
 
     // Replaces any existing recovery codes for the user with a fresh set. The plaintext codes
     // are returned once for display -- only their hashes are persisted.
-    public async Task<List<string>> RegenerateAsync(string username)
+    public async Task<List<string>> RegenerateAsync(string username, string? userId = null)
     {
-        var existing = await _context.RecoveryCodes.Where(r => r.Username == username).ToListAsync();
+        var ownerId = userId ?? _context.RequireCurrentUserId();
+        var existing = await _context.RecoveryCodes.Where(r => r.UserId == ownerId).ToListAsync();
         _context.RecoveryCodes.RemoveRange(existing);
 
         var codes = new List<string>(CodeCount);
@@ -31,6 +32,7 @@ public class RecoveryCodeService
             codes.Add(code);
             _context.RecoveryCodes.Add(new RecoveryCode
             {
+                UserId = ownerId,
                 Username = username,
                 CodeHash = _hasher.HashPassword(username, code),
                 CreatedAt = DateTime.UtcNow
@@ -43,15 +45,16 @@ public class RecoveryCodeService
 
     // Verifies and, on success, consumes (deletes) the matching unused code so it can't be
     // replayed. Returns true only on a genuine single-use match.
-    public async Task<bool> TryConsumeAsync(string username, string code)
+    public async Task<bool> TryConsumeAsync(string username, string code, string? userId = null)
     {
         if (string.IsNullOrWhiteSpace(code))
         {
             return false;
         }
 
+        var ownerId = userId ?? _context.RequireCurrentUserId();
         var candidates = await _context.RecoveryCodes
-            .Where(r => r.Username == username && !r.Used)
+            .Where(r => r.UserId == ownerId && !r.Used)
             .ToListAsync();
 
         foreach (var candidate in candidates)
@@ -62,7 +65,7 @@ public class RecoveryCodeService
                 if (_context.Database.IsRelational())
                 {
                     var claimed = await _context.RecoveryCodes
-                        .Where(item => item.Id == candidate.Id && !item.Used)
+                        .Where(item => item.Id == candidate.Id && item.UserId == ownerId && !item.Used)
                         .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.Used, true));
                     if (claimed == 1) return true;
                     continue;
@@ -77,9 +80,10 @@ public class RecoveryCodeService
         return false;
     }
 
-    public async Task DeleteAllAsync(string username)
+    public async Task DeleteAllAsync(string username, string? userId = null)
     {
-        var existing = await _context.RecoveryCodes.Where(r => r.Username == username).ToListAsync();
+        var ownerId = userId ?? _context.RequireCurrentUserId();
+        var existing = await _context.RecoveryCodes.Where(r => r.UserId == ownerId).ToListAsync();
         _context.RecoveryCodes.RemoveRange(existing);
         await _context.SaveChangesAsync();
     }

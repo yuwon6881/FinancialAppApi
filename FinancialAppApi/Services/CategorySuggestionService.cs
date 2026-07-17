@@ -112,7 +112,7 @@ public sealed class CategorySuggestionService
             ? "inflow"
             : "outflow";
 
-        var cacheKey = SuggestCachePrefix + string.Join('|', [
+        var cacheKey = SuggestCachePrefix + _context.RequireCurrentUserId() + ":" + string.Join('|', [
             description.Trim().ToLowerInvariant(),
             safeTxType,
             string.Join(',', categoryNames.Select(c => c.ToLowerInvariant()))
@@ -298,7 +298,7 @@ Rules:
 Recent usage JSON array: {JsonSerializer.Serialize(usage)}";
 
         var cacheHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
-        var cleanupCacheKey = CleanupCachePrefix + cacheHash;
+        var cleanupCacheKey = CleanupCachePrefix + _context.RequireCurrentUserId() + ":" + cacheHash;
         if (_cache.TryGetValue(cleanupCacheKey, out CategoryCleanupReview? cachedReview) && cachedReview != null)
         {
             Telemetry.CacheHitsCounter.Add(1, new KeyValuePair<string, object?>("cache_type", "ai-category-cleanup"));

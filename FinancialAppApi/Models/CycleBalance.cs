@@ -5,8 +5,10 @@ namespace FinancialAppApi.Models;
 // cycle label. Balances are cumulative/carry-forward across cycles (see FinancialController),
 // so a row's values already include every prior cycle's net change back to the app baseline.
 // Rows are only ever appended or deleted in bulk (CycleBalanceService); never updated in place.
-public class CycleBalance
+public class CycleBalance : IUserOwnedEntity
 {
+    public string UserId { get; set; } = string.Empty;
+
     public int Year { get; set; }
 
     // 1-12, the calendar month that seeds GetCycleRange(Year, MonthIndex, cycleDay).

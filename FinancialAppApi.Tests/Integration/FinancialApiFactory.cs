@@ -69,6 +69,11 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
     {
         using var scope = Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var userIds = await db.AppUsers.AsNoTracking().Select(user => user.Id).Take(2).ToListAsync();
+        if (userIds.Count == 1)
+        {
+            db.SetCurrentUser(userIds[0]);
+        }
         await action(db);
     }
 }

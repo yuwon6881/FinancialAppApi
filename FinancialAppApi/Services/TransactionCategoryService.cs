@@ -39,7 +39,7 @@ public class TransactionCategoryService
     // The category table has ~10 rows and changes rarely, but is read on nearly every
     // screen. Caching it in-process removes almost all repeat DB round-trips. A short
     // absolute expiration bounds cross-instance staleness.
-    private const string CacheKey = "tx-categories";
+    private const string CacheKeyPrefix = "tx-categories:";
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
 
     private readonly AppDbContext _context;
@@ -200,4 +200,6 @@ public class TransactionCategoryService
         return string.Equals(name, "Transfer", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(name, "Adjustment", StringComparison.OrdinalIgnoreCase);
     }
+
+    private string CacheKey => CacheKeyPrefix + _context.RequireCurrentUserId();
 }

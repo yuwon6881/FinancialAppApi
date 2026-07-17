@@ -2,10 +2,13 @@ using System.ComponentModel.DataAnnotations;
 
 namespace FinancialAppApi.Models;
 
-public class Transaction
+public class Transaction : IUserOwnedEntity
 {
     [Key]
     public string Id { get; set; } = string.Empty;
+
+    [Required]
+    public string UserId { get; set; } = string.Empty;
 
     public DateTime Date { get; set; }
 

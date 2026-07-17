@@ -10,7 +10,7 @@ public class LoginLockoutTests
     private static AppUser SeedUser(FinancialAppApi.Database.AppDbContext context, string username, string password)
     {
         var hasher = new PasswordHasher<string>();
-        var user = new AppUser { Id = Guid.NewGuid().ToString(), Username = username };
+        var user = new AppUser { Id = TestHelpers.DefaultUserId, Username = username };
         user.PasswordHash = hasher.HashPassword(user.Username, password);
         context.AppUsers.Add(user);
         context.SaveChanges();

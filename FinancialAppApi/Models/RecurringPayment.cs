@@ -2,10 +2,13 @@ using System.ComponentModel.DataAnnotations;
 
 namespace FinancialAppApi.Models;
 
-public class RecurringPayment
+public class RecurringPayment : IUserOwnedEntity
 {
     [Key]
     public string Id { get; set; } = string.Empty;
+
+    [Required]
+    public string UserId { get; set; } = string.Empty;
 
     [Required]
     public string Name { get; set; } = string.Empty;

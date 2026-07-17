@@ -1,5 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
 using FinancialAppApi.Database;
@@ -96,7 +95,7 @@ public class FinancialController : ControllerBase
 
     // POST: api/financial/select-period
     [HttpPost("select-period")]
-    public async Task<IActionResult> SelectPeriod([FromBody] FinancialSetting periodDto)
+    public async Task<IActionResult> SelectPeriod([FromBody] SelectPeriodDto periodDto)
     {
         if (!IsValidPeriod(periodDto.SelectedMonth, periodDto.SelectedYear))
             return BadRequest(new { message = "Month must be a valid three-letter abbreviation and include a year." });
@@ -141,4 +140,10 @@ public class UpdateHideSensitiveDto
 public class UpdateVibrationDto
 {
     public bool VibrationEnabled { get; set; }
+}
+
+public class SelectPeriodDto
+{
+    public string SelectedMonth { get; set; } = string.Empty;
+    public int SelectedYear { get; set; }
 }

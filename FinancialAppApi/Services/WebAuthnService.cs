@@ -31,9 +31,10 @@ public class WebAuthnService
         }
 
         await CleanupExpiredChallengesAsync();
+        var userId = _context.RequireCurrentUserId();
 
         var existingCredentialIds = await _context.WebAuthnCredentials
-            .Where(c => c.Username == username)
+            .Where(c => c.UserId == userId)
             .Select(c => c.CredentialId)
             .ToListAsync();
 
@@ -60,6 +61,7 @@ public class WebAuthnService
         _context.WebAuthnChallenges.Add(new WebAuthnChallenge
         {
             Id = challengeId,
+            UserId = userId,
             Purpose = "register",
             Username = username,
             OptionsJson = options.ToJson(),
@@ -83,7 +85,8 @@ public class WebAuthnService
             return new UnauthorizedObjectResult(new { message = "User not found in session" });
         }
 
-        var challenge = await ClaimChallengeAsync(challengeId, "register", username);
+        var userId = _context.RequireCurrentUserId();
+        var challenge = await ClaimChallengeAsync(challengeId, "register", userId);
         if (challenge == null)
         {
             return new BadRequestObjectResult(new { message = "Registration challenge expired or invalid. Please try again." });
@@ -113,6 +116,7 @@ public class WebAuthnService
         _context.WebAuthnCredentials.Add(new WebAuthnCredential
         {
             CredentialId = result.Id,
+            UserId = userId,
             Username = username,
             PublicKey = result.PublicKey,
             SignCount = result.SignCount,
@@ -124,24 +128,51 @@ public class WebAuthnService
         return new OkObjectResult(new { message = "Fingerprint registered successfully." });
     }
 
-    public async Task<IActionResult> LoginOptionsAsync(string? requestOrigin, string fallbackOrigin)
+    public async Task<IActionResult> LoginOptionsAsync(
+        string? requestOrigin,
+        string fallbackOrigin,
+        string? username = null)
     {
         await CleanupExpiredChallengesAsync();
 
-        var user = await _context.AppUsers.FirstOrDefaultAsync();
-        if (user == null)
+        if (!await _context.AppUsers.AnyAsync())
         {
             return new BadRequestObjectResult(new { message = "No account registered." });
         }
 
-        var credentials = await _context.WebAuthnCredentials
-            .Where(c => c.Username == user.Username)
-            .Select(c => c.CredentialId)
-            .ToListAsync();
-        if (credentials.Count == 0)
+        var usersWithCredentials = _context.AppUsers
+            .Where(user => _context.WebAuthnCredentials.Any(credential => credential.UserId == user.Id));
+        List<AppUser> candidates;
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            candidates = await usersWithCredentials.OrderBy(user => user.Id).Take(2).ToListAsync();
+            if (candidates.Count > 1)
+            {
+                return new BadRequestObjectResult(new
+                {
+                    message = "Enter a username before using fingerprint login."
+                });
+            }
+        }
+        else
+        {
+            var normalizedUsername = username.Trim().ToUpperInvariant();
+            candidates = await usersWithCredentials
+                .Where(user => user.NormalizedUsername == normalizedUsername)
+                .Take(1)
+                .ToListAsync();
+        }
+
+        var user = candidates.SingleOrDefault();
+        if (user == null)
         {
             return new BadRequestObjectResult(new { message = "Fingerprint login is not set up yet." });
         }
+
+        var credentials = await _context.WebAuthnCredentials
+            .Where(c => c.UserId == user.Id)
+            .Select(c => c.CredentialId)
+            .ToListAsync();
 
         var fido2 = BuildFido2(requestOrigin, fallbackOrigin);
         var options = fido2.GetAssertionOptions(new GetAssertionOptionsParams
@@ -154,6 +185,7 @@ public class WebAuthnService
         _context.WebAuthnChallenges.Add(new WebAuthnChallenge
         {
             Id = challengeId,
+            UserId = user.Id,
             Purpose = "login",
             Username = user.Username,
             OptionsJson = options.ToJson(),
@@ -184,8 +216,9 @@ public class WebAuthnService
             .FirstOrDefaultAsync(c => c.CredentialId == credential.RawId);
         var user = storedCred == null
             ? null
-            : await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == storedCred.Username);
-        if (storedCred == null || user == null || !string.Equals(challenge.Username, user.Username, StringComparison.Ordinal))
+            : await _context.AppUsers.FirstOrDefaultAsync(u => u.Id == storedCred.UserId);
+        if (storedCred == null || user == null ||
+            !string.Equals(challenge.UserId, user.Id, StringComparison.Ordinal))
         {
             return new UnauthorizedObjectResult(new { message = "Unrecognized fingerprint credential." });
         }
@@ -217,9 +250,10 @@ public class WebAuthnService
         }
 
         await CleanupExpiredChallengesAsync();
+        var userId = _context.RequireCurrentUserId();
 
         var credentials = await _context.WebAuthnCredentials
-            .Where(c => c.Username == username)
+            .Where(c => c.UserId == userId)
             .Select(c => c.CredentialId)
             .ToListAsync();
         if (credentials.Count == 0)
@@ -238,6 +272,7 @@ public class WebAuthnService
         _context.WebAuthnChallenges.Add(new WebAuthnChallenge
         {
             Id = challengeId,
+            UserId = userId,
             Purpose = "assert",
             Username = username,
             OptionsJson = options.ToJson(),
@@ -261,14 +296,15 @@ public class WebAuthnService
             return new UnauthorizedObjectResult(new { message = "User not found in session" });
         }
 
-        var challenge = await ClaimChallengeAsync(challengeId, "assert", username);
+        var userId = _context.RequireCurrentUserId();
+        var challenge = await ClaimChallengeAsync(challengeId, "assert", userId);
         if (challenge == null)
         {
             return new UnauthorizedObjectResult(new { message = "Verification challenge expired or invalid. Please try again." });
         }
 
         var storedCred = await _context.WebAuthnCredentials
-            .FirstOrDefaultAsync(c => c.CredentialId == credential.RawId && c.Username == username);
+            .FirstOrDefaultAsync(c => c.CredentialId == credential.RawId && c.UserId == userId);
         if (storedCred == null)
         {
             return new UnauthorizedObjectResult(new { message = "Unrecognized fingerprint credential." });
@@ -288,8 +324,9 @@ public class WebAuthnService
 
     public async Task<IActionResult> ListCredentialsAsync(string? username)
     {
+        var userId = _context.RequireCurrentUserId();
         var creds = await _context.WebAuthnCredentials
-            .Where(c => c.Username == username)
+            .Where(c => c.UserId == userId)
             .OrderBy(c => c.CreatedAt)
             .Select(c => new { id = Convert.ToHexString(c.CredentialId), deviceLabel = c.DeviceLabel, createdAt = c.CreatedAt })
             .ToListAsync();
@@ -308,8 +345,9 @@ public class WebAuthnService
             return new BadRequestObjectResult(new { message = "Invalid credential id." });
         }
 
+        var userId = _context.RequireCurrentUserId();
         var cred = await _context.WebAuthnCredentials
-            .FirstOrDefaultAsync(c => c.CredentialId == credentialId && c.Username == username);
+            .FirstOrDefaultAsync(c => c.CredentialId == credentialId && c.UserId == userId);
         if (cred == null)
         {
             return new NotFoundObjectResult(new { message = "Credential not found." });
@@ -391,14 +429,14 @@ public class WebAuthnService
     private async Task<WebAuthnChallenge?> ClaimChallengeAsync(
         string challengeId,
         string purpose,
-        string? username = null)
+        string? userId = null)
     {
         var now = DateTime.UtcNow;
         var query = _context.WebAuthnChallenges
             .Where(challenge => challenge.Id == challengeId && challenge.Purpose == purpose);
-        if (username != null)
+        if (userId != null)
         {
-            query = query.Where(challenge => challenge.Username == username);
+            query = query.Where(challenge => challenge.UserId == userId);
         }
 
         var challenge = await query.AsNoTracking().FirstOrDefaultAsync();
@@ -419,7 +457,10 @@ public class WebAuthnService
 
     private async Task CleanupExpiredChallengesAsync()
     {
-        var expired = await _context.WebAuthnChallenges.Where(c => c.ExpiresAt < DateTime.UtcNow).ToListAsync();
+        var userId = _context.CurrentUserId;
+        var expired = await _context.WebAuthnChallenges
+            .Where(c => c.ExpiresAt < DateTime.UtcNow && (userId == null || c.UserId == userId))
+            .ToListAsync();
         if (expired.Count > 0)
         {
             _context.WebAuthnChallenges.RemoveRange(expired);

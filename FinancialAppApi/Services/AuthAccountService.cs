@@ -18,6 +18,7 @@ public class AuthAccountService
     private readonly SecretProtector _secretProtector;
     private readonly RecoveryCodeService _recoveryCodeService;
     private readonly AuthSessionService _authSessionService;
+    private readonly FinancialClock _financialClock;
 
     public AuthAccountService(
         AppDbContext context,
@@ -25,7 +26,8 @@ public class AuthAccountService
         TotpService totpService,
         SecretProtector secretProtector,
         RecoveryCodeService recoveryCodeService,
-        AuthSessionService authSessionService)
+        AuthSessionService authSessionService,
+        FinancialClock? financialClock = null)
     {
         _context = context;
         _configuration = configuration;
@@ -33,6 +35,7 @@ public class AuthAccountService
         _secretProtector = secretProtector;
         _recoveryCodeService = recoveryCodeService;
         _authSessionService = authSessionService;
+        _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
     private int MaxFailedLoginAttempts => _configuration.GetValue("Auth:MaxFailedLoginAttempts", 5);
@@ -43,6 +46,7 @@ public class AuthAccountService
         _configuration.GetValue("Auth:PasswordVerificationLockoutMinutes", LockoutMinutes);
     private int MaxTwoFactorAttempts => _configuration.GetValue("Auth:MaxTwoFactorAttempts", MaxCodeAttempts);
     private int TwoFactorLockoutMinutes => _configuration.GetValue("Auth:TwoFactorLockoutMinutes", LockoutMinutes);
+    private bool AllowAdditionalUsers => _configuration.GetValue("Auth:AllowAdditionalUsers", false);
 
     public async Task<IActionResult> GetStatusAsync()
     {
@@ -53,7 +57,7 @@ public class AuthAccountService
 
     public async Task<IActionResult> RegisterAsync(string username, string password)
     {
-        if (await _context.AppUsers.AnyAsync())
+        if (!AllowAdditionalUsers && await _context.AppUsers.AnyAsync())
         {
             return new BadRequestObjectResult(new { message = "Registration is closed. A user is already registered." });
         }
@@ -66,24 +70,33 @@ public class AuthAccountService
         var user = new AppUser
         {
             Id = Guid.NewGuid().ToString(),
-            Username = username.Trim()
+            Username = username.Trim(),
+            NormalizedUsername = username.Trim().ToUpperInvariant(),
+            RegistrationSlot = AllowAdditionalUsers ? null : 1
         };
         user.PasswordHash = _passwordHasher.HashPassword(user.Username, password);
 
+        _context.SetCurrentUser(user.Id);
         _context.AppUsers.Add(user);
+        DbSeeder.EnsureUserDefaults(_context, user.Id, _financialClock);
         try
         {
             await _context.SaveChangesAsync();
         }
         catch (DbUpdateException)
         {
-            // The unique SingletonKey index is the authoritative single-user guard.
-            // If another registration committed after our AnyAsync check, translate
-            // the collision into the same closed-registration response.
-            _context.Entry(user).State = EntityState.Detached;
-            if (await _context.AppUsers.AnyAsync())
+            // RegistrationSlot is the authoritative guard against two concurrent first
+            // registrations; NormalizedUsername also protects future multi-user mode.
+            _context.ChangeTracker.Clear();
+            if (!AllowAdditionalUsers && await _context.AppUsers.AnyAsync())
             {
                 return new BadRequestObjectResult(new { message = "Registration is closed. A user is already registered." });
+            }
+
+            if (await _context.AppUsers.AnyAsync(existing =>
+                    existing.NormalizedUsername == user.NormalizedUsername))
+            {
+                return new BadRequestObjectResult(new { message = "That username is already registered." });
             }
 
             throw;
@@ -105,11 +118,13 @@ public class AuthAccountService
             return new BadRequestObjectResult(new { message = "Username and password are required." });
         }
 
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username.ToLower() == username.ToLower());
+        var normalizedUsername = username.Trim().ToUpperInvariant();
+        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.NormalizedUsername == normalizedUsername);
         if (user == null)
         {
             return new UnauthorizedObjectResult(new { message = "Invalid username or password" });
         }
+        _context.SetCurrentUser(user.Id);
 
         if (user.LockedUntil.HasValue && user.LockedUntil.Value > DateTime.UtcNow)
         {
@@ -129,7 +144,7 @@ public class AuthAccountService
 
         if (user.TotpEnabled)
         {
-            await SweepExpiredPendingTwoFactorsAsync();
+            await SweepExpiredPendingTwoFactorsAsync(user.Id);
             if (user.TwoFactorLockedUntil.HasValue && user.TwoFactorLockedUntil.Value > DateTime.UtcNow)
             {
                 var minutesLeft = Math.Ceiling((user.TwoFactorLockedUntil.Value - DateTime.UtcNow).TotalMinutes);
@@ -138,12 +153,13 @@ public class AuthAccountService
             }
 
             var existingPending = await _context.PendingTwoFactors
-                .Where(p => p.Username == user.Username)
+                .Where(p => p.UserId == user.Id)
                 .ToListAsync();
             _context.PendingTwoFactors.RemoveRange(existingPending);
 
             var pending = new PendingTwoFactor
             {
+                UserId = user.Id,
                 Username = user.Username,
                 DeviceId = deviceId,
                 DeviceName = deviceName,
@@ -188,17 +204,18 @@ public class AuthAccountService
             return new UnauthorizedObjectResult(new { message = "Too many attempts. Please log in again." });
         }
 
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == pending.Username);
+        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Id == pending.UserId);
         if (user == null || !user.TotpEnabled || string.IsNullOrEmpty(user.TotpSecret))
         {
             _context.PendingTwoFactors.Remove(pending);
             await _context.SaveChangesAsync();
             return new UnauthorizedObjectResult(new { message = "Login session expired. Please log in again." });
         }
+        _context.SetCurrentUser(user.Id);
 
         if (user.TwoFactorLockedUntil.HasValue && user.TwoFactorLockedUntil.Value > DateTime.UtcNow)
         {
-            await RemovePendingTwoFactorsAsync(user.Username);
+            await RemovePendingTwoFactorsAsync(user.Id);
             await _context.SaveChangesAsync();
             var minutesLeft = Math.Ceiling((user.TwoFactorLockedUntil.Value - DateTime.UtcNow).TotalMinutes);
             return new ObjectResult(new { message = $"Too many two-factor attempts. Try again in {minutesLeft} minute(s)." }) { StatusCode = 429 };
@@ -206,7 +223,7 @@ public class AuthAccountService
 
         var secret = _secretProtector.Unprotect(user.TotpSecret);
         var validTotp = _totpService.ValidateCode(secret, code, out var timeStepMatched);
-        var validRecovery = !validTotp && await _recoveryCodeService.TryConsumeAsync(user.Username, code);
+        var validRecovery = !validTotp && await _recoveryCodeService.TryConsumeAsync(user.Username, code, user.Id);
 
         if (!validTotp && !validRecovery)
         {
@@ -225,7 +242,7 @@ public class AuthAccountService
 
         user.TwoFactorFailedAttempts = 0;
         user.TwoFactorLockedUntil = null;
-        await RemovePendingTwoFactorsAsync(user.Username);
+        await RemovePendingTwoFactorsAsync(user.Id);
         await _context.SaveChangesAsync();
 
         var session = await _authSessionService.CreateSessionAsync(user, pending.DeviceId, pending.DeviceName, ipAddress, userAgent);
@@ -245,7 +262,7 @@ public class AuthAccountService
 
         var user = await _context.AppUsers
             .AsNoTracking()
-            .FirstOrDefaultAsync(u => u.Username.ToLower() == username.ToLower());
+            .FirstOrDefaultAsync(u => u.NormalizedUsername == username.Trim().ToUpperInvariant());
         if (user == null)
         {
             return new UnauthorizedObjectResult(new { message = "User not found" });
@@ -370,7 +387,7 @@ public class AuthAccountService
         user.TwoFactorFailedAttempts = 0;
         user.TwoFactorLockedUntil = null;
 
-        var recoveryCodes = await _recoveryCodeService.RegenerateAsync(username);
+        var recoveryCodes = await _recoveryCodeService.RegenerateAsync(username, user.Id);
         await _authSessionService.RevokeOtherSessionsAsync(username, currentToken);
         await _context.SaveChangesAsync();
 
@@ -398,7 +415,7 @@ public class AuthAccountService
 
         var secret = _secretProtector.Unprotect(user.TotpSecret);
         var validTotp = _totpService.ValidateCode(secret, code ?? string.Empty);
-        var validRecovery = !validTotp && await _recoveryCodeService.TryConsumeAsync(username, code ?? string.Empty);
+        var validRecovery = !validTotp && await _recoveryCodeService.TryConsumeAsync(username, code ?? string.Empty, user.Id);
         if (!validTotp && !validRecovery)
         {
             return new BadRequestObjectResult(new { message = "Invalid code." });
@@ -411,7 +428,7 @@ public class AuthAccountService
         user.TwoFactorFailedAttempts = 0;
         user.TwoFactorLockedUntil = null;
         await _context.SaveChangesAsync();
-        await _recoveryCodeService.DeleteAllAsync(username);
+        await _recoveryCodeService.DeleteAllAsync(username, user.Id);
 
         return new OkObjectResult(new { message = "Two-factor authentication disabled." });
     }
@@ -435,7 +452,7 @@ public class AuthAccountService
             return new BadRequestObjectResult(new { message = "Incorrect password." });
         }
 
-        var codes = await _recoveryCodeService.RegenerateAsync(username);
+        var codes = await _recoveryCodeService.RegenerateAsync(username, user.Id);
         return new OkObjectResult(new { recoveryCodes = codes });
     }
 
@@ -477,7 +494,7 @@ public class AuthAccountService
             if (lockState.HasValue && lockState.Value > now)
             {
                 await _context.PendingTwoFactors
-                    .Where(candidate => candidate.Username == user.Username)
+                    .Where(candidate => candidate.UserId == user.Id)
                     .ExecuteDeleteAsync();
                 return new ObjectResult(new { message = "Too many two-factor attempts. Please try again later." }) { StatusCode = 429 };
             }
@@ -491,7 +508,7 @@ public class AuthAccountService
         {
             user.TwoFactorLockedUntil = DateTime.UtcNow.AddMinutes(TwoFactorLockoutMinutes);
             user.TwoFactorFailedAttempts = 0;
-            await RemovePendingTwoFactorsAsync(user.Username);
+            await RemovePendingTwoFactorsAsync(user.Id);
             await _context.SaveChangesAsync();
             return new ObjectResult(new { message = "Too many two-factor attempts. Please try again later." }) { StatusCode = 429 };
         }
@@ -662,18 +679,18 @@ public class AuthAccountService
         return false;
     }
 
-    private async Task SweepExpiredPendingTwoFactorsAsync()
+    private async Task SweepExpiredPendingTwoFactorsAsync(string userId)
     {
         var expired = await _context.PendingTwoFactors
-            .Where(p => p.ExpiresAt < DateTime.UtcNow)
+            .Where(p => p.UserId == userId && p.ExpiresAt < DateTime.UtcNow)
             .ToListAsync();
         _context.PendingTwoFactors.RemoveRange(expired);
     }
 
-    private async Task RemovePendingTwoFactorsAsync(string username)
+    private async Task RemovePendingTwoFactorsAsync(string userId)
     {
         var pending = await _context.PendingTwoFactors
-            .Where(p => p.Username == username)
+            .Where(p => p.UserId == userId)
             .ToListAsync();
         _context.PendingTwoFactors.RemoveRange(pending);
     }

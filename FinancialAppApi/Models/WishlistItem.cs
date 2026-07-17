@@ -2,10 +2,13 @@ using System.ComponentModel.DataAnnotations;
 
 namespace FinancialAppApi.Models
 {
-    public class WishlistItem
+    public class WishlistItem : IUserOwnedEntity
     {
         [Key]
         public int Id { get; set; }
+
+        [Required]
+        public string UserId { get; set; } = string.Empty;
 
         [Required]
         [StringLength(200)]

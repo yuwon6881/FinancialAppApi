@@ -38,24 +38,30 @@ public abstract class IntegrationTestBase : IDisposable
         var token = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
         await Factory.WithDbContextAsync(async db =>
         {
-            if (seedCategories)
-            {
-                DbSeeder.Seed(db);
-                foreach (var (id, name) in DefaultCategories)
-                {
-                    db.TransactionCategories.Add(new TransactionCategory { Id = id, Name = name });
-                }
-            }
-
+            var userId = Guid.NewGuid().ToString();
+            db.SetCurrentUser(userId);
             db.AppUsers.Add(new AppUser
             {
-                Id = Guid.NewGuid().ToString(),
+                Id = userId,
                 Username = username,
                 PasswordHash = HashPassword(username, password),
             });
+
+            if (seedCategories)
+            {
+                DbSeeder.EnsureUserDefaults(db, userId);
+                foreach (var category in db.ChangeTracker.Entries<TransactionCategory>()
+                             .Where(entry => entry.State == Microsoft.EntityFrameworkCore.EntityState.Added))
+                {
+                    var match = DefaultCategories.First(item => item.Name == category.Entity.Name);
+                    category.Entity.Id = match.Id;
+                }
+            }
+
             db.UserSessions.Add(new UserSession
             {
                 Token = token,
+                UserId = userId,
                 Username = username,
                 CreatedAt = DateTime.UtcNow,
                 ExpiresAt = DateTime.UtcNow.AddHours(1),

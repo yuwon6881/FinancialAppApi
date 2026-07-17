@@ -43,7 +43,7 @@ public class OcrScanJobService
         _retentionPolicy = retentionPolicy;
     }
 
-    public async Task<CreateScanJobResult> CreateScanJobAsync(string username, IFormFile? image)
+    public async Task<CreateScanJobResult> CreateScanJobAsync(string userId, string username, IFormFile? image)
     {
         if (image == null || image.Length == 0)
         {
@@ -56,7 +56,7 @@ public class OcrScanJobService
         }
 
         var outstandingJobs = await _context.ReceiptScanJobs.CountAsync(job =>
-            job.Username == username &&
+            job.UserId == userId &&
             (job.Status == "queued" || job.Status == "processing"));
         if (outstandingJobs >= _retentionPolicy.MaxOutstandingJobsPerUser)
         {
@@ -84,6 +84,7 @@ public class OcrScanJobService
         var job = new ReceiptScanJob
         {
             Id = $"ocr-{Guid.NewGuid():N}",
+            UserId = userId,
             Username = username,
             Status = "queued",
             MimeType = mimeType,
@@ -98,10 +99,10 @@ public class OcrScanJobService
         return new CreateScanJobResult(CreateScanJobStatus.Created, job.Id);
     }
 
-    public async Task<ScanJobResponse?> GetScanJobAsync(string username, string jobId)
+    public async Task<ScanJobResponse?> GetScanJobAsync(string userId, string jobId)
     {
         var job = await _context.ReceiptScanJobs.AsNoTracking()
-            .FirstOrDefaultAsync(j => j.Id == jobId && j.Username == username);
+            .FirstOrDefaultAsync(j => j.Id == jobId && j.UserId == userId);
 
         if (job == null)
         {
@@ -124,10 +125,10 @@ public class OcrScanJobService
             job.CompletedAt);
     }
 
-    public async Task DeleteScanJobAsync(string username, string jobId)
+    public async Task DeleteScanJobAsync(string userId, string jobId)
     {
         var job = await _context.ReceiptScanJobs
-            .FirstOrDefaultAsync(j => j.Id == jobId && j.Username == username);
+            .FirstOrDefaultAsync(j => j.Id == jobId && j.UserId == userId);
 
         if (job != null)
         {

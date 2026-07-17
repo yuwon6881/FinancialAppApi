@@ -14,6 +14,7 @@ public class OcrScanJobServiceTests
         var service = NewService(context);
 
         var result = await service.CreateScanJobAsync(
+            TestHelpers.DefaultUserId,
             "alice",
             NewFormFile("receipt.heic", "application/octet-stream", HeicBytes()));
 
@@ -31,7 +32,7 @@ public class OcrScanJobServiceTests
         await using var context = TestHelpers.NewInMemoryContext();
         var service = NewService(context);
 
-        var result = await service.CreateScanJobAsync("alice", null);
+        var result = await service.CreateScanJobAsync(TestHelpers.DefaultUserId, "alice", null);
 
         Assert.Equal(CreateScanJobStatus.NoImage, result.Status);
         Assert.Equal("No image file provided.", result.Message);
@@ -44,6 +45,7 @@ public class OcrScanJobServiceTests
         var service = NewService(context);
 
         var result = await service.CreateScanJobAsync(
+            TestHelpers.DefaultUserId,
             "alice",
             NewFormFile("not-an-image.txt", "image/jpeg", "not an image"u8.ToArray()));
 
@@ -60,6 +62,7 @@ public class OcrScanJobServiceTests
         var service = NewService(context, ("Ocr:MaxOutstandingJobsPerUser", "2"));
 
         var result = await service.CreateScanJobAsync(
+            TestHelpers.DefaultUserId,
             "alice",
             NewFormFile("receipt.jpg", "image/jpeg", JpegBytes()));
 
@@ -84,8 +87,8 @@ public class OcrScanJobServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context);
 
-        var result = await service.GetScanJobAsync("alice", "job-1");
-        var repeatedResult = await service.GetScanJobAsync("alice", "job-1");
+        var result = await service.GetScanJobAsync(TestHelpers.DefaultUserId, "job-1");
+        var repeatedResult = await service.GetScanJobAsync(TestHelpers.DefaultUserId, "job-1");
 
         Assert.NotNull(result);
         Assert.Equal("completed", result.Status);
@@ -97,14 +100,14 @@ public class OcrScanJobServiceTests
     [Fact]
     public async Task DeleteScanJobAsync_RemovesOnlyMatchingUsersJob()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = TestHelpers.NewInMemoryContext(currentUserId: null);
         context.ReceiptScanJobs.AddRange(
-            NewJob("job-1", "alice"),
-            NewJob("job-2", "bob"));
+            NewJob("job-1", "alice", "alice-user"),
+            NewJob("job-2", "bob", "bob-user"));
         await context.SaveChangesAsync();
         var service = NewService(context);
 
-        await service.DeleteScanJobAsync("alice", "job-1");
+        await service.DeleteScanJobAsync("alice-user", "job-1");
 
         Assert.False(await context.ReceiptScanJobs.AnyAsync(j => j.Id == "job-1" && j.Username == "alice"));
         Assert.True(await context.ReceiptScanJobs.AnyAsync(j => j.Id == "job-2" && j.Username == "bob"));
@@ -136,11 +139,12 @@ public class OcrScanJobServiceTests
             new ReceiptScanRetentionPolicy(TestHelpers.NewConfiguration(configuration)));
     }
 
-    private static ReceiptScanJob NewJob(string id, string username)
+    private static ReceiptScanJob NewJob(string id, string username, string userId = TestHelpers.DefaultUserId)
     {
         return new ReceiptScanJob
         {
             Id = id,
+            UserId = userId,
             Username = username,
             Status = "queued",
             MimeType = "image/jpeg",

@@ -5,10 +5,13 @@ namespace FinancialAppApi.Models;
 // Bridges a password-verified login and the eventual session it will produce once a TOTP/recovery
 // code is confirmed. The Id doubles as the opaque "pendingToken" handed to the client -- it grants
 // no access on its own, only the ability to attempt the second factor for this specific login.
-public class PendingTwoFactor
+public class PendingTwoFactor : IUserOwnedEntity
 {
     [Key]
     public Guid Id { get; set; } = Guid.NewGuid();
+
+    [Required]
+    public string UserId { get; set; } = string.Empty;
 
     [Required]
     public string Username { get; set; } = string.Empty;

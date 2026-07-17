@@ -39,12 +39,13 @@ public class OcrController : ControllerBase
     public async Task<IActionResult> CreateScanJobEndpoint(IFormFile? image)
     {
         var username = GetUsername();
-        if (username == null)
+        var userId = GetUserId();
+        if (username == null || userId == null)
         {
             return Unauthorized(new { message = "Invalid session" });
         }
 
-        var created = await _scanJobService.CreateScanJobAsync(username, image);
+        var created = await _scanJobService.CreateScanJobAsync(userId, username, image);
         if (created.Status == CreateScanJobStatus.TooManyOutstandingJobs)
         {
             return StatusCode(StatusCodes.Status429TooManyRequests, new { message = created.Message });
@@ -72,13 +73,13 @@ public class OcrController : ControllerBase
     [HttpGet("scan-receipt/jobs/{jobId}")]
     public async Task<IActionResult> GetScanJob(string jobId)
     {
-        var username = GetUsername();
-        if (username == null)
+        var userId = GetUserId();
+        if (userId == null)
         {
             return Unauthorized(new { message = "Invalid session" });
         }
 
-        var job = await _scanJobService.GetScanJobAsync(username, jobId);
+        var job = await _scanJobService.GetScanJobAsync(userId, jobId);
         if (job == null)
         {
             return NotFound(new { message = "Receipt scan job was not found." });
@@ -102,13 +103,13 @@ public class OcrController : ControllerBase
     [HttpDelete("scan-receipt/jobs/{jobId}")]
     public async Task<IActionResult> DeleteScanJob(string jobId)
     {
-        var username = GetUsername();
-        if (username == null)
+        var userId = GetUserId();
+        if (userId == null)
         {
             return Unauthorized(new { message = "Invalid session" });
         }
 
-        await _scanJobService.DeleteScanJobAsync(username, jobId);
+        await _scanJobService.DeleteScanJobAsync(userId, jobId);
 
         return NoContent();
     }
@@ -144,6 +145,11 @@ public class OcrController : ControllerBase
     private string? GetUsername()
     {
         return HttpContext.Items.TryGetValue("Username", out var value) ? value as string : null;
+    }
+
+    private string? GetUserId()
+    {
+        return HttpContext.Items.TryGetValue("UserId", out var value) ? value as string : null;
     }
 
     private static bool SecureEquals(string provided, string expected)

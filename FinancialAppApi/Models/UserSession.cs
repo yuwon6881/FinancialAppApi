@@ -2,10 +2,13 @@ using System.ComponentModel.DataAnnotations;
 
 namespace FinancialAppApi.Models;
 
-public class UserSession
+public class UserSession : IUserOwnedEntity
 {
     [Key]
     public string Token { get; set; } = string.Empty;
+
+    [Required]
+    public string UserId { get; set; } = string.Empty;
 
     // Public identifier used by the sessions list/revoke API so the raw bearer token
     // (the live credential) never has to leave the server in a response body.

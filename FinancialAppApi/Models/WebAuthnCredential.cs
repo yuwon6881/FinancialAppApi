@@ -2,10 +2,13 @@ using System.ComponentModel.DataAnnotations;
 
 namespace FinancialAppApi.Models;
 
-public class WebAuthnCredential
+public class WebAuthnCredential : IUserOwnedEntity
 {
     [Key]
     public byte[] CredentialId { get; set; } = Array.Empty<byte>();
+
+    [Required]
+    public string UserId { get; set; } = string.Empty;
 
     [Required]
     public string Username { get; set; } = string.Empty;

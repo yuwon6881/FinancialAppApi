@@ -3,6 +3,7 @@ using FinancialAppApi.Services;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using OtpNet;
 using System.Text.Json;
@@ -22,6 +23,40 @@ public class AuthAccountServiceTests
         Assert.IsType<OkObjectResult>(result);
         Assert.Single(context.AppUsers);
         Assert.Equal("alice", context.AppUsers.Single().Username);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenClosed_RejectsSecondRegistrationAndProvisionsNothing()
+    {
+        // Default configuration keeps the app single-user: once anyone is registered, a second
+        // registration is refused and no extra account or seeded data is created.
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = NewService(context);
+        Assert.IsType<OkObjectResult>(await service.RegisterAsync("alice", "password123"));
+
+        var second = await service.RegisterAsync("bob", "password123");
+
+        Assert.IsType<BadRequestObjectResult>(second);
+        Assert.Single(context.AppUsers);
+        Assert.Equal("alice", context.AppUsers.Single().Username);
+        Assert.Equal(1, await context.FinancialSettings.IgnoreQueryFilters().CountAsync());
+        Assert.Equal(10, await context.TransactionCategories.IgnoreQueryFilters().CountAsync());
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenAdditionalUsersAreEnabled_ProvisionsSeparateUserData()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var configuration = TestHelpers.NewConfiguration(("Auth:AllowAdditionalUsers", "true"));
+        var service = NewService(context, configuration);
+
+        Assert.IsType<OkObjectResult>(await service.RegisterAsync("alice", "password123"));
+        Assert.IsType<OkObjectResult>(await service.RegisterAsync("bob", "password123"));
+
+        Assert.Equal(2, await context.AppUsers.CountAsync());
+        Assert.Equal(2, await context.FinancialSettings.IgnoreQueryFilters().CountAsync());
+        Assert.Equal(20, await context.TransactionCategories.IgnoreQueryFilters().CountAsync());
+        Assert.All(context.AppUsers, user => Assert.Null(user.RegistrationSlot));
     }
 
     [Fact]
@@ -218,7 +253,7 @@ public class AuthAccountServiceTests
         var hasher = new PasswordHasher<string>();
         var user = new AppUser
         {
-            Id = Guid.NewGuid().ToString(),
+            Id = TestHelpers.DefaultUserId,
             Username = username,
             TotpEnabled = protectedTotpSecret != null,
             TotpSecret = protectedTotpSecret

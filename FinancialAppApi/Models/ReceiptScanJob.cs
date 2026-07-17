@@ -2,10 +2,13 @@ using System.ComponentModel.DataAnnotations;
 
 namespace FinancialAppApi.Models;
 
-public class ReceiptScanJob
+public class ReceiptScanJob : IUserOwnedEntity
 {
     [Key]
     public string Id { get; set; } = string.Empty;
+
+    [Required]
+    public string UserId { get; set; } = string.Empty;
 
     [Required]
     public string Username { get; set; } = string.Empty;

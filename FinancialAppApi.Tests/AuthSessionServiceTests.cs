@@ -9,7 +9,7 @@ public class AuthSessionServiceTests
     public async Task CreateSessionAsync_EvictsLeastRecentlyActiveSession()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        var user = new AppUser { Id = "user-1", Username = "alice" };
+        var user = new AppUser { Id = TestHelpers.DefaultUserId, Username = "alice" };
         context.AppUsers.Add(user);
         var now = DateTime.UtcNow;
         context.UserSessions.AddRange(

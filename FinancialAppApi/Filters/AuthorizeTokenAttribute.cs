@@ -65,8 +65,11 @@ public class AuthorizeTokenAttribute : Attribute, IAsyncActionFilter
             }
         }
 
-        // Store username in context items for reference
+        // Bind this request's shared scoped DbContext to the authenticated owner before
+        // controller services run. Financial query filters use this value automatically.
+        dbContext.SetCurrentUser(session.UserId);
         context.HttpContext.Items["Username"] = session.Username;
+        context.HttpContext.Items["UserId"] = session.UserId;
 
         await next();
     }

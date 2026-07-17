@@ -35,8 +35,9 @@ public class TransactionCategoriesController : ControllerBase
 
     // POST: api/categories
     [HttpPost]
-    public async Task<ActionResult<TransactionCategory>> PostCategory(TransactionCategory category)
+    public async Task<ActionResult<TransactionCategory>> PostCategory(TransactionCategoryMutationDto dto)
     {
+        var category = new TransactionCategory { Id = dto.Id, Name = dto.Name };
         var result = await _categoryService.CreateCategoryAsync(category);
         if (result.Status == CreateTransactionCategoryStatus.Existing)
         {
@@ -218,4 +219,10 @@ public class TransactionCategoriesController : ControllerBase
 
     public sealed record CategoryCleanupApplyRequest(IReadOnlyList<CategoryCleanupAction>? Actions);
 
+}
+
+public class TransactionCategoryMutationDto
+{
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
 }

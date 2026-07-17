@@ -106,9 +106,18 @@ public class OcrIntegrationTests : IntegrationTestBase
         var client = CreateAuthenticatedClient(token);
         await Factory.WithDbContextAsync(async db =>
         {
+            const string otherUserId = "other-user";
+            db.AppUsers.Add(new AppUser
+            {
+                Id = otherUserId,
+                Username = "someone-else",
+                PasswordHash = HashPassword("someone-else", "unused")
+            });
+            db.SetCurrentUser(otherUserId);
             db.ReceiptScanJobs.Add(new ReceiptScanJob
             {
                 Id = "ocr-other-user",
+                UserId = otherUserId,
                 Username = "someone-else",
                 Status = "queued",
             });

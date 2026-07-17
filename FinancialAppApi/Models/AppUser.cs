@@ -7,13 +7,16 @@ public class AppUser
     [Key]
     public string Id { get; set; } = string.Empty;
 
-    // Every row deliberately carries the same value. A unique database index on this
-    // column enforces the application's single-user invariant even when two initial
-    // registration requests race each other.
-    public int SingletonKey { get; set; } = 1;
+    // While self-registration is closed after the first account, the initial user owns
+    // slot 1. The nullable slot keeps the race-proof current behavior without making the
+    // user table itself single-user: additional provisioned users can leave it null.
+    public int? RegistrationSlot { get; set; }
 
     [Required]
     public string Username { get; set; } = string.Empty;
+
+    [Required]
+    public string NormalizedUsername { get; set; } = string.Empty;
 
     [Required]
     public string PasswordHash { get; set; } = string.Empty;

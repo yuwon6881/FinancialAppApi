@@ -96,6 +96,10 @@ public class ReceiptScanProcessor
             return ReceiptScanProcessStatus.NotFound;
         }
 
+        // Worker requests are not authenticated HTTP requests. Once the job is claimed,
+        // bind its owner so category lookups cannot see another user's categories.
+        _context.SetCurrentUser(job.UserId);
+
         if (job.ImageData is not { Length: > 0 })
         {
             await MarkFailed(job, "Receipt image was not available for processing.");

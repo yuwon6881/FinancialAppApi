@@ -6,10 +6,13 @@ namespace FinancialAppApi.Models;
 // the "options" and "verify" steps of a WebAuthn ceremony. The API is
 // stateless (bearer tokens, no cookie session), so this stands in for the
 // ASP.NET Session that the Fido2NetLib samples normally rely on.
-public class WebAuthnChallenge
+public class WebAuthnChallenge : IUserOwnedEntity
 {
     [Key]
     public string Id { get; set; } = string.Empty;
+
+    [Required]
+    public string UserId { get; set; } = string.Empty;
 
     [Required]
     public string Purpose { get; set; } = string.Empty; // "register" or "login"

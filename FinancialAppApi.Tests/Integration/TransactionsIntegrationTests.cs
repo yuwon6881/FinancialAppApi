@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FinancialAppApi.Database;
+using FinancialAppApi.Models;
 
 namespace FinancialAppApi.Tests.Integration;
 
@@ -135,5 +136,59 @@ public class TransactionsIntegrationTests : IntegrationTestBase
 
         var get = await client.GetAsync("/api/transactions/tx-to-delete");
         Assert.Equal(HttpStatusCode.NotFound, get.StatusCode);
+    }
+
+    [Fact]
+    public async Task AuthenticatedUsers_CannotReadOrDeleteEachOthersTransactions()
+    {
+        var aliceToken = await SeedUserAndSessionAsync("alice");
+        var bobToken = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+        await Factory.WithDbContextAsync(async db =>
+        {
+            const string bobUserId = "bob-user";
+            db.SetCurrentUser(bobUserId);
+            db.AppUsers.Add(new AppUser
+            {
+                Id = bobUserId,
+                Username = "bob",
+                PasswordHash = HashPassword("bob", "Password123!")
+            });
+            DbSeeder.EnsureUserDefaults(db, bobUserId);
+            db.UserSessions.Add(new UserSession
+            {
+                Token = bobToken,
+                UserId = bobUserId,
+                Username = "bob",
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddHours(1)
+            });
+            await db.SaveChangesAsync();
+        });
+
+        var alice = CreateAuthenticatedClient(aliceToken);
+        var create = await alice.PostAsJsonAsync("/api/transactions", new
+        {
+            id = "alice-private-transaction",
+            date = "2026-06-15",
+            description = "Alice only",
+            category = "Food",
+            ledgerCategory = "Essentials",
+            amount = ObfuscationHelper.Obfuscate(-12m)
+        });
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+
+        var bob = CreateAuthenticatedClient(bobToken);
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await bob.GetAsync("/api/transactions/alice-private-transaction")).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await bob.DeleteAsync("/api/transactions/alice-private-transaction")).StatusCode);
+
+        var bobLedger = await bob.GetFromJsonAsync<JsonElement>("/api/transactions?all=true");
+        Assert.Empty(bobLedger.GetProperty("items").EnumerateArray());
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await alice.GetAsync("/api/transactions/alice-private-transaction")).StatusCode);
     }
 }
