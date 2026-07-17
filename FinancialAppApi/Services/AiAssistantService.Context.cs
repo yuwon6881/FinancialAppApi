@@ -61,6 +61,187 @@ public partial class AiAssistantService
         CancellationToken cancellationToken)
     {
         var queryPlan = intentPlan.QueryPlan;
+        var frame = await ResolveContextFrameAsync(intentPlan, cancellationToken);
+        var setting = frame.Setting;
+        var cycleDay = frame.CycleDay;
+        var selectedMonth = frame.SelectedMonth;
+        var selectedYear = frame.SelectedYear;
+        var selectedMonthIndex = frame.SelectedMonthIndex;
+        var categories = frame.Categories;
+        var sensitiveMode = frame.SensitiveMode;
+        var ledgerForecastRequest = frame.LedgerForecastRequest;
+        var exactDate = frame.ExactDate;
+        var targetSelection = frame.TargetSelection;
+
+        var referenceDomains = await LoadReferenceDomainContextAsync(queryPlan, sensitiveMode, cancellationToken);
+        var recurringContext = referenceDomains.RecurringContext;
+        var recurringRows = referenceDomains.RecurringRows;
+        var wishlistContext = referenceDomains.WishlistContext;
+        var wishlistRows = referenceDomains.WishlistRows;
+
+        var transactionDomain = await LoadTransactionDomainContextAsync(
+            intentPlan, targetSelection, cycleDay, exactDate, categories, cancellationToken);
+        var allTransactions = transactionDomain.Transactions;
+        var scopeTruncated = transactionDomain.ScopeTruncated;
+        var exactMatchCount = transactionDomain.ExactMatchCount;
+        var constraints = intentPlan.Constraints;
+        var excludedCategories = transactionDomain.ExcludedCategories;
+        var excludedLedgerCategories = transactionDomain.ExcludedLedgerCategories;
+        var includedCategories = transactionDomain.IncludedCategories;
+        var includedLedgerCategories = transactionDomain.IncludedLedgerCategories;
+        var requestedTransactionType = transactionDomain.RequestedTransactionType;
+        var appliesTransactionTypeFilter = transactionDomain.AppliesTransactionTypeFilter;
+
+        var recentTransactions = BuildRecentTransactionsPayload(queryPlan, sensitiveMode, allTransactions);
+
+        var ledgerDomain = await BuildLedgerDomainContextAsync(
+            intentPlan,
+            setting,
+            transactionDomain,
+            targetSelection,
+            wishlistRows,
+            selectedYear,
+            selectedMonthIndex,
+            cycleDay,
+            sensitiveMode,
+            ledgerForecastRequest,
+            cancellationToken);
+        var wishlistForecast = ledgerDomain.WishlistForecast;
+
+        var budgetTargets = BuildBudgetTargetsPayload(queryPlan, setting, sensitiveMode);
+
+        var requestedCycles = BuildRequestedCyclesPayload(targetSelection, allTransactions, cycleDay);
+
+        var turn = ResolveConversationTurn(
+            intentPlan, queryPlan, targetSelection, exactDate, sensitiveMode,
+            allTransactions, recurringRows, wishlistRows);
+        var outgoingState = turn.OutgoingState;
+        var turnFacets = turn.Facets;
+        var turnExactDate = turn.ExactDate;
+        var turnTransactionType = turn.TransactionType;
+        var turnLedgerCategory = turn.LedgerCategory;
+        var turnRecurringStatus = turn.RecurringStatus;
+        var turnWishlistStatus = turn.WishlistStatus;
+
+        var sufficiencyEvaluation = await EvaluateContextSufficiencyAsync(
+            intentPlan, targetSelection, transactionDomain, wishlistRows, wishlistForecast,
+            sensitiveMode, cycleDay, cancellationToken);
+        var intentNames = sufficiencyEvaluation.IntentNames;
+        var recoveredOutflow = sufficiencyEvaluation.RecoveredOutflow;
+        var perCycleRecoveredOutflow = sufficiencyEvaluation.PerCycleRecoveredOutflow;
+        var sufficiencyResult = sufficiencyEvaluation.Result;
+        var resolution = ToResolution(intentPlan);
+
+        var datasets = await BuildContextDatasetsAsync(
+            queryPlan, allTransactions, targetSelection, selectedYear, selectedMonthIndex, cycleDay,
+            sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, recurringRows, ledgerDomain,
+            cancellationToken);
+        var cycleSummaries = datasets.CycleSummaries;
+        var derivedMetrics = datasets.DerivedMetrics;
+
+        var context = new AiContext(
+            Currency: setting?.Currency ?? "USD",
+            Today: _financialClock.Today.ToString("yyyy-MM-dd"),
+            SensitiveMode: sensitiveMode,
+            ActiveCycle: new
+            {
+                month = selectedMonth,
+                year = selectedYear,
+                label = CategoryAttributionService.GetCycleRange(selectedYear, selectedMonthIndex, cycleDay).label
+            },
+            Categories: categories,
+            LedgerCategories: LedgerCategories,
+            RequestedCycles: requestedCycles,
+            DataScope: new
+            {
+                targetWasExplicit = targetSelection.ExplicitlyRequested,
+                aggregatesCoverAllTransactionsInRequestedCycles = targetSelection.Cycles.Count > 0 && !scopeTruncated,
+                aggregatesTruncated = scopeTruncated,
+                // Present only when the sample was truncated but the database returned the exact
+                // headline outflow: use this figure, not the partial sample sum, and do not hedge.
+                recoveredExactOutflow = recoveredOutflow,
+                detailedTransactionsIncluded = queryPlan.NeedsTransactionDetail ? Math.Min(allTransactions.Count, 120) : 0,
+                detailedTransactionsTotalInScope = allTransactions.Count
+            },
+            IntentNames: intentNames,
+            IntentResolution: resolution == null
+                ? null
+                : new
+                {
+                    intents = resolution.Intents.Select(i => i.ToString()).ToList(),
+                    confidence = resolution.Confidence,
+                    usedClassifier = resolution.UsedClassifier,
+                    ambiguities = resolution.Ambiguities
+                },
+            Sufficiency: new
+            {
+                canAnswer = sufficiencyResult.CanAnswer,
+                isApproximate = sufficiencyResult.IsApproximate,
+                missing = sufficiencyResult.Missing.Select(m => new { dataset = m.DatasetKey, reason = m.Reason }).ToList(),
+                recoverable = sufficiencyResult.Recoverable.Select(m => new { dataset = m.DatasetKey, reason = m.Reason }).ToList()
+            },
+            QueryPlan: new
+            {
+                transactionData = queryPlan.TransactionData.ToString(),
+                    metrics = queryPlan.Metrics.Select(metric => metric.ToString()).ToList(),
+                    searchText = queryPlan.SearchText,
+                    cycleHint = queryPlan.CycleHint,
+                    operations = turnFacets,
+                    exactDate = turnExactDate,
+                    transactionType = turnTransactionType,
+                    ledgerCategory = turnLedgerCategory,
+                    recurringStatus = turnRecurringStatus,
+                    wishlistStatus = turnWishlistStatus
+                },
+            ConversationState: outgoingState,
+            Constraints: constraints == AiConstraints.None
+                ? null
+                : new
+                {
+                    preventNavigation = constraints.PreventNavigation,
+                    excludeTransfers = constraints.ExcludeTransfers,
+                    excludedCategories,
+                    excludedLedgerCategories,
+                    includedCategories,
+                    includedLedgerCategories,
+                    hypothetical = constraints.Hypothetical
+                },
+            DerivedMetrics: derivedMetrics,
+            CycleSummaries: cycleSummaries,
+            RecentTransactions: recentTransactions,
+            RecurringPayments: recurringContext,
+            WishlistItems: wishlistContext,
+            BudgetTargets: budgetTargets,
+            WishlistForecast: wishlistForecast);
+        var missing = sufficiencyResult.Missing.Select(m => m.DatasetKey).ToList();
+        var sufficiency = new ContextSufficiency(
+            Complete: sufficiencyResult.CanAnswer,
+            // A truncated scope forces approximate wording UNLESS the exact figure was recovered
+            // from the database (SQL SUM), in which case the headline number is precise.
+            Approximate: sufficiencyResult.IsApproximate || (scopeTruncated && !recoveredOutflow.HasValue),
+            Missing: missing);
+        return new AiContextBuildResult(context, targetSelection.Cycles, cycleDay, selectedYear, sufficiency, outgoingState);
+    }
+
+    // The resolved "frame" of a context build: the user's settings plus the cycle selection and
+    // exact-date narrowing every later section keys off.
+    private sealed record AiContextFrame(
+        Models.FinancialSetting? Setting,
+        int CycleDay,
+        string SelectedMonth,
+        int SelectedYear,
+        int SelectedMonthIndex,
+        List<string> Categories,
+        bool SensitiveMode,
+        (string Ledger, decimal Target)? LedgerForecastRequest,
+        DateOnly? ExactDate,
+        TargetCycleSelection TargetSelection);
+
+    private async Task<AiContextFrame> ResolveContextFrameAsync(
+        AiIntentPlan intentPlan,
+        CancellationToken cancellationToken)
+    {
+        var queryPlan = intentPlan.QueryPlan;
         var setting = await LoadFinancialSettingAsync(cancellationToken);
         var cycleDay = setting?.CycleDay ?? 28;
         var selectedMonth = setting?.SelectedMonth ?? _financialClock.LocalNow.ToString("MMM");
@@ -104,26 +285,24 @@ public partial class AiAssistantService
                 false);
         }
 
-        var referenceDomains = await LoadReferenceDomainContextAsync(queryPlan, sensitiveMode, cancellationToken);
-        var recurringContext = referenceDomains.RecurringContext;
-        var recurringRows = referenceDomains.RecurringRows;
-        var wishlistContext = referenceDomains.WishlistContext;
-        var wishlistRows = referenceDomains.WishlistRows;
+        return new AiContextFrame(
+            setting,
+            cycleDay,
+            selectedMonth,
+            selectedYear,
+            selectedMonthIndex,
+            categories,
+            sensitiveMode,
+            ledgerForecastRequest,
+            exactDate,
+            targetSelection);
+    }
 
-        var transactionDomain = await LoadTransactionDomainContextAsync(
-            intentPlan, targetSelection, cycleDay, exactDate, categories, cancellationToken);
-        var allTransactions = transactionDomain.Transactions;
-        var scopeTruncated = transactionDomain.ScopeTruncated;
-        var exactMatchCount = transactionDomain.ExactMatchCount;
-        var constraints = intentPlan.Constraints;
-        var excludedCategories = transactionDomain.ExcludedCategories;
-        var excludedLedgerCategories = transactionDomain.ExcludedLedgerCategories;
-        var includedCategories = transactionDomain.IncludedCategories;
-        var includedLedgerCategories = transactionDomain.IncludedLedgerCategories;
-        var requestedTransactionType = transactionDomain.RequestedTransactionType;
-        var appliesTransactionTypeFilter = transactionDomain.AppliesTransactionTypeFilter;
-        var cycleTotalRecoverable = transactionDomain.CycleTotalRecoverable;
-
+    private static object BuildRecentTransactionsPayload(
+        AiQueryPlan queryPlan,
+        bool sensitiveMode,
+        IReadOnlyList<AiTransactionRow> allTransactions)
+    {
         object recentTransactions;
         if (!queryPlan.NeedsTransactionDetail)
         {
@@ -155,29 +334,20 @@ public partial class AiAssistantService
             }).ToList();
         }
 
-        var ledgerDomain = await BuildLedgerDomainContextAsync(
-            intentPlan,
-            setting,
-            transactionDomain,
-            targetSelection,
-            wishlistRows,
-            selectedYear,
-            selectedMonthIndex,
-            cycleDay,
-            sensitiveMode,
-            ledgerForecastRequest,
-            cancellationToken);
-        var stabilityProgress = ledgerDomain.StabilityProgress;
-        var affordableWishlistCount = ledgerDomain.AffordableWishlistCount;
-        var ledgerBalanceForecast = ledgerDomain.LedgerBalanceForecast;
-        var wishlistForecast = ledgerDomain.WishlistForecast;
+        return recentTransactions;
+    }
 
-        // The user's allocation goals: fractions of income per ledger category plus the
-        // stability-fund target. Actuals live in cycleSummaries.ledgerNet -- these targets are
-        // what makes "how am I doing" / "where can I cut" answerable rather than guessed. Only
-        // sent for analysis/coaching questions, and never in sensitiveMode (advice is
-        // inherently amount-based, which sensitiveMode refuses anyway).
-        object? budgetTargets = queryPlan.NeedsBudgetTargets && !sensitiveMode
+    // The user's allocation goals: fractions of income per ledger category plus the
+    // stability-fund target. Actuals live in cycleSummaries.ledgerNet -- these targets are
+    // what makes "how am I doing" / "where can I cut" answerable rather than guessed. Only
+    // sent for analysis/coaching questions, and never in sensitiveMode (advice is
+    // inherently amount-based, which sensitiveMode refuses anyway).
+    private static object? BuildBudgetTargetsPayload(
+        AiQueryPlan queryPlan,
+        Models.FinancialSetting? setting,
+        bool sensitiveMode)
+    {
+        return queryPlan.NeedsBudgetTargets && !sensitiveMode
             ? new
             {
                 note = "Fractions of income allocated per ledger category. Compare against cycleSummaries.ledgerNet.",
@@ -189,8 +359,14 @@ public partial class AiAssistantService
                 stabilityOverflowRedirect = setting?.StabilityOverflowRedirect ?? ""
             }
             : null;
+    }
 
-        var requestedCycles = targetSelection.Cycles
+    private static object BuildRequestedCyclesPayload(
+        TargetCycleSelection targetSelection,
+        IReadOnlyList<AiTransactionRow> allTransactions,
+        int cycleDay)
+    {
+        return targetSelection.Cycles
             .Select(c => new
             {
                 month = FinancialConstants.MonthAbbreviations[c.MonthIndex - 1],
@@ -199,7 +375,30 @@ public partial class AiAssistantService
                 hasTransactions = allTransactions.Any(t => IsInCycle(t, c, cycleDay))
             })
             .ToList();
+    }
 
+    // This turn's resolved conversational frame: the outgoing state the client echoes back next
+    // turn, plus the turn-scoped dimensions the context's queryPlan block reports.
+    private sealed record ConversationTurn(
+        AiConversationState OutgoingState,
+        List<string> Facets,
+        string? ExactDate,
+        string? TransactionType,
+        string? LedgerCategory,
+        string? RecurringStatus,
+        string? WishlistStatus);
+
+    private static ConversationTurn ResolveConversationTurn(
+        AiIntentPlan intentPlan,
+        AiQueryPlan queryPlan,
+        TargetCycleSelection targetSelection,
+        DateOnly? exactDate,
+        bool sensitiveMode,
+        IReadOnlyList<AiTransactionRow> allTransactions,
+        IReadOnlyList<AiRecurringRow> recurringRows,
+        IReadOnlyList<AiWishlistRow> wishlistRows)
+    {
+        var constraints = intentPlan.Constraints;
         // Outgoing conversation state: structured references the client echoes back next turn.
         // Matched transaction ids are the rows the DB actually returned this turn (re-derived,
         // never the client's claimed ids), capped, and only when this was a matching-row query.
@@ -296,6 +495,37 @@ public partial class AiAssistantService
             LastTargetAmount = isTransactionalTurn ? turnForecast?.Target : baseState.LastTargetAmount
         };
 
+        return new ConversationTurn(
+            outgoingState,
+            turnFacets,
+            turnExactDate,
+            turnTransactionType,
+            turnLedgerCategory,
+            turnRecurringStatus,
+            turnWishlistStatus);
+    }
+
+    private sealed record ContextSufficiencyEvaluation(
+        SufficiencyResult Result,
+        decimal? RecoveredOutflow,
+        IReadOnlyDictionary<CycleKey, decimal>? PerCycleRecoveredOutflow,
+        List<string> IntentNames);
+
+    private async Task<ContextSufficiencyEvaluation> EvaluateContextSufficiencyAsync(
+        AiIntentPlan intentPlan,
+        TargetCycleSelection targetSelection,
+        TransactionDomainContext transactionDomain,
+        IReadOnlyList<AiWishlistRow> wishlistRows,
+        object? wishlistForecast,
+        bool sensitiveMode,
+        int cycleDay,
+        CancellationToken cancellationToken)
+    {
+        var queryPlan = intentPlan.QueryPlan;
+        var allTransactions = transactionDomain.Transactions;
+        var scopeTruncated = transactionDomain.ScopeTruncated;
+        var exactMatchCount = transactionDomain.ExactMatchCount;
+
         // Phase 5: assemble explicit dataset statuses and run the sufficiency gate.
         var anyExplicitCycleEmpty = targetSelection.ExplicitlyRequested && targetSelection.Cycles.Count > 0 && allTransactions.Count == 0;
         var datasetStates = new Dictionary<AiDatasetKey, AiDatasetState>();
@@ -348,7 +578,7 @@ public partial class AiAssistantService
         decimal? recoveredOutflow = null;
         IReadOnlyDictionary<CycleKey, decimal>? perCycleRecoveredOutflow = null;
         var needsCycleRecovery = firstPassResult.Recoverable.Any(r => r.DatasetKey == AiDatasetKey.CycleSummaries)
-            && cycleTotalRecoverable;
+            && transactionDomain.CycleTotalRecoverable;
         if (needsCycleRecovery)
         {
             var searchFilter = queryPlan.TransactionData == TransactionDataLevel.MatchingRows ? queryPlan.SearchText : null;
@@ -363,8 +593,26 @@ public partial class AiAssistantService
         var sufficiencyResult = needsCycleRecovery
             ? EvaluateSufficiency(intentNames, datasetStates)
             : firstPassResult;
-        var resolution = ToResolution(intentPlan);
 
+        return new ContextSufficiencyEvaluation(sufficiencyResult, recoveredOutflow, perCycleRecoveredOutflow, intentNames);
+    }
+
+    private sealed record ContextDatasets(List<object> CycleSummaries, object DerivedMetrics);
+
+    private async Task<ContextDatasets> BuildContextDatasetsAsync(
+        AiQueryPlan queryPlan,
+        List<AiTransactionRow> allTransactions,
+        TargetCycleSelection targetSelection,
+        int selectedYear,
+        int selectedMonthIndex,
+        int cycleDay,
+        bool sensitiveMode,
+        int? exactMatchCount,
+        IReadOnlyDictionary<CycleKey, decimal>? perCycleRecoveredOutflow,
+        List<AiRecurringRow> recurringRows,
+        LedgerDomainContext ledgerDomain,
+        CancellationToken cancellationToken)
+    {
         // Built after recovery so a per-cycle exact outflow (when recovered) replaces the
         // truncated sample sum in both the single-cycle summary and the multi-cycle comparison.
         var cycleSummaries = queryPlan.NeedsCycleSummary
@@ -380,95 +628,14 @@ public partial class AiAssistantService
 
         var extraMetrics = new Dictionary<string, object?>();
         if (recurringUpcoming != null) extraMetrics["upcomingBills"] = recurringUpcoming;
-        if (stabilityProgress != null) extraMetrics["stabilityProgress"] = stabilityProgress;
-        if (affordableWishlistCount != null) extraMetrics["affordableWishlistCount"] = affordableWishlistCount;
-        if (ledgerBalanceForecast != null) extraMetrics["ledgerBalanceForecast"] = ledgerBalanceForecast;
+        if (ledgerDomain.StabilityProgress != null) extraMetrics["stabilityProgress"] = ledgerDomain.StabilityProgress;
+        if (ledgerDomain.AffordableWishlistCount != null) extraMetrics["affordableWishlistCount"] = ledgerDomain.AffordableWishlistCount;
+        if (ledgerDomain.LedgerBalanceForecast != null) extraMetrics["ledgerBalanceForecast"] = ledgerDomain.LedgerBalanceForecast;
         if (recurringCostSummary != null) extraMetrics["recurringCostSummary"] = recurringCostSummary;
 
         var derivedMetrics = BuildDerivedMetrics(queryPlan, allTransactions, targetSelection.Cycles, cycleDay, sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, balanceSnapshot, recurringBillStatus, extraMetrics);
 
-        var context = new AiContext(
-            Currency: setting?.Currency ?? "USD",
-            Today: _financialClock.Today.ToString("yyyy-MM-dd"),
-            SensitiveMode: sensitiveMode,
-            ActiveCycle: new
-            {
-                month = selectedMonth,
-                year = selectedYear,
-                label = CategoryAttributionService.GetCycleRange(selectedYear, selectedMonthIndex, cycleDay).label
-            },
-            Categories: categories,
-            LedgerCategories: LedgerCategories,
-            RequestedCycles: requestedCycles,
-            DataScope: new
-            {
-                targetWasExplicit = targetSelection.ExplicitlyRequested,
-                aggregatesCoverAllTransactionsInRequestedCycles = targetSelection.Cycles.Count > 0 && !scopeTruncated,
-                aggregatesTruncated = scopeTruncated,
-                // Present only when the sample was truncated but the database returned the exact
-                // headline outflow: use this figure, not the partial sample sum, and do not hedge.
-                recoveredExactOutflow = recoveredOutflow,
-                detailedTransactionsIncluded = queryPlan.NeedsTransactionDetail ? Math.Min(allTransactions.Count, 120) : 0,
-                detailedTransactionsTotalInScope = allTransactions.Count
-            },
-            IntentNames: intentNames,
-            IntentResolution: resolution == null
-                ? null
-                : new
-                {
-                    intents = resolution.Intents.Select(i => i.ToString()).ToList(),
-                    confidence = resolution.Confidence,
-                    usedClassifier = resolution.UsedClassifier,
-                    ambiguities = resolution.Ambiguities
-                },
-            Sufficiency: new
-            {
-                canAnswer = sufficiencyResult.CanAnswer,
-                isApproximate = sufficiencyResult.IsApproximate,
-                missing = sufficiencyResult.Missing.Select(m => new { dataset = m.DatasetKey, reason = m.Reason }).ToList(),
-                recoverable = sufficiencyResult.Recoverable.Select(m => new { dataset = m.DatasetKey, reason = m.Reason }).ToList()
-            },
-            QueryPlan: new
-            {
-                transactionData = queryPlan.TransactionData.ToString(),
-                    metrics = queryPlan.Metrics.Select(metric => metric.ToString()).ToList(),
-                    searchText = queryPlan.SearchText,
-                    cycleHint = queryPlan.CycleHint,
-                    operations = turnFacets,
-                    exactDate = turnExactDate,
-                    transactionType = turnTransactionType,
-                    ledgerCategory = turnLedgerCategory,
-                    recurringStatus = turnRecurringStatus,
-                    wishlistStatus = turnWishlistStatus
-                },
-            ConversationState: outgoingState,
-            Constraints: constraints == AiConstraints.None
-                ? null
-                : new
-                {
-                    preventNavigation = constraints.PreventNavigation,
-                    excludeTransfers = constraints.ExcludeTransfers,
-                    excludedCategories,
-                    excludedLedgerCategories,
-                    includedCategories,
-                    includedLedgerCategories,
-                    hypothetical = constraints.Hypothetical
-                },
-            DerivedMetrics: derivedMetrics,
-            CycleSummaries: cycleSummaries,
-            RecentTransactions: recentTransactions,
-            RecurringPayments: recurringContext,
-            WishlistItems: wishlistContext,
-            BudgetTargets: budgetTargets,
-            WishlistForecast: wishlistForecast);
-        var missing = sufficiencyResult.Missing.Select(m => m.DatasetKey).ToList();
-        var sufficiency = new ContextSufficiency(
-            Complete: sufficiencyResult.CanAnswer,
-            // A truncated scope forces approximate wording UNLESS the exact figure was recovered
-            // from the database (SQL SUM), in which case the headline number is precise.
-            Approximate: sufficiencyResult.IsApproximate || (scopeTruncated && !recoveredOutflow.HasValue),
-            Missing: missing);
-        return new AiContextBuildResult(context, targetSelection.Cycles, cycleDay, selectedYear, sufficiency, outgoingState);
+        return new ContextDatasets(cycleSummaries, derivedMetrics);
     }
 
     private static object BuildDerivedMetrics(
