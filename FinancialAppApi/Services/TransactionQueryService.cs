@@ -96,11 +96,14 @@ public class TransactionQueryService
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
         if (setting == null)
         {
+            // No settings row means no cycle to bound the query by; cap the result so
+            // this branch can never materialize an unbounded table scan.
             var txs = await _context.Transactions
                 .AsNoTracking()
                 .OrderByDescending(t => t.Date)
                 .ThenByDescending(t => t.PostedAt)
                 .ThenByDescending(t => t.Id)
+                .Take(500)
                 .Select(t => new TransactionProjection(
                     t.Id,
                     t.Date,
@@ -164,7 +167,7 @@ public class TransactionQueryService
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
-            .Take(1000)
+            .Take(300)
             .Select(t => new { t.Description, t.Category, t.LedgerCategory, t.Amount })
             .ToListAsync(cancellationToken);
 
