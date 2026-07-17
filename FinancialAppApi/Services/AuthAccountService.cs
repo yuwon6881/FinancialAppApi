@@ -508,6 +508,33 @@ public class AuthAccountService
         return new OkObjectResult(new { recoveryCodes = codes });
     }
 
+    /// <summary>
+    /// Shared attempt-limiter bookkeeping for the non-relational (in-memory provider) paths of
+    /// the three failure recorders: increment the failure counter and, once it reaches
+    /// <paramref name="maxAttempts"/>, engage the lockout and reset the counter. Returns true
+    /// when the lockout engaged on this failure. The relational paths keep their own atomic
+    /// ExecuteUpdate translations of this same shape, which differ per limiter (guarded WHERE
+    /// clauses, preserve-vs-clear lockout semantics) and so are not unified here.
+    /// </summary>
+    private static bool RegisterFailureInMemory(
+        Func<int> getFailedAttempts,
+        Action<int> setFailedAttempts,
+        Action<DateTime> engageLockout,
+        int maxAttempts,
+        DateTime lockedUntil)
+    {
+        var attempts = getFailedAttempts() + 1;
+        if (attempts >= maxAttempts)
+        {
+            engageLockout(lockedUntil);
+            setFailedAttempts(0);
+            return true;
+        }
+
+        setFailedAttempts(attempts);
+        return false;
+    }
+
     private async Task<IActionResult> RecordTwoFactorFailureAsync(
         AppUser user,
         PendingTwoFactor pending,
@@ -555,11 +582,14 @@ public class AuthAccountService
         }
 
         pending.Attempts += 1;
-        user.TwoFactorFailedAttempts += 1;
-        if (user.TwoFactorFailedAttempts >= MaxTwoFactorAttempts)
+        var lockedOut = RegisterFailureInMemory(
+            () => user.TwoFactorFailedAttempts,
+            attempts => user.TwoFactorFailedAttempts = attempts,
+            lockedUntil => user.TwoFactorLockedUntil = lockedUntil,
+            MaxTwoFactorAttempts,
+            DateTime.UtcNow.AddMinutes(TwoFactorLockoutMinutes));
+        if (lockedOut)
         {
-            user.TwoFactorLockedUntil = DateTime.UtcNow.AddMinutes(TwoFactorLockoutMinutes);
-            user.TwoFactorFailedAttempts = 0;
             await RemovePendingTwoFactorsAsync(user.Id);
             await _context.SaveChangesAsync();
             return new ObjectResult(new { message = "Too many two-factor attempts. Please try again later." }) { StatusCode = 429 };
@@ -573,12 +603,12 @@ public class AuthAccountService
     {
         if (!_context.Database.IsRelational())
         {
-            user.FailedLoginAttempts += 1;
-            if (user.FailedLoginAttempts >= Math.Max(1, MaxFailedLoginAttempts))
-            {
-                user.LockedUntil = DateTime.UtcNow.AddMinutes(LockoutMinutes);
-                user.FailedLoginAttempts = 0;
-            }
+            RegisterFailureInMemory(
+                () => user.FailedLoginAttempts,
+                attempts => user.FailedLoginAttempts = attempts,
+                lockedUntil => user.LockedUntil = lockedUntil,
+                Math.Max(1, MaxFailedLoginAttempts),
+                DateTime.UtcNow.AddMinutes(LockoutMinutes));
             await _context.SaveChangesAsync();
             return;
         }
@@ -647,12 +677,12 @@ public class AuthAccountService
             trackedUser.PasswordVerificationFailedAttempts = 0;
         }
 
-        trackedUser.PasswordVerificationFailedAttempts += 1;
-        if (trackedUser.PasswordVerificationFailedAttempts >= maxAttempts)
-        {
-            trackedUser.PasswordVerificationLockedUntil = lockedUntil;
-            trackedUser.PasswordVerificationFailedAttempts = 0;
-        }
+        RegisterFailureInMemory(
+            () => trackedUser.PasswordVerificationFailedAttempts,
+            attempts => trackedUser.PasswordVerificationFailedAttempts = attempts,
+            until => trackedUser.PasswordVerificationLockedUntil = until,
+            maxAttempts,
+            lockedUntil);
 
         await _context.SaveChangesAsync();
         return trackedUser.PasswordVerificationLockedUntil;
