@@ -46,25 +46,45 @@ public class AuthAccountService
         _configuration.GetValue("Auth:PasswordVerificationLockoutMinutes", LockoutMinutes);
     private int MaxTwoFactorAttempts => _configuration.GetValue("Auth:MaxTwoFactorAttempts", MaxCodeAttempts);
     private int TwoFactorLockoutMinutes => _configuration.GetValue("Auth:TwoFactorLockoutMinutes", LockoutMinutes);
-    private bool AllowAdditionalUsers => _configuration.GetValue("Auth:AllowAdditionalUsers", false);
+
+    /// <summary>
+    /// How many accounts may exist. Defaults to 1 (single-user). The legacy
+    /// <c>Auth:AllowAdditionalUsers=true</c> flag is honoured as "unlimited" for back-compat.
+    /// </summary>
+    private int MaxUsers =>
+        _configuration.GetValue("Auth:AllowAdditionalUsers", false)
+            ? int.MaxValue
+            : Math.Max(1, _configuration.GetValue("Auth:MaxUsers", 1));
+
+    private async Task<bool> IsRegistrationOpenAsync() =>
+        await _context.AppUsers.CountAsync() < MaxUsers;
 
     public async Task<IActionResult> GetStatusAsync()
     {
-        var hasUser = await _context.AppUsers.AnyAsync();
+        var userCount = await _context.AppUsers.CountAsync();
+        var hasUser = userCount > 0;
         var hasFingerprint = hasUser && await _context.WebAuthnCredentials.AnyAsync();
-        return new OkObjectResult(new { isRegistered = hasUser, hasFingerprint });
+        // registrationOpen lets the login screen offer a signup form to additional invitees
+        // (up to Auth:MaxUsers) even after the first account exists.
+        return new OkObjectResult(new
+        {
+            isRegistered = hasUser,
+            hasFingerprint,
+            registrationOpen = userCount < MaxUsers,
+        });
     }
 
     public async Task<IActionResult> RegisterAsync(string username, string password)
     {
-        if (!AllowAdditionalUsers && await _context.AppUsers.AnyAsync())
-        {
-            return new BadRequestObjectResult(new { message = "Registration is closed. A user is already registered." });
-        }
-
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
         {
             return new BadRequestObjectResult(new { message = "Username and password are required." });
+        }
+
+        var slot = await AllocateRegistrationSlotAsync();
+        if (slot is null && MaxUsers != int.MaxValue)
+        {
+            return new BadRequestObjectResult(new { message = "Registration is closed. The user limit has been reached." });
         }
 
         var user = new AppUser
@@ -72,7 +92,9 @@ public class AuthAccountService
             Id = Guid.NewGuid().ToString(),
             Username = username.Trim(),
             NormalizedUsername = username.Trim().ToUpperInvariant(),
-            RegistrationSlot = AllowAdditionalUsers ? null : 1
+            // A distinct slot in [1..MaxUsers]; its unique index makes the cap race-safe
+            // (two concurrent registrations for the last slot collide, and one is rejected).
+            RegistrationSlot = slot
         };
         user.PasswordHash = _passwordHasher.HashPassword(user.Username, password);
 
@@ -85,24 +107,54 @@ public class AuthAccountService
         }
         catch (DbUpdateException)
         {
-            // RegistrationSlot is the authoritative guard against two concurrent first
-            // registrations; NormalizedUsername also protects future multi-user mode.
             _context.ChangeTracker.Clear();
-            if (!AllowAdditionalUsers && await _context.AppUsers.AnyAsync())
-            {
-                return new BadRequestObjectResult(new { message = "Registration is closed. A user is already registered." });
-            }
-
             if (await _context.AppUsers.AnyAsync(existing =>
                     existing.NormalizedUsername == user.NormalizedUsername))
             {
                 return new BadRequestObjectResult(new { message = "That username is already registered." });
             }
 
+            // A concurrent registration may have claimed the slot we picked; if the cap is now
+            // full, report it as closed rather than surfacing a raw persistence error.
+            if (!await IsRegistrationOpenAsync())
+            {
+                return new BadRequestObjectResult(new { message = "Registration is closed. The user limit has been reached." });
+            }
+
             throw;
         }
 
         return new OkObjectResult(new { message = "Registration successful" });
+    }
+
+    /// <summary>
+    /// Returns the lowest free registration slot in [1..MaxUsers], or null when the cap is full
+    /// (or, in unlimited mode, always null — no slot is tracked). Reuses slots freed by deleted
+    /// accounts so the limit reflects the live user count, not the high-water mark.
+    /// </summary>
+    private async Task<int?> AllocateRegistrationSlotAsync()
+    {
+        var maxUsers = MaxUsers;
+        if (maxUsers == int.MaxValue)
+        {
+            return null;
+        }
+
+        var usedSlots = await _context.AppUsers
+            .Where(u => u.RegistrationSlot != null)
+            .Select(u => u.RegistrationSlot!.Value)
+            .ToListAsync();
+        var used = usedSlots.ToHashSet();
+
+        for (var candidate = 1; candidate <= maxUsers; candidate++)
+        {
+            if (!used.Contains(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 
     public async Task<IActionResult> LoginAsync(

@@ -60,6 +60,60 @@ public class AuthAccountServiceTests
     }
 
     [Fact]
+    public async Task RegisterAsync_WithMaxUsersCap_AllowsUpToLimitThenCloses()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = NewService(context, TestHelpers.NewConfiguration(("Auth:MaxUsers", "2")));
+
+        Assert.IsType<OkObjectResult>(await service.RegisterAsync("alice", "password123"));
+        Assert.IsType<OkObjectResult>(await service.RegisterAsync("bob", "password123"));
+        var thirdResult = await service.RegisterAsync("carol", "password123");
+
+        Assert.IsType<BadRequestObjectResult>(thirdResult);
+        Assert.Equal(2, await context.AppUsers.CountAsync());
+        // Each accepted user occupies a distinct slot in [1..MaxUsers]; the unique index on that
+        // slot is what makes the cap race-safe.
+        var slots = await context.AppUsers.Select(u => u.RegistrationSlot).ToListAsync();
+        Assert.Equal(new int?[] { 1, 2 }, slots.OrderBy(slot => slot));
+    }
+
+    [Fact]
+    public async Task GetStatusAsync_ReportsRegistrationOpenUntilCapReached()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = NewService(context, TestHelpers.NewConfiguration(("Auth:MaxUsers", "2")));
+
+        Assert.True(ResultBody(await service.GetStatusAsync()).GetProperty("registrationOpen").GetBoolean());
+
+        await service.RegisterAsync("alice", "password123");
+        Assert.True(ResultBody(await service.GetStatusAsync()).GetProperty("registrationOpen").GetBoolean());
+
+        await service.RegisterAsync("bob", "password123");
+        var full = ResultBody(await service.GetStatusAsync());
+        Assert.False(full.GetProperty("registrationOpen").GetBoolean());
+        Assert.True(full.GetProperty("isRegistered").GetBoolean());
+    }
+
+    [Fact]
+    public async Task RegisterAsync_ReusesASlotFreedByADeletedUser()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = NewService(context, TestHelpers.NewConfiguration(("Auth:MaxUsers", "2")));
+        await service.RegisterAsync("alice", "password123");
+        await service.RegisterAsync("bob", "password123");
+
+        var bob = await context.AppUsers.SingleAsync(u => u.NormalizedUsername == "BOB");
+        context.AppUsers.Remove(bob);
+        await context.SaveChangesAsync();
+        context.ChangeTracker.Clear();
+
+        // With a slot freed, a new registration is accepted again and takes the vacated slot.
+        Assert.IsType<OkObjectResult>(await service.RegisterAsync("carol", "password123"));
+        var slots = await context.AppUsers.Select(u => u.RegistrationSlot).ToListAsync();
+        Assert.Equal(new int?[] { 1, 2 }, slots.OrderBy(slot => slot));
+    }
+
+    [Fact]
     public async Task LoginAsync_LocksAccountAfterRepeatedFailures()
     {
         await using var context = TestHelpers.NewInMemoryContext();
