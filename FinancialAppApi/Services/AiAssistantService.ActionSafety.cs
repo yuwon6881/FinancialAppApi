@@ -88,7 +88,7 @@ public partial class AiAssistantService
 
     private static readonly HashSet<string> MutationActionTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        "openAddLedgerDraft", "openEditLedgerDraft", "openEditRecurringDraft", "openEditWishlistDraft",
+        "openAddLedgerDraft", "openEditLedgerDraft", "openAddRecurringDraft", "openEditRecurringDraft", "openAddWishlistDraft", "openEditWishlistDraft",
         "requestDeleteLedger", "requestDeleteRecurring", "requestDeleteWishlist",
         "requestConfirmRecurringBill", "requestDiscardRecurringBill",
         "requestPurchaseWishlist", "requestUnpurchaseWishlist", "toggleRecurring"
@@ -434,12 +434,20 @@ public partial class AiAssistantService
         if (!payload.TryGetValue(key, out var idObj) || idObj == null) return false;
         var id = idObj.ToString();
         if (string.IsNullOrWhiteSpace(id)) return false;
-        var json = JsonSerializer.Serialize(records);
-        using var doc = JsonDocument.Parse(json);
-        return doc.RootElement.ValueKind == JsonValueKind.Array &&
-            doc.RootElement.EnumerateArray().Any(e =>
-                (e.TryGetProperty("id", out var p) || e.TryGetProperty("Id", out p)) &&
-                string.Equals(p.ToString(), id, StringComparison.OrdinalIgnoreCase));
+        if (records is not System.Collections.IEnumerable collection) return false;
+
+        foreach (var item in collection)
+        {
+            if (item == null) continue;
+            var type = item.GetType();
+            var prop = type.GetProperty("Id") ?? type.GetProperty("id");
+            if (prop != null)
+            {
+                var val = prop.GetValue(item)?.ToString();
+                if (string.Equals(val, id, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+        }
+        return false;
     }
 
     private static bool HasKnownIdWithBoolean(
@@ -452,15 +460,24 @@ public partial class AiAssistantService
         if (!payload.TryGetValue(key, out var idObj) || idObj == null) return false;
         var id = idObj.ToString();
         if (string.IsNullOrWhiteSpace(id)) return false;
-        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(records));
-        if (doc.RootElement.ValueKind != JsonValueKind.Array) return false;
+        if (records is not System.Collections.IEnumerable collection) return false;
+
         var camelProperty = char.ToLowerInvariant(booleanProperty[0]) + booleanProperty[1..];
-        foreach (var record in doc.RootElement.EnumerateArray())
+        foreach (var item in collection)
         {
-            if (!(record.TryGetProperty("id", out var recordId) || record.TryGetProperty("Id", out recordId)) ||
-                !string.Equals(recordId.ToString(), id, StringComparison.OrdinalIgnoreCase)) continue;
-            if (!(record.TryGetProperty(booleanProperty, out var booleanValue) || record.TryGetProperty(camelProperty, out booleanValue))) return false;
-            return booleanValue.ValueKind is JsonValueKind.True or JsonValueKind.False && booleanValue.GetBoolean() == expected;
+            if (item == null) continue;
+            var type = item.GetType();
+            var prop = type.GetProperty("Id") ?? type.GetProperty("id");
+            if (prop == null) continue;
+
+            var val = prop.GetValue(item)?.ToString();
+            if (string.Equals(val, id, StringComparison.OrdinalIgnoreCase))
+            {
+                var boolProp = type.GetProperty(booleanProperty) ?? type.GetProperty(camelProperty);
+                if (boolProp == null) return false;
+                var boolVal = boolProp.GetValue(item);
+                return boolVal is bool b && b == expected;
+            }
         }
         return false;
     }

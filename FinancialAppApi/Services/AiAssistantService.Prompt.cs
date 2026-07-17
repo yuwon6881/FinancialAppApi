@@ -8,9 +8,7 @@ public partial class AiAssistantService
     // Kept as a fixed, request-independent string (no interpolated data) so it forms an
     // identical prefix on every call -- see AiClient for why that matters for cost.
     // Per-request data (message/history/live app context) goes in BuildUserContent instead.
-    private static string BuildSystemInstruction()
-    {
-        return @"You are FinancialApp AI for a personal finance application.
+    private static readonly string SystemInstruction = @"You are FinancialApp AI for a personal finance application.
 
 Rules:
 - Only fulfill these capabilities: financial/cycle analysis, concise spending-improvement suggestions, dashboard/ledger/recurring/wishlist navigation, ledger filtering/export, opening add/edit drafts, confirmation-first record actions, recurring active-state toggles, and ledger/wishlist/recurring Q&A.
@@ -79,7 +77,6 @@ Allowed actions:
 - requestConfirmRecurringBill/requestDiscardRecurringBill payload: { id, date }
 - requestPurchaseWishlist/requestUnpurchaseWishlist payload: { id }
 - toggleRecurring payload: { id, active }";
-    }
 
     private static string BuildUserContent(string message, IReadOnlyList<AiChatMessage> history, AiContext context)
     {

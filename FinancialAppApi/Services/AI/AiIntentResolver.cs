@@ -12,7 +12,7 @@ public partial class AiAssistantService
 {
     // The typed plan handed to context loading. Intents are typed; every data-loading decision
     // lives on QueryPlan; Constraints/ConversationState travel alongside.
-    private sealed record AiIntentPlan(
+    internal sealed record AiIntentPlan(
         IReadOnlyList<AiIntent> Intents,
         double Confidence,
         bool UsedClassifier,
@@ -247,7 +247,8 @@ public partial class AiAssistantService
 
         // Negated topics ("I'm not asking about my wishlist") drop the matching data block so the
         // model is never handed context the user explicitly said they don't want.
-        foreach (var topic in constraints.NegatedTopics)
+        var negated = constraints.NegatedTopics.Concat(constraints.ExcludedCategories);
+        foreach (var topic in negated)
         {
             if (topic.Contains("wishlist", StringComparison.OrdinalIgnoreCase) || topic.Contains("wish list", StringComparison.OrdinalIgnoreCase))
             {
@@ -272,7 +273,7 @@ public partial class AiAssistantService
     }
 
     // The deterministic resolver. Produces typed intents + a typed query plan with confidence.
-    private static AiIntentPlan ResolveDeterministically(
+    internal static AiIntentPlan ResolveDeterministically(
         string message,
         AiConversationState? priorState = null)
     {

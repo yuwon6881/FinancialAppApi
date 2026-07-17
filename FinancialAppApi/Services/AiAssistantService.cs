@@ -211,7 +211,7 @@ public partial class AiAssistantService
         // that good?", "explain that") that refers to the assistant's own previous conclusion
         // rather than to data: for those we send a bounded last exchange so "that"/"it" resolves.
         var promptHistory = IsSemanticFollowUp(message) ? BoundedSemanticHistory(history) : [];
-        var systemInstruction = BuildSystemInstruction();
+        var systemInstruction = SystemInstruction;
         var userContent = BuildUserContent(message, promptHistory, context);
         var isLedgerAdd = intentPlan.Intents.Contains(AiIntent.LedgerAdd);
         var structuredLedgerDraftCount = isLedgerAdd ? CountLedgerDraftListRecords(message) : 0;

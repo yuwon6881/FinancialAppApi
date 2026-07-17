@@ -577,6 +577,38 @@ public class AiAssistantServiceTests
         Assert.Empty(outcome.Response.Actions);
     }
 
+    [Fact]
+    public async Task ChatAsync_SensitiveMode_BlocksRecurringDraftCreation()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: true);
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(
+            ScriptedAiHandler.Chat(
+                "Opening a draft.",
+                actionsJson: "[{\"type\":\"openAddRecurringDraft\",\"payload\":{\"description\":\"Netflix\",\"amount\":15,\"category\":\"Entertainment\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("add netflix subscription for 15", []));
+
+        Assert.Empty(outcome.Response.Actions);
+    }
+
+    [Fact]
+    public async Task ChatAsync_SensitiveMode_BlocksWishlistDraftCreation()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: true);
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(
+            ScriptedAiHandler.Chat(
+                "Opening a draft.",
+                actionsJson: "[{\"type\":\"openAddWishlistDraft\",\"payload\":{\"name\":\"Car\",\"price\":50000}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("add car to my wishlist for 50000", []));
+
+        Assert.Empty(outcome.Response.Actions);
+    }
+
     // ---------- Layer: deterministic ledger-edit resolution (zero model calls) ----------
 
     [Fact]
@@ -990,6 +1022,43 @@ public class AiAssistantServiceTests
         var outcome = await service.ChatAsync(new AiChatRequest("How much did I spend this month?", []));
 
         Assert.True(outcome.IsProviderError);
+    }
+
+    [Fact]
+    public async Task ChatAsync_ProviderRateLimited_ReportsProviderError()
+    {
+        // When the upstream AI provider returns 429 (quota exhausted), the service must
+        // surface IsProviderError=true so the controller maps it to HTTP 503 instead of 200.
+        // This mirrors the 503/ServiceUnavailable case: any non-OK provider response should
+        // never present as a successful chat outcome to the frontend.
+        await using var context = NewContextWithSettings();
+        context.Transactions.Add(Txn("t", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "Groceries", -80));
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler();
+        handler.AlwaysFailWith = HttpStatusCode.TooManyRequests;
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("How much did I spend this month?", []));
+
+        Assert.True(outcome.IsProviderError);
+    }
+
+    [Fact]
+    public async Task ChatAsync_ProviderRateLimited_ReturnsNonEmptyReply()
+    {
+        // Even under a 429 from the AI provider the client must receive a human-readable
+        // reply — not null, empty, or a raw status code — so the chat UI always has
+        // something to render rather than a blank bubble.
+        await using var context = NewContextWithSettings();
+        context.Transactions.Add(Txn("t", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "Groceries", -80));
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler();
+        handler.AlwaysFailWith = HttpStatusCode.TooManyRequests;
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("How much did I spend this month?", []));
+
+        Assert.False(string.IsNullOrWhiteSpace(outcome.Response.Reply));
     }
 
     // ---------- Layer: gap-filling derived metrics ----------

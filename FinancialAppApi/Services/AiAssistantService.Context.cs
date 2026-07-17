@@ -9,7 +9,7 @@ public partial class AiAssistantService
     // The authoritative typed query plan. Carries the typed intents plus every data-loading
     // decision derived from them (what transaction level to pull, which derived metrics to
     // compute, and which optional blocks to include). The plan is the sole data-loading contract.
-    private sealed record AiQueryPlan(
+    internal sealed record AiQueryPlan(
         IReadOnlyList<AiIntent> Intents,
         TransactionDataLevel TransactionData,
         IReadOnlyList<DerivedMetric> Metrics,

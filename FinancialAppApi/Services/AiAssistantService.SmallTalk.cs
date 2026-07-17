@@ -26,7 +26,7 @@ public partial class AiAssistantService
     // than just trimming what gets sent. Deliberately an exact-match closed list (after
     // stripping trailing punctuation), not a `Contains` check, so it never fires on a real
     // question that merely starts or ends with "thanks" or "ok".
-    private static bool TryHandleSmallTalk(string message, out AiChatResponse? response)
+    internal static bool TryHandleSmallTalk(string message, out AiChatResponse? response)
     {
         var normalized = Regex.Replace(message.Trim(), @"[!.?,]+$", "").Trim().ToLowerInvariant();
 
@@ -88,10 +88,10 @@ public partial class AiAssistantService
     // Explicit "drop the context" phrasing. Kept tight (leading phrase or standalone) so it never
     // fires on an ordinary question that merely contains one of these words.
     private static readonly Regex ContextResetSignal = new(
-        @"^(?:never ?mind|forget (?:that|it|about that|everything)|start over|start again|reset|clear (?:that|it|context|everything)|new (?:question|topic)|different (?:question|topic)|unrelated|change of topic|scratch that|ignore (?:that|the above|previous))\b",
+        @"^(?:actually,?\s*)?(?:never ?mind|forget (?:that|it|about that|everything)|start over|start again|reset(?: (?:it|that|context|everything))?|clear (?:that|it|context|everything)|new (?:question|topic)|different (?:question|topic)|unrelated|change of topic|scratch that|ignore (?:that|the above|previous))(?:\s*[.!?]*)$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    private static bool IsContextResetRequest(string message) => ContextResetSignal.IsMatch(message.Trim());
+    internal static bool IsContextResetRequest(string message) => ContextResetSignal.IsMatch(message.Trim());
 
     // The minimal prior context a semantic follow-up needs: the last assistant turn (its
     // conclusion) plus the user turn that prompted it. Already sanitized/length-capped upstream.

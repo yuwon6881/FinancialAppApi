@@ -251,7 +251,7 @@ public partial class AiAssistantService
     // intent, an over-long search string, or a giant id list must never flow into query
     // building unchecked. IDs here are only *hints*; they are re-derived/re-validated against
     // the DB before being surfaced again, never trusted verbatim.
-    private static AiConversationState? SanitizeConversationState(AiConversationState? state)
+    internal static AiConversationState? SanitizeConversationState(AiConversationState? state)
     {
         if (state == null) return null;
         var intent = !string.IsNullOrWhiteSpace(state.LastIntent) && KnownIntents.Contains(state.LastIntent)
@@ -517,7 +517,7 @@ public partial class AiAssistantService
             Clean(wishlistReference), Clean(transactionReference), constraints, cleanAmbiguities);
     }
 
-    private enum TransactionDataLevel
+    internal enum TransactionDataLevel
     {
         None,
         AggregateOnly,
@@ -525,7 +525,7 @@ public partial class AiAssistantService
         BoundedSample
     }
 
-    private enum DerivedMetric
+    internal enum DerivedMetric
     {
         ActivityCount,
         MerchantMatches,
