@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Extensions;
 using FinancialAppApi.Services;
@@ -143,6 +144,7 @@ public class AuthController : ControllerBase
 
     // POST: api/auth/verify-password
     [AuthorizeToken]
+    [EnableRateLimiting("password-verification")]
     [HttpPost("verify-password")]
     public async Task<IActionResult> VerifyPassword([FromBody] VerifyPasswordRequest request)
     {

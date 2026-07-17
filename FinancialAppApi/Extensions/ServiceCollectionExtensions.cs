@@ -119,6 +119,8 @@ public static class ServiceCollectionExtensions
         // OCR receipt scans each trigger a Gemini vision call (pricier than a chat turn) and write
         // ~13 MB of base64 to Postgres, so cap them harder than chat by default.
         var ocrRequestsPerMinute = configuration.GetValue("Ocr:RequestsPerMinute", 10);
+        var passwordVerificationRequestsPerMinute =
+            configuration.GetValue("Auth:PasswordVerificationRequestsPerMinute", 30);
         services.AddRateLimiter(options =>
         {
             static string PartitionKeyFor(HttpContext httpContext)
@@ -147,6 +149,22 @@ public static class ServiceCollectionExtensions
                     QueueLimit = 0,
                     AutoReplenishment = true
                 }));
+
+            options.AddPolicy("password-verification", httpContext =>
+            {
+                var partitionKey = httpContext.Request.TryGetBearerToken(out var token) == BearerTokenResult.Ok
+                    ? token
+                    : httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous";
+                return RateLimitPartition.GetFixedWindowLimiter(
+                    "password-verification:" + partitionKey,
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = Math.Max(1, passwordVerificationRequestsPerMinute),
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    });
+            });
 
             options.OnRejected = async (context, cancellationToken) =>
             {

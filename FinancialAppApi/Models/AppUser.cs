@@ -32,6 +32,13 @@ public class AppUser
 
     public DateTime? LockedUntil { get; set; }
 
+    // Password checks used to unlock a session or reveal sensitive values have their own
+    // lockout state. Keeping this separate prevents a typo in an already-authenticated
+    // session from unexpectedly changing the normal login lockout counter.
+    public int PasswordVerificationFailedAttempts { get; set; } = 0;
+
+    public DateTime? PasswordVerificationLockedUntil { get; set; }
+
     public int TwoFactorFailedAttempts { get; set; } = 0;
 
     public DateTime? TwoFactorLockedUntil { get; set; }

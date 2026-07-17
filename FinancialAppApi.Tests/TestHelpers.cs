@@ -25,7 +25,9 @@ public static class TestHelpers
         var defaults = new Dictionary<string, string?>
         {
             ["Auth:MaxFailedLoginAttempts"] = "5",
-            ["Auth:LockoutMinutes"] = "15"
+            ["Auth:LockoutMinutes"] = "15",
+            ["Auth:MaxPasswordVerificationAttempts"] = "5",
+            ["Auth:PasswordVerificationLockoutMinutes"] = "15"
         };
         foreach (var (key, value) in overrides)
         {

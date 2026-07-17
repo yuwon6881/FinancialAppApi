@@ -44,7 +44,8 @@ public class AuthAccountServiceTests
     public async Task VerifyPasswordAsync_UnlocksCurrentSession()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        SeedUser(context, "alice", "password123");
+        var user = SeedUser(context, "alice", "password123");
+        user.PasswordVerificationFailedAttempts = 2;
         context.UserSessions.Add(new UserSession
         {
             Token = "token",
@@ -58,8 +59,73 @@ public class AuthAccountServiceTests
 
         var result = await service.VerifyPasswordAsync("alice", "password123", "token");
 
-        Assert.IsType<OkObjectResult>(result);
+        var body = ResultBody(result);
+        Assert.True(body.GetProperty("verified").GetBoolean());
         Assert.False(context.UserSessions.Single().IsLocked);
+        Assert.Equal(0, user.PasswordVerificationFailedAttempts);
+        Assert.Null(user.PasswordVerificationLockedUntil);
+    }
+
+    [Fact]
+    public async Task VerifyPasswordAsync_LocksAtThresholdWithoutChangingLoginLockout()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var user = SeedUser(context, "alice", "password123");
+        context.UserSessions.Add(new UserSession
+        {
+            Token = "token",
+            Username = "alice",
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(7),
+            IsLocked = true
+        });
+        await context.SaveChangesAsync();
+        var configuration = TestHelpers.NewConfiguration(
+            ("Auth:MaxPasswordVerificationAttempts", "2"),
+            ("Auth:PasswordVerificationLockoutMinutes", "15"));
+        var service = NewService(context, configuration);
+
+        var firstFailure = ResultBody(await service.VerifyPasswordAsync("alice", "wrong", "token"));
+        var thresholdFailure = ResultBody(await service.VerifyPasswordAsync("alice", "wrong", "token"));
+        var correctPasswordWhileLocked = ResultBody(
+            await service.VerifyPasswordAsync("alice", "password123", "token"));
+
+        Assert.False(firstFailure.GetProperty("verified").GetBoolean());
+        Assert.False(firstFailure.TryGetProperty("locked", out _));
+        Assert.False(thresholdFailure.GetProperty("verified").GetBoolean());
+        Assert.True(thresholdFailure.GetProperty("locked").GetBoolean());
+        Assert.True(thresholdFailure.GetProperty("retryAfterSeconds").GetInt32() > 0);
+        Assert.True(correctPasswordWhileLocked.GetProperty("locked").GetBoolean());
+        Assert.True(context.UserSessions.Single().IsLocked);
+        Assert.Equal(0, user.FailedLoginAttempts);
+        Assert.Null(user.LockedUntil);
+        Assert.NotNull(user.PasswordVerificationLockedUntil);
+    }
+
+    [Fact]
+    public async Task VerifyPasswordAsync_ExpiredVerificationLockoutCanUnlockAndReset()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var user = SeedUser(context, "alice", "password123");
+        user.PasswordVerificationFailedAttempts = 3;
+        user.PasswordVerificationLockedUntil = DateTime.UtcNow.AddMinutes(-1);
+        context.UserSessions.Add(new UserSession
+        {
+            Token = "token",
+            Username = "alice",
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(7),
+            IsLocked = true
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var body = ResultBody(await service.VerifyPasswordAsync("alice", "password123", "token"));
+
+        Assert.True(body.GetProperty("verified").GetBoolean());
+        Assert.False(context.UserSessions.Single().IsLocked);
+        Assert.Equal(0, user.PasswordVerificationFailedAttempts);
+        Assert.Null(user.PasswordVerificationLockedUntil);
     }
 
     [Fact]
@@ -143,7 +209,7 @@ public class AuthAccountServiceTests
             sessionService);
     }
 
-    private static void SeedUser(
+    private static AppUser SeedUser(
         Database.AppDbContext context,
         string username,
         string password,
@@ -160,6 +226,14 @@ public class AuthAccountServiceTests
         user.PasswordHash = hasher.HashPassword(user.Username, password);
         context.AppUsers.Add(user);
         context.SaveChanges();
+        return user;
+    }
+
+    private static JsonElement ResultBody(IActionResult result)
+    {
+        var ok = Assert.IsType<OkObjectResult>(result);
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(ok.Value));
+        return json.RootElement.Clone();
     }
 
     private static string PendingToken(IActionResult result)

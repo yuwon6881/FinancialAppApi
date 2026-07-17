@@ -37,6 +37,10 @@ public class AuthAccountService
 
     private int MaxFailedLoginAttempts => _configuration.GetValue("Auth:MaxFailedLoginAttempts", 5);
     private int LockoutMinutes => _configuration.GetValue("Auth:LockoutMinutes", 15);
+    private int MaxPasswordVerificationAttempts =>
+        _configuration.GetValue("Auth:MaxPasswordVerificationAttempts", MaxFailedLoginAttempts);
+    private int PasswordVerificationLockoutMinutes =>
+        _configuration.GetValue("Auth:PasswordVerificationLockoutMinutes", LockoutMinutes);
     private int MaxTwoFactorAttempts => _configuration.GetValue("Auth:MaxTwoFactorAttempts", MaxCodeAttempts);
     private int TwoFactorLockoutMinutes => _configuration.GetValue("Auth:TwoFactorLockoutMinutes", LockoutMinutes);
 
@@ -239,18 +243,33 @@ public class AuthAccountService
             return new UnauthorizedObjectResult(new { message = "User not found in session" });
         }
 
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username.ToLower() == username.ToLower());
+        var user = await _context.AppUsers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Username.ToLower() == username.ToLower());
         if (user == null)
         {
             return new UnauthorizedObjectResult(new { message = "User not found" });
         }
 
+        if (user.PasswordVerificationLockedUntil.HasValue &&
+            user.PasswordVerificationLockedUntil.Value > DateTime.UtcNow)
+        {
+            return PasswordVerificationLockedResult(user.PasswordVerificationLockedUntil.Value);
+        }
+
         var result = _passwordHasher.VerifyHashedPassword(user.Username, user.PasswordHash, password);
         if (result == PasswordVerificationResult.Failed)
         {
+            var lockedUntil = await RecordPasswordVerificationFailureAsync(user.Id);
+            if (lockedUntil.HasValue && lockedUntil.Value > DateTime.UtcNow)
+            {
+                return PasswordVerificationLockedResult(lockedUntil.Value);
+            }
+
             return new OkObjectResult(new { verified = false, message = "Incorrect password" });
         }
 
+        await ResetPasswordVerificationFailuresAsync(user.Id);
         await _authSessionService.UnlockSessionAsync(currentToken);
         return new OkObjectResult(new { verified = true });
     }
@@ -510,6 +529,97 @@ public class AuthAccountService
                     candidate => candidate.FailedLoginAttempts + 1 >= maxAttempts
                         ? 0
                         : candidate.FailedLoginAttempts + 1));
+    }
+
+    private async Task<DateTime?> RecordPasswordVerificationFailureAsync(string userId)
+    {
+        var maxAttempts = Math.Max(1, MaxPasswordVerificationAttempts);
+        var now = DateTime.UtcNow;
+        var lockedUntil = now.AddMinutes(Math.Max(1, PasswordVerificationLockoutMinutes));
+
+        if (_context.Database.IsRelational())
+        {
+            // ExecuteUpdate translates to one atomic UPDATE in PostgreSQL. Concurrent wrong
+            // passwords therefore cannot overwrite each other's increments or bypass the
+            // threshold through a read-modify-write race.
+            await _context.AppUsers
+                .Where(candidate =>
+                    candidate.Id == userId &&
+                    (!candidate.PasswordVerificationLockedUntil.HasValue ||
+                     candidate.PasswordVerificationLockedUntil.Value <= now))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(
+                        candidate => candidate.PasswordVerificationLockedUntil,
+                        candidate => candidate.PasswordVerificationFailedAttempts + 1 >= maxAttempts
+                            ? lockedUntil
+                            : null)
+                    .SetProperty(
+                        candidate => candidate.PasswordVerificationFailedAttempts,
+                        candidate => candidate.PasswordVerificationFailedAttempts + 1 >= maxAttempts
+                            ? 0
+                            : candidate.PasswordVerificationFailedAttempts + 1));
+
+            return await _context.AppUsers
+                .AsNoTracking()
+                .Where(candidate => candidate.Id == userId)
+                .Select(candidate => candidate.PasswordVerificationLockedUntil)
+                .SingleAsync();
+        }
+
+        var trackedUser = await _context.AppUsers.SingleAsync(candidate => candidate.Id == userId);
+        if (trackedUser.PasswordVerificationLockedUntil.HasValue)
+        {
+            if (trackedUser.PasswordVerificationLockedUntil.Value > now)
+            {
+                return trackedUser.PasswordVerificationLockedUntil;
+            }
+
+            trackedUser.PasswordVerificationLockedUntil = null;
+            trackedUser.PasswordVerificationFailedAttempts = 0;
+        }
+
+        trackedUser.PasswordVerificationFailedAttempts += 1;
+        if (trackedUser.PasswordVerificationFailedAttempts >= maxAttempts)
+        {
+            trackedUser.PasswordVerificationLockedUntil = lockedUntil;
+            trackedUser.PasswordVerificationFailedAttempts = 0;
+        }
+
+        await _context.SaveChangesAsync();
+        return trackedUser.PasswordVerificationLockedUntil;
+    }
+
+    private async Task ResetPasswordVerificationFailuresAsync(string userId)
+    {
+        if (_context.Database.IsRelational())
+        {
+            await _context.AppUsers
+                .Where(candidate => candidate.Id == userId)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(candidate => candidate.PasswordVerificationFailedAttempts, 0)
+                    .SetProperty(candidate => candidate.PasswordVerificationLockedUntil, (DateTime?)null));
+            return;
+        }
+
+        var trackedUser = await _context.AppUsers.SingleAsync(candidate => candidate.Id == userId);
+        trackedUser.PasswordVerificationFailedAttempts = 0;
+        trackedUser.PasswordVerificationLockedUntil = null;
+        await _context.SaveChangesAsync();
+    }
+
+    private static OkObjectResult PasswordVerificationLockedResult(DateTime lockedUntil)
+    {
+        var retryAfterSeconds = Math.Max(
+            1,
+            (int)Math.Ceiling((lockedUntil - DateTime.UtcNow).TotalSeconds));
+        var minutesLeft = Math.Max(1, (int)Math.Ceiling(retryAfterSeconds / 60d));
+        return new OkObjectResult(new
+        {
+            verified = false,
+            locked = true,
+            retryAfterSeconds,
+            message = $"Too many incorrect password attempts. Try again in {minutesLeft} minute(s)."
+        });
     }
 
     private async Task<bool> TryConsumePendingTwoFactorAsync(PendingTwoFactor pending)

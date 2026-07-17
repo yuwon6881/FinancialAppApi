@@ -96,6 +96,86 @@ public class AuthFlowIntegrationTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task VerifyPassword_LockedSessionCanUnlockWithCorrectPassword()
+    {
+        var token = await SeedUserAndSessionAsync();
+        await Factory.WithDbContextAsync(async db =>
+        {
+            var session = await db.UserSessions.SingleAsync(candidate => candidate.Token == token);
+            session.IsLocked = true;
+            await db.SaveChangesAsync();
+        });
+        var client = CreateAuthenticatedClient(token);
+
+        var verify = await client.PostAsJsonAsync("/api/auth/verify-password",
+            new { password = "Password123!" });
+
+        Assert.Equal(HttpStatusCode.OK, verify.StatusCode);
+        var body = await verify.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("verified").GetBoolean());
+
+        var protectedResponse = await client.GetAsync("/api/transactions");
+        Assert.Equal(HttpStatusCode.OK, protectedResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task VerifyPassword_AfterThresholdReturnsLockoutWithoutLockingNormalLogin()
+    {
+        var token = await SeedUserAndSessionAsync();
+        await Factory.WithDbContextAsync(async db =>
+        {
+            var session = await db.UserSessions.SingleAsync(candidate => candidate.Token == token);
+            session.IsLocked = true;
+            await db.SaveChangesAsync();
+        });
+        var client = CreateAuthenticatedClient(token);
+
+        HttpResponseMessage? thresholdResponse = null;
+        for (var i = 0; i < 5; i++)
+        {
+            thresholdResponse = await client.PostAsJsonAsync("/api/auth/verify-password",
+                new { password = "wrong-password" });
+        }
+
+        Assert.NotNull(thresholdResponse);
+        Assert.Equal(HttpStatusCode.OK, thresholdResponse.StatusCode);
+        var thresholdBody = await thresholdResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(thresholdBody.GetProperty("verified").GetBoolean());
+        Assert.True(thresholdBody.GetProperty("locked").GetBoolean());
+        Assert.True(thresholdBody.GetProperty("retryAfterSeconds").GetInt32() > 0);
+
+        var stillLocked = await client.PostAsJsonAsync("/api/auth/verify-password",
+            new { password = "Password123!" });
+        Assert.Equal(HttpStatusCode.OK, stillLocked.StatusCode);
+        var lockedBody = await stillLocked.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(lockedBody.GetProperty("locked").GetBoolean());
+
+        await Factory.WithDbContextAsync(async db =>
+        {
+            var user = await db.AppUsers.SingleAsync();
+            Assert.Equal(0, user.FailedLoginAttempts);
+            Assert.Null(user.LockedUntil);
+        });
+    }
+
+    [Fact]
+    public async Task VerifyPassword_EndpointRateLimitCapsRepeatedRequests()
+    {
+        var token = await SeedUserAndSessionAsync();
+        var client = CreateAuthenticatedClient(token);
+
+        HttpResponseMessage? response = null;
+        for (var i = 0; i < 31; i++)
+        {
+            response = await client.PostAsJsonAsync("/api/auth/verify-password",
+                new { password = "wrong-password" });
+        }
+
+        Assert.NotNull(response);
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Login_WithTotpEnabled_RequiresSecondFactor_AndCompletesWithCode()
     {
         // Seed a user with TOTP enabled and a known secret (stored encrypted via SecretProtector).

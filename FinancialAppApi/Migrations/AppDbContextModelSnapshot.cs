@@ -40,6 +40,12 @@ namespace FinancialAppApi.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<int>("PasswordVerificationFailedAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("PasswordVerificationLockedUntil")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("PendingTotpSecret")
                         .HasColumnType("text");
 
