@@ -157,7 +157,7 @@ public sealed class SupabaseReceiptImageStore : IReceiptImageStore
                 settings.ApiKey);
             using var getResponse = await SendAsync(getRequest, cancellationToken);
 
-            if (getResponse.StatusCode == HttpStatusCode.NotFound)
+            if (await IsBucketNotFoundAsync(getResponse, cancellationToken))
             {
                 using var createRequest = CreateRequest(
                     HttpMethod.Post,
@@ -253,6 +253,38 @@ public sealed class SupabaseReceiptImageStore : IReceiptImageStore
         catch (JsonException exception)
         {
             throw new ReceiptImageStoreException("Supabase Storage returned invalid bucket metadata.", exception);
+        }
+    }
+
+    private static async Task<bool> IsBucketNotFoundAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
+    {
+        if (response.StatusCode == HttpStatusCode.NotFound) return true;
+        if (response.StatusCode != HttpStatusCode.BadRequest) return false;
+
+        // Supabase Storage currently responds to GET /bucket/{id} for a missing
+        // bucket with HTTP 400 while its JSON payload carries statusCode "404".
+        // Accept both representations so first-use bucket creation remains reliable.
+        try
+        {
+            var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var document = JsonDocument.Parse(responseJson);
+            if (!document.RootElement.TryGetProperty("statusCode", out var statusCode))
+            {
+                return false;
+            }
+
+            return statusCode.ValueKind switch
+            {
+                JsonValueKind.String => statusCode.GetString() == "404",
+                JsonValueKind.Number => statusCode.TryGetInt32(out var value) && value == 404,
+                _ => false
+            };
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 

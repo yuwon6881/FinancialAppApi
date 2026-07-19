@@ -17,7 +17,9 @@ public class SupabaseReceiptImageStoreTests
             requests.Add(await CapturedRequest.FromAsync(request));
             return requests.Count switch
             {
-                1 => new HttpResponseMessage(HttpStatusCode.NotFound),
+                // Supabase currently wraps the missing-bucket 404 in HTTP 400.
+                1 => JsonResponse(HttpStatusCode.BadRequest,
+                    """{"statusCode":"404","error":"Bucket not found","message":"Bucket not found"}"""),
                 2 => JsonResponse(HttpStatusCode.OK, """{"name":"receipt-scans"}"""),
                 3 => JsonResponse(HttpStatusCode.OK, """{"Key":"receipt-scans/user/scan.jpg"}"""),
                 _ => throw new InvalidOperationException("Unexpected request.")
