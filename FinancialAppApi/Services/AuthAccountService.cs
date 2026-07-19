@@ -783,6 +783,8 @@ public class AuthAccountService
 
     public static List<string> GetAvailableSecurityQuestions()
     {
+        // Append-only: the position (index) of each entry is the persisted QuestionId,
+        // so never reorder or remove existing questions — only add new ones at the end.
         return new List<string>
         {
             "What was the name of your first pet?",
@@ -790,7 +792,17 @@ public class AuthAccountService
             "In what city were you born?",
             "What is your mother's maiden name?",
             "What was the name of your elementary school?",
-            "What was your childhood nickname?"
+            "What was your childhood nickname?",
+            "What is the name of your favourite teacher?",
+            "What was the name of the street you grew up on?",
+            "What is your favourite book?",
+            "What was the name of your first employer?",
+            "In what city did your parents meet?",
+            "What is the name of your favourite childhood friend?",
+            "What was your dream job as a child?",
+            "What is the make and model of your dream car?",
+            "What is your favourite movie?",
+            "What was the destination of your first flight?"
         };
     }
 

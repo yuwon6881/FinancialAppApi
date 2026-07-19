@@ -239,7 +239,7 @@ public class WebAuthnService
 
         await _context.SaveChangesAsync();
 
-        return new OkObjectResult(new { token = session.Token, username = storedCred.Username });
+        return new OkObjectResult(new { token = session.Token, username = storedCred.Username, hasSetupSecurityQuestions = user.HasSetupSecurityQuestions });
     }
 
     public async Task<IActionResult> AssertOptionsAsync(string? username, string? requestOrigin, string fallbackOrigin)
