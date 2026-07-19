@@ -15,14 +15,20 @@ public class OcrControllerTests
         await using var context = TestHelpers.NewInMemoryContext();
         var configuration = TestHelpers.NewConfiguration(("OcrWorkerKey", "test-worker-key"));
         var policy = new ReceiptScanRetentionPolicy(configuration);
+        var imageStore = new FakeReceiptImageStore();
         using var cache = new MemoryCache(new MemoryCacheOptions());
         var processor = new ReceiptScanProcessor(
             new AiClient(new HttpClient(), configuration, NullLogger<AiClient>.Instance),
             context,
+            imageStore,
             new TransactionCategoryService(context, cache),
             NullLogger<ReceiptScanProcessor>.Instance);
         var controller = new OcrController(
-            new OcrScanJobService(context, policy),
+            new OcrScanJobService(
+                context,
+                policy,
+                imageStore,
+                NullLogger<OcrScanJobService>.Instance),
             processor,
             new ReceiptScanTaskDispatcher(
                 new HttpClient(),

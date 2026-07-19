@@ -3,6 +3,7 @@ using System;
 using FinancialAppApi.Database;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace FinancialAppApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260718065439_AddSecurityQuestions")]
+    partial class AddSecurityQuestions
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -233,6 +236,9 @@ namespace FinancialAppApi.Migrations
                     b.Property<string>("ErrorMessage")
                         .HasColumnType("text");
 
+                    b.Property<byte[]>("ImageData")
+                        .HasColumnType("bytea");
+
                     b.Property<string>("MimeType")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -247,10 +253,6 @@ namespace FinancialAppApi.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("text")
                         .HasDefaultValue("queued");
-
-                    b.Property<string>("StorageObjectPath")
-                        .HasMaxLength(512)
-                        .HasColumnType("character varying(512)");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");

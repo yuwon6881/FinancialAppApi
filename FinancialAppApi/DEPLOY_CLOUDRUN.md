@@ -36,6 +36,30 @@ printf '%s' 'Host=...;Port=...;Database=postgres;Username=...;Password=...;SSL M
 > add-on — Cloud Run can't reach it without a VPC connector). The transaction
 > pooler (port `6543`) is the serverless-friendly choice.
 
+## Configure private receipt-image storage
+
+OCR images are stored temporarily in a private Supabase Storage bucket instead
+of in Postgres. Copy the project URL from Supabase's Connect dialog and create a
+dedicated backend **secret API key** (`sb_secret_...`) under Settings > API Keys.
+Do not use a publishable/anon key, and never expose this secret to the frontend.
+
+```bash
+printf '%s' 'https://YOUR_PROJECT_REF.supabase.co' \
+  | gcloud secrets create financialapp-supabase-project-url --data-file=-
+
+printf '%s' 'sb_secret_REPLACE_ME' \
+  | gcloud secrets create financialapp-supabase-api-key --data-file=-
+```
+
+The API creates the private `receipt-scans` bucket on the first upload with a
+10 MiB file limit and image-only MIME restrictions. If a bucket with that name
+already exists, it must be private or uploads fail closed.
+
+The object-storage migrations add `StorageObjectPath` and remove the old
+`ReceiptScanJobs.ImageData` database blob. Any legacy queued scan that still has
+only an embedded database image is marked failed during migration so the client
+can submit it again instead of leaving an unprocessable job stuck in the queue.
+
 ## Deploy
 ```bash
 gcloud run deploy financialapp-api \
@@ -46,7 +70,7 @@ gcloud run deploy financialapp-api \
   --min-instances 0 \
   --max-instances 2 \
   --memory 512Mi \
-  --set-secrets "ConnectionStrings__DefaultConnection=financialapp-db:latest"
+  --set-secrets "ConnectionStrings__DefaultConnection=financialapp-db:latest,SupabaseStorage__ProjectUrl=financialapp-supabase-project-url:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest"
 ```
 
 - `--source .` builds the image from the `Dockerfile` via Cloud Build and deploys it.

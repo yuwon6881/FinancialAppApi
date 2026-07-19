@@ -28,17 +28,20 @@ public class ReceiptScanProcessor
     public static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(2);
     private readonly AiClient _aiClient;
     private readonly AppDbContext _context;
+    private readonly IReceiptImageStore _imageStore;
     private readonly TransactionCategoryService _categoryService;
     private readonly ILogger<ReceiptScanProcessor> _logger;
 
     public ReceiptScanProcessor(
         AiClient aiClient,
         AppDbContext context,
+        IReceiptImageStore imageStore,
         TransactionCategoryService categoryService,
         ILogger<ReceiptScanProcessor> logger)
     {
         _aiClient = aiClient;
         _context = context;
+        _imageStore = imageStore;
         _categoryService = categoryService;
         _logger = logger;
     }
@@ -100,7 +103,28 @@ public class ReceiptScanProcessor
         // bind its owner so category lookups cannot see another user's categories.
         _context.SetCurrentUser(job.UserId);
 
-        if (job.ImageData is not { Length: > 0 })
+        if (string.IsNullOrWhiteSpace(job.StorageObjectPath))
+        {
+            await MarkFailed(job, "Receipt image was not available for processing.");
+            return ReceiptScanProcessStatus.Processed;
+        }
+
+        byte[]? imageData;
+        try
+        {
+            imageData = await _imageStore.DownloadAsync(job.StorageObjectPath);
+        }
+        catch (ReceiptImageStoreException)
+        {
+            // Release the processing lease so Cloud Tasks (or the in-process
+            // recovery loop) can retry a transient Storage API failure.
+            job.Status = "queued";
+            job.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+            throw;
+        }
+
+        if (imageData is not { Length: > 0 })
         {
             await MarkFailed(job, "Receipt image was not available for processing.");
             return ReceiptScanProcessStatus.Processed;
@@ -108,7 +132,7 @@ public class ReceiptScanProcessor
 
         try
         {
-            var outcome = await ScanImageAsync(Convert.ToBase64String(job.ImageData), job.MimeType);
+            var outcome = await ScanImageAsync(Convert.ToBase64String(imageData), job.MimeType);
             if (outcome.ErrorMessage != null)
             {
                 _logger.LogWarning("Receipt scan job {JobId} failed with user-facing error: {Message}", jobId, outcome.ErrorMessage);
@@ -122,10 +146,10 @@ public class ReceiptScanProcessor
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             });
             job.ErrorMessage = null;
-            job.ImageData = null;
             job.CompletedAt = DateTime.UtcNow;
             job.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+            await TryDeleteTerminalImageAsync(job);
         }
         catch (TaskCanceledException ex)
         {
@@ -150,10 +174,39 @@ public class ReceiptScanProcessor
     {
         job.Status = "failed";
         job.ErrorMessage = message;
-        job.ImageData = null;
         job.CompletedAt = DateTime.UtcNow;
         job.UpdatedAt = DateTime.UtcNow;
         await _context.SaveChangesAsync();
+        await TryDeleteTerminalImageAsync(job);
+    }
+
+    private async Task TryDeleteTerminalImageAsync(ReceiptScanJob job)
+    {
+        if (string.IsNullOrWhiteSpace(job.StorageObjectPath)) return;
+
+        try
+        {
+            await _imageStore.DeleteIfExistsAsync(job.StorageObjectPath);
+        }
+        catch (ReceiptImageStoreException exception)
+        {
+            // Completion is already durable. Keep the object path on the terminal
+            // row so retention cleanup can retry without losing the reference.
+            _logger.LogError(exception, "Could not delete terminal receipt image for OCR job {JobId}.", job.Id);
+            return;
+        }
+
+        job.StorageObjectPath = null;
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (Exception exception)
+        {
+            // The terminal status was saved before object deletion. If clearing the
+            // now-stale path fails, cleanup treats a later Storage 404 as success.
+            _logger.LogError(exception, "Could not clear the deleted receipt object path for OCR job {JobId}.", job.Id);
+        }
     }
 
     private static readonly string[] ValidLedgerCategories = ["Essentials", "Growth", "Stability", "Rewards", "Income"];
@@ -171,7 +224,7 @@ Rules:
     {
         if (!_aiClient.IsConfigured)
         {
-            return ScanOutcome.Failed("OCR service is not configured. Ask your administrator to set the AiApiKey.");
+            return ScanOutcome.Failed("Receipt scanning is not configured for this app.");
         }
 
         var categories = (await _categoryService.GetCategoriesAsync())

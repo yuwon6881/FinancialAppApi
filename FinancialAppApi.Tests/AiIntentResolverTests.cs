@@ -67,4 +67,115 @@ public class AiIntentResolverTests
         var plan = AiAssistantService.ResolveDeterministically("were there any unusual expenses last month?");
         Assert.Contains(AiAssistantService.AiIntent.LedgerAnomaly, plan.Intents);
     }
+
+    [Fact]
+    public void ResolveDeterministically_CycleAnalysisKeywords_SetsSpendingTotalIntent()
+    {
+        var queries = new[]
+        {
+            "what were my expenses this month",
+            "show me my costs for january",
+            "what are my fees",
+            "what is my profit margin"
+        };
+
+        foreach (var query in queries)
+        {
+            var plan = AiAssistantService.ResolveDeterministically(query);
+            Assert.Contains(AiAssistantService.AiIntent.LedgerSpendingTotal, plan.Intents);
+            Assert.True(plan.QueryPlan.NeedsCycleSummary, $"Failed for query: {query}");
+        }
+    }
+
+    [Fact]
+    public void ResolveDeterministically_TransactionDetailKeywords_SetsTransactionListIntent()
+    {
+        var queries = new[]
+        {
+            "find my invoices",
+            "search for bills",
+            "which transactions cost me the most",
+            "show priced items"
+        };
+
+        foreach (var query in queries)
+        {
+            var plan = AiAssistantService.ResolveDeterministically(query);
+            Assert.Contains(AiAssistantService.AiIntent.LedgerTransactionList, plan.Intents);
+            Assert.True(plan.QueryPlan.NeedsTransactionDetail, $"Failed for query: {query}");
+        }
+    }
+
+    [Fact]
+    public void ResolveDeterministically_RecurringKeywords_SetsRecurringIntents()
+    {
+        var queries = new[]
+        {
+            "show my subs",
+            "what are my direct debits",
+            "annual payment schedule",
+            "auto-renewal list"
+        };
+
+        foreach (var query in queries)
+        {
+            var plan = AiAssistantService.ResolveDeterministically(query);
+            Assert.True(plan.Intents.Contains(AiAssistantService.AiIntent.RecurringList) || plan.Intents.Contains(AiAssistantService.AiIntent.RecurringUpcoming));
+            Assert.True(plan.QueryPlan.NeedsRecurring, $"Failed for query: {query}");
+        }
+    }
+
+    [Fact]
+    public void ResolveDeterministically_WishlistKeywords_SetsWishlistIntents()
+    {
+        var queries = new[]
+        {
+            "show my wish-list",
+            "what am I saving up for",
+            "save up items"
+        };
+
+        foreach (var query in queries)
+        {
+            var plan = AiAssistantService.ResolveDeterministically(query);
+            Assert.Contains(AiAssistantService.AiIntent.WishlistList, plan.Intents);
+            Assert.True(plan.QueryPlan.NeedsWishlist, $"Failed for query: {query}");
+        }
+    }
+
+    [Fact]
+    public void ResolveDeterministically_WishlistForecastKeywords_SetsForecastIntent()
+    {
+        var queries = new[]
+        {
+            "how many months to save for a car",
+            "time to save for a house",
+            "when could i afford a boat"
+        };
+
+        foreach (var query in queries)
+        {
+            var plan = AiAssistantService.ResolveDeterministically(query);
+            Assert.Contains(AiAssistantService.AiIntent.WishlistForecast, plan.Intents);
+            Assert.True(plan.QueryPlan.NeedsWishlistForecast, $"Failed for query: {query}");
+            Assert.True(plan.QueryPlan.NeedsWishlist, $"Failed for query: {query}");
+        }
+    }
+
+    [Fact]
+    public void ResolveDeterministically_ImprovementKeywords_SetsAllocationIntent()
+    {
+        var queries = new[]
+        {
+            "how is my budgeting",
+            "show me my plan",
+            "what are my goals"
+        };
+
+        foreach (var query in queries)
+        {
+            var plan = AiAssistantService.ResolveDeterministically(query);
+            Assert.True(plan.QueryPlan.NeedsBudgetTargets, $"Failed for query: {query}");
+        }
+    }
 }

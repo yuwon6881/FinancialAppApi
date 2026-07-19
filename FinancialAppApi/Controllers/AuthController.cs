@@ -38,7 +38,8 @@ public class AuthController : ControllerBase
 
     // GET: api/auth/status
     [HttpGet("status")]
-    public async Task<IActionResult> GetStatus() => await _authAccountService.GetStatusAsync();
+    public async Task<IActionResult> GetStatus([FromQuery] string? username = null) =>
+        await _authAccountService.GetStatusAsync(username);
 
     // POST: api/auth/register
     [HttpPost("register")]
@@ -247,6 +248,33 @@ public class AuthController : ControllerBase
     [HttpPost("2fa/recovery-codes/regenerate")]
     public async Task<IActionResult> RegenerateRecoveryCodes([FromBody] RegenerateRecoveryCodesRequest request) =>
         await _authAccountService.RegenerateRecoveryCodesAsync(Username, request.Password);
+
+    // GET: api/auth/security-questions/setup-status
+    [AuthorizeToken]
+    [HttpGet("security-questions/setup-status")]
+    public async Task<IActionResult> GetSecurityQuestionsSetupStatus() =>
+        await _authAccountService.GetSecurityQuestionsSetupStatusAsync(Username);
+
+    // GET: api/auth/security-questions/available
+    [HttpGet("security-questions/available")]
+    public IActionResult GetAvailableSecurityQuestions() =>
+        Ok(AuthAccountService.GetAvailableSecurityQuestions());
+
+    // POST: api/auth/security-questions/setup
+    [AuthorizeToken]
+    [HttpPost("security-questions/setup")]
+    public async Task<IActionResult> SetupSecurityQuestions([FromBody] SetupSecurityQuestionsRequest request) =>
+        await _authAccountService.SetupSecurityQuestionsAsync(Username, request.Answers);
+
+    // POST: api/auth/security-questions/recovery/start
+    [HttpPost("security-questions/recovery/start")]
+    public async Task<IActionResult> StartSecurityQuestionsRecovery([FromBody] SecurityQuestionsRecoveryStartRequest request) =>
+        await _authAccountService.GetSecurityQuestionsForRecoveryAsync(request.Username);
+
+    // POST: api/auth/security-questions/recovery/reset
+    [HttpPost("security-questions/recovery/reset")]
+    public async Task<IActionResult> ResetPasswordViaSecurityQuestions([FromBody] SecurityQuestionsRecoveryResetRequest request) =>
+        await _authAccountService.VerifySecurityQuestionsAndResetPasswordAsync(request.Username, request.Answers, request.NewPassword);
 }
 
 public class RegisterRequest
@@ -289,4 +317,21 @@ public class DisableTotpRequest
 public class RegenerateRecoveryCodesRequest
 {
     public string Password { get; set; } = string.Empty;
+}
+
+public class SetupSecurityQuestionsRequest
+{
+    public List<QuestionAnswerDto> Answers { get; set; } = new();
+}
+
+public class SecurityQuestionsRecoveryStartRequest
+{
+    public string Username { get; set; } = string.Empty;
+}
+
+public class SecurityQuestionsRecoveryResetRequest
+{
+    public string Username { get; set; } = string.Empty;
+    public List<QuestionAnswerDto> Answers { get; set; } = new();
+    public string NewPassword { get; set; } = string.Empty;
 }

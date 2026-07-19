@@ -49,4 +49,6 @@ public class AppUser
     // Highest successfully consumed RFC 6238 time step. Persisting it makes a TOTP
     // code single-use even when two pending login tokens are submitted concurrently.
     public long? LastTotpTimeStep { get; set; }
+
+    public bool HasSetupSecurityQuestions { get; set; } = false;
 }

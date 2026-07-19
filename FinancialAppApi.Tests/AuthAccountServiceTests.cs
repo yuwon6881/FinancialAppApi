@@ -95,6 +95,32 @@ public class AuthAccountServiceTests
     }
 
     [Fact]
+    public async Task GetStatusAsync_ScopesDeviceUnlockAvailabilityToRequestedUser()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = NewService(context, TestHelpers.NewConfiguration(("Auth:MaxUsers", "2")));
+        await service.RegisterAsync("alice", "password123");
+        await service.RegisterAsync("bob", "password123");
+        var alice = await context.AppUsers.SingleAsync(user => user.NormalizedUsername == "ALICE");
+        context.SetCurrentUser(alice.Id);
+        context.WebAuthnCredentials.Add(new WebAuthnCredential
+        {
+            CredentialId = [1, 2, 3],
+            UserId = alice.Id,
+            Username = alice.Username,
+            PublicKey = [4, 5, 6],
+            CreatedAt = DateTime.UtcNow
+        });
+        await context.SaveChangesAsync();
+
+        var aliceStatus = ResultBody(await service.GetStatusAsync(" Alice "));
+        var bobStatus = ResultBody(await service.GetStatusAsync("bob"));
+
+        Assert.True(aliceStatus.GetProperty("hasFingerprint").GetBoolean());
+        Assert.False(bobStatus.GetProperty("hasFingerprint").GetBoolean());
+    }
+
+    [Fact]
     public async Task RegisterAsync_ReusesASlotFreedByADeletedUser()
     {
         await using var context = TestHelpers.NewInMemoryContext();

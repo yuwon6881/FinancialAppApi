@@ -18,6 +18,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<TransactionCategory> TransactionCategories => Set<TransactionCategory>();
     public DbSet<AppUser> AppUsers => Set<AppUser>();
     public DbSet<UserSession> UserSessions => Set<UserSession>();
+
     public DbSet<WishlistItem> WishlistItems => Set<WishlistItem>();
     public DbSet<WebAuthnCredential> WebAuthnCredentials => Set<WebAuthnCredential>();
     public DbSet<WebAuthnChallenge> WebAuthnChallenges => Set<WebAuthnChallenge>();
@@ -25,6 +26,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<CycleBalance> CycleBalances => Set<CycleBalance>();
     public DbSet<PendingTwoFactor> PendingTwoFactors => Set<PendingTwoFactor>();
     public DbSet<RecoveryCode> RecoveryCodes => Set<RecoveryCode>();
+    public DbSet<SecurityQuestionAnswer> SecurityQuestionAnswers => Set<SecurityQuestionAnswer>();
     public DbSet<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey> DataProtectionKeys => Set<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey>();
 
     public void SetCurrentUser(string userId)
@@ -110,6 +112,11 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(e => e.UserId);
         });
 
+        modelBuilder.Entity<SecurityQuestionAnswer>(entity =>
+        {
+            entity.HasIndex(e => new { e.UserId, e.QuestionId }).IsUnique();
+        });
+
         modelBuilder.Entity<PendingTwoFactor>(entity =>
         {
             entity.HasIndex(e => e.UserId);
@@ -135,6 +142,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.Property(e => e.Status).HasDefaultValue("queued");
             entity.Property(e => e.MimeType).HasDefaultValue("image/jpeg");
+            entity.Property(e => e.StorageObjectPath).HasMaxLength(512);
             entity.HasIndex(e => new { e.UserId, e.Status, e.UpdatedAt });
             // Supports lease recovery and retention cleanup without scanning image/result data.
             entity.HasIndex(e => new { e.Status, e.UpdatedAt });
@@ -166,6 +174,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<ReceiptScanJob>(), applyQueryFilter: false);
         ConfigureUserOwnership(modelBuilder.Entity<PendingTwoFactor>(), applyQueryFilter: false);
         ConfigureUserOwnership(modelBuilder.Entity<RecoveryCode>(), applyQueryFilter: false);
+        ConfigureUserOwnership(modelBuilder.Entity<SecurityQuestionAnswer>(), applyQueryFilter: false);
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

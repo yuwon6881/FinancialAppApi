@@ -19,9 +19,10 @@ public class ReceiptScanJob : IUserOwnedEntity
     [Required]
     public string MimeType { get; set; } = "image/jpeg";
 
-    // Stored as PostgreSQL bytea instead of base64 text, avoiding roughly 33% encoding
-    // overhead. This payload is cleared immediately when processing reaches a terminal state.
-    public byte[]? ImageData { get; set; }
+    // Jobs keep only this private Supabase Storage object path in Postgres. The
+    // object itself is deleted as soon as OCR reaches a terminal state.
+    [StringLength(512)]
+    public string? StorageObjectPath { get; set; }
 
     public string? ResultJson { get; set; }
 

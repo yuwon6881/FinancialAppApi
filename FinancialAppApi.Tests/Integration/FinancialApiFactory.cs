@@ -56,6 +56,15 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
                     .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning));
             });
 
+            var imageStoreRegistrations = services
+                .Where(descriptor => descriptor.ServiceType == typeof(IReceiptImageStore))
+                .ToList();
+            foreach (var descriptor in imageStoreRegistrations)
+            {
+                services.Remove(descriptor);
+            }
+            services.AddSingleton<IReceiptImageStore, FakeReceiptImageStore>();
+
             // The receipt-scan background worker would drain the queue and call Gemini for real.
             // Remove it so OCR tests stay hermetic; jobs simply remain "queued".
             var hostedService = services.FirstOrDefault(d =>

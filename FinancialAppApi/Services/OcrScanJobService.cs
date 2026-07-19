@@ -11,7 +11,8 @@ public enum CreateScanJobStatus
     NoImage,
     ImageTooLarge,
     UnsupportedImageType,
-    TooManyOutstandingJobs
+    TooManyOutstandingJobs,
+    StorageUnavailable
 }
 
 public sealed record CreateScanJobResult(
@@ -30,34 +31,43 @@ public sealed record ScanJobResponse(
 
 public class OcrScanJobService
 {
-    private const long MaxImageBytes = 10 * 1024 * 1024;
-
     private readonly AppDbContext _context;
     private readonly ReceiptScanRetentionPolicy _retentionPolicy;
+    private readonly IReceiptImageStore _imageStore;
+    private readonly ILogger<OcrScanJobService> _logger;
 
     public OcrScanJobService(
         AppDbContext context,
-        ReceiptScanRetentionPolicy retentionPolicy)
+        ReceiptScanRetentionPolicy retentionPolicy,
+        IReceiptImageStore imageStore,
+        ILogger<OcrScanJobService> logger)
     {
         _context = context;
         _retentionPolicy = retentionPolicy;
+        _imageStore = imageStore;
+        _logger = logger;
     }
 
-    public async Task<CreateScanJobResult> CreateScanJobAsync(string userId, string username, IFormFile? image)
+    public async Task<CreateScanJobResult> CreateScanJobAsync(
+        string userId,
+        string username,
+        IFormFile? image,
+        CancellationToken cancellationToken = default)
     {
         if (image == null || image.Length == 0)
         {
             return new CreateScanJobResult(CreateScanJobStatus.NoImage, Message: "No image file provided.");
         }
 
-        if (image.Length > MaxImageBytes)
+        if (image.Length > SupabaseReceiptImageStore.MaxImageBytes)
         {
             return new CreateScanJobResult(CreateScanJobStatus.ImageTooLarge, Message: "Receipt image is too large. Please use an image under 10 MB.");
         }
 
         var outstandingJobs = await _context.ReceiptScanJobs.CountAsync(job =>
             job.UserId == userId &&
-            (job.Status == "queued" || job.Status == "processing"));
+            (job.Status == "queued" || job.Status == "processing"),
+            cancellationToken);
         if (outstandingJobs >= _retentionPolicy.MaxOutstandingJobsPerUser)
         {
             return new CreateScanJobResult(
@@ -68,7 +78,7 @@ public class OcrScanJobService
         byte[] imageData;
         await using (var ms = new MemoryStream())
         {
-            await image.CopyToAsync(ms);
+            await image.CopyToAsync(ms, cancellationToken);
             imageData = ms.ToArray();
         }
 
@@ -81,28 +91,63 @@ public class OcrScanJobService
         }
 
         var now = DateTime.UtcNow;
+        var jobId = $"ocr-{Guid.NewGuid():N}";
+        var storageObjectPath = $"{userId}/{jobId}{ExtensionForMimeType(mimeType)}";
+        try
+        {
+            await _imageStore.UploadAsync(storageObjectPath, imageData, mimeType, cancellationToken);
+        }
+        catch (ReceiptImageStoreException exception)
+        {
+            _logger.LogError(exception, "Could not store receipt image for OCR job {JobId}.", jobId);
+            return new CreateScanJobResult(
+                CreateScanJobStatus.StorageUnavailable,
+                Message: "Receipt image storage is temporarily unavailable. Please try again.");
+        }
+
         var job = new ReceiptScanJob
         {
-            Id = $"ocr-{Guid.NewGuid():N}",
+            Id = jobId,
             UserId = userId,
             Username = username,
             Status = "queued",
             MimeType = mimeType,
-            ImageData = imageData,
+            StorageObjectPath = storageObjectPath,
             CreatedAt = now,
             UpdatedAt = now
         };
 
         _context.ReceiptScanJobs.Add(job);
-        await _context.SaveChangesAsync();
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch
+        {
+            try
+            {
+                await _imageStore.DeleteIfExistsAsync(storageObjectPath, cancellationToken);
+            }
+            catch (ReceiptImageStoreException cleanupException)
+            {
+                _logger.LogError(
+                    cleanupException,
+                    "Could not roll back receipt image {StorageObjectPath} after the OCR job failed to persist.",
+                    storageObjectPath);
+            }
+            throw;
+        }
 
         return new CreateScanJobResult(CreateScanJobStatus.Created, job.Id);
     }
 
-    public async Task<ScanJobResponse?> GetScanJobAsync(string userId, string jobId)
+    public async Task<ScanJobResponse?> GetScanJobAsync(
+        string userId,
+        string jobId,
+        CancellationToken cancellationToken = default)
     {
         var job = await _context.ReceiptScanJobs.AsNoTracking()
-            .FirstOrDefaultAsync(j => j.Id == jobId && j.UserId == userId);
+            .FirstOrDefaultAsync(j => j.Id == jobId && j.UserId == userId, cancellationToken);
 
         if (job == null)
         {
@@ -125,16 +170,37 @@ public class OcrScanJobService
             job.CompletedAt);
     }
 
-    public async Task DeleteScanJobAsync(string userId, string jobId)
+    public async Task<bool> DeleteScanJobAsync(
+        string userId,
+        string jobId,
+        CancellationToken cancellationToken = default)
     {
         var job = await _context.ReceiptScanJobs
-            .FirstOrDefaultAsync(j => j.Id == jobId && j.UserId == userId);
+            .FirstOrDefaultAsync(j => j.Id == jobId && j.UserId == userId, cancellationToken);
 
-        if (job != null)
+        if (job == null)
         {
-            _context.ReceiptScanJobs.Remove(job);
-            await _context.SaveChangesAsync();
+            return true;
         }
+
+        if (!string.IsNullOrWhiteSpace(job.StorageObjectPath))
+        {
+            try
+            {
+                await _imageStore.DeleteIfExistsAsync(job.StorageObjectPath, cancellationToken);
+            }
+            catch (ReceiptImageStoreException exception)
+            {
+                // Keep the row and path so retention cleanup can retry rather than
+                // orphaning a sensitive receipt object with no database reference.
+                _logger.LogError(exception, "Could not delete stored receipt image for OCR job {JobId}.", job.Id);
+                return false;
+            }
+        }
+
+        _context.ReceiptScanJobs.Remove(job);
+        await _context.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     public async Task MarkDispatchFailedAsync(string jobId)
@@ -146,11 +212,11 @@ public class OcrScanJobService
         }
 
         job.Status = "failed";
-        job.ImageData = null;
         job.ErrorMessage = "Could not start receipt scan. Please try again.";
         job.CompletedAt = DateTime.UtcNow;
         job.UpdatedAt = DateTime.UtcNow;
         await _context.SaveChangesAsync();
+        await TryDeleteTerminalImageAsync(job);
     }
 
     private static string? DetectSupportedMimeType(ReadOnlySpan<byte> data)
@@ -191,6 +257,45 @@ public class OcrScanJobService
 
         return null;
     }
+
+    private async Task TryDeleteTerminalImageAsync(ReceiptScanJob job)
+    {
+        if (string.IsNullOrWhiteSpace(job.StorageObjectPath)) return;
+
+        try
+        {
+            await _imageStore.DeleteIfExistsAsync(job.StorageObjectPath);
+        }
+        catch (ReceiptImageStoreException exception)
+        {
+            // The terminal row deliberately retains the path so hourly retention
+            // cleanup can retry the object deletion.
+            _logger.LogError(exception, "Could not delete terminal receipt image for OCR job {JobId}.", job.Id);
+            return;
+        }
+
+        job.StorageObjectPath = null;
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (Exception exception)
+        {
+            // The terminal state is already durable. A stale path is safe because
+            // retention cleanup treats an object-not-found response as success.
+            _logger.LogError(exception, "Could not clear the deleted receipt object path for OCR job {JobId}.", job.Id);
+        }
+    }
+
+    private static string ExtensionForMimeType(string mimeType) => mimeType switch
+    {
+        "image/jpeg" => ".jpg",
+        "image/png" => ".png",
+        "image/webp" => ".webp",
+        "image/heic" => ".heic",
+        "image/heif" => ".heif",
+        _ => ".img"
+    };
 
     private static object? ObfuscateReceiptScanAmount(string resultJson)
     {

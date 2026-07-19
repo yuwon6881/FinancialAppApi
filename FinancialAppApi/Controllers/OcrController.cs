@@ -45,10 +45,18 @@ public class OcrController : ControllerBase
             return Unauthorized(new { message = "Invalid session" });
         }
 
-        var created = await _scanJobService.CreateScanJobAsync(userId, username, image);
+        var created = await _scanJobService.CreateScanJobAsync(
+            userId,
+            username,
+            image,
+            HttpContext.RequestAborted);
         if (created.Status == CreateScanJobStatus.TooManyOutstandingJobs)
         {
             return StatusCode(StatusCodes.Status429TooManyRequests, new { message = created.Message });
+        }
+        if (created.Status == CreateScanJobStatus.StorageUnavailable)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = created.Message });
         }
         if (created.Status != CreateScanJobStatus.Created)
         {
@@ -79,7 +87,7 @@ public class OcrController : ControllerBase
             return Unauthorized(new { message = "Invalid session" });
         }
 
-        var job = await _scanJobService.GetScanJobAsync(userId, jobId);
+        var job = await _scanJobService.GetScanJobAsync(userId, jobId, HttpContext.RequestAborted);
         if (job == null)
         {
             return NotFound(new { message = "Receipt scan job was not found." });
@@ -109,7 +117,13 @@ public class OcrController : ControllerBase
             return Unauthorized(new { message = "Invalid session" });
         }
 
-        await _scanJobService.DeleteScanJobAsync(userId, jobId);
+        if (!await _scanJobService.DeleteScanJobAsync(userId, jobId, HttpContext.RequestAborted))
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                message = "Receipt image cleanup is temporarily unavailable. It will be retried automatically."
+            });
+        }
 
         return NoContent();
     }

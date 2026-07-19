@@ -59,11 +59,15 @@ public class AuthAccountService
     private async Task<bool> IsRegistrationOpenAsync() =>
         await _context.AppUsers.CountAsync() < MaxUsers;
 
-    public async Task<IActionResult> GetStatusAsync()
+    public async Task<IActionResult> GetStatusAsync(string? username = null)
     {
         var userCount = await _context.AppUsers.CountAsync();
         var hasUser = userCount > 0;
-        var hasFingerprint = hasUser && await _context.WebAuthnCredentials.AnyAsync();
+        var hasFingerprint = string.IsNullOrWhiteSpace(username)
+            ? hasUser && await _context.WebAuthnCredentials.AnyAsync()
+            : await _context.AppUsers
+                .Where(user => user.NormalizedUsername == username.Trim().ToUpperInvariant())
+                .AnyAsync(user => _context.WebAuthnCredentials.Any(credential => credential.UserId == user.Id));
         // registrationOpen lets the login screen offer a signup form to additional invitees
         // (up to Auth:MaxUsers) even after the first account exists.
         return new OkObjectResult(new
@@ -224,7 +228,7 @@ public class AuthAccountService
 
         await _context.SaveChangesAsync();
         var session = await _authSessionService.CreateSessionAsync(user, deviceId, deviceName, ipAddress, userAgent);
-        return new OkObjectResult(new { token = session.Token, username = user.Username });
+        return new OkObjectResult(new { token = session.Token, username = user.Username, hasSetupSecurityQuestions = user.HasSetupSecurityQuestions });
     }
 
     public async Task<IActionResult> LoginTwoFactorAsync(
@@ -298,7 +302,7 @@ public class AuthAccountService
         await _context.SaveChangesAsync();
 
         var session = await _authSessionService.CreateSessionAsync(user, pending.DeviceId, pending.DeviceName, ipAddress, userAgent);
-        return new OkObjectResult(new { token = session.Token, username = user.Username });
+        return new OkObjectResult(new { token = session.Token, username = user.Username, hasSetupSecurityQuestions = user.HasSetupSecurityQuestions });
     }
 
     public async Task<IActionResult> VerifyPasswordAsync(string? username, string password, string? currentToken)
@@ -776,4 +780,177 @@ public class AuthAccountService
             .ToListAsync();
         _context.PendingTwoFactors.RemoveRange(pending);
     }
+
+    public static List<string> GetAvailableSecurityQuestions()
+    {
+        return new List<string>
+        {
+            "What was the name of your first pet?",
+            "What was the model of your first car?",
+            "In what city were you born?",
+            "What is your mother's maiden name?",
+            "What was the name of your elementary school?",
+            "What was your childhood nickname?"
+        };
+    }
+
+    public async Task<IActionResult> GetSecurityQuestionsSetupStatusAsync(string? username)
+    {
+        if (string.IsNullOrEmpty(username)) return new UnauthorizedResult();
+        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
+        if (user == null) return new UnauthorizedResult();
+        return new OkObjectResult(new { hasSetupSecurityQuestions = user.HasSetupSecurityQuestions });
+    }
+
+    public async Task<IActionResult> SetupSecurityQuestionsAsync(string? username, List<QuestionAnswerDto> answers)
+    {
+        if (string.IsNullOrEmpty(username)) return new UnauthorizedResult();
+        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
+        if (user == null) return new UnauthorizedResult();
+
+        if (user.HasSetupSecurityQuestions)
+        {
+            return new BadRequestObjectResult(new { message = "Security questions are already set up." });
+        }
+
+        if (answers == null || answers.Count != 3)
+        {
+            return new BadRequestObjectResult(new { message = "You must provide answers to exactly 3 questions." });
+        }
+
+        var uniqueQuestionIds = answers.Select(a => a.QuestionId).Distinct().Count();
+        if (uniqueQuestionIds != 3)
+        {
+            return new BadRequestObjectResult(new { message = "You must select 3 distinct questions." });
+        }
+
+        var availableQuestionsCount = GetAvailableSecurityQuestions().Count;
+        if (answers.Any(a => a.QuestionId < 0 || a.QuestionId >= availableQuestionsCount))
+        {
+             return new BadRequestObjectResult(new { message = "Invalid question selected." });
+        }
+
+        foreach (var answer in answers)
+        {
+            if (string.IsNullOrWhiteSpace(answer.Answer))
+            {
+                return new BadRequestObjectResult(new { message = "Answers cannot be empty." });
+            }
+
+            var normalized = SecurityQuestionNormalization.NormalizeAnswer(answer.Answer);
+            var hash = _passwordHasher.HashPassword(user.Username, normalized);
+
+            _context.SecurityQuestionAnswers.Add(new SecurityQuestionAnswer
+            {
+                UserId = user.Id,
+                QuestionId = answer.QuestionId,
+                AnswerHash = hash
+            });
+        }
+
+        user.HasSetupSecurityQuestions = true;
+        await _context.SaveChangesAsync();
+
+        return new OkObjectResult(new { message = "Security questions configured successfully." });
+    }
+
+    public async Task<IActionResult> GetSecurityQuestionsForRecoveryAsync(string username)
+    {
+        if (string.IsNullOrWhiteSpace(username)) return new BadRequestObjectResult(new { message = "Username is required." });
+
+        var normalizedUsername = username.Trim().ToUpperInvariant();
+        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.NormalizedUsername == normalizedUsername);
+
+        if (user == null)
+        {
+            // Do not reveal user existence; just return empty or generic response
+            return new BadRequestObjectResult(new { message = "If the user exists and has security questions, they will be displayed." });
+        }
+
+        if (!user.HasSetupSecurityQuestions)
+        {
+             return new BadRequestObjectResult(new { message = "This user has not set up security questions." });
+        }
+
+        var userQuestions = await _context.SecurityQuestionAnswers
+            .Where(sqa => sqa.UserId == user.Id)
+            .Select(sqa => sqa.QuestionId)
+            .ToListAsync();
+
+        var available = GetAvailableSecurityQuestions();
+        var questionsToAsk = userQuestions.Select(id => new { QuestionId = id, Question = available[id] }).ToList();
+
+        return new OkObjectResult(new { username = user.Username, questions = questionsToAsk });
+    }
+
+    public async Task<IActionResult> VerifySecurityQuestionsAndResetPasswordAsync(string username, List<QuestionAnswerDto> answers, string newPassword)
+    {
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(newPassword))
+        {
+            return new BadRequestObjectResult(new { message = "Username and new password are required." });
+        }
+
+        var normalizedUsername = username.Trim().ToUpperInvariant();
+        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.NormalizedUsername == normalizedUsername);
+
+        if (user == null || !user.HasSetupSecurityQuestions)
+        {
+            return new BadRequestObjectResult(new { message = "Invalid attempt." });
+        }
+
+        if (answers == null || answers.Count < 3)
+        {
+            return new BadRequestObjectResult(new { message = "You must answer all 3 questions." });
+        }
+
+        var storedAnswers = await _context.SecurityQuestionAnswers
+            .Where(sqa => sqa.UserId == user.Id)
+            .ToListAsync();
+
+        if (storedAnswers.Count != 3)
+        {
+            return new BadRequestObjectResult(new { message = "Internal error regarding stored questions." });
+        }
+
+        int correctAnswers = 0;
+
+        foreach (var answer in answers)
+        {
+            var stored = storedAnswers.FirstOrDefault(s => s.QuestionId == answer.QuestionId);
+            if (stored != null)
+            {
+                var normalized = SecurityQuestionNormalization.NormalizeAnswer(answer.Answer);
+                var result = _passwordHasher.VerifyHashedPassword(user.Username, stored.AnswerHash, normalized);
+                if (result != PasswordVerificationResult.Failed)
+                {
+                    correctAnswers++;
+                }
+            }
+        }
+
+        // Require at least 2 out of 3 correct answers
+        if (correctAnswers >= 2)
+        {
+            user.PasswordHash = _passwordHasher.HashPassword(user.Username, newPassword);
+            user.FailedLoginAttempts = 0;
+            user.LockedUntil = null;
+            user.PasswordVerificationFailedAttempts = 0;
+            user.PasswordVerificationLockedUntil = null;
+            user.TwoFactorFailedAttempts = 0;
+            user.TwoFactorLockedUntil = null;
+
+            await _context.SaveChangesAsync();
+            await _authSessionService.RevokeAllSessionsAsync(user.Username, null, keepCurrent: false);
+
+            return new OkObjectResult(new { message = "Password reset successfully." });
+        }
+
+        return new BadRequestObjectResult(new { message = "Answers are incorrect." });
+    }
+}
+
+public class QuestionAnswerDto
+{
+    public int QuestionId { get; set; }
+    public string Answer { get; set; } = string.Empty;
 }

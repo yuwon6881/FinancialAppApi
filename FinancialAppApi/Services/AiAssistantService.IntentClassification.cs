@@ -388,11 +388,11 @@ public partial class AiAssistantService
         RegexOptions.Compiled);
 
     private static readonly Regex CycleAnalysisSignal = new(
-        @"\b(spend|spent|spending|budget|income|earnings?|salary|paychecks?|cash ?flow|outflow|inflow|balance|total|average|net|save|saved|savings|essentials|growth|stability|rewards|cycle|this month|last month|how much|money going|doing better|doing worse|afford|financial health|performance)\b",
+        @"\b(spend|spent|spending|budget|income|earnings?|salary|paychecks?|cash ?flow|outflow|inflow|balance|total|average|net|save|saved|savings|essentials|growth|stability|rewards|cycle|this month|last month|how much|money going|doing better|doing worse|afford|financial health|performance|expense|expenses|cost|costs|fee|fees|profit|profits|margin|margins)\b",
         RegexOptions.Compiled);
 
     private static readonly Regex TransactionDetailSignal = new(
-        @"\b(transaction|transactions|ledger|purchase|purchased|bought|paid|payment|receipt|charge|charged|expense|expenses|deposit|deposits|withdrawal|withdrawals|refund|refunds|debit|debits|credit|credits|find|search|when did|did i|edit|update|change|modify|delete|remove|erase|export|download|record|entry|merchant|cost me|how often|how frequently|frequency|largest|biggest|highest|lowest|smallest|most expensive|cheapest)\b",
+        @"\b(transaction|transactions|ledger|purchase|purchased|bought|paid|payment|receipt|charge|charged|expense|expenses|deposit|deposits|withdrawal|withdrawals|refund|refunds|debit|debits|credit|credits|find|search|when did|did i|edit|update|change|modify|delete|remove|erase|export|download|record|entry|merchant|cost me|how often|how frequently|frequency|largest|biggest|highest|lowest|smallest|most expensive|cheapest|invoice|invoices|bill|bills|fee|fees|cost|costs|priced|billed)\b",
         RegexOptions.Compiled);
 
     private static bool LooksLikeLedgerDraftList(string message) => CountLedgerDraftListRecords(message) > 0;
@@ -430,22 +430,22 @@ public partial class AiAssistantService
         RegexOptions.Compiled);
 
     private static readonly Regex RecurringSignal = new(
-        @"\b(recurring|subscription|subscriptions|membership|memberships|renewal|renewals|renews?|bill|bills|instalments?|installments?|standing orders?|monthly payment|autopay|auto-pay)\b",
+        @"\b(recurring|subscription|subscriptions|sub|subs|membership|memberships|renewal|renewals|renews?|bill|bills|instalments?|installments?|standing orders?|monthly payment|yearly payment|annual payment|autopay|auto-pay|auto-renewal|auto renewal|direct debit|direct debits)\b",
         RegexOptions.Compiled);
 
     private static readonly Regex WishlistSignal = new(
-        @"\b(wishlist|wish list|bucket list|dream purchase|next purchase|want to buy|planning to buy|saving for|priority item|afford|goal|goals|savings? goal|savings? target)\b",
+        @"\b(wishlist|wish list|wish-list|wish|bucket list|dream purchase|next purchase|want to buy|planning to buy|saving for|save for|saving up|save up|priority item|afford|goal|goals|savings? goal|savings? target)\b",
         RegexOptions.Compiled);
 
     private static readonly Regex WishlistForecastSignal = new(
-        @"\b(how long|when can i|when will i|reach|hit|achieve|afford|target date|months? until|cycles? until)\b",
+        @"\b(how long|when can i|when could i|when will i|when would i|reach|hit|achieve|afford|target date|months? until|cycles? until|how many months|time to save)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // Coaching/advice intent -- "how do I improve", "where can I cut", "am I on track".
     // Grounding this kind of answer needs the user's allocation targets, not just actuals,
     // so it turns on the budgetTargets block (and cycle summaries) the same way analysis does.
     private static readonly Regex ImprovementSignal = new(
-        @"\b(improve|improving|reduce|reducing|cut|cutting|spend less|save more|advice|advise|suggest|suggestion|recommend|recommendation|on track|over ?budget|under ?budget|overspend|overspending|should i|where can i|too much|tips?|optimi[sz]e)\b",
+        @"\b(improve|improving|reduce|reducing|cut|cutting|spend less|save more|advice|advise|suggest|suggestion|recommend|recommendation|on track|over ?budget|under ?budget|overspend|overspending|should i|where can i|too much|tips?|optimi[sz]e|budgeting|plan|planning|goal|goals)\b",
         RegexOptions.Compiled);
 
     internal sealed record IntentClassification(

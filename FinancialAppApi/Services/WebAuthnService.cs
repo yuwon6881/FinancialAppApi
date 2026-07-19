@@ -110,7 +110,7 @@ public class WebAuthnService
         }
         catch (Exception e)
         {
-            return new BadRequestObjectResult(new { message = "Fingerprint registration failed: " + e.Message });
+            return new BadRequestObjectResult(new { message = "Device unlock setup failed: " + e.Message });
         }
 
         _context.WebAuthnCredentials.Add(new WebAuthnCredential
@@ -125,7 +125,7 @@ public class WebAuthnService
         });
         await _context.SaveChangesAsync();
 
-        return new OkObjectResult(new { message = "Fingerprint registered successfully." });
+        return new OkObjectResult(new { message = "Device unlock set up successfully." });
     }
 
     public async Task<IActionResult> LoginOptionsAsync(
@@ -150,7 +150,7 @@ public class WebAuthnService
             {
                 return new BadRequestObjectResult(new
                 {
-                    message = "Enter a username before using fingerprint login."
+                    message = "Enter a username before using device unlock."
                 });
             }
         }
@@ -166,7 +166,7 @@ public class WebAuthnService
         var user = candidates.SingleOrDefault();
         if (user == null)
         {
-            return new BadRequestObjectResult(new { message = "Fingerprint login is not set up yet." });
+            return new BadRequestObjectResult(new { message = "Device unlock is not set up yet." });
         }
 
         var credentials = await _context.WebAuthnCredentials
@@ -220,7 +220,7 @@ public class WebAuthnService
         if (storedCred == null || user == null ||
             !string.Equals(challenge.UserId, user.Id, StringComparison.Ordinal))
         {
-            return new UnauthorizedObjectResult(new { message = "Unrecognized fingerprint credential." });
+            return new UnauthorizedObjectResult(new { message = "Unrecognized device credential." });
         }
 
         var verifyResult = await VerifyAssertionAsync(storedCred, credential, challenge.OptionsJson, requestOrigin, fallbackOrigin);
@@ -258,7 +258,7 @@ public class WebAuthnService
             .ToListAsync();
         if (credentials.Count == 0)
         {
-            return new BadRequestObjectResult(new { message = "Fingerprint login is not set up yet." });
+            return new BadRequestObjectResult(new { message = "Device unlock is not set up yet." });
         }
 
         var fido2 = BuildFido2(requestOrigin, fallbackOrigin);
@@ -307,7 +307,7 @@ public class WebAuthnService
             .FirstOrDefaultAsync(c => c.CredentialId == credential.RawId && c.UserId == userId);
         if (storedCred == null)
         {
-            return new UnauthorizedObjectResult(new { message = "Unrecognized fingerprint credential." });
+            return new UnauthorizedObjectResult(new { message = "Unrecognized device credential." });
         }
 
         var verifyResult = await VerifyAssertionAsync(storedCred, credential, challenge.OptionsJson, requestOrigin, fallbackOrigin);
@@ -355,7 +355,7 @@ public class WebAuthnService
 
         _context.WebAuthnCredentials.Remove(cred);
         await _context.SaveChangesAsync();
-        return new OkObjectResult(new { message = "Fingerprint credential removed." });
+        return new OkObjectResult(new { message = "Device unlock credential removed." });
     }
 
     private async Task<IActionResult?> VerifyAssertionAsync(
@@ -386,7 +386,10 @@ public class WebAuthnService
         }
         catch (Exception e)
         {
-            return new UnauthorizedObjectResult(new { message = "Fingerprint verification failed: " + e.Message });
+            var message = e.Message.Contains("User Verified flag not set", StringComparison.OrdinalIgnoreCase)
+                ? "This device did not verify your identity. Use its PIN, fingerprint, face recognition, or screen lock, then try again."
+                : "Device verification failed: " + e.Message;
+            return new UnauthorizedObjectResult(new { message });
         }
 
         storedCred.SignCount = result.SignCount;

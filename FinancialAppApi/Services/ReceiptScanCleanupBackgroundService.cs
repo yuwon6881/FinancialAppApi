@@ -30,11 +30,11 @@ public sealed class ReceiptScanCleanupBackgroundService : BackgroundService
                 using var scope = _scopeFactory.CreateScope();
                 var cleanup = scope.ServiceProvider.GetRequiredService<ReceiptScanJobCleanupService>();
                 var result = await cleanup.PruneExpiredJobsAsync(stoppingToken);
-                if (result.ScrubbedImages > 0 || result.DeletedJobs > 0)
+                if (result.DeletedObjects > 0 || result.DeletedJobs > 0)
                 {
                     _logger.LogInformation(
-                        "OCR retention scrubbed {ScrubbedImages} image payloads and deleted {DeletedJobs} expired jobs.",
-                        result.ScrubbedImages,
+                        "OCR retention deleted {DeletedObjects} Storage objects and {DeletedJobs} expired jobs.",
+                        result.DeletedObjects,
                         result.DeletedJobs);
                 }
             }

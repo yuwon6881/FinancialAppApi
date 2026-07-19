@@ -197,6 +197,12 @@ public static class ServiceCollectionExtensions
 
         services.AddHttpClient<AiClient>(client => client.Timeout = TimeSpan.FromSeconds(30));
         services.AddHttpClient<ReceiptScanTaskDispatcher>(client => client.Timeout = TimeSpan.FromSeconds(15));
+        services.AddHttpClient(SupabaseReceiptImageStore.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("FinancialAppApi/1.0");
+        });
+        services.AddSingleton<IReceiptImageStore, SupabaseReceiptImageStore>();
         services.AddSingleton<ReceiptScanRetentionPolicy>();
         services.AddScoped<ReceiptScanProcessor>();
         services.AddScoped<ReceiptScanJobCleanupService>();
