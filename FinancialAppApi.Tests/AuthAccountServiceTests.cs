@@ -308,6 +308,68 @@ public class AuthAccountServiceTests
         Assert.All(context.PendingTwoFactors, pending => Assert.True(pending.ExpiresAt > DateTime.UtcNow));
     }
 
+    [Fact]
+    public async Task SecurityQuestions_RecoveryReset_WithAtLeastTwoCorrectAnswers_ResetsPassword()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var user = SeedUser(context, "alice", "old-password");
+        user.NormalizedUsername = "ALICE";
+        context.SaveChanges();
+        var service = NewService(context);
+
+        var setup = await service.SetupSecurityQuestionsAsync("alice", new List<QuestionAnswerDto>
+        {
+            new() { QuestionId = 0, Answer = "Rex" },
+            new() { QuestionId = 1, Answer = "Civic" },
+            new() { QuestionId = 2, Answer = "London" },
+        });
+
+        Assert.IsType<OkObjectResult>(setup);
+        Assert.True(context.AppUsers.Single().HasSetupSecurityQuestions);
+
+        // Two correct (answer normalization tolerates case/whitespace), one wrong -> still resets.
+        var reset = await service.VerifySecurityQuestionsAndResetPasswordAsync("alice", new List<QuestionAnswerDto>
+        {
+            new() { QuestionId = 0, Answer = "  rEx " },
+            new() { QuestionId = 1, Answer = "Civic" },
+            new() { QuestionId = 2, Answer = "wrong-city" },
+        }, "new-password");
+
+        Assert.IsType<OkObjectResult>(reset);
+        // Old password no longer works; the new one does.
+        Assert.IsType<UnauthorizedObjectResult>(await service.LoginAsync("alice", "old-password", null, null, null, null));
+        Assert.IsType<OkObjectResult>(await service.LoginAsync("alice", "new-password", null, null, null, null));
+    }
+
+    [Fact]
+    public async Task SecurityQuestions_RecoveryReset_WithTooManyWrongAnswers_IsRejected()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var user = SeedUser(context, "alice", "old-password");
+        user.NormalizedUsername = "ALICE";
+        context.SaveChanges();
+        var service = NewService(context);
+
+        await service.SetupSecurityQuestionsAsync("alice", new List<QuestionAnswerDto>
+        {
+            new() { QuestionId = 0, Answer = "Rex" },
+            new() { QuestionId = 1, Answer = "Civic" },
+            new() { QuestionId = 2, Answer = "London" },
+        });
+
+        // Only one correct -> below the 2-of-3 threshold, rejected.
+        var reset = await service.VerifySecurityQuestionsAndResetPasswordAsync("alice", new List<QuestionAnswerDto>
+        {
+            new() { QuestionId = 0, Answer = "wrong" },
+            new() { QuestionId = 1, Answer = "wrong" },
+            new() { QuestionId = 2, Answer = "London" },
+        }, "new-password");
+
+        Assert.IsType<BadRequestObjectResult>(reset);
+        // Password is unchanged: the original still works.
+        Assert.IsType<OkObjectResult>(await service.LoginAsync("alice", "old-password", null, null, null, null));
+    }
+
     private static AuthAccountService NewService(
         Database.AppDbContext context,
         IConfiguration? configuration = null,

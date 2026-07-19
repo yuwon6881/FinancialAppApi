@@ -36,8 +36,9 @@ public class FinancialSetting : IUserOwnedEntity
     [Required]
     public int CycleDay { get; set; } = 28; // Day of the month representing the cycle start (e.g. 28th)
 
-    // New property for dark theme preference
-    public bool DarkMode { get; set; } = false;
+    // Dark theme preference. Null means "never chosen" so the client can fall back to
+    // the OS/browser color scheme (matching the login screen) instead of forcing light.
+    public bool? DarkMode { get; set; }
 
     [Required]
     public bool HideSensitive { get; set; } = true;

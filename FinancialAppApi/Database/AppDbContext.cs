@@ -80,7 +80,6 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.RewardsAlloc).HasColumnType("numeric");
             entity.Property(e => e.StabilityOverflowRedirect)
                 .HasDefaultValue("Split: Growth 50%, Rewards 50%");
-            entity.Property(e => e.DarkMode).HasDefaultValue(false);
             entity.Property(e => e.HideSensitive).HasDefaultValue(true);
             entity.Property(e => e.Currency).HasDefaultValue("USD");
             entity.Property(e => e.VibrationEnabled).HasDefaultValue(true);
