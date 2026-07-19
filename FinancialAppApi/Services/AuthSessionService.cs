@@ -225,6 +225,22 @@ public class AuthSessionService
         return sessions.Count;
     }
 
+    // Revokes every session for a specific user by id, without requiring an authenticated
+    // database scope. Used by unauthenticated flows (e.g. password recovery) that have
+    // already verified the account out-of-band. UserSession is not query-filtered, so this
+    // is safe with a null CurrentUserId.
+    public async Task<int> RevokeAllSessionsForUserAsync(string userId)
+    {
+        var sessions = await _context.UserSessions
+            .Where(s => s.UserId == userId)
+            .ToListAsync();
+
+        _context.UserSessions.RemoveRange(sessions);
+        await _context.SaveChangesAsync();
+
+        return sessions.Count;
+    }
+
     public async Task<int> RevokeOtherSessionsAsync(string username, string? currentToken)
     {
         if (string.IsNullOrWhiteSpace(currentToken)) return 0;

@@ -952,7 +952,9 @@ public class AuthAccountService
             user.TwoFactorLockedUntil = null;
 
             await _context.SaveChangesAsync();
-            await _authSessionService.RevokeAllSessionsAsync(user.Username, null, keepCurrent: false);
+            // This endpoint is unauthenticated (no current-user DB scope), so revoke by the
+            // verified user's id rather than the ambient scope.
+            await _authSessionService.RevokeAllSessionsForUserAsync(user.Id);
 
             return new OkObjectResult(new { message = "Password reset successfully." });
         }

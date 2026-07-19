@@ -309,11 +309,21 @@ public class AuthAccountServiceTests
     }
 
     [Fact]
-    public async Task SecurityQuestions_RecoveryReset_WithAtLeastTwoCorrectAnswers_ResetsPassword()
+    public async Task SecurityQuestions_RecoveryReset_WithAtLeastTwoCorrectAnswers_ResetsPasswordAndRevokesSessions()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        // The recovery/reset endpoint is unauthenticated, so there is no current-user DB
+        // scope. Run without one to faithfully reproduce production (and guard the regression
+        // where session revocation threw "No authenticated user is associated with this scope").
+        await using var context = TestHelpers.NewInMemoryContext(currentUserId: null);
         var user = SeedUser(context, "alice", "old-password");
-        user.NormalizedUsername = "ALICE";
+        context.UserSessions.Add(new UserSession
+        {
+            Token = "existing-session",
+            Username = "alice",
+            UserId = user.Id,
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(7)
+        });
         context.SaveChanges();
         var service = NewService(context);
 
@@ -336,6 +346,8 @@ public class AuthAccountServiceTests
         }, "new-password");
 
         Assert.IsType<OkObjectResult>(reset);
+        // All prior sessions are revoked.
+        Assert.Empty(context.UserSessions);
         // Old password no longer works; the new one does.
         Assert.IsType<UnauthorizedObjectResult>(await service.LoginAsync("alice", "old-password", null, null, null, null));
         Assert.IsType<OkObjectResult>(await service.LoginAsync("alice", "new-password", null, null, null, null));
@@ -344,10 +356,8 @@ public class AuthAccountServiceTests
     [Fact]
     public async Task SecurityQuestions_RecoveryReset_WithTooManyWrongAnswers_IsRejected()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
-        var user = SeedUser(context, "alice", "old-password");
-        user.NormalizedUsername = "ALICE";
-        context.SaveChanges();
+        await using var context = TestHelpers.NewInMemoryContext(currentUserId: null);
+        SeedUser(context, "alice", "old-password");
         var service = NewService(context);
 
         await service.SetupSecurityQuestionsAsync("alice", new List<QuestionAnswerDto>
