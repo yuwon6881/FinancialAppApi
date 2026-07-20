@@ -84,6 +84,24 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
+    public async Task GetTransactionsAsync_SearchMatchesDescriptionCategoryAndLedgerCaseInsensitively()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("by-description", "Grocery Store", "Food", "Essentials", -10m),
+            NewTransaction("by-category", "Weekly shop", "GROCERIES", "Essentials", -12m),
+            NewTransaction("no-match", "Rent", "Housing", "Essentials", -1000m));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var result = await service.GetTransactionsAsync(all: true, search: "grocer");
+
+        Assert.Equal(
+            new[] { "by-category", "by-description" },
+            result.Items.Select(item => item.Id).OrderBy(id => id).ToArray());
+    }
+
+    [Fact]
     public async Task ExportTransactionsAsync_IncludesCsvHeaderAndRows()
     {
         await using var context = TestHelpers.NewInMemoryContext();

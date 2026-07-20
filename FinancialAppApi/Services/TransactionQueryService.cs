@@ -60,6 +60,7 @@ public class TransactionQueryService
         {
             var query = ApplyAllFilters(
                 _context.Transactions.AsNoTracking(),
+                _context.Database.IsNpgsql(),
                 search,
                 ledgerCategory,
                 category,
@@ -209,6 +210,7 @@ public class TransactionQueryService
     {
         var query = ApplyAllFilters(
             _context.Transactions.AsNoTracking(),
+            _context.Database.IsNpgsql(),
             search,
             ledgerCategory,
             category,
@@ -259,6 +261,7 @@ public class TransactionQueryService
 
     private static IQueryable<Transaction> ApplyAllFilters(
         IQueryable<Transaction> query,
+        bool useIlike,
         string? search,
         string? ledgerCategory,
         string? category,
@@ -280,13 +283,19 @@ public class TransactionQueryService
             query = query.Where(t => t.Date < TransactionDate.ExclusiveEndOfDate(endDateOnly));
         }
 
+        // Compare the raw signed amount against ±bound instead of Math.Abs(Amount): the
+        // abs() form is non-sargable (the planner cannot use an index on Amount), whereas
+        // the OR/AND range form is. Semantics are identical for the inflow(+)/outflow(-)
+        // sign convention.
         if (minAmount is >= 0)
         {
-            query = query.Where(t => Math.Abs(t.Amount) >= minAmount.Value);
+            var min = minAmount.Value;
+            query = query.Where(t => t.Amount >= min || t.Amount <= -min);
         }
         if (maxAmount is >= 0)
         {
-            query = query.Where(t => Math.Abs(t.Amount) <= maxAmount.Value);
+            var max = maxAmount.Value;
+            query = query.Where(t => t.Amount <= max && t.Amount >= -max);
         }
 
         if (recurringOnly)
@@ -296,11 +305,29 @@ public class TransactionQueryService
 
         if (!string.IsNullOrWhiteSpace(search))
         {
-            var s = search.Trim().ToLower();
-            query = query.Where(t =>
-                t.Description.ToLower().Contains(s) ||
-                t.Category.ToLower().Contains(s) ||
-                t.LedgerCategory.ToLower().Contains(s));
+            var term = search.Trim();
+            if (useIlike)
+            {
+                // ILIKE is case-insensitive at the DB level and, unlike ToLower().Contains(),
+                // can be served by the pg_trgm GIN indexes (see the AddTransactionSearchTrgmIndexes
+                // migration). Escape LIKE wildcards so a literal % or _ typed by the user is not
+                // treated as a pattern; '\' is the default ILIKE escape character.
+                var pattern = "%" + EscapeLikePattern(term) + "%";
+                query = query.Where(t =>
+                    EF.Functions.ILike(t.Description, pattern) ||
+                    EF.Functions.ILike(t.Category, pattern) ||
+                    EF.Functions.ILike(t.LedgerCategory, pattern));
+            }
+            else
+            {
+                // Providers without ILIKE (e.g. the InMemory test provider) fall back to the
+                // original case-insensitive substring match.
+                var s = term.ToLower();
+                query = query.Where(t =>
+                    t.Description.ToLower().Contains(s) ||
+                    t.Category.ToLower().Contains(s) ||
+                    t.LedgerCategory.ToLower().Contains(s));
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(ledgerCategory))
@@ -334,6 +361,13 @@ public class TransactionQueryService
 
         return query;
     }
+
+    // Escapes the ILIKE special characters so user-typed text is matched literally.
+    // Backslash first (it is the escape character), then the wildcards % and _.
+    private static string EscapeLikePattern(string input) => input
+        .Replace("\\", "\\\\")
+        .Replace("%", "\\%")
+        .Replace("_", "\\_");
 
     private static string EscapeCsvField(string value)
     {

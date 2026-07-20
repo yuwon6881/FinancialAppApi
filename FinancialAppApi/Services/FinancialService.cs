@@ -205,15 +205,27 @@ public class FinancialService
         var activeRange = CategoryAttributionService.GetCycleRange(activeYear, activeMonthIndex, cycleDay);
         var activeCycleEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(activeRange.end));
 
-        // Yearly breakdown only ever aggregated by category across the whole range -- one query
-        // spanning all 12 months replaces what used to be 12 separate per-month queries.
+        // Yearly breakdown only ever aggregated by category across the whole range. Push the
+        // GroupBy/Sum into SQL so a full year of expense rows collapses to one row per category
+        // in the database, instead of materializing every yearly transaction just to group it in
+        // memory. The projection mirrors BuildBreakdown's semantics exactly (exclude transfers,
+        // sum outflows by category, abs, order by amount desc).
         var yearStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(CategoryAttributionService.GetCycleRange(activeYear, 1, cycleDay).start));
         var yearEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(CategoryAttributionService.GetCycleRange(activeYear, 12, cycleDay).end));
-        var yearlyTxs = await _context.Transactions
+        var yearlyGroups = await _context.Transactions
             .AsNoTracking()
             .Where(t => t.Date >= yearStartDate && t.Date < yearEndExclusive)
+            .Where(t => t.Amount < 0)
+            .Where(t => t.Category.ToLower() != "transfer")
+            .Where(t => !t.LedgerCategory.ToLower().StartsWith("transfer:"))
+            .GroupBy(t => t.Category)
+            .Select(g => new { Category = g.Key, Total = g.Sum(t => t.Amount) })
             .ToListAsync();
-        var yearlyCategoryBreakdown = BuildBreakdown(yearlyTxs);
+        var yearlyCategoryBreakdown = yearlyGroups
+            .GroupBy(g => string.IsNullOrWhiteSpace(g.Category) ? "Other" : g.Category)
+            .Select(g => (category: g.Key, amount: Math.Abs(g.Sum(x => x.Total))))
+            .OrderByDescending(b => b.amount)
+            .ToList();
 
         // Last-6 is one range query; last-3 is a strict subset of that same range, sliced in
         // memory instead of querying again.
