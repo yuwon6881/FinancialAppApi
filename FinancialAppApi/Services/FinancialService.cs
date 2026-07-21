@@ -74,7 +74,7 @@ public class FinancialService
         var (setting, cycleDay, _, activeYear, activeMonthIndex) =
             await ResolveCycleContextAsync(queryMonth, queryYear, persist: persistSelection);
 
-        var allRecurring = await _context.RecurringPayments.AsNoTracking().ToListAsync();
+        var allRecurring = await _context.RecurringPayments.AsNoTracking().Where(r => r.Active).ToListAsync();
 
         var year = activeYear;
 
@@ -99,15 +99,15 @@ public class FinancialService
         // Net change mixes allocated income, transfers, and expenses, so it cannot be used as a
         // proxy for "spent" in cycle reports. Report true purchase/payment outflows separately;
         // transfers only move money between envelopes and are intentionally excluded.
-        decimal SpentFrom(string ledgerCategory) => Math.Abs(activeCycleTxs
+        var spentByCategory = activeCycleTxs
             .Where(t => t.Amount < 0 && !IsTransfer(t))
-            .Where(t => string.Equals(t.LedgerCategory, ledgerCategory, StringComparison.OrdinalIgnoreCase))
-            .Sum(t => t.Amount));
+            .GroupBy(t => t.LedgerCategory, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => Math.Abs(g.Sum(t => t.Amount)), StringComparer.OrdinalIgnoreCase);
 
-        var selectedSpentEssentials = SpentFrom("Essentials");
-        var selectedSpentGrowth = SpentFrom("Growth");
-        var selectedSpentStability = SpentFrom("Stability");
-        var selectedSpentRewards = SpentFrom("Rewards");
+        var selectedSpentEssentials = spentByCategory.GetValueOrDefault("Essentials");
+        var selectedSpentGrowth = spentByCategory.GetValueOrDefault("Growth");
+        var selectedSpentStability = spentByCategory.GetValueOrDefault("Stability");
+        var selectedSpentRewards = spentByCategory.GetValueOrDefault("Rewards");
 
         var selectedRemEssentials = selectedBudgetEssentials + selectedNetEssentials;
         var selectedRemGrowth = selectedBudgetGrowth + selectedNetGrowth;
@@ -172,6 +172,12 @@ public class FinancialService
             ? trendPointsList.GetRange(trendPointsList.Count - 3, 3)
             : trendPointsList.ToList();
 
+        object? cycleSummaryInsights = null;
+        if (summaryOnly)
+        {
+            cycleSummaryInsights = BuildSummaryInsights(activeCycleTxs, activeRangeStartDate, activeRangeEndExclusive);
+        }
+
         var result = new
         {
             setting = new
@@ -207,7 +213,8 @@ public class FinancialService
             last3TrendPoints = ObfuscateTrendPoints(last3TrendPoints),
             last6TrendPoints = ObfuscateTrendPoints(last6TrendPoints),
             pendingNotifications,
-            monthlyCategoryBreakdown = ObfuscateBreakdown(monthlyCategoryBreakdown)
+            monthlyCategoryBreakdown = ObfuscateBreakdown(monthlyCategoryBreakdown),
+            cycleSummaryInsights
         };
 
         stopwatch.Stop();
@@ -437,7 +444,7 @@ public class FinancialService
             activeYear = queryYear.Value;
         }
 
-        if (persist)
+        if (persist && (setting.SelectedMonth != activeMonth || setting.SelectedYear != activeYear))
         {
             setting.SelectedMonth = activeMonth;
             setting.SelectedYear = activeYear;
@@ -470,10 +477,14 @@ public class FinancialService
         int activeYear,
         int activeMonthIndex)
     {
+        var txsByRecurringId = activeCycleTxs
+            .Where(t => t.RecurringPaymentId != null)
+            .GroupBy(t => t.RecurringPaymentId!)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
         var activeRecurringList = new List<object>();
         foreach (var rp in allRecurring)
         {
-            if (!rp.Active) continue;
             foreach (var billingDate in _recurringOccurrenceService.GetOccurrencesInRange(
                          rp,
                          activeRangeStart,
@@ -481,8 +492,8 @@ public class FinancialService
                          cycleDay))
             {
                 var instanceId = $"{rp.Id}-{activeYear}-{activeMonthIndex}";
-                var paidTx = activeCycleTxs
-                    .Where(t => t.RecurringPaymentId == rp.Id)
+                var relatedTxs = txsByRecurringId.GetValueOrDefault(rp.Id);
+                var paidTx = relatedTxs?
                     .OrderBy(t => string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
                     .ThenBy(t => t.Date)
                     .ThenBy(t => t.Id, StringComparer.Ordinal)
@@ -583,15 +594,14 @@ public class FinancialService
 
     private async Task<List<int>> GetAvailableYearsAsync()
     {
-        var minYear = await _context.Transactions
-            .OrderBy(t => t.Date)
-            .Select(t => t.Date.Year)
+        var yearRange = await _context.Transactions
+            .GroupBy(_ => 1)
+            .Select(g => new { Min = g.Min(t => t.Date.Year), Max = g.Max(t => t.Date.Year) })
             .FirstOrDefaultAsync();
-        var maxYear = await _context.Transactions
-            .OrderByDescending(t => t.Date)
-            .Select(t => t.Date.Year)
-            .FirstOrDefaultAsync();
+
         var currentYear = _financialClock.LocalNow.Year;
+        var minYear = yearRange?.Min ?? 0;
+        var maxYear = yearRange?.Max ?? 0;
 
         if (minYear == 0 || maxYear == 0)
         {
@@ -639,4 +649,62 @@ public class FinancialService
 
     private static List<object> ObfuscateBreakdown(List<(string category, decimal amount)> breakdown) =>
         breakdown.Select(b => (object)new { category = b.category, amount = ObfuscationHelper.Obfuscate(b.amount) }).ToList();
+
+    private static object? BuildSummaryInsights(List<Transaction> activeCycleTxs, DateTime start, DateTime endExclusive)
+    {
+        var cycleExpenseTxs = activeCycleTxs.Where(t => t.Amount < 0 && !IsTransfer(t)).ToList();
+        
+        var largestTxn = cycleExpenseTxs.OrderBy(t => t.Amount).FirstOrDefault(); // Amount is negative, so smallest value is largest absolute amount
+        
+        var biggestDay = cycleExpenseTxs
+            .GroupBy(t => TransactionDate.ToDateOnly(t.Date))
+            .Select(g => new { Date = g.Key, Total = Math.Abs(g.Sum(t => t.Amount)) })
+            .OrderByDescending(g => g.Total)
+            .FirstOrDefault();
+            
+        var startMid = DateOnly.FromDateTime(start);
+        var endMid = DateOnly.FromDateTime(endExclusive);
+        var cycleLengthDays = endMid.DayNumber - startMid.DayNumber;
+        
+        var avgDailySpend = cycleExpenseTxs.Count > 0 && cycleLengthDays > 0
+            ? Math.Abs(cycleExpenseTxs.Sum(t => t.Amount)) / cycleLengthDays
+            : (decimal?)null;
+            
+        var startDateTime = start;
+        var endDateTime = endExclusive;
+        var midMs = startDateTime.Ticks + (endDateTime.Ticks - startDateTime.Ticks) / 2;
+        
+        decimal velocityFirstHalf = 0;
+        decimal velocitySecondHalf = 0;
+        
+        foreach (var t in cycleExpenseTxs)
+        {
+            if (t.Date.Ticks <= midMs) velocityFirstHalf += Math.Abs(t.Amount);
+            else velocitySecondHalf += Math.Abs(t.Amount);
+        }
+        
+        var distinctExpenseDays = cycleExpenseTxs.Select(t => TransactionDate.ToDateOnly(t.Date)).Distinct().Count();
+        var noSpendDays = Math.Max(0, cycleLengthDays - distinctExpenseDays);
+        
+        var transactionCount = cycleExpenseTxs.Count;
+        
+        var committedSpend = Math.Abs(cycleExpenseTxs.Where(t => !string.IsNullOrEmpty(t.RecurringPaymentId)).Sum(t => t.Amount));
+        var discretionarySpend = Math.Abs(cycleExpenseTxs.Where(t => string.IsNullOrEmpty(t.RecurringPaymentId)).Sum(t => t.Amount));
+        
+        return new
+        {
+            largestExpenseDescription = largestTxn?.Description,
+            largestExpenseAmount = largestTxn != null ? ObfuscationHelper.Obfuscate(Math.Abs(largestTxn.Amount)) : null,
+            biggestDayDate = biggestDay?.Date.ToString("yyyy-MM-dd"),
+            biggestDayTotal = biggestDay != null ? ObfuscationHelper.Obfuscate(biggestDay.Total) : null,
+            avgDailySpend = avgDailySpend != null ? ObfuscationHelper.Obfuscate(avgDailySpend.Value) : null,
+            cycleLengthDays,
+            velocityFirstHalf = cycleExpenseTxs.Count > 0 ? ObfuscationHelper.Obfuscate(velocityFirstHalf) : null,
+            velocitySecondHalf = cycleExpenseTxs.Count > 0 ? ObfuscationHelper.Obfuscate(velocitySecondHalf) : null,
+            noSpendDays,
+            transactionCount,
+            committedSpend = ObfuscationHelper.Obfuscate(committedSpend),
+            discretionarySpend = ObfuscationHelper.Obfuscate(discretionarySpend)
+        };
+    }
 }
