@@ -172,11 +172,7 @@ public class FinancialService
             ? trendPointsList.GetRange(trendPointsList.Count - 3, 3)
             : trendPointsList.ToList();
 
-        object? cycleSummaryInsights = null;
-        if (summaryOnly)
-        {
-            cycleSummaryInsights = BuildSummaryInsights(activeCycleTxs, activeRangeStartDate, activeRangeEndExclusive);
-        }
+        var cycleSummaryInsights = BuildSummaryInsights(activeCycleTxs, activeRangeStartDate, activeRangeEndExclusive);
 
         var result = new
         {
