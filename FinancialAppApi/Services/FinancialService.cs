@@ -62,13 +62,16 @@ public class FinancialService
         return new { totalBalance = ObfuscationHelper.Obfuscate(totalBalance) };
     }
 
-    public async Task<object> GetDashboardDataAsync(string? queryMonth = null, int? queryYear = null)
+    public async Task<object> GetDashboardDataAsync(
+        string? queryMonth = null,
+        int? queryYear = null,
+        bool persistSelection = true)
     {
         var stopwatch = Stopwatch.StartNew();
         using var activity = Telemetry.ActivitySource.StartActivity("FinancialService.GetDashboardData");
 
         var (setting, cycleDay, _, activeYear, activeMonthIndex) =
-            await ResolveCycleContextAsync(queryMonth, queryYear, persist: true);
+            await ResolveCycleContextAsync(queryMonth, queryYear, persist: persistSelection);
 
         var allRecurring = await _context.RecurringPayments.AsNoTracking().ToListAsync();
 
@@ -91,6 +94,19 @@ public class FinancialService
         var selectedNetGrowth = activeCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Growth"));
         var selectedNetStability = activeCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Stability"));
         var selectedNetRewards = activeCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Rewards"));
+
+        // Net change mixes allocated income, transfers, and expenses, so it cannot be used as a
+        // proxy for "spent" in cycle reports. Report true purchase/payment outflows separately;
+        // transfers only move money between envelopes and are intentionally excluded.
+        decimal SpentFrom(string ledgerCategory) => Math.Abs(activeCycleTxs
+            .Where(t => t.Amount < 0 && !IsTransfer(t))
+            .Where(t => string.Equals(t.LedgerCategory, ledgerCategory, StringComparison.OrdinalIgnoreCase))
+            .Sum(t => t.Amount));
+
+        var selectedSpentEssentials = SpentFrom("Essentials");
+        var selectedSpentGrowth = SpentFrom("Growth");
+        var selectedSpentStability = SpentFrom("Stability");
+        var selectedSpentRewards = SpentFrom("Rewards");
 
         var selectedRemEssentials = selectedBudgetEssentials + selectedNetEssentials;
         var selectedRemGrowth = selectedBudgetGrowth + selectedNetGrowth;
@@ -116,10 +132,10 @@ public class FinancialService
 
         var categories = new[]
         {
-            new { name = "Essentials", allocation = setting.EssentialsAlloc, target = ObfuscationHelper.Obfuscate(targetEssentials), budget = ObfuscationHelper.Obfuscate(selectedBudgetEssentials), netChange = ObfuscationHelper.Obfuscate(selectedNetEssentials), remaining = ObfuscationHelper.Obfuscate(selectedRemEssentials) },
-            new { name = "Growth", allocation = setting.GrowthAlloc, target = ObfuscationHelper.Obfuscate(targetGrowth), budget = ObfuscationHelper.Obfuscate(selectedBudgetGrowth), netChange = ObfuscationHelper.Obfuscate(selectedNetGrowth), remaining = ObfuscationHelper.Obfuscate(selectedRemGrowth) },
-            new { name = "Stability", allocation = setting.StabilityAlloc, target = ObfuscationHelper.Obfuscate(targetStability), budget = ObfuscationHelper.Obfuscate(selectedBudgetStability), netChange = ObfuscationHelper.Obfuscate(selectedNetStability), remaining = ObfuscationHelper.Obfuscate(selectedRemStability) },
-            new { name = "Rewards", allocation = setting.RewardsAlloc, target = ObfuscationHelper.Obfuscate(targetRewards), budget = ObfuscationHelper.Obfuscate(selectedBudgetRewards), netChange = ObfuscationHelper.Obfuscate(selectedNetRewards), remaining = ObfuscationHelper.Obfuscate(selectedRemRewards) }
+            new { name = "Essentials", allocation = setting.EssentialsAlloc, target = ObfuscationHelper.Obfuscate(targetEssentials), budget = ObfuscationHelper.Obfuscate(selectedBudgetEssentials), netChange = ObfuscationHelper.Obfuscate(selectedNetEssentials), spent = ObfuscationHelper.Obfuscate(selectedSpentEssentials), remaining = ObfuscationHelper.Obfuscate(selectedRemEssentials) },
+            new { name = "Growth", allocation = setting.GrowthAlloc, target = ObfuscationHelper.Obfuscate(targetGrowth), budget = ObfuscationHelper.Obfuscate(selectedBudgetGrowth), netChange = ObfuscationHelper.Obfuscate(selectedNetGrowth), spent = ObfuscationHelper.Obfuscate(selectedSpentGrowth), remaining = ObfuscationHelper.Obfuscate(selectedRemGrowth) },
+            new { name = "Stability", allocation = setting.StabilityAlloc, target = ObfuscationHelper.Obfuscate(targetStability), budget = ObfuscationHelper.Obfuscate(selectedBudgetStability), netChange = ObfuscationHelper.Obfuscate(selectedNetStability), spent = ObfuscationHelper.Obfuscate(selectedSpentStability), remaining = ObfuscationHelper.Obfuscate(selectedRemStability) },
+            new { name = "Rewards", allocation = setting.RewardsAlloc, target = ObfuscationHelper.Obfuscate(targetRewards), budget = ObfuscationHelper.Obfuscate(selectedBudgetRewards), netChange = ObfuscationHelper.Obfuscate(selectedNetRewards), spent = ObfuscationHelper.Obfuscate(selectedSpentRewards), remaining = ObfuscationHelper.Obfuscate(selectedRemRewards) }
         };
 
         var totalBalance = selectedRemEssentials + selectedRemStability + selectedRemRewards;

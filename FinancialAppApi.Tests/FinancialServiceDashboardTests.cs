@@ -117,6 +117,20 @@ public class FinancialServiceDashboardTests
     }
 
     [Fact]
+    public async Task GetDashboardDataAsync_CanReadHistoricalCycleWithoutChangingSelectedPeriod()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jan", SelectedYear = 2025 });
+        await context.SaveChangesAsync();
+
+        await NewService(context).GetDashboardDataAsync("Jul", 2026, persistSelection: false);
+
+        var setting = context.FinancialSettings.Single();
+        Assert.Equal("Jan", setting.SelectedMonth);
+        Assert.Equal(2025, setting.SelectedYear);
+    }
+
+    [Fact]
     public async Task GetDashboardDataAsync_ExcludesLegacyNegativeTransfersFromExpenses()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -133,6 +147,28 @@ public class FinancialServiceDashboardTests
         var stats = response.GetType().GetProperty("stats")!.GetValue(response)!;
         var expensesRaw = (string)stats.GetType().GetProperty("monthlyExpenses")!.GetValue(stats)!;
         Assert.Equal(100m, ObfuscationHelper.Deobfuscate(expensesRaw));
+    }
+
+    [Fact]
+    public async Task GetDashboardDataAsync_ReportsTrueEnvelopeSpendingWithoutIncomeOrTransfers()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.Transactions.AddRange(
+            Tx("income", 2026, 7, 1, "Salary", 1000m, "IncomeSplit:50,20,10,20"),
+            Tx("food", 2026, 7, 9, "Food", -125m, "Essentials"),
+            Tx("course", 2026, 7, 10, "Education", -40m, "Growth"),
+            Tx("treat", 2026, 7, 11, "Hobbies", -25m, "Rewards"),
+            Tx("transfer", 2026, 7, 12, "Transfer", -75m, "Transfer:Essentials->Rewards"));
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context).GetDashboardDataAsync("Jul", 2026);
+        var categories = GetObjects(response, "categories");
+
+        Assert.Equal(125m, GetCategoryAmount(categories, "Essentials", "spent"));
+        Assert.Equal(40m, GetCategoryAmount(categories, "Growth", "spent"));
+        Assert.Equal(0m, GetCategoryAmount(categories, "Stability", "spent"));
+        Assert.Equal(25m, GetCategoryAmount(categories, "Rewards", "spent"));
     }
 
     [Fact]
@@ -256,6 +292,14 @@ public class FinancialServiceDashboardTests
     {
         var stats = response.GetType().GetProperty("stats")!.GetValue(response)!;
         var raw = (string)stats.GetType().GetProperty(propertyName)!.GetValue(stats)!;
+        return ObfuscationHelper.Deobfuscate(raw);
+    }
+
+    private static decimal GetCategoryAmount(object[] categories, string name, string propertyName)
+    {
+        var category = categories.Single(item =>
+            string.Equals((string)item.GetType().GetProperty("name")!.GetValue(item)!, name, StringComparison.Ordinal));
+        var raw = (string)category.GetType().GetProperty(propertyName)!.GetValue(category)!;
         return ObfuscationHelper.Deobfuscate(raw);
     }
 
