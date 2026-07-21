@@ -65,7 +65,8 @@ public class FinancialService
     public async Task<object> GetDashboardDataAsync(
         string? queryMonth = null,
         int? queryYear = null,
-        bool persistSelection = true)
+        bool persistSelection = true,
+        bool summaryOnly = false)
     {
         var stopwatch = Stopwatch.StartNew();
         using var activity = Telemetry.ActivitySource.StartActivity("FinancialService.GetDashboardData");
@@ -113,13 +114,17 @@ public class FinancialService
         var selectedRemStability = selectedBudgetStability + selectedNetStability;
         var selectedRemRewards = selectedBudgetRewards + selectedNetRewards;
 
-        await _cycleBalanceService.EnsureComputedThroughAsync(year, activeMonthIndex, cycleDay);
-        var trendRows = await _context.CycleBalances
-            .AsNoTracking()
-            .Where(b => b.Year == activeYear && b.MonthIndex <= activeMonthIndex)
-            .OrderBy(b => b.MonthIndex)
-            .ToListAsync();
-        var trendPoints = trendRows.Select(r => (Months[r.MonthIndex - 1], r.GrowthBalance)).ToList();
+        var trendPoints = new List<(string month, decimal balance)>();
+        if (!summaryOnly)
+        {
+            await _cycleBalanceService.EnsureComputedThroughAsync(year, activeMonthIndex, cycleDay);
+            var trendRows = await _context.CycleBalances
+                .AsNoTracking()
+                .Where(b => b.Year == activeYear && b.MonthIndex <= activeMonthIndex)
+                .OrderBy(b => b.MonthIndex)
+                .ToListAsync();
+            trendPoints = trendRows.Select(r => (Months[r.MonthIndex - 1], r.GrowthBalance)).ToList();
+        }
 
         var selectedCycleIncome = activeCycleTxs
             .Where(t => t.LedgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase) || string.Equals(t.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
@@ -153,7 +158,9 @@ public class FinancialService
             .ThenBy(r => ((dynamic)r).dueDate)
             .ToList();
 
-        var pendingNotifications = await _recurringPaymentAlertService.GetSubscriptionAlertsAsync();
+        var pendingNotifications = summaryOnly
+            ? new List<object>()
+            : await _recurringPaymentAlertService.GetSubscriptionAlertsAsync();
 
         var monthlyCategoryBreakdown = BuildBreakdown(activeCycleTxs);
 

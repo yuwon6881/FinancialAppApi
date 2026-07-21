@@ -29,11 +29,12 @@ public class FinancialController : ControllerBase
     public async Task<ActionResult<object>> GetDashboardData(
         [FromQuery(Name = "month")] string? queryMonth = null,
         [FromQuery(Name = "year")] int? queryYear = null,
-        [FromQuery(Name = "persistSelection")] bool persistSelection = true)
+        [FromQuery(Name = "persistSelection")] bool persistSelection = true,
+        [FromQuery(Name = "summaryOnly")] bool summaryOnly = false)
     {
         if (!IsValidPeriod(queryMonth, queryYear))
             return BadRequest(new { message = "Month must be a valid three-letter abbreviation and include a year." });
-        return Ok(await _financialService.GetDashboardDataAsync(queryMonth, queryYear, persistSelection));
+        return Ok(await _financialService.GetDashboardDataAsync(queryMonth, queryYear, persistSelection, summaryOnly));
     }
 
     // GET: api/financial/dashboard/insights

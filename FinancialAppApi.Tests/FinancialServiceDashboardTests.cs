@@ -131,6 +131,23 @@ public class FinancialServiceDashboardTests
     }
 
     [Fact]
+    public async Task GetDashboardDataAsync_SummaryOnlyOmitsUnneededDashboardExtras()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.Transactions.Add(Tx("jul", 2026, 7, 9, "Food", -100m));
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context).GetDashboardDataAsync("Jul", 2026, persistSelection: false, summaryOnly: true);
+
+        Assert.Empty(GetObjects(response, "trendPoints"));
+        Assert.Empty(GetObjects(response, "last3TrendPoints"));
+        Assert.Empty(GetObjects(response, "last6TrendPoints"));
+        Assert.Empty(GetObjects(response, "pendingNotifications"));
+        Assert.Equal(new[] { ("Food", 100m) }, GetBreakdown(response, "monthlyCategoryBreakdown"));
+    }
+
+    [Fact]
     public async Task GetDashboardDataAsync_ExcludesLegacyNegativeTransfersFromExpenses()
     {
         await using var context = TestHelpers.NewInMemoryContext();
