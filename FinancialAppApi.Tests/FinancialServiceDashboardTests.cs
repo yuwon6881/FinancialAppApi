@@ -191,6 +191,48 @@ public class FinancialServiceDashboardTests
         Assert.Equal(0m, GetStat(response, "activeRecurringTotal"));
     }
 
+    [Fact]
+    public async Task GetDashboardDataAsync_PaidOccurrenceUsesLedgerSnapshotAfterTemplateChanges()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "streaming",
+            Name = "Renamed Future Plan",
+            Amount = -25m,
+            Frequency = "Monthly",
+            Category = "Software",
+            LedgerCategory = "Essentials",
+            StartDate = "2026-01-10",
+            NextDueDate = "2026-01-10",
+            DueDate = 10,
+            Active = true
+        });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "streaming-jul-payment",
+            Date = new DateTime(2026, 7, 10),
+            Description = "Original Plan",
+            Amount = -19m,
+            Category = "Entertainment",
+            LedgerCategory = "Rewards",
+            RecurringPaymentId = "streaming"
+        });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context).GetDashboardDataAsync("Jul", 2026);
+        var occurrence = Assert.Single(GetObjects(response, "activeRecurringPayments"));
+        var occurrenceType = occurrence.GetType();
+
+        Assert.Equal("Original Plan", occurrenceType.GetProperty("name")!.GetValue(occurrence));
+        Assert.Equal("Entertainment", occurrenceType.GetProperty("category")!.GetValue(occurrence));
+        Assert.Equal("Rewards", occurrenceType.GetProperty("ledgerCategory")!.GetValue(occurrence));
+        Assert.Equal("Paid", occurrenceType.GetProperty("status")!.GetValue(occurrence));
+        var amountRaw = (string)occurrenceType.GetProperty("amount")!.GetValue(occurrence)!;
+        Assert.Equal(19m, ObfuscationHelper.Deobfuscate(amountRaw));
+    }
+
     private static (string category, decimal amount)[] GetBreakdown(object response, string propertyName)
     {
         var raw = (System.Collections.IEnumerable)response.GetType().GetProperty(propertyName)!.GetValue(response)!;

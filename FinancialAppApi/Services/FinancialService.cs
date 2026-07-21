@@ -456,14 +456,19 @@ public class FinancialService
                 var isDiscarded = paidTx != null && string.Equals(paidTx.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase);
                 var isPaid = paidTx != null && !isDiscarded;
 
+                // The recurring payment is a template for pending and future occurrences. Once an
+                // occurrence is paid, its linked ledger transaction is the historical snapshot:
+                // later subscription edits must not rewrite what the user actually recorded for
+                // this cycle. Discard markers carry no payment details, so they retain the template
+                // fields while reporting their discarded status.
                 activeRecurringList.Add(new
                 {
                     id = instanceId,
                     recurringPaymentId = rp.Id,
-                    name = rp.Name,
-                    amount = ObfuscationHelper.Obfuscate(Math.Abs(rp.Amount)),
-                    category = rp.Category,
-                    ledgerCategory = rp.LedgerCategory,
+                    name = isPaid ? paidTx!.Description : rp.Name,
+                    amount = ObfuscationHelper.Obfuscate(isPaid ? Math.Abs(paidTx!.Amount) : Math.Abs(rp.Amount)),
+                    category = isPaid ? paidTx!.Category : rp.Category,
+                    ledgerCategory = isPaid ? paidTx!.LedgerCategory : rp.LedgerCategory,
                     dueDate = billingDate.ToString("yyyy-MM-dd"),
                     isPaid = isPaid,
                     isDiscarded = isDiscarded,
