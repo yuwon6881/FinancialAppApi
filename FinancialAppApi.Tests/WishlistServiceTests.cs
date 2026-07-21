@@ -215,6 +215,54 @@ public class WishlistServiceTests
         Assert.Null(await context.Transactions.FindAsync("tx-1"));
     }
 
+    [Fact]
+    public async Task GetClaimedWishlistPagedAsync_ReturnsOnlyPurchasedNewestFirstAndPaged()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        // 6 purchased (claimed on distinct days) + 1 unpurchased that must be excluded.
+        for (var i = 1; i <= 6; i++)
+        {
+            var purchased = NewItem(i, $"Claim {i}", active: false, price: 10m * i);
+            purchased.IsPurchased = true;
+            purchased.PurchasedAt = new DateTime(2026, 1, i, 0, 0, 0, DateTimeKind.Utc);
+            context.WishlistItems.Add(purchased);
+        }
+        context.WishlistItems.Add(NewItem(7, "Still saving", active: true));
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var page1 = await service.GetClaimedWishlistPagedAsync(1, 5);
+        var page2 = await service.GetClaimedWishlistPagedAsync(2, 5);
+
+        Assert.Equal(6, page1.Total);
+        Assert.Equal(5, page1.Items.Count);
+        Assert.All(page1.Items, item => Assert.True(item.IsPurchased));
+        // Newest claim (Jan 6) first.
+        Assert.Equal("Claim 6", page1.Items[0].Name);
+        Assert.Equal("Claim 2", page1.Items[4].Name);
+        // Second page holds the remaining, oldest claim.
+        Assert.Single(page2.Items);
+        Assert.Equal("Claim 1", page2.Items[0].Name);
+    }
+
+    [Fact]
+    public async Task GetClaimedWishlistPagedAsync_ClampsInvalidPagingArguments()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var purchased = NewItem(1, "Only claim", active: false);
+        purchased.IsPurchased = true;
+        purchased.PurchasedAt = DateTime.UtcNow;
+        context.WishlistItems.Add(purchased);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.GetClaimedWishlistPagedAsync(0, 0);
+
+        Assert.Equal(1, result.Page);
+        Assert.Equal(5, result.PageSize);
+        Assert.Single(result.Items);
+    }
+
     private static WishlistService NewService(Database.AppDbContext context)
     {
         return new WishlistService(context, new CycleBalanceService(context));
