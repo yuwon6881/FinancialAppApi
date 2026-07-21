@@ -164,7 +164,8 @@ public class FinancialService
                 darkMode = setting.DarkMode,
                 hideSensitive = setting.HideSensitive,
                 currency = setting.Currency,
-                stabilityOverflowRedirect = setting.StabilityOverflowRedirect
+                stabilityOverflowRedirect = setting.StabilityOverflowRedirect,
+                lastSummaryCycleSeen = setting.LastSummaryCycleSeen
             },
             cycleLabel = selectedCycleLabel,
             categories,
@@ -333,6 +334,16 @@ public class FinancialService
     {
         var setting = await GetOrCreateSettingAsync();
         setting.VibrationEnabled = vibrationEnabled;
+        await _context.SaveChangesAsync();
+    }
+
+    // Records which cycle the user has acknowledged an end-of-cycle summary for. Kept as a
+    // tiny dedicated writer (like dark-mode/hide-sensitive) so acknowledging a summary never
+    // races or overwrites a full settings edit. A null/blank key clears the marker.
+    public async Task UpdateSummarySeenAsync(string? cycleKey)
+    {
+        var setting = await GetOrCreateSettingAsync();
+        setting.LastSummaryCycleSeen = string.IsNullOrWhiteSpace(cycleKey) ? null : cycleKey.Trim();
         await _context.SaveChangesAsync();
     }
 

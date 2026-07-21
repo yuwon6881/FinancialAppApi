@@ -48,4 +48,11 @@ public class FinancialSetting : IUserOwnedEntity
 
     [Required]
     public bool VibrationEnabled { get; set; } = true;
+
+    // The current-cycle key ("yyyy-MM", e.g. "2026-08") the user last acknowledged an
+    // end-of-cycle summary for. Null means the user has never seen one, so the client
+    // silently adopts the current cycle instead of surfacing a summary for a cycle the
+    // user never actually used. Persisting this server-side (rather than per-device)
+    // guarantees the summary fires exactly once per cycle across all of a user's devices.
+    public string? LastSummaryCycleSeen { get; set; }
 }

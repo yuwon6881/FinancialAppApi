@@ -7,6 +7,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using System.Net;
+using System.Text;
 
 namespace FinancialAppApi.Tests.Integration;
 
@@ -21,6 +23,10 @@ namespace FinancialAppApi.Tests.Integration;
 public sealed class FinancialApiFactory : WebApplicationFactory<Program>
 {
     private readonly string _databaseName = "it-" + Guid.NewGuid().ToString("N");
+    private string? _lastAiRequestBody;
+
+    /// <summary>The most recent prompt sent to the AI provider by this test host.</summary>
+    public string? LastAiRequestBody => Volatile.Read(ref _lastAiRequestBody);
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -30,6 +36,7 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
         // ConfigureTestServices override, so supply a dummy one to get past the guard.
         builder.UseSetting("ConnectionStrings:DefaultConnection",
             "Host=localhost;Database=unused;Username=unused;Password=unused");
+        builder.UseSetting("AiApiKey", "test-key");
 
         // Pin the registration cap so HTTP registration-gating tests stay deterministic
         // regardless of the shipped appsettings default (which product config may change).
@@ -55,6 +62,11 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
                 options.UseInMemoryDatabase(_databaseName)
                     .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning));
             });
+
+            // Keep AI endpoint tests hermetic while allowing them to inspect the exact provider
+            // payload generated through the real HTTP, auth, and application-service pipeline.
+            services.AddHttpClient<AiClient>()
+                .ConfigurePrimaryHttpMessageHandler(() => new CapturingAiHandler(this));
 
             var imageStoreRegistrations = services
                 .Where(descriptor => descriptor.ServiceType == typeof(IReceiptImageStore))
@@ -88,5 +100,22 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
             db.SetCurrentUser(userIds[0]);
         }
         await action(db);
+    }
+
+    private sealed class CapturingAiHandler(FinancialApiFactory factory) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var requestBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+            Volatile.Write(ref factory._lastAiRequestBody, requestBody);
+
+            const string responseBody = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"{\\\"reply\\\":\\\"Context received.\\\",\\\"closeChat\\\":false,\\\"actions\\\":[]}\"}]},\"finishReason\":\"STOP\"}]}";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(responseBody, Encoding.UTF8, "application/json")
+            };
+        }
     }
 }

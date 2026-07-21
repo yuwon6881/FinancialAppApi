@@ -93,6 +93,19 @@ public class FinancialController : ControllerBase
         return NoContent();
     }
 
+    // PUT: api/financial/summary-seen
+    [HttpPut("summary-seen")]
+    public async Task<IActionResult> UpdateSummarySeen([FromBody] UpdateSummarySeenDto dto)
+    {
+        if (!string.IsNullOrWhiteSpace(dto.CycleKey) &&
+            !System.Text.RegularExpressions.Regex.IsMatch(dto.CycleKey, "^[0-9]{4}-[0-9]{2}$"))
+        {
+            return BadRequest(new { message = "Cycle key must be in yyyy-MM format." });
+        }
+        await _financialService.UpdateSummarySeenAsync(dto.CycleKey);
+        return NoContent();
+    }
+
     // POST: api/financial/select-period
     [HttpPost("select-period")]
     public async Task<IActionResult> SelectPeriod([FromBody] SelectPeriodDto periodDto)
@@ -140,6 +153,11 @@ public class UpdateHideSensitiveDto
 public class UpdateVibrationDto
 {
     public bool VibrationEnabled { get; set; }
+}
+
+public class UpdateSummarySeenDto
+{
+    public string? CycleKey { get; set; }
 }
 
 public class SelectPeriodDto

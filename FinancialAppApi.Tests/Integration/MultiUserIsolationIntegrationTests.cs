@@ -84,6 +84,35 @@ public class MultiUserIsolationIntegrationTests : IntegrationTestBase
         Assert.Equal(10, bobNames.Count);
     }
 
+    [Fact]
+    public async Task AiChat_SendsOnlyTheAuthenticatedUsersContextToTheProvider()
+    {
+        var alice = CreateAuthenticatedClient(await SeedUserWithDefaultsAsync("alice", AliceUserId));
+        var bob = CreateAuthenticatedClient(await SeedUserWithDefaultsAsync("bob", BobUserId));
+
+        await CreateTransactionAsync(alice, "alice-ai-transaction", "Alice Private Groceries");
+        await CreateTransactionAsync(bob, "bob-ai-transaction", "Bob Secret Groceries");
+        await CreateRecurringPaymentAsync(alice, "alice-ai-recurring", "Alice Private Streaming", -15m);
+        await CreateRecurringPaymentAsync(bob, "bob-ai-recurring", "Bob Secret Streaming", -10m);
+        await CreateWishlistItemAsync(alice, "Alice Private Laptop", 1500m);
+        await CreateWishlistItemAsync(bob, "Bob Secret Phone", 900m);
+
+        var chat = await alice.PostAsJsonAsync("/api/ai/chat", new
+        {
+            message = "Summarize my recent transactions, recurring payments, and wishlist.",
+            conversationState = new { }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, chat.StatusCode);
+        var providerPayload = Assert.IsType<string>(Factory.LastAiRequestBody);
+        Assert.Contains("Alice Private Groceries", providerPayload);
+        Assert.Contains("Alice Private Streaming", providerPayload);
+        Assert.Contains("Alice Private Laptop", providerPayload);
+        Assert.DoesNotContain("Bob Secret Groceries", providerPayload);
+        Assert.DoesNotContain("Bob Secret Streaming", providerPayload);
+        Assert.DoesNotContain("Bob Secret Phone", providerPayload);
+    }
+
     // --- helpers ------------------------------------------------------------
 
     /// <summary>
@@ -126,6 +155,20 @@ public class MultiUserIsolationIntegrationTests : IntegrationTestBase
         });
         Assert.Equal(HttpStatusCode.Created, create.StatusCode);
         return (await create.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+    }
+
+    private static async Task CreateTransactionAsync(HttpClient client, string id, string description)
+    {
+        var create = await client.PostAsJsonAsync("/api/transactions", new
+        {
+            id,
+            date = "2026-07-15",
+            description,
+            category = "Food",
+            ledgerCategory = "Essentials",
+            amount = ObfuscationHelper.Obfuscate(-25m),
+        });
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
     }
 
     private static async Task CreateRecurringPaymentAsync(HttpClient client, string id, string name, decimal amount)
