@@ -77,7 +77,7 @@ public class WishlistController : ControllerBase
         DateTime? customDate = null;
         if (!string.IsNullOrWhiteSpace(dto?.Date) && TransactionDate.TryParseInputDate(dto.Date, out var parsedDate))
         {
-            customDate = parsedDate;
+            customDate = TransactionDate.FromInputDate(parsedDate);
         }
 
         var result = await _wishlistService.PurchaseWishlistItemAsync(id, customDate, HttpContext.RequestAborted);

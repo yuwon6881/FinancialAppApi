@@ -243,7 +243,7 @@ public class WishlistService
         }
 
         item.IsPurchased = true;
-        var purchaseDate = customDate.HasValue ? TransactionDate.StartOfDate(customDate.Value) : TransactionDate.StartOfDate(_financialClock.Today);
+        var purchaseDate = customDate.HasValue ? TransactionDate.StartOfDate(TransactionDate.ToDateOnly(customDate.Value)) : TransactionDate.StartOfDate(_financialClock.Today);
         var purchasedAt = customDate ?? DateTime.UtcNow;
         item.PurchasedAt = purchaseDate;
         item.IsActive = false;
