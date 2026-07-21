@@ -72,9 +72,15 @@ public class WishlistController : ControllerBase
 
     // POST: api/wishlist/{id}/purchase
     [HttpPost("{id}/purchase")]
-    public async Task<IActionResult> PurchaseWishlistItem(int id)
+    public async Task<IActionResult> PurchaseWishlistItem(int id, [FromBody] PurchaseWishlistRequestDto? dto = null)
     {
-        var result = await _wishlistService.PurchaseWishlistItemAsync(id, HttpContext.RequestAborted);
+        DateTime? customDate = null;
+        if (!string.IsNullOrWhiteSpace(dto?.Date) && TransactionDate.TryParseInputDate(dto.Date, out var parsedDate))
+        {
+            customDate = parsedDate;
+        }
+
+        var result = await _wishlistService.PurchaseWishlistItemAsync(id, customDate, HttpContext.RequestAborted);
         return result.Status switch
         {
             WishlistMutationStatus.NotFound => NotFound(),
@@ -181,4 +187,9 @@ public class WishlistItemDto
     public string? PurchaseTransactionId { get; set; }
     public DateTime CreatedAt { get; set; }
     public bool IsActive { get; set; }
+}
+
+public class PurchaseWishlistRequestDto
+{
+    public string? Date { get; set; }
 }

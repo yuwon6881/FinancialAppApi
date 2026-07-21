@@ -283,7 +283,7 @@ public class TransactionPersistenceService
         if (item == null) return;
 
         item.IsPurchased = true;
-        item.PurchasedAt ??= transaction.Date;
+        item.PurchasedAt = transaction.Date;
         item.PurchaseTransactionId = transaction.Id;
         item.IsActive = false;
     }

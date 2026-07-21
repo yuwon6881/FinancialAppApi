@@ -223,7 +223,7 @@ public class WishlistService
         return WishlistMutationStatus.Success;
     }
 
-    public async Task<WishlistPurchaseResult> PurchaseWishlistItemAsync(int id, CancellationToken cancellationToken = default)
+    public async Task<WishlistPurchaseResult> PurchaseWishlistItemAsync(int id, DateTime? customDate = null, CancellationToken cancellationToken = default)
     {
         var item = await _context.WishlistItems.FindAsync([id], cancellationToken);
         if (item == null)
@@ -243,14 +243,15 @@ public class WishlistService
         }
 
         item.IsPurchased = true;
-        var purchasedAt = DateTime.UtcNow;
-        item.PurchasedAt = purchasedAt;
+        var purchaseDate = customDate.HasValue ? TransactionDate.StartOfDate(customDate.Value) : TransactionDate.StartOfDate(_financialClock.Today);
+        var purchasedAt = customDate ?? DateTime.UtcNow;
+        item.PurchasedAt = purchaseDate;
         item.IsActive = false;
 
         var tx = new Transaction
         {
             Id = Guid.NewGuid().ToString("N"),
-            Date = TransactionDate.StartOfDate(_financialClock.Today),
+            Date = purchaseDate,
             PostedAt = purchasedAt,
             Description = $"Purchased: {item.Name} (Wish List)",
             Category = "Other",
