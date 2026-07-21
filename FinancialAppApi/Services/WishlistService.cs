@@ -173,8 +173,35 @@ public class WishlistService
 
         bool wasActive = item.IsActive;
 
+        // A purchased item owns a ledger transaction (and possibly split rows). There is no
+        // FK cascade from Transaction.WishlistItemId, so deleting the item alone would orphan
+        // that transaction in the ledger. Remove it here to mirror UnpurchaseWishlistItemAsync,
+        // otherwise undoing an add-then-purchase leaves the purchase record behind.
+        var transaction = !string.IsNullOrWhiteSpace(item.PurchaseTransactionId)
+            ? await _context.Transactions.FindAsync([item.PurchaseTransactionId], cancellationToken)
+            : await _context.Transactions.FirstOrDefaultAsync(t => t.WishlistItemId == item.Id, cancellationToken);
+        DateTime? affectedDate = transaction?.Date;
+        if (transaction != null)
+        {
+            var splits = await _context.Transactions
+                .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
+                .ToListAsync(cancellationToken);
+            _context.Transactions.RemoveRange(splits);
+            _context.Transactions.Remove(transaction);
+        }
+
         _context.WishlistItems.Remove(item);
         await _context.SaveChangesAsync(cancellationToken);
+
+        if (affectedDate.HasValue)
+        {
+            var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
+            if (setting != null)
+            {
+                var (cycleYear, cycleMonthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(affectedDate.Value), setting.CycleDay);
+                await _cycleBalanceService.InvalidateFromAsync(cycleYear, cycleMonthIndex);
+            }
+        }
 
         if (wasActive)
         {

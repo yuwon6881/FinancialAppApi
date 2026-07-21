@@ -105,6 +105,35 @@ public class WishlistServiceTests
     }
 
     [Fact]
+    public async Task DeleteWishlistItemAsync_RemovesOrphanPurchaseTransaction()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var purchased = NewItem(1, "Headphones", active: false, price: 80m);
+        purchased.IsPurchased = true;
+        purchased.PurchaseTransactionId = "tx-1";
+        context.WishlistItems.Add(purchased);
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-1",
+            Date = DateTime.UtcNow,
+            Description = "Purchased: Headphones (Wish List)",
+            Category = "Other",
+            LedgerCategory = "Rewards",
+            Amount = -80m,
+            WishlistItemId = 1
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.DeleteWishlistItemAsync(1);
+
+        Assert.Equal(WishlistMutationStatus.Success, result);
+        Assert.Null(await context.WishlistItems.FindAsync(1));
+        // The ledger transaction must be gone too, not orphaned.
+        Assert.Null(await context.Transactions.FindAsync("tx-1"));
+    }
+
+    [Fact]
     public async Task PurchaseWishlistItemAsync_MarksPurchasedAndCreatesTransaction()
     {
         await using var context = TestHelpers.NewInMemoryContext();
