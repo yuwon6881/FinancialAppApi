@@ -38,7 +38,8 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "endDate")] string? endDate = null,
         [FromQuery(Name = "minAmount")] decimal? minAmount = null,
         [FromQuery(Name = "maxAmount")] decimal? maxAmount = null,
-        [FromQuery(Name = "recurringOnly")] bool recurringOnly = false)
+        [FromQuery(Name = "recurringOnly")] bool recurringOnly = false,
+        [FromQuery(Name = "wishlistOnly")] bool wishlistOnly = false)
     {
         if (queryMonth != null && !FinancialConstants.MonthAbbreviations.Contains(queryMonth, StringComparer.Ordinal))
             return BadRequest(new { message = "Month must be a valid three-letter abbreviation." });
@@ -58,6 +59,7 @@ public class TransactionsController : ControllerBase
             minAmount,
             maxAmount,
             recurringOnly,
+            wishlistOnly,
             HttpContext.RequestAborted);
 
         if (result.Total.HasValue)
@@ -105,7 +107,8 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "endDate")] string? endDate = null,
         [FromQuery(Name = "minAmount")] decimal? minAmount = null,
         [FromQuery(Name = "maxAmount")] decimal? maxAmount = null,
-        [FromQuery(Name = "recurringOnly")] bool recurringOnly = false)
+        [FromQuery(Name = "recurringOnly")] bool recurringOnly = false,
+        [FromQuery(Name = "wishlistOnly")] bool wishlistOnly = false)
     {
         var export = await _transactionQueryService.ExportTransactionsAsync(
             search,
@@ -117,6 +120,7 @@ public class TransactionsController : ControllerBase
             minAmount,
             maxAmount,
             recurringOnly,
+            wishlistOnly,
             HttpContext.RequestAborted);
         return File(export.Bytes, "text/csv", export.FileName);
     }

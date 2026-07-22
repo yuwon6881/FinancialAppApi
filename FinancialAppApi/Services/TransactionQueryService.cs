@@ -51,6 +51,7 @@ public class TransactionQueryService
         decimal? minAmount = null,
         decimal? maxAmount = null,
         bool recurringOnly = false,
+        bool wishlistOnly = false,
         CancellationToken cancellationToken = default)
     {
         page = Math.Max(1, page);
@@ -69,7 +70,8 @@ public class TransactionQueryService
                 endDate,
                 minAmount,
                 maxAmount,
-                recurringOnly);
+                recurringOnly,
+                wishlistOnly);
             var total = await query.CountAsync(cancellationToken);
 
             var txs = await query
@@ -206,6 +208,7 @@ public class TransactionQueryService
         decimal? minAmount = null,
         decimal? maxAmount = null,
         bool recurringOnly = false,
+        bool wishlistOnly = false,
         CancellationToken cancellationToken = default)
     {
         var query = ApplyAllFilters(
@@ -219,7 +222,8 @@ public class TransactionQueryService
             endDate,
             minAmount,
             maxAmount,
-            recurringOnly);
+            recurringOnly,
+            wishlistOnly);
         var rows = await query
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.PostedAt)
@@ -270,7 +274,8 @@ public class TransactionQueryService
         string? endDate,
         decimal? minAmount,
         decimal? maxAmount,
-        bool recurringOnly)
+        bool recurringOnly,
+        bool wishlistOnly)
     {
         query = query.Where(t => t.LedgerCategory != "Discarded");
 
@@ -301,6 +306,11 @@ public class TransactionQueryService
         if (recurringOnly)
         {
             query = query.Where(t => t.RecurringPaymentId != null && t.RecurringPaymentId != "");
+        }
+
+        if (wishlistOnly)
+        {
+            query = query.Where(t => t.WishlistItemId != null);
         }
 
         if (!string.IsNullOrWhiteSpace(search))

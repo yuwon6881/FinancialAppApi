@@ -67,6 +67,23 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
+    public async Task GetTransactionsAsync_WishlistOnlyReturnsLinkedPurchases()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("wishlist", "Purchased: Headphones", "Other", "Rewards", -80m, wishlistItemId: 12),
+            NewTransaction("ordinary", "Coffee", "Food", "Rewards", -10m));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var result = await service.GetTransactionsAsync(all: true, wishlistOnly: true);
+
+        var transaction = Assert.Single(result.Items);
+        Assert.Equal("wishlist", transaction.Id);
+        Assert.Equal(12, transaction.WishlistItemId);
+    }
+
+    [Fact]
     public async Task GetTransactionsAsync_OrdersSameDayRowsByCreationTimestamp()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -145,7 +162,8 @@ public class TransactionQueryServiceTests
         decimal amount,
         DateTime? postedAt = null,
         DateOnly? date = null,
-        string? recurringPaymentId = null)
+        string? recurringPaymentId = null,
+        int? wishlistItemId = null)
     {
         return new Transaction
         {
@@ -156,7 +174,8 @@ public class TransactionQueryServiceTests
             Category = category,
             LedgerCategory = ledgerCategory,
             Amount = amount,
-            RecurringPaymentId = recurringPaymentId
+            RecurringPaymentId = recurringPaymentId,
+            WishlistItemId = wishlistItemId
         };
     }
 }
