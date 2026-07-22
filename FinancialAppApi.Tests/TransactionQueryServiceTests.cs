@@ -154,6 +154,22 @@ public class TransactionQueryServiceTests
         Assert.Equal("Income", suggestion.LedgerCategory);
     }
 
+    [Fact]
+    public async Task GetAutocompleteSuggestionsAsync_ExcludesWishlistPurchases()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("ordinary-1", "Prawn Noodle Soup", "Food", "Essentials", -10m),
+            NewTransaction("wishlist-1", "Purchased: Rave (Wish List)", "Other", "Rewards", -200m, wishlistItemId: 42));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var suggestions = await service.GetAutocompleteSuggestionsAsync();
+
+        var suggestion = Assert.Single(suggestions);
+        Assert.Equal("Prawn Noodle Soup", suggestion.Description);
+    }
+
     private static Transaction NewTransaction(
         string id,
         string description,
