@@ -13,4 +13,9 @@ public class TransactionCategory : IUserOwnedEntity
 
     [Required]
     public string Name { get; set; } = string.Empty;
+
+    // Optional default spending guide for the user's current and future salary cycles.
+    // Historical values are versioned in CategorySpendingGuide so changing this default
+    // never rewrites an already-finished cycle's report.
+    public decimal? CycleLimit { get; set; }
 }

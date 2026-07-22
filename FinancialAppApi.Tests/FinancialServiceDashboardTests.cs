@@ -286,6 +286,79 @@ public class FinancialServiceDashboardTests
         Assert.Equal(19m, ObfuscationHelper.Deobfuscate(amountRaw));
     }
 
+    [Fact]
+    public async Task GetDashboardDataAsync_ComputesTodayPlanInsightsFromUnpaidBillsAndCurrentPace()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.Transactions.Add(Tx("food", 2026, 7, 3, "Food", -150m));
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "internet",
+            Name = "Internet",
+            Amount = -60m,
+            Frequency = "Monthly",
+            Category = "Bills",
+            LedgerCategory = "Essentials",
+            StartDate = "2026-01-20",
+            NextDueDate = "2026-01-20",
+            DueDate = 20,
+            Active = true
+        });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context, new DateTimeOffset(2026, 7, 16, 0, 0, 0, TimeSpan.Zero))
+            .GetDashboardDataAsync("Jul", 2026);
+        var insights = response.GetType().GetProperty("todayPlanInsights")!.GetValue(response)!;
+
+        Assert.Equal(1, insights.GetType().GetProperty("unpaidRecurringCount")!.GetValue(insights));
+        Assert.Equal(60m, GetAmount(insights, "unpaidRecurringTotal"));
+        Assert.Equal(150m, GetAmount(insights, "nonRecurringEssentialsSpent"));
+        Assert.Equal(9.38m, GetAmount(insights, "nonRecurringEssentialsDailyAverage"));
+        Assert.Equal(-350.63m, GetAmount(insights, "projectedEssentialsEndingBalance"));
+    }
+
+    [Fact]
+    public async Task GetDashboardDataAsync_UsesTheGuideEffectiveForTheSelectedCycle()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.Transactions.Add(Tx("transport", 2026, 7, 4, "Transport", -150m));
+        context.CategorySpendingGuides.AddRange(
+            new CategorySpendingGuide
+            {
+                Id = "guide-old",
+                CategoryName = "Transport",
+                EffectiveFromCycleKey = "2026-06",
+                LimitAmount = 100m
+            },
+            new CategorySpendingGuide
+            {
+                Id = "guide-current",
+                CategoryName = "Transport",
+                EffectiveFromCycleKey = "2026-07",
+                LimitAmount = 400m
+            },
+            new CategorySpendingGuide
+            {
+                Id = "guide-future",
+                CategoryName = "Transport",
+                EffectiveFromCycleKey = "2026-08",
+                LimitAmount = 50m
+            });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context, new DateTimeOffset(2026, 7, 16, 0, 0, 0, TimeSpan.Zero))
+            .GetDashboardDataAsync("Jul", 2026);
+        var progress = Assert.Single(GetObjects(response, "categoryLimitProgress"));
+
+        Assert.Equal("Transport", progress.GetType().GetProperty("category")!.GetValue(progress));
+        Assert.Equal(400m, GetAmount(progress, "limit"));
+        Assert.Equal(150m, GetAmount(progress, "spent"));
+        Assert.Equal(290.63m, GetAmount(progress, "projectedSpend"));
+        Assert.Equal("OnTrack", progress.GetType().GetProperty("status")!.GetValue(progress));
+    }
+
     private static (string category, decimal amount)[] GetBreakdown(object response, string propertyName)
     {
         var raw = (System.Collections.IEnumerable)response.GetType().GetProperty(propertyName)!.GetValue(response)!;
@@ -320,13 +393,30 @@ public class FinancialServiceDashboardTests
         return ObfuscationHelper.Deobfuscate(raw);
     }
 
-    private static FinancialService NewService(AppDbContext context)
+    private static decimal GetAmount(object value, string propertyName)
+    {
+        var raw = (string)value.GetType().GetProperty(propertyName)!.GetValue(value)!;
+        return ObfuscationHelper.Deobfuscate(raw);
+    }
+
+    private static FinancialService NewService(AppDbContext context, DateTimeOffset? utcNow = null)
     {
         var occurrences = new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
+        var clock = utcNow.HasValue
+            ? new FinancialClock(
+                TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+                new FixedTimeProvider(utcNow.Value))
+            : null;
         return new FinancialService(
             context,
             new CycleBalanceService(context),
-            new RecurringPaymentAlertService(context, occurrences),
-            occurrences);
+            new RecurringPaymentAlertService(context, occurrences, clock),
+            occurrences,
+            clock);
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

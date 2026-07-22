@@ -132,9 +132,47 @@ public class TransactionCategoryServiceTests
         Assert.Equal("Other", (await context.RecurringPayments.SingleAsync()).Category);
     }
 
-    private static TransactionCategoryService NewService(Database.AppDbContext context)
+    [Fact]
+    public async Task UpdateCycleLimitAsync_UpsertsAnEffectiveDatedGuideAndCanDisableIt()
     {
-        return new TransactionCategoryService(context, new MemoryCache(new MemoryCacheOptions()));
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.TransactionCategories.Add(new TransactionCategory { Id = "cat-transport", Name = "Transport" });
+        await context.SaveChangesAsync();
+        var service = NewService(context, new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero));
+
+        var enabled = await service.UpdateCycleLimitAsync("cat-transport", 400m);
+        var revised = await service.UpdateCycleLimitAsync("cat-transport", 450m);
+
+        Assert.Equal(UpdateCategoryCycleLimitStatus.Updated, enabled.Status);
+        Assert.Equal(UpdateCategoryCycleLimitStatus.Updated, revised.Status);
+        Assert.Equal(450m, (await context.TransactionCategories.SingleAsync()).CycleLimit);
+        var guide = await context.CategorySpendingGuides.SingleAsync();
+        Assert.Equal("2026-07", guide.EffectiveFromCycleKey);
+        Assert.Equal(450m, guide.LimitAmount);
+
+        var disabled = await service.UpdateCycleLimitAsync("cat-transport", null);
+
+        Assert.Equal(UpdateCategoryCycleLimitStatus.Updated, disabled.Status);
+        Assert.Null((await context.TransactionCategories.SingleAsync()).CycleLimit);
+        Assert.Null((await context.CategorySpendingGuides.SingleAsync()).LimitAmount);
+    }
+
+    private static TransactionCategoryService NewService(
+        Database.AppDbContext context,
+        DateTimeOffset? utcNow = null)
+    {
+        var clock = utcNow.HasValue
+            ? new FinancialClock(
+                TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+                new FixedTimeProvider(utcNow.Value))
+            : null;
+        return new TransactionCategoryService(context, new MemoryCache(new MemoryCacheOptions()), clock);
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 
     private static Transaction NewTransaction(string id, string category)

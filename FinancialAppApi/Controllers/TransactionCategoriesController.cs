@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
+using FinancialAppApi.Database;
 
 namespace FinancialAppApi.Controllers;
 
@@ -27,10 +28,10 @@ public class TransactionCategoriesController : ControllerBase
 
     // GET: api/categories
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<TransactionCategory>>> GetCategories()
+    public async Task<ActionResult<IEnumerable<object>>> GetCategories()
     {
         var categories = await _categoryService.GetCategoriesAsync();
-        return categories.ToList();
+        return categories.Select(ToResponse).ToList();
     }
 
     // POST: api/categories
@@ -42,14 +43,39 @@ public class TransactionCategoriesController : ControllerBase
         if (result.Status == CreateTransactionCategoryStatus.Existing)
         {
             // Idempotent replay of an already-committed create — return the stored row as success.
-            return Ok(result.Category);
+            return Ok(ToResponse(result.Category!));
         }
         if (result.Status != CreateTransactionCategoryStatus.Created)
         {
             return BadRequest(new { message = result.Message });
         }
 
-        return CreatedAtAction(nameof(GetCategories), new { id = result.Category!.Id }, result.Category);
+        return CreatedAtAction(nameof(GetCategories), new { id = result.Category!.Id }, ToResponse(result.Category));
+    }
+
+    // PUT: api/categories/{id}/cycle-limit
+    [HttpPut("{id}/cycle-limit")]
+    public async Task<IActionResult> UpdateCycleLimit(string id, UpdateCategoryCycleLimitDto dto)
+    {
+        decimal? limit = null;
+        if (!string.IsNullOrWhiteSpace(dto.CycleLimit))
+        {
+            try
+            {
+                limit = ObfuscationHelper.Deobfuscate(dto.CycleLimit);
+            }
+            catch (FormatException)
+            {
+                return BadRequest(new { message = "Cycle spending guide is invalid." });
+            }
+        }
+
+        var result = await _categoryService.UpdateCycleLimitAsync(id, limit);
+        if (result.Status == UpdateCategoryCycleLimitStatus.NotFound) return NotFound();
+        if (result.Status == UpdateCategoryCycleLimitStatus.InvalidAmount)
+            return BadRequest(new { message = result.Message });
+
+        return Ok(ToResponse(result.Category!));
     }
 
     [HttpPost("suggest")]
@@ -219,10 +245,24 @@ public class TransactionCategoriesController : ControllerBase
 
     public sealed record CategoryCleanupApplyRequest(IReadOnlyList<CategoryCleanupAction>? Actions);
 
+    private static object ToResponse(TransactionCategory category) => new
+    {
+        category.Id,
+        category.Name,
+        CycleLimit = category.CycleLimit.HasValue
+            ? ObfuscationHelper.Obfuscate(category.CycleLimit.Value)
+            : null
+    };
+
 }
 
 public class TransactionCategoryMutationDto
 {
     public string Id { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
+}
+
+public class UpdateCategoryCycleLimitDto
+{
+    public string? CycleLimit { get; set; }
 }

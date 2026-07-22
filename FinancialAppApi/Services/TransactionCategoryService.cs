@@ -34,6 +34,18 @@ public sealed record DeleteTransactionCategoryResult(
     int TransactionCount = 0,
     int RecurringPaymentCount = 0);
 
+public enum UpdateCategoryCycleLimitStatus
+{
+    Updated,
+    NotFound,
+    InvalidAmount
+}
+
+public sealed record UpdateCategoryCycleLimitResult(
+    UpdateCategoryCycleLimitStatus Status,
+    TransactionCategory? Category = null,
+    string? Message = null);
+
 public class TransactionCategoryService
 {
     // The category table has ~10 rows and changes rarely, but is read on nearly every
@@ -44,11 +56,13 @@ public class TransactionCategoryService
 
     private readonly AppDbContext _context;
     private readonly IMemoryCache _cache;
+    private readonly FinancialClock _financialClock;
 
-    public TransactionCategoryService(AppDbContext context, IMemoryCache cache)
+    public TransactionCategoryService(AppDbContext context, IMemoryCache cache, FinancialClock? financialClock = null)
     {
         _context = context;
         _cache = cache;
+        _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
     public async Task<IReadOnlyList<TransactionCategory>> GetCategoriesAsync()
@@ -177,6 +191,56 @@ public class TransactionCategoryService
         _cache.Remove(CacheKey);
 
         return new DeleteTransactionCategoryResult(DeleteTransactionCategoryStatus.Deleted);
+    }
+
+    public async Task<UpdateCategoryCycleLimitResult> UpdateCycleLimitAsync(string id, decimal? cycleLimit)
+    {
+        if (cycleLimit is <= 0 or > 9_999_999_999.99m)
+        {
+            return new UpdateCategoryCycleLimitResult(
+                UpdateCategoryCycleLimitStatus.InvalidAmount,
+                Message: "Cycle spending guide must be greater than zero and fit the supported currency range.");
+        }
+
+        var category = await _context.TransactionCategories.FindAsync(id);
+        if (category == null)
+        {
+            return new UpdateCategoryCycleLimitResult(UpdateCategoryCycleLimitStatus.NotFound);
+        }
+
+        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
+        var cycleDay = setting?.CycleDay ?? 28;
+        var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+            _financialClock.Today,
+            cycleDay);
+        var cycleKey = $"{year:D4}-{monthIndex:D2}";
+
+        category.CycleLimit = cycleLimit;
+
+        var history = await _context.CategorySpendingGuides
+            .FirstOrDefaultAsync(guide =>
+                guide.CategoryName == category.Name &&
+                guide.EffectiveFromCycleKey == cycleKey);
+        if (history == null)
+        {
+            history = new CategorySpendingGuide
+            {
+                Id = $"guide-{Guid.NewGuid():N}",
+                CategoryName = category.Name,
+                EffectiveFromCycleKey = cycleKey,
+                LimitAmount = cycleLimit
+            };
+            _context.CategorySpendingGuides.Add(history);
+        }
+        else
+        {
+            history.LimitAmount = cycleLimit;
+        }
+
+        await _context.SaveChangesAsync();
+        _cache.Remove(CacheKey);
+
+        return new UpdateCategoryCycleLimitResult(UpdateCategoryCycleLimitStatus.Updated, category);
     }
 
     public async Task<bool> CategoryNameExistsAsync(string name)

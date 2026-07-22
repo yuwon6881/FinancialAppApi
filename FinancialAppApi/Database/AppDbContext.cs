@@ -16,6 +16,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<RecurringPayment> RecurringPayments => Set<RecurringPayment>();
     public DbSet<FinancialSetting> FinancialSettings => Set<FinancialSetting>();
     public DbSet<TransactionCategory> TransactionCategories => Set<TransactionCategory>();
+    public DbSet<CategorySpendingGuide> CategorySpendingGuides => Set<CategorySpendingGuide>();
     public DbSet<AppUser> AppUsers => Set<AppUser>();
     public DbSet<UserSession> UserSessions => Set<UserSession>();
 
@@ -158,13 +159,22 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<TransactionCategory>(entity =>
         {
+            entity.Property(e => e.CycleLimit).HasColumnType("numeric(12,2)");
             entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
+        });
+
+        modelBuilder.Entity<CategorySpendingGuide>(entity =>
+        {
+            entity.Property(e => e.LimitAmount).HasColumnType("numeric(12,2)");
+            entity.HasIndex(e => new { e.UserId, e.CategoryName, e.EffectiveFromCycleKey }).IsUnique();
+            entity.HasIndex(e => new { e.UserId, e.EffectiveFromCycleKey });
         });
 
         ConfigureUserOwnership(modelBuilder.Entity<Transaction>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<RecurringPayment>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<FinancialSetting>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<TransactionCategory>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<CategorySpendingGuide>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<WishlistItem>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<CycleBalance>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<UserSession>(), applyQueryFilter: false);

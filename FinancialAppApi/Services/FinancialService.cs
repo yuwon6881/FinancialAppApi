@@ -158,6 +158,28 @@ public class FinancialService
             .ThenBy(r => ((dynamic)r).dueDate)
             .ToList();
 
+        var pendingRecurring = BuildPendingRecurringItems(
+            allRecurring,
+            activeCycleTxs,
+            activeRange.start,
+            activeRange.end,
+            cycleDay);
+
+        var todayPlanInsights = BuildTodayPlanInsights(
+            activeCycleTxs,
+            pendingRecurring,
+            selectedRemEssentials,
+            activeRange.start,
+            activeRange.end);
+
+        var categoryLimitProgress = await BuildCategoryLimitProgressAsync(
+            activeCycleTxs,
+            pendingRecurring,
+            activeYear,
+            activeMonthIndex,
+            activeRange.start,
+            activeRange.end);
+
         var pendingNotifications = summaryOnly
             ? new List<object>()
             : await _recurringPaymentAlertService.GetSubscriptionAlertsAsync();
@@ -210,6 +232,8 @@ public class FinancialService
             last6TrendPoints = ObfuscateTrendPoints(last6TrendPoints),
             pendingNotifications,
             monthlyCategoryBreakdown = ObfuscateBreakdown(monthlyCategoryBreakdown),
+            todayPlanInsights,
+            categoryLimitProgress,
             cycleSummaryInsights
         };
 
@@ -645,6 +669,169 @@ public class FinancialService
 
     private static List<object> ObfuscateBreakdown(List<(string category, decimal amount)> breakdown) =>
         breakdown.Select(b => (object)new { category = b.category, amount = ObfuscationHelper.Obfuscate(b.amount) }).ToList();
+
+    private sealed record PendingRecurringItem(string Category, string LedgerCategory, decimal Amount);
+
+    private List<PendingRecurringItem> BuildPendingRecurringItems(
+        List<RecurringPayment> allRecurring,
+        List<Transaction> activeCycleTxs,
+        DateTime rangeStart,
+        DateTime rangeEnd,
+        int cycleDay)
+    {
+        var resolvedRecurringIds = activeCycleTxs
+            .Where(transaction => !string.IsNullOrWhiteSpace(transaction.RecurringPaymentId))
+            .Select(transaction => transaction.RecurringPaymentId!)
+            .ToHashSet(StringComparer.Ordinal);
+        var pending = new List<PendingRecurringItem>();
+
+        foreach (var payment in allRecurring)
+        {
+            if (resolvedRecurringIds.Contains(payment.Id)) continue;
+            foreach (var _ in _recurringOccurrenceService.GetOccurrencesInRange(payment, rangeStart, rangeEnd, cycleDay))
+            {
+                pending.Add(new PendingRecurringItem(
+                    payment.Category,
+                    payment.LedgerCategory,
+                    Math.Abs(payment.Amount)));
+            }
+        }
+
+        return pending;
+    }
+
+    private object BuildTodayPlanInsights(
+        List<Transaction> activeCycleTxs,
+        List<PendingRecurringItem> pendingRecurring,
+        decimal essentialsRemaining,
+        DateTime rangeStart,
+        DateTime rangeEnd)
+    {
+        var nonRecurringEssentialsSpent = Math.Abs(activeCycleTxs
+            .Where(transaction =>
+                transaction.Amount < 0 &&
+                !IsTransfer(transaction) &&
+                string.IsNullOrWhiteSpace(transaction.RecurringPaymentId) &&
+                !string.Equals(transaction.Category, "Adjustment", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(transaction.LedgerCategory, "Essentials", StringComparison.OrdinalIgnoreCase))
+            .Sum(transaction => transaction.Amount));
+
+        var start = DateOnly.FromDateTime(rangeStart);
+        var end = DateOnly.FromDateTime(rangeEnd);
+        var today = _financialClock.Today;
+        var totalDays = end.DayNumber - start.DayNumber + 1;
+        var elapsedDays = today < start
+            ? 0
+            : today > end
+                ? totalDays
+                : today.DayNumber - start.DayNumber + 1;
+        var remainingDaysAfterToday = today < start
+            ? totalDays
+            : today > end
+                ? 0
+                : Math.Max(0, totalDays - elapsedDays);
+        var dailyAverage = elapsedDays > 0 ? nonRecurringEssentialsSpent / elapsedDays : 0m;
+        var unpaidEssentials = pendingRecurring
+            .Where(item => string.Equals(item.LedgerCategory, "Essentials", StringComparison.OrdinalIgnoreCase))
+            .Sum(item => item.Amount);
+        var projectedEndingBalance = today > end
+            ? essentialsRemaining
+            : essentialsRemaining - unpaidEssentials - (dailyAverage * remainingDaysAfterToday);
+
+        return new
+        {
+            unpaidRecurringCount = pendingRecurring.Count,
+            unpaidRecurringTotal = ObfuscationHelper.Obfuscate(pendingRecurring.Sum(item => item.Amount)),
+            unpaidEssentialsTotal = ObfuscationHelper.Obfuscate(unpaidEssentials),
+            nonRecurringEssentialsSpent = ObfuscationHelper.Obfuscate(nonRecurringEssentialsSpent),
+            nonRecurringEssentialsDailyAverage = ObfuscationHelper.Obfuscate(dailyAverage),
+            projectedEssentialsEndingBalance = ObfuscationHelper.Obfuscate(projectedEndingBalance)
+        };
+    }
+
+    private async Task<List<object>> BuildCategoryLimitProgressAsync(
+        List<Transaction> activeCycleTxs,
+        List<PendingRecurringItem> pendingRecurring,
+        int activeYear,
+        int activeMonthIndex,
+        DateTime rangeStart,
+        DateTime rangeEnd)
+    {
+        var cycleKey = $"{activeYear:D4}-{activeMonthIndex:D2}";
+        var allGuideVersions = await _context.CategorySpendingGuides
+            .AsNoTracking()
+            .ToListAsync();
+        var effectiveGuides = allGuideVersions
+            .Where(guide => string.CompareOrdinal(guide.EffectiveFromCycleKey, cycleKey) <= 0)
+            .GroupBy(guide => guide.CategoryName, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderByDescending(guide => guide.EffectiveFromCycleKey).First())
+            .Where(guide => guide.LimitAmount.HasValue)
+            .OrderBy(guide => guide.CategoryName)
+            .ToList();
+
+        if (effectiveGuides.Count == 0) return [];
+
+        var expenseTransactions = activeCycleTxs
+            .Where(transaction =>
+                transaction.Amount < 0 &&
+                !IsTransfer(transaction) &&
+                !string.Equals(transaction.Category, "Adjustment", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var spentByCategory = expenseTransactions
+            .GroupBy(transaction => transaction.Category, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => Math.Abs(group.Sum(transaction => transaction.Amount)), StringComparer.OrdinalIgnoreCase);
+        var recurringSpentByCategory = expenseTransactions
+            .Where(transaction => !string.IsNullOrWhiteSpace(transaction.RecurringPaymentId))
+            .GroupBy(transaction => transaction.Category, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => Math.Abs(group.Sum(transaction => transaction.Amount)), StringComparer.OrdinalIgnoreCase);
+        var nonRecurringSpentByCategory = expenseTransactions
+            .Where(transaction => string.IsNullOrWhiteSpace(transaction.RecurringPaymentId))
+            .GroupBy(transaction => transaction.Category, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => Math.Abs(group.Sum(transaction => transaction.Amount)), StringComparer.OrdinalIgnoreCase);
+        var pendingByCategory = pendingRecurring
+            .GroupBy(item => item.Category, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Sum(item => item.Amount), StringComparer.OrdinalIgnoreCase);
+
+        var start = DateOnly.FromDateTime(rangeStart);
+        var end = DateOnly.FromDateTime(rangeEnd);
+        var today = _financialClock.Today;
+        var totalDays = end.DayNumber - start.DayNumber + 1;
+        var elapsedDays = today < start
+            ? 0
+            : today > end
+                ? totalDays
+                : today.DayNumber - start.DayNumber + 1;
+        var isEnded = today > end;
+
+        return effectiveGuides.Select(guide =>
+        {
+            var limit = guide.LimitAmount!.Value;
+            var spent = spentByCategory.GetValueOrDefault(guide.CategoryName);
+            var recurringSpent = recurringSpentByCategory.GetValueOrDefault(guide.CategoryName);
+            var nonRecurringSpent = nonRecurringSpentByCategory.GetValueOrDefault(guide.CategoryName);
+            var pending = pendingByCategory.GetValueOrDefault(guide.CategoryName);
+            var projected = isEnded
+                ? spent
+                : recurringSpent + pending + (elapsedDays > 0 ? nonRecurringSpent / elapsedDays * totalDays : 0m);
+            var status = spent > limit
+                ? "Exceeded"
+                : projected > limit
+                    ? "Watch"
+                    : "OnTrack";
+
+            return (object)new
+            {
+                category = guide.CategoryName,
+                limit = ObfuscationHelper.Obfuscate(limit),
+                spent = ObfuscationHelper.Obfuscate(spent),
+                remaining = ObfuscationHelper.Obfuscate(limit - spent),
+                pendingCommitted = ObfuscationHelper.Obfuscate(pending),
+                projectedSpend = ObfuscationHelper.Obfuscate(projected),
+                percentUsed = limit > 0 ? (double)(spent / limit) : 0d,
+                status
+            };
+        }).ToList();
+    }
 
     private static object? BuildSummaryInsights(List<Transaction> activeCycleTxs, DateTime start, DateTime endExclusive)
     {
