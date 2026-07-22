@@ -263,6 +263,47 @@ public class WishlistServiceTests
         Assert.Single(result.Items);
     }
 
+    [Fact]
+    public async Task GetClaimedWishlistPagedAsync_HandlesHugePageAndClampsPageSize()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var purchased = NewItem(1, "Only claim", active: false);
+        purchased.IsPurchased = true;
+        purchased.PurchasedAt = DateTime.UtcNow;
+        context.WishlistItems.Add(purchased);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.GetClaimedWishlistPagedAsync(int.MaxValue, int.MaxValue);
+
+        Assert.Equal(int.MaxValue, result.Page);
+        Assert.Equal(100, result.PageSize);
+        Assert.Empty(result.Items);
+        Assert.Equal(1, result.Total);
+    }
+
+    [Fact]
+    public async Task GetClaimedWishlistPagedAsync_UsesIdAsStableTimestampTieBreaker()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var timestamp = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        for (var id = 1; id <= 3; id++)
+        {
+            var purchased = NewItem(id, $"Claim {id}", active: false, createdAt: timestamp);
+            purchased.IsPurchased = true;
+            purchased.PurchasedAt = timestamp;
+            context.WishlistItems.Add(purchased);
+        }
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var firstPage = await service.GetClaimedWishlistPagedAsync(1, 2);
+        var secondPage = await service.GetClaimedWishlistPagedAsync(2, 2);
+
+        Assert.Equal([3, 2], firstPage.Items.Select(item => item.Id));
+        Assert.Equal([1], secondPage.Items.Select(item => item.Id));
+    }
+
     private static WishlistService NewService(Database.AppDbContext context)
     {
         return new WishlistService(context, new CycleBalanceService(context));

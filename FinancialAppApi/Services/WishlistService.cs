@@ -98,10 +98,22 @@ public class WishlistService
 
         var total = await query.CountAsync(cancellationToken);
 
+        // Keep the offset calculation out of Int32 arithmetic. A caller can supply
+        // int.MaxValue for page; multiplying that by pageSize would otherwise wrap
+        // and can turn into an invalid negative Skip value.
+        var offset = ((long)page - 1) * pageSize;
+        if (offset >= total)
+        {
+            return new PagedWishlist([], total, page, pageSize);
+        }
+
         var items = await query
             .OrderByDescending(w => w.PurchasedAt)
             .ThenByDescending(w => w.CreatedAt)
-            .Skip((page - 1) * pageSize)
+            // PurchasedAt and CreatedAt are not guaranteed to be unique. The PK
+            // tie-breaker keeps rows from moving between pages across requests.
+            .ThenByDescending(w => w.Id)
+            .Skip((int)offset)
             .Take(pageSize)
             .Select(w => new WishlistItemProjection(
                 w.Id,
