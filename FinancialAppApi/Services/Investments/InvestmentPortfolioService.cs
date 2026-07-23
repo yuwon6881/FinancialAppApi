@@ -124,7 +124,12 @@ public sealed class InvestmentPortfolioService(
                             value.QuoteCurrency == appCurrency)
             .ToListAsync(cancellationToken);
 
-        var calculation = accounting.Calculate(transactions, appCurrency);
+        // Value foreign-currency dividends, fees, and trades that carry no manual
+        // trade FX at the market rate on their trade date (manual price override or
+        // stored provider daily close), mirroring how current holdings are valued.
+        decimal? HistoricalTradeFx(InvestmentTransaction transaction) =>
+            ResolveFx(transaction.Instrument.Currency, appCurrency, transaction.TradeDate, fxBars, overrides, transaction.InstrumentId);
+        var calculation = accounting.Calculate(transactions, appCurrency, HistoricalTradeFx);
         var accountById = accounts.ToDictionary(value => value.Id);
         var instrumentById = instruments.ToDictionary(value => value.Id);
         var holdings = new List<InvestmentHoldingDto>();
@@ -262,11 +267,13 @@ public sealed class InvestmentPortfolioService(
         }
 
         var instrumentById = instruments.ToDictionary(value => value.Id);
+        decimal? HistoricalTradeFx(InvestmentTransaction transaction) =>
+            ResolveFx(transaction.Instrument.Currency, appCurrency, transaction.TradeDate, fxBars, overrides, transaction.InstrumentId);
         var points = new List<InvestmentChartPointDto>();
         foreach (var date in dates)
         {
             var relevant = transactions.Where(value => value.TradeDate <= date).ToList();
-            var result = accounting.Calculate(relevant, appCurrency);
+            var result = accounting.Calculate(relevant, appCurrency, HistoricalTradeFx);
             decimal market = 0;
             decimal cost = 0;
             decimal contributions = 0;

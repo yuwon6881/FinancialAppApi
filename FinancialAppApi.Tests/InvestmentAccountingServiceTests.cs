@@ -80,6 +80,41 @@ public sealed class InvestmentAccountingServiceTests
     }
 
     [Fact]
+    public void ForeignCurrencyWithHistoricalFxFallback_ValuesAppAmountsWithoutManualRate()
+    {
+        _instrument.Currency = "EUR";
+        var result = _service.Calculate(
+            [
+                Tx("Buy", new DateOnly(2025, 1, 1), units: 2, price: 50),
+                Tx("Dividend", new DateOnly(2025, 3, 1), cash: 10),
+            ],
+            "USD",
+            // No manual TradeFxRate on either transaction: the reporting rate comes
+            // from the market fallback (e.g. a stored provider daily close).
+            _ => 1.1m);
+
+        var position = Assert.Single(result.Positions);
+        Assert.Equal(100m, position.CostBasisNative);
+        Assert.Equal(110m, position.CostBasisApp);
+        Assert.Equal(10m, position.DividendsNative);
+        Assert.Equal(11m, position.DividendsApp);
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
+    public void ManualTradeFxOverridesHistoricalFallback()
+    {
+        _instrument.Currency = "EUR";
+        var trade = Tx("Buy", new DateOnly(2025, 1, 1), units: 2, price: 50);
+        trade.TradeFxRate = 1.25m;
+
+        var result = _service.Calculate([trade], "USD", _ => 1.1m);
+
+        var position = Assert.Single(result.Positions);
+        Assert.Equal(125m, position.CostBasisApp);
+    }
+
+    [Fact]
     public void OversellingIsRejectedAfterHistoricalEdit()
     {
         var transactions = new[]
