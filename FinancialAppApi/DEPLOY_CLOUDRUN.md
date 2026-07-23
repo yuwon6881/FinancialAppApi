@@ -199,8 +199,8 @@ has no role except invoking this one Cloud Run service.
      --oidc-token-audience="https://financialapp-api-i47taxhzba-as.a.run.app/api/push/dispatch" \
      --max-retry-attempts=3 \
      --max-retry-duration=3600s \
-     --min-backoff-duration=60s \
-     --max-backoff-duration=600s
+     --min-backoff=60s \
+     --max-backoff=600s
    ```
    One job, one cron (`0 9 * * *`, `Asia/Kuala_Lumpur`) — the reminder TTL
    already ends at the close of that same local day, so retries are bounded
