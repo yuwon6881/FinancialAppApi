@@ -217,7 +217,9 @@ public class TransactionPersistenceServiceTests
 
     private static TransactionPersistenceService NewService(AppDbContext context)
     {
-        return new TransactionPersistenceService(context, new CycleBalanceService(context));
+        var occurrenceService = new RecurringOccurrenceService(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance);
+        return new TransactionPersistenceService(context, new CycleBalanceService(context), occurrenceService);
     }
 
     private static void SeedCategories(AppDbContext context)

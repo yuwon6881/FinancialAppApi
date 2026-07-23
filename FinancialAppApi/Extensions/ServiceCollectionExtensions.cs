@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using FinancialAppApi.Database;
 using FinancialAppApi.Services;
+using FinancialAppApi.Services.Push;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
@@ -294,11 +295,22 @@ public static class ServiceCollectionExtensions
         services.AddScoped<RecurringOccurrenceService>();
         services.AddScoped<RecurringPaymentAlertService>();
         services.AddScoped<RecurringPaymentService>();
+        services.AddScoped<RecurringPaymentPayEarlyService>();
         services.AddScoped<TransactionCategoryService>();
         services.AddScoped<WishlistService>();
         services.AddScoped<TransactionPersistenceService>();
         services.AddScoped<TransactionQueryService>();
         services.AddScoped<FinancialService>();
+        services.AddScoped<PushSubscriptionService>();
+        return services;
+    }
+
+    public static IServiceCollection AddPushServices(this IServiceCollection services)
+    {
+        services.AddSingleton<IGoogleIdTokenVerifier, GoogleIdTokenVerifier>();
+        services.AddSingleton<IGoogleOidcTokenValidator, GoogleOidcTokenValidator>();
+        services.AddHttpClient<IFcmPushSender, FcmHttpV1PushSender>(client => client.Timeout = TimeSpan.FromSeconds(10));
+        services.AddScoped<PushDispatchService>();
         return services;
     }
 }

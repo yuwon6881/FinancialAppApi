@@ -35,6 +35,7 @@
     <PackageReference Include="Swashbuckle.AspNetCore" />
     <PackageReference Include="Fido2" />
     <PackageReference Include="Otp.NET" />
+    <PackageReference Include="Google.Apis.Auth" />
   </ItemGroup>
 
 </Project>

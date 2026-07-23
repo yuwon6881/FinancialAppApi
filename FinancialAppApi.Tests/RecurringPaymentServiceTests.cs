@@ -130,6 +130,86 @@ public class RecurringPaymentServiceTests
         Assert.False(await context.RecurringPayments.AnyAsync(p => p.Id == "rec-1"));
     }
 
+    [Fact]
+    public async Task UpdateReminderAsync_UpdatesEnabledModeAndLeadDays()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", "Internet"));
+        await context.SaveChangesAsync();
+        var service = new RecurringPaymentService(context);
+
+        var result = await service.UpdateReminderAsync("rec-1", enabled: true, mode: "daily", leadDays: 3);
+
+        Assert.Equal(UpdateReminderStatus.Updated, result.Status);
+        Assert.True(result.Payment!.PushReminderEnabled);
+        Assert.Equal("Daily", result.Payment.PushReminderMode);
+        Assert.Equal(3, result.Payment.PushReminderLeadDays);
+    }
+
+    [Fact]
+    public async Task UpdateReminderAsync_ReturnsNotFoundForMissingPayment()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = new RecurringPaymentService(context);
+
+        var result = await service.UpdateReminderAsync("missing", true, "Once", 1);
+
+        Assert.Equal(UpdateReminderStatus.NotFound, result.Status);
+    }
+
+    [Theory]
+    [InlineData("Weekly")]
+    [InlineData("Countdown")]
+    [InlineData("")]
+    public async Task UpdateReminderAsync_RejectsUnsupportedMode(string mode)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", "Internet"));
+        await context.SaveChangesAsync();
+        var service = new RecurringPaymentService(context);
+
+        var result = await service.UpdateReminderAsync("rec-1", true, mode, 1);
+
+        Assert.Equal(UpdateReminderStatus.InvalidMode, result.Status);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(6)]
+    [InlineData(8)]
+    [InlineData(-1)]
+    public async Task UpdateReminderAsync_RejectsUnsupportedLeadDays(int leadDays)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", "Internet"));
+        await context.SaveChangesAsync();
+        var service = new RecurringPaymentService(context);
+
+        var result = await service.UpdateReminderAsync("rec-1", true, "Once", leadDays);
+
+        Assert.Equal(UpdateReminderStatus.InvalidLeadDays, result.Status);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(7)]
+    public async Task UpdateReminderAsync_AcceptsAllowedLeadDays(int leadDays)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", "Internet"));
+        await context.SaveChangesAsync();
+        var service = new RecurringPaymentService(context);
+
+        var result = await service.UpdateReminderAsync("rec-1", true, "Once", leadDays);
+
+        Assert.Equal(UpdateReminderStatus.Updated, result.Status);
+        Assert.Equal(leadDays, result.Payment!.PushReminderLeadDays);
+    }
+
     private static RecurringPayment NewPayment(
         string id,
         string name,

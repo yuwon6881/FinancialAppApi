@@ -40,4 +40,21 @@ public class RecurringPayment : IUserOwnedEntity
     public bool Active { get; set; }
 
     public string? EndDate { get; set; } // End date (yyyy-MM-dd, optional)
+
+    // Per-payment opt-in for push reminders. Defaults to false: the account-level toggle
+    // (FinancialSetting.PushRemindersEnabled) and this payment-level toggle must both be on
+    // before any reminder is dispatched.
+    [Required]
+    public bool PushReminderEnabled { get; set; }
+
+    // "Once" sends a single catch-up reminder anywhere inside the lead window; "Countdown"
+    // sends one reminder per day counting down from PushReminderLeadDays to 0 with no backfill.
+    [Required]
+    [StringLength(20)]
+    public string PushReminderMode { get; set; } = "Once";
+
+    // How many days before the due date reminders may start. Restricted to 1/2/3/7 by both the
+    // controller validation and a database check constraint.
+    [Required]
+    public int PushReminderLeadDays { get; set; } = 1;
 }

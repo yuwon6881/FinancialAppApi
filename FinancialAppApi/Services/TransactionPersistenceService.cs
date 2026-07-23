@@ -14,7 +14,9 @@ public enum TransactionMutationStatus
     InvalidDate,
     InvalidAmount,
     InvalidCategory,
-    InvalidLedgerCategory
+    InvalidLedgerCategory,
+    InvalidRecurringOccurrence,
+    Conflict
 }
 
 public sealed record TransactionMutationRequest(
@@ -26,7 +28,8 @@ public sealed record TransactionMutationRequest(
     string LedgerCategory,
     string Amount,
     string? RecurringPaymentId,
-    int? WishlistItemId);
+    int? WishlistItemId,
+    string? RecurringOccurrenceDate = null);
 
 public sealed record TransactionMutationResult(
     TransactionMutationStatus Status,
@@ -37,11 +40,16 @@ public class TransactionPersistenceService
 {
     private readonly AppDbContext _context;
     private readonly CycleBalanceService _cycleBalanceService;
+    private readonly RecurringOccurrenceService _occurrenceService;
 
-    public TransactionPersistenceService(AppDbContext context, CycleBalanceService cycleBalanceService)
+    public TransactionPersistenceService(
+        AppDbContext context,
+        CycleBalanceService cycleBalanceService,
+        RecurringOccurrenceService occurrenceService)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
+        _occurrenceService = occurrenceService;
     }
 
     public async Task<TransactionMutationResult> CreateTransactionAsync(TransactionMutationRequest request)
@@ -85,6 +93,12 @@ public class TransactionPersistenceService
             RecurringPaymentId = request.RecurringPaymentId,
             WishlistItemId = request.WishlistItemId
         };
+        var occurrence = await ResolveRecurringOccurrenceDateAsync(transaction, request.RecurringOccurrenceDate);
+        if (!occurrence.IsValid)
+        {
+            return new TransactionMutationResult(TransactionMutationStatus.InvalidRecurringOccurrence, Message: occurrence.Message);
+        }
+        transaction.RecurringOccurrenceDate = occurrence.Date;
 
         var splitSpec = await ResolveIncomeSplitSpecAsync(transaction);
 
@@ -92,7 +106,14 @@ public class TransactionPersistenceService
         AddIncomeSplitTransactions(transaction, splitSpec);
         await ApplyWishlistPurchaseLinkAsync(transaction);
 
-        await SaveAndInvalidateCycleBalancesAsync(transaction.Date);
+        try
+        {
+            await SaveAndInvalidateCycleBalancesAsync(transaction.Date);
+        }
+        catch (DbUpdateException ex) when (ex.IsUniqueViolation() && transaction.RecurringOccurrenceDate != null)
+        {
+            return new TransactionMutationResult(TransactionMutationStatus.Conflict, Message: "This recurring occurrence has already been settled.");
+        }
 
         return new TransactionMutationResult(TransactionMutationStatus.Created, transaction);
     }
@@ -165,6 +186,77 @@ public class TransactionPersistenceService
         await SaveAndInvalidateCycleBalancesAsync(transaction.Date);
 
         return new TransactionMutationResult(TransactionMutationStatus.Deleted, transaction);
+    }
+
+    // Tags a new transaction with the exact recurrence-engine billing date it settles, when it
+    // was created against a recurring payment and its date lines up with that payment's cycle
+    // occurrence. Legacy/manual transactions (no match, or no RecurringPaymentId) keep this null.
+    private async Task<(bool IsValid, DateOnly? Date, string? Message)> ResolveRecurringOccurrenceDateAsync(
+        Transaction transaction,
+        string? requestedOccurrenceDate)
+    {
+        if (string.IsNullOrWhiteSpace(transaction.RecurringPaymentId))
+        {
+            return string.IsNullOrWhiteSpace(requestedOccurrenceDate)
+                ? (true, null, null)
+                : (false, null, "A recurring occurrence requires a recurring payment.");
+        }
+
+        var payment = await _context.RecurringPayments.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == transaction.RecurringPaymentId);
+        if (payment == null)
+        {
+            return string.IsNullOrWhiteSpace(requestedOccurrenceDate)
+                ? (true, null, null)
+                : (false, null, "The recurring payment could not be found.");
+        }
+
+        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
+        var cycleDay = setting?.CycleDay ?? 1;
+
+        var transactionDate = TransactionDate.ToDateOnly(transaction.Date);
+        DateOnly candidateDate;
+        if (!string.IsNullOrWhiteSpace(requestedOccurrenceDate))
+        {
+            if (!DateOnly.TryParseExact(requestedOccurrenceDate, "yyyy-MM-dd", out candidateDate))
+            {
+                return (false, null, "recurringOccurrenceDate must use yyyy-MM-dd format.");
+            }
+        }
+        else
+        {
+            candidateDate = transactionDate;
+        }
+
+        var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(candidateDate, cycleDay);
+        var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
+
+        DateOnly? matchedOccurrence = null;
+        foreach (var billingDate in _occurrenceService.GetOccurrencesInRange(payment, cycleStart, cycleEnd, cycleDay))
+        {
+            if (DateOnly.FromDateTime(billingDate) == candidateDate)
+            {
+                matchedOccurrence = candidateDate;
+                break;
+            }
+        }
+        if (matchedOccurrence == null)
+        {
+            return string.IsNullOrWhiteSpace(requestedOccurrenceDate)
+                ? (true, null, null)
+                : (false, null, "The selected date is not an occurrence of this recurring payment.");
+        }
+
+        // Soft guard: never tag an occurrence that would collide with one already settled (e.g.
+        // pay-early already recorded it). Leaving it null here keeps this normal ledger-entry
+        // path from failing outright on that edge case, which the dedicated pay-early flow
+        // already rejects explicitly.
+        var alreadySettled = await _context.Transactions.AnyAsync(t =>
+            t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate == matchedOccurrence);
+
+        return alreadySettled
+            ? (false, null, "This recurring occurrence has already been settled.")
+            : (true, matchedOccurrence, null);
     }
 
     private async Task InvalidateCycleBalancesFromAsync(DateTime date)

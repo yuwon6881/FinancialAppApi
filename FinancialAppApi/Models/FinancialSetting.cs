@@ -55,4 +55,10 @@ public class FinancialSetting : IUserOwnedEntity
     // user never actually used. Persisting this server-side (rather than per-device)
     // guarantees the summary fires exactly once per cycle across all of a user's devices.
     public string? LastSummaryCycleSeen { get; set; }
+
+    // Account-level kill switch for recurring-payment push reminders. Defaults to false so
+    // reminders stay opt-in: existing accounts (and brand-new ones) never receive a push until
+    // the user explicitly enables it, even if individual recurring payments have reminders on.
+    [Required]
+    public bool PushRemindersEnabled { get; set; }
 }

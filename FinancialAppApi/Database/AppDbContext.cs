@@ -28,6 +28,8 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PendingTwoFactor> PendingTwoFactors => Set<PendingTwoFactor>();
     public DbSet<RecoveryCode> RecoveryCodes => Set<RecoveryCode>();
     public DbSet<SecurityQuestionAnswer> SecurityQuestionAnswers => Set<SecurityQuestionAnswer>();
+    public DbSet<PushSubscription> PushSubscriptions => Set<PushSubscription>();
+    public DbSet<PushReminderDelivery> PushReminderDeliveries => Set<PushReminderDelivery>();
     public DbSet<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey> DataProtectionKeys => Set<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey>();
 
     public void SetCurrentUser(string userId)
@@ -57,6 +59,12 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(e => new { e.UserId, e.WishlistItemId })
                 .IsUnique()
                 .HasFilter("\"WishlistItemId\" IS NOT NULL");
+            // Guarantees a given recurring-payment occurrence can never be settled twice
+            // (normal confirmation racing pay-early, pay-early retried, etc.). Partial so
+            // legacy/manual transactions (either column null) are exempt.
+            entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId, e.RecurringOccurrenceDate })
+                .IsUnique()
+                .HasFilter("\"RecurringPaymentId\" IS NOT NULL AND \"RecurringOccurrenceDate\" IS NOT NULL");
         });
 
         modelBuilder.Entity<AppUser>(entity =>
@@ -68,8 +76,15 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<RecurringPayment>(entity =>
         {
             entity.Property(e => e.Amount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.PushReminderMode).HasDefaultValue("Once");
+            entity.Property(e => e.PushReminderLeadDays).HasDefaultValue(1);
             entity.HasIndex(e => e.UserId);
-            entity.ToTable(t => t.HasCheckConstraint("ck_recurringpayments_amount_nonzero", "\"Amount\" <> 0"));
+            entity.ToTable(t =>
+            {
+                t.HasCheckConstraint("ck_recurringpayments_amount_nonzero", "\"Amount\" <> 0");
+                t.HasCheckConstraint("ck_recurringpayments_pushremindermode", "\"PushReminderMode\" IN ('Once', 'Daily')");
+                t.HasCheckConstraint("ck_recurringpayments_pushreminderleaddays", "\"PushReminderLeadDays\" IN (1, 2, 3, 7)");
+            });
         });
 
         modelBuilder.Entity<FinancialSetting>(entity =>
@@ -115,6 +130,28 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<SecurityQuestionAnswer>(entity =>
         {
             entity.HasIndex(e => new { e.UserId, e.QuestionId }).IsUnique();
+        });
+
+        modelBuilder.Entity<PushSubscription>(entity =>
+        {
+            // One live subscription per (user, device): re-registering a device upserts the
+            // stored FCM token in place instead of accumulating stale duplicate rows.
+            entity.HasIndex(e => new { e.UserId, e.DeviceId }).IsUnique();
+        });
+
+        modelBuilder.Entity<PushReminderDelivery>(entity =>
+        {
+            // The claim key: an insert into this unique tuple IS the concurrency-safe "has this
+            // exact reminder already been sent" check, so retries/races can never double-send.
+            entity.HasIndex(e => new
+            {
+                e.UserId,
+                e.RecurringPaymentId,
+                e.OccurrenceDate,
+                e.ActualOffsetDays,
+                e.SubscriptionId
+            }).IsUnique();
+            entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId, e.OccurrenceDate, e.SubscriptionId });
         });
 
         modelBuilder.Entity<PendingTwoFactor>(entity =>
@@ -184,6 +221,8 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<PendingTwoFactor>(), applyQueryFilter: false);
         ConfigureUserOwnership(modelBuilder.Entity<RecoveryCode>(), applyQueryFilter: false);
         ConfigureUserOwnership(modelBuilder.Entity<SecurityQuestionAnswer>(), applyQueryFilter: false);
+        ConfigureUserOwnership(modelBuilder.Entity<PushSubscription>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<PushReminderDelivery>(), applyQueryFilter: true);
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

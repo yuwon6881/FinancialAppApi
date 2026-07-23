@@ -15,6 +15,7 @@ public sealed record TransactionProjection(
     string LedgerCategory,
     decimal Amount,
     string? RecurringPaymentId,
+    DateOnly? RecurringOccurrenceDate,
     int? WishlistItemId);
 
 public sealed record TransactionListResult(
@@ -89,6 +90,7 @@ public class TransactionQueryService
                     t.LedgerCategory,
                     t.Amount,
                     t.RecurringPaymentId,
+                    t.RecurringOccurrenceDate,
                     t.WishlistItemId
                 ))
                 .ToListAsync(cancellationToken);
@@ -116,6 +118,7 @@ public class TransactionQueryService
                     t.LedgerCategory,
                     t.Amount,
                     t.RecurringPaymentId,
+                    t.RecurringOccurrenceDate,
                     t.WishlistItemId
                 ))
                 .ToListAsync(cancellationToken);
@@ -147,6 +150,7 @@ public class TransactionQueryService
                 t.LedgerCategory,
                 t.Amount,
                 t.RecurringPaymentId,
+                t.RecurringOccurrenceDate,
                 t.WishlistItemId
             ))
             .ToListAsync(cancellationToken);

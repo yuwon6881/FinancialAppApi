@@ -16,6 +16,19 @@ public sealed record UpdateRecurringPaymentResult(
     RecurringPayment? Payment = null,
     string? Message = null);
 
+public enum UpdateReminderStatus
+{
+    Updated,
+    NotFound,
+    InvalidMode,
+    InvalidLeadDays
+}
+
+public sealed record UpdateReminderResult(
+    UpdateReminderStatus Status,
+    RecurringPayment? Payment = null,
+    string? Message = null);
+
 public enum CreateRecurringPaymentStatus
 {
     Created,
@@ -39,10 +52,17 @@ public sealed record RecurringPaymentProjection(
     int DueDate,
     string StartDate,
     bool Active,
-    string? EndDate);
+    string? EndDate,
+    bool ReminderEnabled,
+    string ReminderMode,
+    int ReminderLeadDays);
 
 public class RecurringPaymentService
 {
+    // The only lead-day windows the client can present, and the same set the database check
+    // constraint enforces — keep both lists in sync if this ever changes.
+    private static readonly int[] AllowedLeadDays = [1, 2, 3, 7];
+
     private readonly AppDbContext _context;
 
     public RecurringPaymentService(AppDbContext context)
@@ -69,7 +89,10 @@ public class RecurringPaymentService
                 p.DueDate,
                 p.StartDate,
                 p.Active,
-                p.EndDate
+                p.EndDate,
+                p.PushReminderEnabled,
+                p.PushReminderMode,
+                p.PushReminderLeadDays
             ))
             .ToListAsync(cancellationToken);
     }
@@ -179,6 +202,58 @@ public class RecurringPaymentService
         await _context.SaveChangesAsync(cancellationToken);
 
         return true;
+    }
+
+    public async Task<UpdateReminderResult> UpdateReminderAsync(
+        string id,
+        bool enabled,
+        string mode,
+        int leadDays,
+        CancellationToken cancellationToken = default)
+    {
+        var payment = await _context.RecurringPayments.FindAsync([id], cancellationToken);
+        if (payment == null)
+        {
+            return new UpdateReminderResult(UpdateReminderStatus.NotFound);
+        }
+
+        if (!TryNormalizeReminderMode(mode, out var normalizedMode))
+        {
+            return new UpdateReminderResult(
+                UpdateReminderStatus.InvalidMode,
+                Message: "Mode must be Once or Daily.");
+        }
+
+        if (!AllowedLeadDays.Contains(leadDays))
+        {
+            return new UpdateReminderResult(
+                UpdateReminderStatus.InvalidLeadDays,
+                Message: "Lead days must be one of: " + string.Join(", ", AllowedLeadDays) + ".");
+        }
+
+        payment.PushReminderEnabled = enabled;
+        payment.PushReminderMode = normalizedMode;
+        payment.PushReminderLeadDays = leadDays;
+        await _context.SaveChangesAsync(cancellationToken);
+
+        return new UpdateReminderResult(UpdateReminderStatus.Updated, payment);
+    }
+
+    private static bool TryNormalizeReminderMode(string? value, out string mode)
+    {
+        if (string.Equals(value, "Once", StringComparison.OrdinalIgnoreCase))
+        {
+            mode = "Once";
+            return true;
+        }
+        if (string.Equals(value, "Daily", StringComparison.OrdinalIgnoreCase))
+        {
+            mode = "Daily";
+            return true;
+        }
+
+        mode = string.Empty;
+        return false;
     }
 
     private async Task<bool> CategoryExistsAsync(string category, CancellationToken cancellationToken = default)

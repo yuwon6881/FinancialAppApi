@@ -12,10 +12,14 @@ namespace FinancialAppApi.Controllers;
 public class RecurringPaymentsController : ControllerBase
 {
     private readonly RecurringPaymentService _recurringPaymentService;
+    private readonly RecurringPaymentPayEarlyService _payEarlyService;
 
-    public RecurringPaymentsController(RecurringPaymentService recurringPaymentService)
+    public RecurringPaymentsController(
+        RecurringPaymentService recurringPaymentService,
+        RecurringPaymentPayEarlyService payEarlyService)
     {
         _recurringPaymentService = recurringPaymentService;
+        _payEarlyService = payEarlyService;
     }
 
     // GET: api/recurring-payments
@@ -23,7 +27,15 @@ public class RecurringPaymentsController : ControllerBase
     public async Task<ActionResult<IEnumerable<RecurringPaymentDto>>> GetRecurringPayments()
     {
         var list = await _recurringPaymentService.GetRecurringPaymentsAsync(HttpContext.RequestAborted);
-        return Ok(list.Select(MapToDto).ToList());
+        var result = new List<RecurringPaymentDto>(list.Count);
+        foreach (var payment in list)
+        {
+            var dto = MapToDto(payment);
+            var nextUnpaid = await _payEarlyService.GetNextUnpaidOccurrenceAsync(payment.Id, HttpContext.RequestAborted);
+            if (nextUnpaid != null) dto.NextDueDate = nextUnpaid.Value.ToString("yyyy-MM-dd");
+            result.Add(dto);
+        }
+        return Ok(result);
     }
 
     // POST: api/recurring-payments
@@ -140,6 +152,57 @@ public class RecurringPaymentsController : ControllerBase
         return NoContent();
     }
 
+    // PUT: api/recurring-payments/{id}/reminder
+    [HttpPut("{id}/reminder")]
+    public async Task<IActionResult> PutReminder(string id, RecurringPaymentReminderDto dto)
+    {
+        var result = await _recurringPaymentService.UpdateReminderAsync(
+            id, dto.Enabled, dto.Mode, dto.LeadDays, HttpContext.RequestAborted);
+
+        if (result.Status == UpdateReminderStatus.NotFound)
+        {
+            return NotFound();
+        }
+        if (result.Status is UpdateReminderStatus.InvalidMode or UpdateReminderStatus.InvalidLeadDays)
+        {
+            return BadRequest(new { message = result.Message });
+        }
+
+        var payment = result.Payment!;
+        return Ok(new RecurringPaymentReminderDto
+        {
+            Enabled = payment.PushReminderEnabled,
+            Mode = payment.PushReminderMode,
+            LeadDays = payment.PushReminderLeadDays
+        });
+    }
+
+    // POST: api/recurring-payments/{id}/pay-early
+    [HttpPost("{id}/pay-early")]
+    public async Task<IActionResult> PostPayEarly(string id, PayEarlyRequestDto dto)
+    {
+        if (!DateOnly.TryParseExact(dto.OccurrenceDate, "yyyy-MM-dd", out var occurrenceDate))
+        {
+            return BadRequest(new { message = "occurrenceDate must use yyyy-MM-dd format." });
+        }
+
+        var result = await _payEarlyService.PayEarlyAsync(id, occurrenceDate, HttpContext.RequestAborted);
+
+        return result.Status switch
+        {
+            PayEarlyStatus.PaymentNotFound => NotFound(),
+            PayEarlyStatus.PaymentInactive => BadRequest(new { message = result.Message }),
+            PayEarlyStatus.NoUpcomingOccurrence => BadRequest(new { message = result.Message }),
+            PayEarlyStatus.Conflict => Conflict(new { message = result.Message }),
+            _ => Ok(new
+            {
+                transaction = TransactionsController.MapToDto(result.Transaction!),
+                settledOccurrenceDate = result.SettledOccurrenceDate!.Value.ToString("yyyy-MM-dd"),
+                nextOccurrenceDate = result.NextOccurrenceDate?.ToString("yyyy-MM-dd")
+            })
+        };
+    }
+
     private static RecurringPaymentDto MapToDto(RecurringPayment rp)
     {
         return new RecurringPaymentDto
@@ -154,7 +217,10 @@ public class RecurringPaymentsController : ControllerBase
             DueDate = rp.DueDate,
             StartDate = rp.StartDate,
             Active = rp.Active,
-            EndDate = rp.EndDate
+            EndDate = rp.EndDate,
+            ReminderEnabled = rp.PushReminderEnabled,
+            ReminderMode = rp.PushReminderMode,
+            ReminderLeadDays = rp.PushReminderLeadDays
         };
     }
 
@@ -189,7 +255,10 @@ public class RecurringPaymentsController : ControllerBase
             DueDate = rp.DueDate,
             StartDate = rp.StartDate,
             Active = rp.Active,
-            EndDate = rp.EndDate
+            EndDate = rp.EndDate,
+            ReminderEnabled = rp.ReminderEnabled,
+            ReminderMode = rp.ReminderMode,
+            ReminderLeadDays = rp.ReminderLeadDays
         };
     }
 }
@@ -197,6 +266,18 @@ public class RecurringPaymentsController : ControllerBase
 public class ToggleActiveDto
 {
     public bool? Active { get; set; }
+}
+
+public class RecurringPaymentReminderDto
+{
+    public bool Enabled { get; set; }
+    public string Mode { get; set; } = "Once";
+    public int LeadDays { get; set; } = 1;
+}
+
+public class PayEarlyRequestDto
+{
+    public string OccurrenceDate { get; set; } = string.Empty;
 }
 
 public class RecurringPaymentDto
@@ -212,4 +293,7 @@ public class RecurringPaymentDto
     public string StartDate { get; set; } = string.Empty;
     public bool Active { get; set; }
     public string? EndDate { get; set; }
+    public bool ReminderEnabled { get; set; }
+    public string ReminderMode { get; set; } = "Once";
+    public int ReminderLeadDays { get; set; } = 1;
 }

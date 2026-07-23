@@ -138,6 +138,14 @@ public class TransactionsController : ControllerBase
         {
             return BadRequest(new { message = result.Message });
         }
+        if (result.Status == TransactionMutationStatus.InvalidRecurringOccurrence)
+        {
+            return BadRequest(new { message = result.Message });
+        }
+        if (result.Status == TransactionMutationStatus.Conflict)
+        {
+            return Conflict(new { message = result.Message });
+        }
         if (result.Status == TransactionMutationStatus.Existing)
         {
             return Ok(MapToDto(result.Transaction!));
@@ -191,7 +199,8 @@ public class TransactionsController : ControllerBase
             dto.LedgerCategory,
             dto.Amount,
             dto.RecurringPaymentId,
-            dto.WishlistItemId);
+            dto.WishlistItemId,
+            dto.RecurringOccurrenceDate);
     }
 
     public static TransactionDto MapToDto(Transaction t)
@@ -206,6 +215,7 @@ public class TransactionsController : ControllerBase
             LedgerCategory = t.LedgerCategory,
             Amount = ObfuscationHelper.Obfuscate(t.Amount),
             RecurringPaymentId = t.RecurringPaymentId,
+            RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
             WishlistItemId = t.WishlistItemId
         };
     }
@@ -222,6 +232,7 @@ public class TransactionsController : ControllerBase
             LedgerCategory = t.LedgerCategory,
             Amount = ObfuscationHelper.Obfuscate(t.Amount),
             RecurringPaymentId = t.RecurringPaymentId,
+            RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
             WishlistItemId = t.WishlistItemId
         };
     }
@@ -237,5 +248,6 @@ public class TransactionDto
     public string LedgerCategory { get; set; } = string.Empty;
     public string Amount { get; set; } = string.Empty;
     public string? RecurringPaymentId { get; set; }
+    public string? RecurringOccurrenceDate { get; set; }
     public int? WishlistItemId { get; set; }
 }

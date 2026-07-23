@@ -114,3 +114,114 @@ schema on startup.
 - EF Core migrations run on startup by default via `Database:MigrateOnStartup`.
   For stricter production deploys, set that value to `false` and run
   `dotnet ef database update` or an idempotent migration script as a deploy step.
+
+## Push notification dispatcher (Cloud Scheduler -> `POST /api/push/dispatch`)
+
+`POST /api/push/dispatch` is the daily fan-out job for recurring-payment push
+reminders. It carries no user session — it is guarded entirely by
+`AuthorizeGoogleOidc`, which requires a Google-signed OIDC identity token
+whose issuer, configured audience, and service-account email are all
+independently verified, and whose email must be on an explicit allowlist. The
+dispatcher (`PushDispatchService`) itself fails closed: with no `Fcm:ProjectId`
+configured it returns immediately without claiming a single reminder, and with
+no `Push:OidcAudience`/`Push:AllowlistedServiceAccounts` configured the filter
+above rejects every request before the dispatcher ever runs.
+
+### Configuration
+Three config sections gate this feature end-to-end; leaving any of them empty
+disables the corresponding layer instead of degrading insecurely:
+
+```bash
+--update-env-vars="Push__OidcAudience=https://financialapp-api-i47taxhzba-as.a.run.app/api/push/dispatch"
+--update-env-vars="Push__AllowlistedServiceAccounts__0=financialapp-scheduler@YOUR_PROJECT_ID.iam.gserviceaccount.com"
+--update-env-vars="Fcm__ProjectId=YOUR_FIREBASE_PROJECT_ID"
+```
+
+- `Push:OidcAudience` — must exactly match the `--oidc-token-audience` the
+  Scheduler job is created with (below).
+- `Push:AllowlistedServiceAccounts` — the *only* service account emails the
+  filter will accept an identity token from, even if the token is otherwise
+  perfectly valid and Google-signed.
+- `Fcm:ProjectId` — the Firebase project the FCM HTTP v1 API sends through.
+
+### Grant FCM send permission via the Cloud Run service identity (no key file)
+The sender (`FcmHttpV1PushSender`) uses Application Default Credentials — the
+identity Cloud Run already attaches to the container — so no service-account
+JSON key is ever generated, stored, or shipped:
+
+```bash
+gcloud projects add-iam-policy-binding YOUR_FIREBASE_PROJECT_ID \
+  --member="serviceAccount:YOUR_CLOUD_RUN_RUNTIME_SA@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/firebasecloudmessaging.admin"
+```
+
+### Create the dedicated scheduler service account (allowlisted, no other privileges)
+```bash
+gcloud iam service-accounts create financialapp-scheduler \
+  --display-name="Cloud Scheduler caller for push dispatch"
+
+gcloud run services add-iam-policy-binding financialapp-api \
+  --region=asia-southeast1 \
+  --member="serviceAccount:financialapp-scheduler@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/run.invoker"
+```
+Add that exact email to `Push:AllowlistedServiceAccounts` above — this account
+has no role except invoking this one Cloud Run service.
+
+### Rollout order (do not skip the manual validation step)
+1. Deploy the app with the three config sections above set, but **do not
+   create the Cloud Scheduler job yet**.
+2. Grant the FCM and `run.invoker` IAM bindings above.
+3. Mint a short-lived identity token for the scheduler service account
+   yourself and call the endpoint manually to validate the full path
+   end-to-end (auth, recurrence matching, FCM send, token disabling) before
+   anything runs unattended:
+   ```bash
+   TOKEN=$(gcloud auth print-identity-token \
+     --impersonate-service-account=financialapp-scheduler@YOUR_PROJECT_ID.iam.gserviceaccount.com \
+     --audiences="https://financialapp-api-i47taxhzba-as.a.run.app/api/push/dispatch")
+   curl -X POST -H "Authorization: Bearer $TOKEN" \
+     https://financialapp-api-i47taxhzba-as.a.run.app/api/push/dispatch
+   ```
+   Confirm the `{sent, skipped, disabled}` response looks right and that a
+   real device actually receives a reminder before proceeding.
+4. Only after that manual call succeeds, create the Cloud Scheduler job
+   (below). Keep it **paused** immediately after creation if you want one
+   more supervised run before it goes fully unattended:
+   ```bash
+   gcloud scheduler jobs create http financialapp-push-dispatch \
+     --location=asia-southeast1 \
+     --schedule="0 9 * * *" \
+     --time-zone="Asia/Kuala_Lumpur" \
+     --uri="https://financialapp-api-i47taxhzba-as.a.run.app/api/push/dispatch" \
+     --http-method=POST \
+     --oidc-service-account-email="financialapp-scheduler@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+     --oidc-token-audience="https://financialapp-api-i47taxhzba-as.a.run.app/api/push/dispatch" \
+     --max-retry-attempts=3 \
+     --max-retry-duration=3600s \
+     --min-backoff-duration=60s \
+     --max-backoff-duration=600s
+   ```
+   One job, one cron (`0 9 * * *`, `Asia/Kuala_Lumpur`) — the reminder TTL
+   already ends at the close of that same local day, so retries are bounded
+   to the same day by design; `--max-retry-duration=3600s` just keeps
+   Scheduler itself from retrying into the next one.
+
+### Cost stays inside the free tier
+- Cloud Run already runs with `--min-instances 0 --max-instances 2`, so this
+  adds one extra request per day, billed the same request-based way as any
+  other endpoint — no dedicated always-on worker.
+- Cloud Scheduler's free tier covers 3 jobs/month; this uses exactly one.
+- FCM sends are free; no paid add-on is introduced anywhere in this path.
+
+### Monitoring without leaking sensitive data
+- The dispatcher and sender never log an FCM token, a payment amount, or any
+  other financial detail — only outcomes (`Sent` / `InvalidOrUnregistered` /
+  `TransientFailure`) and non-sensitive identifiers (payment/occurrence IDs).
+- Set a Cloud Billing budget alert as an early-warning notification (e.g. at
+  50/90/100% of a small monthly threshold) — this is a **warning, not a
+  spending cap**; Cloud Billing budgets cannot themselves stop billing or
+  disable a project.
+- Watch Cloud Run request logs and Cloud Scheduler job history for the daily
+  `09:00 Asia/Kuala_Lumpur` run; a failed OIDC check shows up as `401`/`403`
+  on that endpoint without any payload detail attached.

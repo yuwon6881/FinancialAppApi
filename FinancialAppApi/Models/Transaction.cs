@@ -37,6 +37,14 @@ public class Transaction : IUserOwnedEntity
     // Intentionally not a real FK: the transaction can be deleted independently, and the
     // delete path clears the wishlist purchase state instead of blocking the ledger delete.
     public int? WishlistItemId { get; set; }
+
+    // The exact recurrence-engine billing date (calendar day, no time) this transaction settles,
+    // when it was recorded through a recurring-payment-aware path (normal confirmation or
+    // pay-early). Null for legacy rows and for transactions that aren't tied to a matching
+    // occurrence. A PostgreSQL partial unique index on (UserId, RecurringPaymentId,
+    // RecurringOccurrenceDate) — non-null only — guarantees a given occurrence can never be
+    // paid twice.
+    public DateOnly? RecurringOccurrenceDate { get; set; }
 }
 
 public class AutocompleteSuggestion

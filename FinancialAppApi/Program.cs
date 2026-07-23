@@ -18,7 +18,8 @@ builder.Services
     .AddApiInfrastructure(builder.Configuration, builder.Environment)
     .AddAiServices(builder.Configuration)
     .AddAuthServices()
-    .AddPersistence(builder.Configuration, migrateOnly);
+    .AddPersistence(builder.Configuration, migrateOnly)
+    .AddPushServices();
 
 builder.Services.AddProblemDetails();
 
