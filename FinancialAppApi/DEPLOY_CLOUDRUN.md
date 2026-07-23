@@ -44,12 +44,13 @@ dedicated backend **secret API key** (`sb_secret_...`) under Settings > API Keys
 Do not use a publishable/anon key, and never expose this secret to the frontend.
 
 ```bash
-printf '%s' 'https://YOUR_PROJECT_REF.supabase.co' \
-  | gcloud secrets create financialapp-supabase-project-url --data-file=-
-
 printf '%s' 'sb_secret_REPLACE_ME' \
   | gcloud secrets create financialapp-supabase-api-key --data-file=-
 ```
+
+The Supabase project URL is not secret. Set it as the Cloud Build substitution
+`_SUPABASE_PROJECT_URL` (or the normal Cloud Run environment variable
+`SupabaseStorage__ProjectUrl`) instead of consuming a Secret Manager version.
 
 The API creates the private `receipt-scans` bucket on the first upload with a
 10 MiB file limit and image-only MIME restrictions. If a bucket with that name
@@ -70,7 +71,8 @@ gcloud run deploy financialapp-api \
   --min-instances 0 \
   --max-instances 2 \
   --memory 512Mi \
-  --set-secrets "ConnectionStrings__DefaultConnection=financialapp-db:latest,SupabaseStorage__ProjectUrl=financialapp-supabase-project-url:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest"
+  --set-env-vars "SupabaseStorage__ProjectUrl=https://YOUR_PROJECT_REF.supabase.co" \
+  --set-secrets "ConnectionStrings__DefaultConnection=financialapp-db:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest,MarketData__TwelveDataApiKey=financialapp-twelvedata-api-key:latest"
 ```
 
 - `--source .` builds the image from the `Dockerfile` via Cloud Build and deploys it.
@@ -78,6 +80,47 @@ gcloud run deploy financialapp-api \
   Set it to `1` for an always-warm instance (leaves the free tier, ~a few $/mo).
 - `--allow-unauthenticated` is required — this is a public API guarded by its own
   bearer-token auth, not Google IAM.
+
+For the checked-in Cloud Build pipeline, provide the non-secret URL explicitly:
+
+```bash
+gcloud builds submit .. \
+  --config cloudbuild.yaml \
+  --substitutions "_SUPABASE_PROJECT_URL=https://YOUR_PROJECT_REF.supabase.co"
+```
+
+## Configure Growth Investments market data
+
+Twelve Data is used only after an explicit symbol search or **Update prices**
+action. Store the shared provider key in Secret Manager and grant the Cloud Run
+runtime identity access; never put the value in `appsettings.json`, a URL, or
+Cloud Build substitutions.
+
+```bash
+printf '%s' 'YOUR_TWELVE_DATA_KEY' \
+  | gcloud secrets create financialapp-twelvedata-api-key --data-file=-
+
+gcloud secrets add-iam-policy-binding financialapp-twelvedata-api-key \
+  --member="serviceAccount:YOUR_CLOUD_RUN_RUNTIME_SA@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+```
+
+The deployment maps the secret to
+`MarketData__TwelveDataApiKey=financialapp-twelvedata-api-key:latest`.
+Non-secret defaults live under `MarketData` in `appsettings.json`: provider base
+URL, 15-minute freshness, six refresh calls per minute (leaving two discovery
+calls available), a 750-call daily ceiling, and feature enablement. With no key,
+manual accounts, instruments, transactions, and prices continue to work.
+
+To migrate an existing deployment that stored the Supabase URL as a secret:
+
+1. Read the current project URL and set it as `SupabaseStorage__ProjectUrl`.
+2. Remove the `SupabaseStorage__ProjectUrl` secret mapping.
+3. Verify a receipt can be uploaded, retrieved, and cleaned up.
+4. Destroy the active `financialapp-supabase-project-url` secret version, then
+   delete the obsolete secret container if it has no retained versions.
+
+Destroy the old version only after the receipt lifecycle check succeeds.
 
 ## Baseline an existing database before first deploy
 This app now uses EF Core migrations instead of the old startup `DbInitializer`.

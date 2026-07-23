@@ -30,6 +30,15 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<SecurityQuestionAnswer> SecurityQuestionAnswers => Set<SecurityQuestionAnswer>();
     public DbSet<PushSubscription> PushSubscriptions => Set<PushSubscription>();
     public DbSet<PushReminderDelivery> PushReminderDeliveries => Set<PushReminderDelivery>();
+    public DbSet<InvestmentAccount> InvestmentAccounts => Set<InvestmentAccount>();
+    public DbSet<InvestmentInstrument> InvestmentInstruments => Set<InvestmentInstrument>();
+    public DbSet<InvestmentTransaction> InvestmentTransactions => Set<InvestmentTransaction>();
+    public DbSet<MarketPriceBar> MarketPriceBars => Set<MarketPriceBar>();
+    public DbSet<FxRateBar> FxRateBars => Set<FxRateBar>();
+    public DbSet<ManualPriceOverride> ManualPriceOverrides => Set<ManualPriceOverride>();
+    public DbSet<MarketDataRefreshJob> MarketDataRefreshJobs => Set<MarketDataRefreshJob>();
+    public DbSet<MarketDataQuotaWindow> MarketDataQuotaWindows => Set<MarketDataQuotaWindow>();
+    public DbSet<InstrumentSearchCache> InstrumentSearchCaches => Set<InstrumentSearchCache>();
     public DbSet<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey> DataProtectionKeys => Set<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey>();
 
     public void SetCurrentUser(string userId)
@@ -207,6 +216,88 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(e => new { e.UserId, e.EffectiveFromCycleKey });
         });
 
+        modelBuilder.Entity<InvestmentAccount>(entity =>
+        {
+            entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
+        });
+
+        modelBuilder.Entity<InvestmentInstrument>(entity =>
+        {
+            entity.HasIndex(e => new { e.UserId, e.Symbol, e.ProviderMic }).IsUnique();
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
+        });
+
+        modelBuilder.Entity<InvestmentTransaction>(entity =>
+        {
+            entity.Property(e => e.TradeDate).HasColumnType("date");
+            entity.Property(e => e.Units).HasColumnType("numeric(28,10)");
+            entity.Property(e => e.UnitPrice).HasColumnType("numeric(28,10)");
+            entity.Property(e => e.CashAmount).HasColumnType("numeric(28,10)");
+            entity.Property(e => e.Fees).HasColumnType("numeric(28,10)");
+            entity.Property(e => e.Taxes).HasColumnType("numeric(28,10)");
+            entity.Property(e => e.TradeFxRate).HasColumnType("numeric(28,10)");
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.UserId, e.AccountId, e.InstrumentId, e.TradeDate });
+            entity.HasOne(e => e.Account).WithMany().HasForeignKey(e => e.AccountId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Instrument).WithMany().HasForeignKey(e => e.InstrumentId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.LinkedTransfer).WithMany().HasForeignKey(e => e.LinkedTransferId).OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<MarketPriceBar>(entity =>
+        {
+            entity.Property(e => e.MarketDate).HasColumnType("date");
+            entity.Property(e => e.Close).HasColumnType("numeric(28,10)");
+            entity.Property(e => e.FetchedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.Provider, e.Symbol, e.Mic, e.MarketDate }).IsUnique();
+        });
+
+        modelBuilder.Entity<FxRateBar>(entity =>
+        {
+            entity.Property(e => e.MarketDate).HasColumnType("date");
+            entity.Property(e => e.Rate).HasColumnType("numeric(28,10)");
+            entity.Property(e => e.FetchedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.Provider, e.BaseCurrency, e.QuoteCurrency, e.MarketDate }).IsUnique();
+        });
+
+        modelBuilder.Entity<ManualPriceOverride>(entity =>
+        {
+            entity.Property(e => e.MarketDate).HasColumnType("date");
+            entity.Property(e => e.Price).HasColumnType("numeric(28,10)");
+            entity.Property(e => e.FxRate).HasColumnType("numeric(28,10)");
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.UserId, e.InstrumentId, e.MarketDate }).IsUnique();
+            entity.HasOne(e => e.Instrument).WithMany().HasForeignKey(e => e.InstrumentId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<MarketDataRefreshJob>(entity =>
+        {
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.CompletedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.UserId, e.Status, e.UpdatedAt });
+        });
+
+        modelBuilder.Entity<MarketDataQuotaWindow>(entity =>
+        {
+            entity.Property(e => e.WindowStart).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.Version).IsRowVersion();
+            entity.HasIndex(e => new { e.Scope, e.WindowStart }).IsUnique();
+        });
+
+        modelBuilder.Entity<InstrumentSearchCache>(entity =>
+        {
+            entity.Property(e => e.ExpiresAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => e.NormalizedQuery).IsUnique();
+            entity.HasIndex(e => e.ExpiresAt);
+        });
+
         ConfigureUserOwnership(modelBuilder.Entity<Transaction>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<RecurringPayment>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<FinancialSetting>(), applyQueryFilter: true);
@@ -223,6 +314,11 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<SecurityQuestionAnswer>(), applyQueryFilter: false);
         ConfigureUserOwnership(modelBuilder.Entity<PushSubscription>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<PushReminderDelivery>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<InvestmentAccount>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<InvestmentInstrument>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<InvestmentTransaction>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<ManualPriceOverride>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<MarketDataRefreshJob>(), applyQueryFilter: true);
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

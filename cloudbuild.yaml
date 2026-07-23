@@ -62,8 +62,8 @@ steps:
       # (which CPU throttling can stall after the 202 response) to a Cloud Tasks HTTP
       # callback, so OCR work always runs inside a billed request. All four keys plus
       # OcrWorkerKey must be non-empty or the dispatcher silently keeps the fallback.
-      - '--update-env-vars=Database__MigrateOnStartup=false,Database__SeedOnStartup=false,CloudTasks__ProjectId=$PROJECT_ID,CloudTasks__LocationId=asia-southeast1,CloudTasks__QueueId=receipt-scan,CloudTasks__WorkerBaseUrl=https://financialapp-api-i47taxhzba-as.a.run.app,Fcm__ProjectId=$PROJECT_ID,Push__OidcAudience=https://financialapp-api-i47taxhzba-as.a.run.app/api/push/dispatch,Push__AllowlistedServiceAccounts__0=financialapp-scheduler@$PROJECT_ID.iam.gserviceaccount.com'
-      - '--update-secrets=OcrWorkerKey=financialapp-ocr-worker-key:latest,SupabaseStorage__ProjectUrl=financialapp-supabase-project-url:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest'
+      - '--update-env-vars=Database__MigrateOnStartup=false,Database__SeedOnStartup=false,SupabaseStorage__ProjectUrl=${_SUPABASE_PROJECT_URL},CloudTasks__ProjectId=$PROJECT_ID,CloudTasks__LocationId=asia-southeast1,CloudTasks__QueueId=receipt-scan,CloudTasks__WorkerBaseUrl=https://financialapp-api-i47taxhzba-as.a.run.app,Fcm__ProjectId=$PROJECT_ID,Push__OidcAudience=https://financialapp-api-i47taxhzba-as.a.run.app/api/push/dispatch,Push__AllowlistedServiceAccounts__0=financialapp-scheduler@$PROJECT_ID.iam.gserviceaccount.com'
+      - '--update-secrets=OcrWorkerKey=financialapp-ocr-worker-key:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest,MarketData__TwelveDataApiKey=financialapp-twelvedata-api-key:latest'
     id: Deploy
     waitFor:
       - Migrate
@@ -80,3 +80,8 @@ availableSecrets:
     # pooler (port 6543); Program.cs swaps it to session mode (5432) under --migrate.
     - versionName: projects/$PROJECT_ID/secrets/financialapp-db/versions/latest
       env: 'ConnectionStrings__DefaultConnection'
+
+# Non-sensitive deployment configuration. Keeping this as a substitution makes
+# the normal Cloud Run environment value explicit and overridable per project.
+substitutions:
+  _SUPABASE_PROJECT_URL: 'https://wdbdsnpldtiwsmscwyqt.supabase.co'

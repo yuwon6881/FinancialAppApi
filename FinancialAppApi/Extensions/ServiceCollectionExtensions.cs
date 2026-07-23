@@ -13,6 +13,7 @@ using OpenTelemetry.Trace;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using FinancialAppApi.Diagnostics;
+using FinancialAppApi.Services.Investments;
 
 namespace FinancialAppApi.Extensions;
 
@@ -302,6 +303,18 @@ public static class ServiceCollectionExtensions
         services.AddScoped<TransactionQueryService>();
         services.AddScoped<FinancialService>();
         services.AddScoped<PushSubscriptionService>();
+        services.Configure<MarketDataOptions>(configuration.GetSection("MarketData"));
+        services.AddHttpClient<IMarketDataProvider, TwelveDataMarketDataProvider>((serviceProvider, client) =>
+        {
+            var marketData = serviceProvider.GetRequiredService<
+                Microsoft.Extensions.Options.IOptions<MarketDataOptions>>().Value;
+            client.BaseAddress = new Uri(marketData.BaseUrl.TrimEnd('/') + "/");
+            client.Timeout = TimeSpan.FromSeconds(20);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("FinancialAppApi/1.0");
+        });
+        services.AddScoped<InvestmentAccountingService>();
+        services.AddScoped<InvestmentPortfolioService>();
+        services.AddScoped<InvestmentMarketDataService>();
         return services;
     }
 
