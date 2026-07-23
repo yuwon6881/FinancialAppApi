@@ -5,7 +5,7 @@ internal static class AiResponseSchemas
     // Max number of actions the chat model may return in one turn -- also the effective ceiling
     // on a batched ledger-add (one flat openAddLedgerDraft action per record).
     //
-    // WHY 4 (and not 50): gemini-3.1-flash-lite has a small structured-output (responseJsonSchema)
+    // WHY 4 (and not 50): gemini-3.5-flash-lite has a small structured-output (responseJsonSchema)
     // complexity budget. Because the actions array items are the full ActionPayload union, Gemini
     // rejects the whole request with 400 INVALID_ARGUMENT once maxItems exceeds ~4. This was
     // measured directly against the live API: full payload passes at maxItems=4 and fails at 5+,

@@ -30,7 +30,7 @@ public sealed record AiGenerationOptions(
 // explicit compute budget; transport, retries, usage telemetry and provider parsing stay here.
 public class AiClient
 {
-    private const string DefaultPrimaryModel = "gemini-3.1-flash-lite";
+    private const string DefaultPrimaryModel = "gemini-3.5-flash-lite";
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(250);
 
     private readonly HttpClient _httpClient;
@@ -74,7 +74,7 @@ public class AiClient
         }
         catch (AiProviderUnavailableException) when (!cancellationToken.IsCancellationRequested)
         {
-            // No fallback model: gemini-3.1-flash-lite is the only model. A transient provider
+            // No fallback model: gemini-3.5-flash-lite is the only model. A transient provider
             // failure (already retried once by CallWithRetryAsync) surfaces as a clean error.
             throw new AiClientException("AI service is temporarily unavailable. Please try again.");
         }

@@ -336,58 +336,68 @@ public sealed class InvestmentMarketDataService(
     private async Task<int> ReserveQuotaAsync(int requested, CancellationToken cancellationToken)
     {
         if (requested <= 0) return 0;
-        var now = DateTime.UtcNow;
-        var minuteStart = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
-        var dayStart = new DateTime(now.Year, now.Month, now.Day, 0, 0, 0, DateTimeKind.Utc);
-        await using var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
-        await AcquireQuotaLockAsync(cancellationToken);
-        var minute = await GetOrCreateWindowAsync("refresh-minute", minuteStart, cancellationToken);
-        var providerMinute = await GetOrCreateWindowAsync("provider-minute", minuteStart, cancellationToken);
-        var day = await GetOrCreateWindowAsync("provider-day", dayStart, cancellationToken);
-        var allowed = Math.Min(requested, Math.Min(
-            Math.Max(0, _options.RefreshCallsPerMinute - minute.Used),
-            Math.Min(
-                Math.Max(0, _options.RefreshCallsPerMinute + 2 - providerMinute.Used),
-                Math.Max(0, _options.DailyCallCeiling - day.Used))));
-        if (allowed > 0)
+        var result = 0;
+        await context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
-            minute.Used += allowed;
-            minute.UpdatedAt = now;
-            providerMinute.Used += allowed;
-            providerMinute.UpdatedAt = now;
-            day.Used += allowed;
-            day.UpdatedAt = now;
-            await context.SaveChangesAsync(cancellationToken);
-        }
-        await transaction.CommitAsync(cancellationToken);
-        return allowed;
+            var now = DateTime.UtcNow;
+            var minuteStart = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
+            var dayStart = new DateTime(now.Year, now.Month, now.Day, 0, 0, 0, DateTimeKind.Utc);
+            await using var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+            await AcquireQuotaLockAsync(cancellationToken);
+            var minute = await GetOrCreateWindowAsync("refresh-minute", minuteStart, cancellationToken);
+            var providerMinute = await GetOrCreateWindowAsync("provider-minute", minuteStart, cancellationToken);
+            var day = await GetOrCreateWindowAsync("provider-day", dayStart, cancellationToken);
+            var allowed = Math.Min(requested, Math.Min(
+                Math.Max(0, _options.RefreshCallsPerMinute - minute.Used),
+                Math.Min(
+                    Math.Max(0, _options.RefreshCallsPerMinute + 2 - providerMinute.Used),
+                    Math.Max(0, _options.DailyCallCeiling - day.Used))));
+            if (allowed > 0)
+            {
+                minute.Used += allowed;
+                minute.UpdatedAt = now;
+                providerMinute.Used += allowed;
+                providerMinute.UpdatedAt = now;
+                day.Used += allowed;
+                day.UpdatedAt = now;
+                await context.SaveChangesAsync(cancellationToken);
+            }
+            await transaction.CommitAsync(cancellationToken);
+            result = allowed;
+        });
+        return result;
     }
 
     private async Task<bool> ReserveDiscoveryQuotaAsync(CancellationToken cancellationToken)
     {
-        var now = DateTime.UtcNow;
-        var minuteStart = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
-        var dayStart = new DateTime(now.Year, now.Month, now.Day, 0, 0, 0, DateTimeKind.Utc);
-        await using var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
-        await AcquireQuotaLockAsync(cancellationToken);
-        var providerMinute = await GetOrCreateWindowAsync("provider-minute", minuteStart, cancellationToken);
-        var discoveryMinute = await GetOrCreateWindowAsync("discovery-minute", minuteStart, cancellationToken);
-        var day = await GetOrCreateWindowAsync("provider-day", dayStart, cancellationToken);
-        var allowed = discoveryMinute.Used < 2 &&
-                      providerMinute.Used < _options.RefreshCallsPerMinute + 2 &&
-                      day.Used < _options.DailyCallCeiling;
-        if (allowed)
+        var result = false;
+        await context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
-            discoveryMinute.Used++;
-            discoveryMinute.UpdatedAt = now;
-            providerMinute.Used++;
-            providerMinute.UpdatedAt = now;
-            day.Used++;
-            day.UpdatedAt = now;
-            await context.SaveChangesAsync(cancellationToken);
-        }
-        await transaction.CommitAsync(cancellationToken);
-        return allowed;
+            var now = DateTime.UtcNow;
+            var minuteStart = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
+            var dayStart = new DateTime(now.Year, now.Month, now.Day, 0, 0, 0, DateTimeKind.Utc);
+            await using var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+            await AcquireQuotaLockAsync(cancellationToken);
+            var providerMinute = await GetOrCreateWindowAsync("provider-minute", minuteStart, cancellationToken);
+            var discoveryMinute = await GetOrCreateWindowAsync("discovery-minute", minuteStart, cancellationToken);
+            var day = await GetOrCreateWindowAsync("provider-day", dayStart, cancellationToken);
+            var allowed = discoveryMinute.Used < 2 &&
+                          providerMinute.Used < _options.RefreshCallsPerMinute + 2 &&
+                          day.Used < _options.DailyCallCeiling;
+            if (allowed)
+            {
+                discoveryMinute.Used++;
+                discoveryMinute.UpdatedAt = now;
+                providerMinute.Used++;
+                providerMinute.UpdatedAt = now;
+                day.Used++;
+                day.UpdatedAt = now;
+                await context.SaveChangesAsync(cancellationToken);
+            }
+            await transaction.CommitAsync(cancellationToken);
+            result = allowed;
+        });
+        return result;
     }
 
     private Task AcquireQuotaLockAsync(CancellationToken cancellationToken)
