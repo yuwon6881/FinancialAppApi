@@ -84,7 +84,8 @@ public sealed class InvestmentsController(
     {
         var account = await context.InvestmentAccounts.FindAsync([id], HttpContext.RequestAborted);
         if (account is null) return NotFound();
-        if (await context.InvestmentTransactions.AnyAsync(value => value.AccountId == id, HttpContext.RequestAborted))
+        if (await context.InvestmentTransactions.AnyAsync(value => value.AccountId == id, HttpContext.RequestAborted) ||
+            await context.InvestmentCashFlows.AnyAsync(value => value.AccountId == id, HttpContext.RequestAborted))
             return Conflict(new { message = "Accounts with activity cannot be deleted. Archive this account instead." });
         context.InvestmentAccounts.Remove(account);
         await context.SaveChangesAsync(HttpContext.RequestAborted);
@@ -262,9 +263,52 @@ public sealed class InvestmentsController(
         return NoContent();
     }
 
+    [HttpPost("cash-flows")]
+    public async Task<ActionResult<InvestmentCashFlowDto>> CreateCashFlow(CashFlowMutationDto dto)
+    {
+        var (flow, error) = await BuildCashFlowAsync(dto);
+        if (error is not null) return BadRequest(new { message = error });
+        context.InvestmentCashFlows.Add(flow!);
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+        return Created($"/api/investments/cash-flows/{flow!.Id}", InvestmentPortfolioService.ToDto(flow));
+    }
+
+    [HttpDelete("cash-flows/{id:guid}")]
+    public async Task<IActionResult> DeleteCashFlow(Guid id)
+    {
+        var flow = await context.InvestmentCashFlows.FindAsync([id], HttpContext.RequestAborted);
+        if (flow is null) return NotFound();
+        context.InvestmentCashFlows.Remove(flow);
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+        return NoContent();
+    }
+
     [HttpPost("market-data/refresh")]
     public async Task<ActionResult<MarketRefreshResponse>> RefreshMarketData()
         => Ok(await marketDataService.RefreshAsync(HttpContext.RequestAborted));
+
+    private async Task<(InvestmentCashFlow? Flow, string? Error)> BuildCashFlowAsync(CashFlowMutationDto dto)
+    {
+        if (!InvestmentKinds.CashFlowTypes.Contains(dto.Type))
+            return (null, "Cash flow type must be Deposit or Withdrawal.");
+        var account = await context.InvestmentAccounts.FindAsync([dto.AccountId], HttpContext.RequestAborted);
+        if (account is null || account.IsArchived) return (null, "Select an active investment account.");
+        if (!ValidCurrency(dto.Currency)) return (null, "Use a three-letter cash currency.");
+        if (dto.Amount <= 0) return (null, "Enter a positive amount.");
+        if (dto.Date == default || dto.Date > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)))
+            return (null, "Enter a valid date.");
+        // Store the net effect signed: withdrawals reduce the balance.
+        var signed = dto.Type.Equals("Withdrawal", StringComparison.OrdinalIgnoreCase) ? -dto.Amount : dto.Amount;
+        return (new InvestmentCashFlow
+        {
+            AccountId = dto.AccountId,
+            Currency = dto.Currency.Trim().ToUpperInvariant(),
+            Type = dto.Type.Equals("Withdrawal", StringComparison.OrdinalIgnoreCase) ? "Withdrawal" : "Deposit",
+            Amount = signed,
+            Date = dto.Date,
+            Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim()
+        }, null);
+    }
 
     private async Task<(InvestmentTransaction? Transaction, string? Error)> BuildTransactionAsync(
         InvestmentTransactionMutationDto dto,
@@ -446,3 +490,11 @@ public sealed record ManualPriceMutationDto(
     DateOnly MarketDate,
     decimal Price,
     decimal? FxRate);
+
+public sealed record CashFlowMutationDto(
+    Guid AccountId,
+    string Currency,
+    string Type,
+    decimal Amount,
+    DateOnly Date,
+    string? Notes);

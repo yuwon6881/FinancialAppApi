@@ -12,7 +12,25 @@ public sealed record InvestmentSummaryDto(
     decimal? UnrealisedPercent,
     decimal? RealisedProfitLoss,
     decimal? NetDividends,
-    decimal? DailyChange);
+    decimal? DailyChange,
+    decimal? CashValue,
+    decimal? TotalValue);
+
+public sealed record InvestmentCashBalanceDto(
+    Guid AccountId,
+    string AccountName,
+    string Currency,
+    decimal Amount,
+    decimal? AmountApp);
+
+public sealed record InvestmentCashFlowDto(
+    Guid Id,
+    Guid AccountId,
+    string Currency,
+    string Type,
+    decimal Amount,
+    DateOnly Date,
+    string? Notes);
 
 public sealed record InvestmentHoldingDto(
     Guid AccountId,
@@ -50,6 +68,8 @@ public sealed record InvestmentPortfolioDto(
     IReadOnlyList<InvestmentTransactionDto> Activity,
     IReadOnlyList<ManualPriceDto> ManualPrices,
     IReadOnlyList<InvestmentChartPointDto> Chart,
+    IReadOnlyList<InvestmentCashBalanceDto> CashBalances,
+    IReadOnlyList<InvestmentCashFlowDto> CashFlows,
     IReadOnlyList<string> Insights,
     IReadOnlyList<string> Warnings,
     DateTime? PricesUpdatedAt,
@@ -106,6 +126,10 @@ public sealed class InvestmentPortfolioService(
         var overrides = await context.ManualPriceOverrides.AsNoTracking()
             .OrderByDescending(value => value.MarketDate)
             .ToListAsync(cancellationToken);
+        var cashFlows = await context.InvestmentCashFlows.AsNoTracking()
+            .OrderByDescending(value => value.Date)
+            .ThenByDescending(value => value.CreatedAt)
+            .ToListAsync(cancellationToken);
 
         var symbols = instruments
             .Where(value => !value.IsCustom && !string.IsNullOrWhiteSpace(value.ProviderSymbol))
@@ -117,7 +141,10 @@ public sealed class InvestmentPortfolioService(
             : await context.MarketPriceBars.AsNoTracking()
                 .Where(value => value.Provider == "twelvedata" && symbols.Contains(value.Symbol))
                 .ToListAsync(cancellationToken);
-        var currencies = instruments.Select(value => value.Currency).Distinct().ToList();
+        var currencies = instruments.Select(value => value.Currency)
+            .Concat(cashFlows.Select(value => value.Currency))
+            .Distinct()
+            .ToList();
         var fxBars = await context.FxRateBars.AsNoTracking()
             .Where(value => value.Provider == "twelvedata" &&
                             currencies.Contains(value.BaseCurrency) &&
@@ -204,6 +231,72 @@ public sealed class InvestmentPortfolioService(
             .Select(value => (decimal?)value.GrowthBalance)
             .FirstOrDefaultAsync(cancellationToken) ?? 0;
 
+        // Uninvested cash per account+currency: explicit deposits/withdrawals plus
+        // the implicit cash effect of trades and income. Opening positions declare
+        // existing holdings and do not move cash.
+        var cashByKey = new Dictionary<(Guid AccountId, string Currency), decimal>();
+        void AddCash(Guid accountId, string currency, decimal amount)
+        {
+            var key = (accountId, currency.ToUpperInvariant());
+            cashByKey[key] = cashByKey.GetValueOrDefault(key) + amount;
+        }
+        foreach (var flow in cashFlows)
+        {
+            AddCash(flow.AccountId, flow.Currency, flow.Amount);
+        }
+        foreach (var transaction in transactions)
+        {
+            var currency = transaction.Instrument.Currency;
+            var feesAndTaxes = transaction.Fees + transaction.Taxes;
+            switch (transaction.Type)
+            {
+                case "Buy":
+                    AddCash(transaction.AccountId, currency, -((transaction.CashAmount ?? 0) + feesAndTaxes));
+                    break;
+                case "Sell":
+                    AddCash(transaction.AccountId, currency, (transaction.CashAmount ?? 0) - feesAndTaxes);
+                    break;
+                case "Dividend":
+                    AddCash(transaction.AccountId, currency, (transaction.CashAmount ?? 0) - feesAndTaxes);
+                    break;
+                case "FeeTax":
+                    AddCash(transaction.AccountId, currency, -((transaction.CashAmount ?? 0) + feesAndTaxes));
+                    break;
+            }
+        }
+
+        decimal? CurrencyFx(string currency) =>
+            currency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase)
+                ? 1m
+                : fxBars.Where(value => value.BaseCurrency == currency &&
+                                        value.QuoteCurrency == appCurrency &&
+                                        value.MarketDate <= today)
+                    .OrderByDescending(value => value.MarketDate)
+                    .Select(value => (decimal?)value.Rate)
+                    .FirstOrDefault();
+
+        var cashBalances = cashByKey
+            .Where(pair => pair.Value != 0)
+            .Select(pair =>
+            {
+                var fx = CurrencyFx(pair.Key.Currency);
+                if (fx is null)
+                {
+                    warnings.Add($"Current FX is missing for {pair.Key.Currency}/{appCurrency}; cash totals are incomplete.");
+                }
+                return new InvestmentCashBalanceDto(
+                    pair.Key.AccountId,
+                    accountById.TryGetValue(pair.Key.AccountId, out var account) ? account.Name : "Account",
+                    pair.Key.Currency,
+                    pair.Value,
+                    fx is null ? null : pair.Value * fx.Value);
+            })
+            .OrderByDescending(value => value.AmountApp ?? decimal.MinValue)
+            .ToList();
+        var cashComplete = cashBalances.All(value => value.AmountApp is not null);
+        decimal? cashValue = cashComplete ? cashBalances.Sum(value => value.AmountApp ?? 0) : null;
+        decimal? totalValue = marketValue is not null && cashValue is not null ? marketValue + cashValue : null;
+
         var chart = BuildChart(range, transactions, instruments, priceBars, fxBars, overrides, appCurrency);
         var latestFetchedAt = holdings.Where(value => value.PriceFetchedAt is not null)
             .Select(value => value.PriceFetchedAt)
@@ -216,7 +309,9 @@ public sealed class InvestmentPortfolioService(
             unrealisedTotal is not null && costBasis is > 0 ? unrealisedTotal / costBasis * 100m : null,
             realised,
             dividends,
-            convertedComplete ? holdings.Sum(value => value.DailyChangeApp ?? 0) : null);
+            convertedComplete ? holdings.Sum(value => value.DailyChangeApp ?? 0) : null,
+            cashValue,
+            totalValue);
 
         return new InvestmentPortfolioDto(
             appCurrency,
@@ -227,6 +322,8 @@ public sealed class InvestmentPortfolioService(
             transactions.Select(ToDto).ToList(),
             overrides.Select(ToDto).ToList(),
             chart,
+            cashBalances,
+            cashFlows.Select(ToDto).ToList(),
             BuildInsights(holdings, warnings),
             warnings.Distinct().ToList(),
             latestFetchedAt,
@@ -386,6 +483,9 @@ public sealed class InvestmentPortfolioService(
 
     public static ManualPriceDto ToDto(ManualPriceOverride value) => new(
         value.Id, value.InstrumentId, value.MarketDate, value.Price, value.FxRate);
+
+    public static InvestmentCashFlowDto ToDto(InvestmentCashFlow value) => new(
+        value.Id, value.AccountId, value.Currency, value.Type, value.Amount, value.Date, value.Notes);
 
     private sealed record ResolvedPrice(DateOnly Date, decimal Price, DateTime FetchedAt, bool Manual);
 }

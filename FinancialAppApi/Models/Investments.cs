@@ -14,6 +14,11 @@ public static class InvestmentKinds
         "OpeningPosition", "Buy", "Sell", "Dividend", "FeeTax", "Split",
         "TransferIn", "TransferOut"
     };
+
+    public static readonly HashSet<string> CashFlowTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Deposit", "Withdrawal"
+    };
 }
 
 public sealed class InvestmentAccount : IUserOwnedEntity
@@ -65,6 +70,26 @@ public sealed class InvestmentTransaction : IUserOwnedEntity
     [MaxLength(1000)] public string? Notes { get; set; }
     public Guid? LinkedTransferId { get; set; }
     public InvestmentTransaction? LinkedTransfer { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+// A cash movement into or out of a broker account's uninvested balance
+// (settlement cash). Amount is stored signed: deposits positive, withdrawals
+// negative. Combined with the implicit cash effects of trades and dividends,
+// this gives a per-account, per-currency cash balance that counts toward the
+// portfolio's total value -- mirroring a broker app like Moomoo.
+public sealed class InvestmentCashFlow : IUserOwnedEntity
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    [Required] public string UserId { get; set; } = string.Empty;
+    public Guid AccountId { get; set; }
+    public InvestmentAccount Account { get; set; } = null!;
+    [Required, MaxLength(3)] public string Currency { get; set; } = "USD";
+    [Required, MaxLength(16)] public string Type { get; set; } = "Deposit";
+    public decimal Amount { get; set; }
+    public DateOnly Date { get; set; }
+    [MaxLength(1000)] public string? Notes { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }
