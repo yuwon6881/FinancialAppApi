@@ -47,6 +47,11 @@ public sealed class InvestmentAccountingServiceTests
         var transferIn = Tx("TransferIn", new DateOnly(2025, 2, 1), units: 4);
         transferIn.AccountId = destination;
         transferIn.LinkedTransferId = transferOut.Id;
+        // The in-leg is always recorded after the out-leg. Make CreatedAt reflect
+        // that so ordering is deterministic: both legs share a TradeDate, and
+        // without a distinct CreatedAt the sort falls back to the random Guid Id,
+        // which would process TransferIn first ~half the time and fail to link.
+        transferIn.CreatedAt = transferOut.CreatedAt.AddSeconds(1);
         var transactions = new[]
         {
             Tx("Buy", new DateOnly(2025, 1, 1), units: 10, price: 15),
