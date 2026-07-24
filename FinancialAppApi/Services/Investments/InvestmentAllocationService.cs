@@ -158,12 +158,10 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         var minimumNewMoney = SleeveDefinitions.Max(definition =>
             values[definition.Key] / (targets[definition.Key] / 100m) - investedValue);
         minimumNewMoney = Math.Max(0, minimumNewMoney);
-        var finalTotal = investedValue + minimumNewMoney;
-        var requiredBuys = SleeveDefinitions.ToDictionary(
-            definition => definition.Key,
-            definition => Math.Max(0, finalTotal * targets[definition.Key] / 100m - values[definition.Key]));
-        var recommendations = BuildRecommendations(
-            appCurrency, investedValue, values, targets, requiredBuys, availableCash, minimumNewMoney);
+
+        var recommendations = status == "OnTrack" 
+            ? new List<InvestmentAllocationRecommendationDto>()
+            : BuildRecommendations(appCurrency, investedValue, values, targets, availableCash);
 
         return new InvestmentAllocationOverviewDto(
             status, appCurrency, plan, assignments, sleeves, recommendations, [],
@@ -230,49 +228,43 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         decimal investedValue,
         IReadOnlyDictionary<string, decimal> values,
         IReadOnlyDictionary<string, decimal> targets,
-        IReadOnlyDictionary<string, decimal> requiredBuys,
-        decimal cash,
-        decimal minimumNewMoney)
+        decimal cash)
     {
         var recommendations = new List<InvestmentAllocationRecommendationDto>();
-        var usableCash = Math.Min(cash, minimumNewMoney);
-        if (usableCash > 0)
+        var total = investedValue + cash;
+        
+        if (cash > 0)
         {
             recommendations.Add(new InvestmentAllocationRecommendationDto(
-                1, "UseCash", null, RoundMoney(usableCash),
-                $"Invest {Format(usableCash, currency)} of available brokerage cash first."));
+                1, "UseCash", null, RoundMoney(cash),
+                $"Allocate {Format(cash, currency)} from uninvested cash to begin."));
         }
-        var topUp = Math.Max(0, minimumNewMoney - cash);
-        if (topUp > 0)
-        {
-            recommendations.Add(new InvestmentAllocationRecommendationDto(
-                2, "TopUp", null, RoundMoney(topUp),
-                $"Add {Format(topUp, currency)} to reach the targets without selling."));
-        }
-        foreach (var definition in SleeveDefinitions.Where(value => requiredBuys[value.Key] > 0))
-        {
-            var amount = requiredBuys[definition.Key];
-            recommendations.Add(new InvestmentAllocationRecommendationDto(
-                3, "Buy", definition.Key, RoundMoney(amount),
-                $"Buy {Format(amount, currency)} of {definition.Label} in the new-money plan."));
-        }
-
+        
+        int priority = 2;
         foreach (var definition in SleeveDefinitions)
         {
-            var difference = values[definition.Key] - investedValue * targets[definition.Key] / 100m;
+            var targetVal = total * targets[definition.Key] / 100m;
+            var difference = values[definition.Key] - targetVal;
             if (difference > 0.005m)
+            {
                 recommendations.Add(new InvestmentAllocationRecommendationDto(
-                    4, "Sell", definition.Key, RoundMoney(difference),
-                    $"Exact transfer: sell {Format(difference, currency)} of {definition.Label}."));
+                    priority++, "Sell", definition.Key, RoundMoney(difference),
+                    $"Sell {Format(difference, currency)} of {definition.Label}."));
+            }
         }
+        
         foreach (var definition in SleeveDefinitions)
         {
-            var difference = investedValue * targets[definition.Key] / 100m - values[definition.Key];
+            var targetVal = total * targets[definition.Key] / 100m;
+            var difference = targetVal - values[definition.Key];
             if (difference > 0.005m)
+            {
                 recommendations.Add(new InvestmentAllocationRecommendationDto(
-                    5, "TransferBuy", definition.Key, RoundMoney(difference),
-                    $"Exact transfer: buy {Format(difference, currency)} of {definition.Label}."));
+                    priority++, "Buy", definition.Key, RoundMoney(difference),
+                    $"Buy {Format(difference, currency)} of {definition.Label}."));
+            }
         }
+        
         return recommendations;
     }
 

@@ -59,9 +59,10 @@ public sealed class InvestmentAllocationServiceTests
         Assert.Equal(80, portfolio.Allocation.Sleeves.Single(value => value.Sleeve == "USEquity").Value);
         Assert.Equal(16.21m, portfolio.Allocation.MinimumContribution);
         Assert.Equal("UseCash", portfolio.Allocation.Recommendations[0].Kind);
-        Assert.Contains(portfolio.Allocation.Recommendations, value => value.Kind == "TopUp");
+        Assert.DoesNotContain(portfolio.Allocation.Recommendations, value => value.Kind == "TopUp");
         Assert.Contains(portfolio.Allocation.Recommendations, value => value.Kind == "Sell");
-        Assert.Contains(portfolio.Allocation.Recommendations, value => value.Kind == "TransferBuy");
+        Assert.Contains(portfolio.Allocation.Recommendations, value => value.Kind == "Buy");
+        Assert.DoesNotContain(portfolio.Allocation.Recommendations, value => value.Kind == "TransferBuy");
     }
 
     [Fact]

@@ -44,20 +44,31 @@ public class AiIntentResolverTests
         Assert.True(plan.QueryPlan.NeedsRecurring);
     }
 
-    [Fact]
-    public void ResolveDeterministically_CategoryLimitQuestion_LoadsLimitAndCycleContext()
+    [Theory]
+    [InlineData("Which category limits am I likely to exceed this cycle?")]
+    [InlineData("What limit do I currently have?")]
+    [InlineData("Show my limits")]
+    [InlineData("Limits")]
+    [InlineData("Am I within my spending cap?")]
+    public void ResolveDeterministically_CategoryLimitQuestion_LoadsLimitAndCycleContext(string query)
     {
-        var plan = AiAssistantService.ResolveDeterministically("Which category limits am I likely to exceed this cycle?");
+        var plan = AiAssistantService.ResolveDeterministically(query);
 
         Assert.Contains(AiAssistantService.AiIntent.CategoryLimits, plan.Intents);
         Assert.True(plan.QueryPlan.NeedsCategoryLimits);
         Assert.True(plan.QueryPlan.NeedsCycleSummary);
     }
 
-    [Fact]
-    public void ResolveDeterministically_CycleSummaryQuestion_LoadsSupplementalInsights()
+    [Theory]
+    [InlineData("Give me a cycle summary for this cycle")]
+    [InlineData("How am I doing this cycle?")]
+    [InlineData("How is my current cycle going?")]
+    [InlineData("This month so far")]
+    [InlineData("Current cycle")]
+    [InlineData("Recap")]
+    public void ResolveDeterministically_CycleSummaryQuestion_LoadsSupplementalInsights(string query)
     {
-        var plan = AiAssistantService.ResolveDeterministically("Give me a cycle summary for this cycle");
+        var plan = AiAssistantService.ResolveDeterministically(query);
 
         Assert.Contains(AiAssistantService.AiIntent.CycleInsights, plan.Intents);
         Assert.True(plan.QueryPlan.NeedsCycleInsights);
