@@ -3,6 +3,7 @@ using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
 using System.Diagnostics;
 using FinancialAppApi.Diagnostics;
+using FinancialAppApi.Services.Investments;
 
 namespace FinancialAppApi.Services;
 
@@ -323,6 +324,10 @@ public class FinancialService
         {
             return "Income allocations must total exactly 100%.";
         }
+        if (!CurrencyCatalog.Contains(update.Currency))
+        {
+            return "Select a supported ISO 4217 currency.";
+        }
 
         var setting = await GetOrCreateSettingAsync();
 
@@ -350,7 +355,7 @@ public class FinancialService
         {
             setting.StabilityOverflowRedirect = update.StabilityOverflowRedirect;
         }
-        setting.Currency = update.Currency;
+        setting.Currency = update.Currency.Trim().ToUpperInvariant();
 
         var strategy = _context.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>

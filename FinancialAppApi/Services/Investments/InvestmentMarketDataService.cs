@@ -140,34 +140,47 @@ public sealed class InvestmentMarketDataService(
             .ToUpperInvariant();
         var transactions = await context.InvestmentTransactions.AsNoTracking()
             .ToListAsync(cancellationToken);
-        if (transactions.Count == 0)
-        {
-            return new MarketRefreshResponse(null, "Complete", 0, 0, null, true, [], "Nothing to update.");
-        }
+        var cashFlows = await context.InvestmentCashFlows.AsNoTracking().ToListAsync(cancellationToken);
 
         var instrumentIds = transactions.Select(value => value.InstrumentId).Distinct().ToList();
-        var instruments = await context.InvestmentInstruments
-            .Where(value => instrumentIds.Contains(value.Id) && !value.IsCustom && !value.IsArchived &&
-                            value.ProviderSymbol != null)
+        var heldInstruments = await context.InvestmentInstruments
+            .Where(value => instrumentIds.Contains(value.Id) && !value.IsArchived)
             .ToListAsync(cancellationToken);
-        if (instruments.Count == 0)
-        {
-            return new MarketRefreshResponse(null, "Complete", 0, 0, null, true, [], "Manual-only holdings do not require a provider refresh.");
-        }
+        var instruments = heldInstruments
+            .Where(value => !value.IsCustom && value.ProviderSymbol != null)
+            .ToList();
+        var currencies = heldInstruments.Select(value => value.Currency)
+            .Concat(cashFlows.Select(value => value.Currency))
+            .Where(value => !value.Equals(appCurrency, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (instruments.Count == 0 && currencies.Count == 0)
+            return new MarketRefreshResponse(null, "Complete", 0, 0, null, true, [], "Nothing to update.");
 
         var activeJob = await context.MarketDataRefreshJobs
             .OrderByDescending(value => value.CreatedAt)
-            .FirstOrDefaultAsync(value => value.Status == "Pending" || value.Status == "Running", cancellationToken);
+            .FirstOrDefaultAsync(value =>
+                (value.Status == "Pending" || value.Status == "Running") &&
+                value.ReportingCurrency == appCurrency, cancellationToken);
+        var staleJobs = await context.MarketDataRefreshJobs
+            .Where(value => (value.Status == "Pending" || value.Status == "Running") &&
+                            value.ReportingCurrency != appCurrency)
+            .ToListAsync(cancellationToken);
+        foreach (var stale in staleJobs)
+        {
+            stale.Status = "Superseded";
+            stale.CompletedAt = DateTime.UtcNow;
+            stale.UpdatedAt = DateTime.UtcNow;
+        }
         if (activeJob is null)
         {
             var pending = instruments.Select(value => $"instrument:{value.Id}").ToList();
-            pending.AddRange(instruments
-                .Where(value => !value.Currency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase))
-                .Select(value => $"fx:{value.Currency}:{appCurrency}")
+            pending.AddRange(currencies
+                .Select(value => $"fx:{value}:{appCurrency}")
                 .Distinct(StringComparer.OrdinalIgnoreCase));
             activeJob = new MarketDataRefreshJob
             {
                 Status = "Pending",
+                ReportingCurrency = appCurrency,
                 TotalItems = pending.Count,
                 PendingItemsJson = JsonSerializer.Serialize(pending)
             };
@@ -206,7 +219,15 @@ public sealed class InvestmentMarketDataService(
                 else
                 {
                     var pair = item.Split(':');
-                    await RefreshFxAsync(pair[1], pair[2], transactions, instruments, cancellationToken);
+                    var relevantDates = transactions.Where(value =>
+                            heldInstruments.Any(instrument => instrument.Id == value.InstrumentId &&
+                                                          instrument.Currency == pair[1]))
+                        .Select(value => value.TradeDate)
+                        .Concat(cashFlows.Where(value => value.Currency == pair[1]).Select(value => value.Date))
+                        .ToList();
+                    await RefreshFxAsync(pair[1], pair[2],
+                        relevantDates.Count == 0 ? DateOnly.FromDateTime(DateTime.UtcNow) : relevantDates.Min(),
+                        cancellationToken);
                 }
             }
             catch (MarketDataProviderException exception)
@@ -286,12 +307,9 @@ public sealed class InvestmentMarketDataService(
     private async Task RefreshFxAsync(
         string baseCurrency,
         string quoteCurrency,
-        IReadOnlyList<InvestmentTransaction> transactions,
-        IReadOnlyList<InvestmentInstrument> instruments,
+        DateOnly earliest,
         CancellationToken cancellationToken)
     {
-        var instrumentIds = instruments.Where(value => value.Currency == baseCurrency).Select(value => value.Id).ToHashSet();
-        var earliest = transactions.Where(value => instrumentIds.Contains(value.InstrumentId)).Min(value => value.TradeDate);
         var latest = await context.FxRateBars
             .Where(value => value.Provider == "twelvedata" &&
                             value.BaseCurrency == baseCurrency &&

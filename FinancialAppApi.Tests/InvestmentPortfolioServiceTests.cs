@@ -6,6 +6,86 @@ namespace FinancialAppApi.Tests;
 public sealed class InvestmentPortfolioServiceTests
 {
     [Fact]
+    public async Task EndOfDayClose_ConvertsHoldingAndAddsSettlementCashWithoutEarlyRounding()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        var account = new InvestmentAccount { Name = "Moomoo", BaseCurrency = "MYR" };
+        var instrument = new InvestmentInstrument
+        {
+            Symbol = "VOO", Name = "Vanguard S&P 500 ETF", Type = "ETF", Currency = "USD",
+            ProviderSymbol = "VOO", ProviderMic = "ARCX"
+        };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+            Type = "OpeningPosition", TradeDate = new DateOnly(2026, 7, 1),
+            Units = 0.7642m, UnitPrice = 650m, CashAmount = 496.73m, TradeFxRate = 4.1m
+        });
+        context.InvestmentCashFlows.Add(new InvestmentCashFlow
+        {
+            AccountId = account.Id, Currency = "MYR", Type = "Deposit",
+            Amount = 2.13m, Date = new DateOnly(2026, 7, 23)
+        });
+        context.MarketPriceBars.Add(new MarketPriceBar
+        {
+            Symbol = "VOO", Mic = "ARCX", MarketDate = new DateOnly(2026, 7, 23), Close = 678.61m
+        });
+        context.FxRateBars.Add(new FxRateBar
+        {
+            BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 23),
+            Rate = 4.0968097876965978622781814333m
+        });
+        await context.SaveChangesAsync();
+
+        var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
+
+        var holding = Assert.Single(portfolio.Holdings);
+        Assert.Equal(678.61m, holding.LatestPriceNative);
+        Assert.Equal(4.0968097876965978622781814333m, holding.FxRate);
+        Assert.Equal("Twelve Data direct", holding.FxSource);
+        Assert.Equal(2124.58m, decimal.Round(holding.ValueApp!.Value, 2));
+        Assert.Equal(2126.71m, decimal.Round(portfolio.Summary.TotalValue!.Value, 2));
+    }
+
+    [Fact]
+    public async Task NewerProviderFx_SupersedesOlderManualFx()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var instrument = new InvestmentInstrument
+        {
+            Symbol = "TEST", Name = "Test", Type = "Stock", Currency = "USD", IsCustom = true
+        };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+            Type = "OpeningPosition", TradeDate = new DateOnly(2026, 7, 1),
+            Units = 1, UnitPrice = 10, CashAmount = 10, TradeFxRate = 4
+        });
+        context.ManualPriceOverrides.AddRange(
+            new ManualPriceOverride { InstrumentId = instrument.Id, MarketDate = new DateOnly(2026, 7, 20), Price = 10, FxRate = 4m },
+            new ManualPriceOverride { InstrumentId = instrument.Id, MarketDate = new DateOnly(2026, 7, 23), Price = 10 });
+        context.FxRateBars.Add(new FxRateBar
+        {
+            BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 22), Rate = 4.2m
+        });
+        await context.SaveChangesAsync();
+
+        var holding = Assert.Single((await NewService(context).GetPortfolioAsync("all", CancellationToken.None)).Holdings);
+
+        Assert.Equal(4.2m, holding.FxRate);
+        Assert.Equal("Twelve Data direct", holding.FxSource);
+    }
+
+    [Fact]
     public async Task Cash_CombinesDepositsWithdrawalsAndDividends_AndCountsTowardTotalValue()
     {
         await using var context = TestHelpers.NewInMemoryContext();

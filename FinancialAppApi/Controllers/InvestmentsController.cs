@@ -31,6 +31,62 @@ public sealed class InvestmentsController(
             .OrderBy(value => value.IsArchived).ThenBy(value => value.Name)
             .ToListAsync(HttpContext.RequestAborted));
 
+    [HttpGet("currencies")]
+    public ActionResult<IReadOnlyList<CurrencyCatalogItem>> GetCurrencies()
+        => Ok(CurrencyCatalog.Items);
+
+    [HttpGet("transactions")]
+    public async Task<ActionResult<PagedResult<InvestmentTransactionDto>>> GetTransactions(
+        [FromQuery] Guid? accountId,
+        [FromQuery] Guid? instrumentId,
+        [FromQuery] string? type,
+        [FromQuery] DateOnly? from,
+        [FromQuery] DateOnly? to,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10)
+    {
+        if (!ValidPage(page, pageSize)) return BadRequest(new { message = "Page must be positive and page size must be 10, 25, or 50." });
+        var query = context.InvestmentTransactions.AsNoTracking();
+        if (accountId is not null) query = query.Where(value => value.AccountId == accountId);
+        if (instrumentId is not null) query = query.Where(value => value.InstrumentId == instrumentId);
+        if (!string.IsNullOrWhiteSpace(type)) query = query.Where(value => value.Type == type);
+        if (from is not null) query = query.Where(value => value.TradeDate >= from);
+        if (to is not null) query = query.Where(value => value.TradeDate <= to);
+        var total = await query.CountAsync(HttpContext.RequestAborted);
+        var rows = await query.OrderByDescending(value => value.TradeDate)
+            .ThenByDescending(value => value.CreatedAt)
+            .ThenByDescending(value => value.Id)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .ToListAsync(HttpContext.RequestAborted);
+        var items = rows.Select(InvestmentPortfolioService.ToDto).ToList();
+        return Ok(new PagedResult<InvestmentTransactionDto>(items, total, page, pageSize));
+    }
+
+    [HttpGet("cash-flows")]
+    public async Task<ActionResult<PagedResult<InvestmentCashFlowDto>>> GetCashFlows(
+        [FromQuery] Guid? accountId,
+        [FromQuery] string? type,
+        [FromQuery] DateOnly? from,
+        [FromQuery] DateOnly? to,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10)
+    {
+        if (!ValidPage(page, pageSize)) return BadRequest(new { message = "Page must be positive and page size must be 10, 25, or 50." });
+        var query = context.InvestmentCashFlows.AsNoTracking();
+        if (accountId is not null) query = query.Where(value => value.AccountId == accountId);
+        if (!string.IsNullOrWhiteSpace(type)) query = query.Where(value => value.Type == type);
+        if (from is not null) query = query.Where(value => value.Date >= from);
+        if (to is not null) query = query.Where(value => value.Date <= to);
+        var total = await query.CountAsync(HttpContext.RequestAborted);
+        var rows = await query.OrderByDescending(value => value.Date)
+            .ThenByDescending(value => value.CreatedAt)
+            .ThenByDescending(value => value.Id)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .ToListAsync(HttpContext.RequestAborted);
+        var items = rows.Select(InvestmentPortfolioService.ToDto).ToList();
+        return Ok(new PagedResult<InvestmentCashFlowDto>(items, total, page, pageSize));
+    }
+
     [HttpPost("accounts")]
     public async Task<ActionResult<InvestmentAccount>> CreateAccount(AccountMutationDto dto)
     {
@@ -60,6 +116,11 @@ public sealed class InvestmentsController(
         if (error is not null) return BadRequest(new { message = error });
         var account = await context.InvestmentAccounts.FindAsync([id], HttpContext.RequestAborted);
         if (account is null) return NotFound();
+        if (dto.IsArchived && !account.IsArchived)
+        {
+            var reason = await AccountArchiveUnavailableReason(id);
+            if (reason is not null) return Conflict(new { message = reason });
+        }
         account.Name = dto.Name.Trim();
         account.BaseCurrency = dto.BaseCurrency.Trim().ToUpperInvariant();
         account.IsArchived = dto.IsArchived;
@@ -73,6 +134,8 @@ public sealed class InvestmentsController(
     {
         var account = await context.InvestmentAccounts.FindAsync([id], HttpContext.RequestAborted);
         if (account is null) return NotFound();
+        var reason = await AccountArchiveUnavailableReason(id);
+        if (reason is not null) return Conflict(new { message = reason });
         account.IsArchived = true;
         account.UpdatedAt = DateTime.UtcNow;
         await context.SaveChangesAsync(HttpContext.RequestAborted);
@@ -121,6 +184,17 @@ public sealed class InvestmentsController(
         if (error is not null) return BadRequest(new { message = error });
         var instrument = await context.InvestmentInstruments.FindAsync([id], HttpContext.RequestAborted);
         if (instrument is null) return NotFound();
+        if (dto.IsArchived && !instrument.IsArchived)
+        {
+            var history = await context.InvestmentTransactions.AsNoTracking()
+                .Include(value => value.Instrument)
+                .Where(value => value.InstrumentId == id)
+                .ToListAsync(HttpContext.RequestAborted);
+            if (history.Count > 0 &&
+                accountingService.Calculate(history, await GetAppCurrencyAsync())
+                    .Positions.Any(value => value.Units != 0))
+                return Conflict(new { message = "Close all units before archiving this investment." });
+        }
         if (!instrument.IsCustom &&
             await context.InvestmentTransactions.AnyAsync(value => value.InstrumentId == id, HttpContext.RequestAborted) &&
             (!instrument.Symbol.Equals(dto.Symbol, StringComparison.OrdinalIgnoreCase) ||
@@ -138,8 +212,9 @@ public sealed class InvestmentsController(
     {
         var instrument = await context.InvestmentInstruments.FindAsync([id], HttpContext.RequestAborted);
         if (instrument is null) return NotFound();
-        if (await context.InvestmentTransactions.AnyAsync(value => value.InstrumentId == id, HttpContext.RequestAborted))
-            return Conflict(new { message = "Instruments with activity cannot be deleted." });
+        if (await context.InvestmentTransactions.AnyAsync(value => value.InstrumentId == id, HttpContext.RequestAborted) ||
+            await context.ManualPriceOverrides.AnyAsync(value => value.InstrumentId == id, HttpContext.RequestAborted))
+            return Conflict(new { message = "Investments with activity or manual prices cannot be deleted. Archive this investment after closing all units." });
         context.InvestmentInstruments.Remove(instrument);
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return NoContent();
@@ -193,7 +268,7 @@ public sealed class InvestmentsController(
     }
 
     [HttpDelete("transactions/{id:guid}")]
-    public async Task<IActionResult> DeleteTransaction(Guid id)
+    public async Task<ActionResult<DeletedTransactionsSnapshot>> DeleteTransaction(Guid id)
     {
         var transaction = await context.InvestmentTransactions
             .FirstOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
@@ -208,6 +283,47 @@ public sealed class InvestmentsController(
         {
             context.ChangeTracker.Clear();
             return Conflict(new { message = $"This activity cannot be deleted because later activity would become invalid: {validation}" });
+        }
+        var snapshot = new DeletedTransactionsSnapshot(
+            linked.Append(transaction).DistinctBy(value => value.Id)
+                .Select(InvestmentPortfolioService.ToDto).ToList());
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+        return Ok(snapshot);
+    }
+
+    [HttpPost("transactions/restore")]
+    public async Task<IActionResult> RestoreTransactions(DeletedTransactionsSnapshot snapshot)
+    {
+        if (snapshot.Transactions.Count is < 1 or > 2)
+            return BadRequest(new { message = "The activity snapshot is invalid." });
+        var accountIds = snapshot.Transactions.Select(value => value.AccountId).Distinct().ToList();
+        var instrumentIds = snapshot.Transactions.Select(value => value.InstrumentId).Distinct().ToList();
+        if (await context.InvestmentAccounts.CountAsync(value => accountIds.Contains(value.Id), HttpContext.RequestAborted) != accountIds.Count ||
+            await context.InvestmentInstruments.CountAsync(value => instrumentIds.Contains(value.Id), HttpContext.RequestAborted) != instrumentIds.Count)
+            return Conflict(new { message = "The account or investment required by this activity no longer exists." });
+        if (await context.InvestmentTransactions.AnyAsync(value =>
+                snapshot.Transactions.Select(item => item.Id).Contains(value.Id), HttpContext.RequestAborted))
+            return Conflict(new { message = "This activity has already been restored." });
+
+        foreach (var item in snapshot.Transactions)
+        {
+            context.InvestmentTransactions.Add(new InvestmentTransaction
+            {
+                Id = item.Id,
+                AccountId = item.AccountId,
+                InstrumentId = item.InstrumentId,
+                Type = item.Type,
+                TradeDate = item.TradeDate,
+                Units = item.Units,
+                UnitPrice = item.UnitPrice,
+                CashAmount = item.CashAmount,
+                Fees = item.Fees,
+                Taxes = item.Taxes,
+                TradeFxRate = item.TradeFxRate,
+                Notes = item.Notes,
+                LinkedTransferId = item.LinkedTransferId,
+                CreatedAt = item.CreatedAt
+            });
         }
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return NoContent();
@@ -274,11 +390,36 @@ public sealed class InvestmentsController(
     }
 
     [HttpDelete("cash-flows/{id:guid}")]
-    public async Task<IActionResult> DeleteCashFlow(Guid id)
+    public async Task<ActionResult<InvestmentCashFlowDto>> DeleteCashFlow(Guid id)
     {
         var flow = await context.InvestmentCashFlows.FindAsync([id], HttpContext.RequestAborted);
         if (flow is null) return NotFound();
+        var snapshot = InvestmentPortfolioService.ToDto(flow);
         context.InvestmentCashFlows.Remove(flow);
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+        return Ok(snapshot);
+    }
+
+    [HttpPost("cash-flows/restore")]
+    public async Task<IActionResult> RestoreCashFlow(InvestmentCashFlowDto snapshot)
+    {
+        if (!CurrencyCatalog.Contains(snapshot.Currency) ||
+            !InvestmentKinds.CashFlowTypes.Contains(snapshot.Type) ||
+            snapshot.Amount == 0 ||
+            !await context.InvestmentAccounts.AnyAsync(value => value.Id == snapshot.AccountId, HttpContext.RequestAborted))
+            return BadRequest(new { message = "The cash-flow snapshot is invalid." });
+        if (await context.InvestmentCashFlows.AnyAsync(value => value.Id == snapshot.Id, HttpContext.RequestAborted))
+            return Conflict(new { message = "This cash flow has already been restored." });
+        context.InvestmentCashFlows.Add(new InvestmentCashFlow
+        {
+            Id = snapshot.Id,
+            AccountId = snapshot.AccountId,
+            Currency = snapshot.Currency,
+            Type = snapshot.Type,
+            Amount = snapshot.Amount,
+            Date = snapshot.Date,
+            Notes = snapshot.Notes
+        });
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return NoContent();
     }
@@ -427,7 +568,43 @@ public sealed class InvestmentsController(
     }
 
     private static bool ValidCurrency(string value)
-        => value.Trim().Length == 3 && value.Trim().All(char.IsLetter);
+        => CurrencyCatalog.Contains(value);
+
+    private static bool ValidPage(int page, int pageSize)
+        => page > 0 && pageSize is 10 or 25 or 50;
+
+    private async Task<string?> AccountArchiveUnavailableReason(Guid accountId)
+    {
+        var transactions = await context.InvestmentTransactions.AsNoTracking()
+            .Include(value => value.Instrument)
+            .Where(value => value.AccountId == accountId)
+            .ToListAsync(HttpContext.RequestAborted);
+        if (transactions.Count > 0)
+        {
+            var calculation = accountingService.Calculate(transactions, await GetAppCurrencyAsync());
+            if (calculation.Positions.Any(value => value.Units != 0))
+                return "Close all positions before archiving this account.";
+        }
+        var flows = await context.InvestmentCashFlows.AsNoTracking()
+            .Where(value => value.AccountId == accountId).ToListAsync(HttpContext.RequestAborted);
+        var cash = flows.GroupBy(value => value.Currency)
+            .ToDictionary(group => group.Key, group => group.Sum(value => value.Amount));
+        foreach (var transaction in transactions)
+        {
+            var currency = transaction.Instrument.Currency;
+            var effect = transaction.Type switch
+            {
+                "Buy" => -((transaction.CashAmount ?? 0) + transaction.Fees + transaction.Taxes),
+                "Sell" or "Dividend" => (transaction.CashAmount ?? 0) - transaction.Fees - transaction.Taxes,
+                "FeeTax" => -((transaction.CashAmount ?? 0) + transaction.Fees + transaction.Taxes),
+                _ => 0
+            };
+            cash[currency] = cash.GetValueOrDefault(currency) + effect;
+        }
+        return cash.Values.Any(value => value != 0)
+            ? "Bring every cash balance to zero before archiving this account."
+            : null;
+    }
 
     private static InvestmentInstrument MapInstrument(InstrumentMutationDto dto)
     {
@@ -498,3 +675,6 @@ public sealed record CashFlowMutationDto(
     decimal Amount,
     DateOnly Date,
     string? Notes);
+
+public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
+public sealed record DeletedTransactionsSnapshot(IReadOnlyList<InvestmentTransactionDto> Transactions);

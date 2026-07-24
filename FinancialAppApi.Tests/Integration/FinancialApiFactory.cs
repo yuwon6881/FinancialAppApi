@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Text;
 
@@ -31,6 +32,10 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
+        // The default Windows Event Log provider is enabled by the Release host and requires
+        // machine-level write access. Integration tests must remain runnable by unprivileged
+        // developers and CI workers, so keep the test host silent and provider-independent.
+        builder.ConfigureLogging(logging => logging.ClearProviders());
 
         // AddPersistence() throws if no connection string is present, and it runs before our
         // ConfigureTestServices override, so supply a dummy one to get past the guard.

@@ -608,6 +608,11 @@ namespace FinancialAppApi.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("ReportingCurrency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(24)

@@ -51,25 +51,57 @@ public sealed record InvestmentHoldingDto(
     DateOnly? PriceDate,
     DateTime? PriceFetchedAt,
     bool UsesManualPrice,
-    bool FxIncomplete);
+    bool FxIncomplete,
+    decimal? FxRate,
+    DateOnly? FxDate,
+    string? FxSource,
+    string? PriceSource,
+    DateOnly? ValuationAsOf);
 
 public sealed record InvestmentChartPointDto(
     DateOnly Date,
-    decimal? MarketValue,
-    decimal? CostBasis,
-    decimal? NetContributions);
+    decimal? TotalValue,
+    decimal? NetDeposits);
+
+public sealed record InvestmentAccountSetupDto(
+    Guid Id,
+    string Name,
+    string BaseCurrency,
+    bool IsArchived,
+    DateTime CreatedAt,
+    DateTime UpdatedAt,
+    bool CanDelete,
+    bool CanArchive,
+    string? ArchiveUnavailableReason);
+
+public sealed record InvestmentInstrumentSetupDto(
+    Guid Id,
+    string Symbol,
+    string Name,
+    string Type,
+    string? Exchange,
+    string? Mic,
+    string? Country,
+    string Currency,
+    string? ProviderSymbol,
+    string? ProviderMic,
+    bool IsCustom,
+    bool IsArchived,
+    bool CanDelete,
+    bool CanArchive,
+    string? ArchiveUnavailableReason);
 
 public sealed record InvestmentPortfolioDto(
     string AppCurrency,
     InvestmentSummaryDto Summary,
-    IReadOnlyList<InvestmentAccount> Accounts,
-    IReadOnlyList<InvestmentInstrument> Instruments,
+    IReadOnlyList<InvestmentAccountSetupDto> Accounts,
+    IReadOnlyList<InvestmentInstrumentSetupDto> Instruments,
     IReadOnlyList<InvestmentHoldingDto> Holdings,
-    IReadOnlyList<InvestmentTransactionDto> Activity,
     IReadOnlyList<ManualPriceDto> ManualPrices,
     IReadOnlyList<InvestmentChartPointDto> Chart,
     IReadOnlyList<InvestmentCashBalanceDto> CashBalances,
-    IReadOnlyList<InvestmentCashFlowDto> CashFlows,
+    int ActivityCount,
+    int CashFlowCount,
     IReadOnlyList<string> Insights,
     IReadOnlyList<string> Warnings,
     DateTime? PricesUpdatedAt,
@@ -147,15 +179,17 @@ public sealed class InvestmentPortfolioService(
             .ToList();
         var fxBars = await context.FxRateBars.AsNoTracking()
             .Where(value => value.Provider == "twelvedata" &&
-                            currencies.Contains(value.BaseCurrency) &&
-                            value.QuoteCurrency == appCurrency)
+                            (currencies.Contains(value.BaseCurrency) ||
+                             currencies.Contains(value.QuoteCurrency) ||
+                             value.BaseCurrency == "USD" ||
+                             value.QuoteCurrency == "USD"))
             .ToListAsync(cancellationToken);
 
         // Value foreign-currency dividends, fees, and trades that carry no manual
         // trade FX at the market rate on their trade date (manual price override or
         // stored provider daily close), mirroring how current holdings are valued.
         decimal? HistoricalTradeFx(InvestmentTransaction transaction) =>
-            ResolveFx(transaction.Instrument.Currency, appCurrency, transaction.TradeDate, fxBars, overrides, transaction.InstrumentId);
+            ResolveFx(transaction.Instrument.Currency, appCurrency, transaction.TradeDate, fxBars, overrides, transaction.InstrumentId)?.Rate;
         var calculation = accounting.Calculate(transactions, appCurrency, HistoricalTradeFx);
         var accountById = accounts.ToDictionary(value => value.Id);
         var instrumentById = instruments.ToDictionary(value => value.Id);
@@ -176,12 +210,12 @@ public sealed class InvestmentPortfolioService(
             var previous = prices.Count > 1 ? prices[^2] : null;
             var fx = ResolveFx(instrument.Currency, appCurrency, today, fxBars, overrides, instrument.Id);
             decimal? valueNative = latest is null ? null : latest.Price * position.Units;
-            decimal? valueApp = valueNative is not null && fx is not null ? valueNative * fx : null;
+            decimal? valueApp = valueNative is not null && fx is not null ? valueNative * fx.Rate : null;
             decimal? unrealised = valueApp is not null && position.CostBasisApp is not null
                 ? valueApp - position.CostBasisApp
                 : null;
             decimal? daily = latest is not null && previous is not null && fx is not null
-                ? (latest.Price - previous.Price) * position.Units * fx
+                ? (latest.Price - previous.Price) * position.Units * fx.Rate
                 : null;
             var incomplete = instrument.Currency != appCurrency && fx is null;
             if (incomplete)
@@ -210,7 +244,12 @@ public sealed class InvestmentPortfolioService(
                 latest?.Date,
                 latest?.FetchedAt,
                 latest?.Manual == true,
-                incomplete));
+                incomplete,
+                fx?.Rate,
+                fx?.Date,
+                fx?.Source,
+                latest is null ? null : latest.Manual ? "Manual close" : "Twelve Data daily close",
+                latest is null || fx is null ? null : latest.Date < fx.Date ? latest.Date : fx.Date));
         }
 
         var convertedComplete = holdings.All(value => value.ValueApp is not null) &&
@@ -225,11 +264,7 @@ public sealed class InvestmentPortfolioService(
         decimal? realised = convertedComplete ? calculation.Positions.Sum(value => value.RealisedApp ?? 0) : null;
         decimal? dividends = convertedComplete ? calculation.Positions.Sum(value => value.DividendsApp ?? 0) : null;
         decimal? unrealisedTotal = marketValue is not null && costBasis is not null ? marketValue - costBasis : null;
-        var growthLedger = await context.CycleBalances.AsNoTracking()
-            .OrderByDescending(value => value.Year)
-            .ThenByDescending(value => value.MonthIndex)
-            .Select(value => (decimal?)value.GrowthBalance)
-            .FirstOrDefaultAsync(cancellationToken) ?? 0;
+        const decimal growthLedger = 0;
 
         // Uninvested cash per account+currency: explicit deposits/withdrawals plus
         // the implicit cash effect of trades and income. Opening positions declare
@@ -266,14 +301,7 @@ public sealed class InvestmentPortfolioService(
         }
 
         decimal? CurrencyFx(string currency) =>
-            currency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase)
-                ? 1m
-                : fxBars.Where(value => value.BaseCurrency == currency &&
-                                        value.QuoteCurrency == appCurrency &&
-                                        value.MarketDate <= today)
-                    .OrderByDescending(value => value.MarketDate)
-                    .Select(value => (decimal?)value.Rate)
-                    .FirstOrDefault();
+            ResolveFx(currency, appCurrency, today, fxBars, overrides, null)?.Rate;
 
         var cashBalances = cashByKey
             .Where(pair => pair.Value != 0)
@@ -297,7 +325,7 @@ public sealed class InvestmentPortfolioService(
         decimal? cashValue = cashComplete ? cashBalances.Sum(value => value.AmountApp ?? 0) : null;
         decimal? totalValue = marketValue is not null && cashValue is not null ? marketValue + cashValue : null;
 
-        var chart = BuildChart(range, transactions, instruments, priceBars, fxBars, overrides, appCurrency);
+        var chart = BuildChart(range, transactions, cashFlows, instruments, priceBars, fxBars, overrides, appCurrency);
         var latestFetchedAt = holdings.Where(value => value.PriceFetchedAt is not null)
             .Select(value => value.PriceFetchedAt)
             .Max();
@@ -313,17 +341,43 @@ public sealed class InvestmentPortfolioService(
             cashValue,
             totalValue);
 
+        var openKeys = calculation.Positions.Where(value => value.Units != 0)
+            .Select(value => (value.AccountId, value.InstrumentId)).ToHashSet();
+        var nonZeroCashAccounts = cashBalances.Where(value => value.Amount != 0)
+            .Select(value => value.AccountId).ToHashSet();
+        var accountDtos = accounts.Select(value =>
+        {
+            var hasHistory = transactions.Any(tx => tx.AccountId == value.Id) ||
+                             cashFlows.Any(flow => flow.AccountId == value.Id);
+            var canArchive = !openKeys.Any(key => key.AccountId == value.Id) &&
+                             !nonZeroCashAccounts.Contains(value.Id);
+            return new InvestmentAccountSetupDto(
+                value.Id, value.Name, value.BaseCurrency, value.IsArchived, value.CreatedAt, value.UpdatedAt,
+                !hasHistory, canArchive,
+                canArchive ? null : "Close all positions and bring every cash balance to zero before archiving.");
+        }).ToList();
+        var instrumentDtos = instruments.Select(value =>
+        {
+            var hasHistory = transactions.Any(tx => tx.InstrumentId == value.Id) ||
+                             overrides.Any(price => price.InstrumentId == value.Id);
+            var canArchive = !openKeys.Any(key => key.InstrumentId == value.Id);
+            return new InvestmentInstrumentSetupDto(
+                value.Id, value.Symbol, value.Name, value.Type, value.Exchange, value.Mic, value.Country,
+                value.Currency, value.ProviderSymbol, value.ProviderMic, value.IsCustom, value.IsArchived,
+                !hasHistory, canArchive, canArchive ? null : "Close all units before archiving this investment.");
+        }).ToList();
+
         return new InvestmentPortfolioDto(
             appCurrency,
             summary,
-            accounts,
-            instruments,
+            accountDtos,
+            instrumentDtos,
             holdings.OrderByDescending(value => value.ValueApp ?? decimal.MinValue).ToList(),
-            transactions.Select(ToDto).ToList(),
             overrides.Select(ToDto).ToList(),
             chart,
             cashBalances,
-            cashFlows.Select(ToDto).ToList(),
+            transactions.Count,
+            cashFlows.Count,
             BuildInsights(holdings, warnings),
             warnings.Distinct().ToList(),
             latestFetchedAt,
@@ -333,13 +387,14 @@ public sealed class InvestmentPortfolioService(
     private IReadOnlyList<InvestmentChartPointDto> BuildChart(
         string range,
         IReadOnlyList<InvestmentTransaction> transactions,
+        IReadOnlyList<InvestmentCashFlow> cashFlows,
         IReadOnlyList<InvestmentInstrument> instruments,
         IReadOnlyList<MarketPriceBar> priceBars,
         IReadOnlyList<FxRateBar> fxBars,
         IReadOnlyList<ManualPriceOverride> overrides,
         string appCurrency)
     {
-        if (transactions.Count == 0) return [];
+        if (transactions.Count == 0 && cashFlows.Count == 0) return [];
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var from = range.ToLowerInvariant() switch
         {
@@ -347,9 +402,12 @@ public sealed class InvestmentPortfolioService(
             "3m" => today.AddMonths(-3),
             "6m" => today.AddMonths(-6),
             "1y" => today.AddYears(-1),
-            _ => transactions.Min(value => value.TradeDate)
+            _ => transactions.Select(value => value.TradeDate)
+                .Concat(cashFlows.Select(value => value.Date))
+                .Min()
         };
         var dates = transactions.Select(value => value.TradeDate)
+            .Concat(cashFlows.Select(value => value.Date))
             .Concat(priceBars.Select(value => value.MarketDate))
             .Concat(overrides.Select(value => value.MarketDate))
             .Append(today)
@@ -365,26 +423,23 @@ public sealed class InvestmentPortfolioService(
 
         var instrumentById = instruments.ToDictionary(value => value.Id);
         decimal? HistoricalTradeFx(InvestmentTransaction transaction) =>
-            ResolveFx(transaction.Instrument.Currency, appCurrency, transaction.TradeDate, fxBars, overrides, transaction.InstrumentId);
+            ResolveFx(transaction.Instrument.Currency, appCurrency, transaction.TradeDate, fxBars, overrides, transaction.InstrumentId)?.Rate;
         var points = new List<InvestmentChartPointDto>();
         foreach (var date in dates)
         {
             var relevant = transactions.Where(value => value.TradeDate <= date).ToList();
             var result = accounting.Calculate(relevant, appCurrency, HistoricalTradeFx);
             decimal market = 0;
-            decimal cost = 0;
-            decimal contributions = 0;
+            decimal cash = 0;
+            decimal deposits = 0;
             var complete = true;
             foreach (var position in result.Positions)
             {
-                if (position.CostBasisApp is null || position.NetContributionsApp is null ||
-                    !instrumentById.TryGetValue(position.InstrumentId, out var instrument))
+                if (!instrumentById.TryGetValue(position.InstrumentId, out var instrument))
                 {
                     complete = false;
                     continue;
                 }
-                cost += position.CostBasisApp.Value;
-                contributions += position.NetContributionsApp.Value;
                 if (position.Units == 0) continue;
                 var price = ResolvePrices(instrument, priceBars, overrides).LastOrDefault(value => value.Date <= date);
                 var fx = ResolveFx(instrument.Currency, appCurrency, date, fxBars, overrides, instrument.Id);
@@ -393,13 +448,40 @@ public sealed class InvestmentPortfolioService(
                     complete = false;
                     continue;
                 }
-                market += price.Price * position.Units * fx.Value;
+                market += price.Price * position.Units * fx.Rate;
+            }
+            var cashNative = new Dictionary<(Guid AccountId, string Currency), decimal>();
+            void AddCash(Guid accountId, string currency, decimal amount)
+            {
+                var key = (accountId, currency);
+                cashNative[key] = cashNative.GetValueOrDefault(key) + amount;
+            }
+            foreach (var flow in cashFlows.Where(value => value.Date <= date))
+            {
+                AddCash(flow.AccountId, flow.Currency, flow.Amount);
+                var flowFx = ResolveFx(flow.Currency, appCurrency, flow.Date, fxBars, overrides, null);
+                if (flowFx is null) complete = false;
+                else deposits += flow.Amount * flowFx.Rate;
+            }
+            foreach (var transaction in relevant)
+            {
+                var currency = transaction.Instrument.Currency;
+                var charges = transaction.Fees + transaction.Taxes;
+                if (transaction.Type == "Buy") AddCash(transaction.AccountId, currency, -((transaction.CashAmount ?? 0) + charges));
+                if (transaction.Type == "Sell" || transaction.Type == "Dividend")
+                    AddCash(transaction.AccountId, currency, (transaction.CashAmount ?? 0) - charges);
+                if (transaction.Type == "FeeTax") AddCash(transaction.AccountId, currency, -((transaction.CashAmount ?? 0) + charges));
+            }
+            foreach (var balance in cashNative)
+            {
+                var cashFx = ResolveFx(balance.Key.Currency, appCurrency, date, fxBars, overrides, null);
+                if (cashFx is null) complete = false;
+                else cash += balance.Value * cashFx.Rate;
             }
             points.Add(new InvestmentChartPointDto(
                 date,
-                complete ? market : null,
-                complete ? cost : null,
-                complete ? contributions : null));
+                complete ? market + cash : null,
+                complete ? deposits : null));
         }
         return points;
     }
@@ -424,28 +506,58 @@ public sealed class InvestmentPortfolioService(
             .ToList();
     }
 
-    private static decimal? ResolveFx(
+    private static ResolvedFx? ResolveFx(
         string nativeCurrency,
         string appCurrency,
         DateOnly date,
         IReadOnlyList<FxRateBar> fxBars,
         IReadOnlyList<ManualPriceOverride> overrides,
-        Guid instrumentId)
+        Guid? instrumentId)
     {
-        if (nativeCurrency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase)) return 1;
-        var manual = overrides
-            .Where(value => value.InstrumentId == instrumentId && value.MarketDate <= date && value.FxRate is > 0)
+        if (nativeCurrency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase))
+            return new ResolvedFx(1, date, "Same currency");
+        var manual = instrumentId is null ? null : overrides
+            .Where(value => value.InstrumentId == instrumentId.Value && value.MarketDate <= date && value.FxRate is > 0)
             .OrderByDescending(value => value.MarketDate)
             .FirstOrDefault();
-        if (manual?.FxRate is > 0) return manual.FxRate;
-        return fxBars
+        var direct = fxBars
             .Where(value =>
                 value.BaseCurrency == nativeCurrency &&
                 value.QuoteCurrency == appCurrency &&
                 value.MarketDate <= date)
             .OrderByDescending(value => value.MarketDate)
-            .Select(value => (decimal?)value.Rate)
             .FirstOrDefault();
+        if (manual?.FxRate is > 0 && (direct is null || manual.MarketDate >= direct.MarketDate))
+            return new ResolvedFx(manual.FxRate.Value, manual.MarketDate, "Manual FX");
+        if (direct is not null) return new ResolvedFx(direct.Rate, direct.MarketDate, "Twelve Data direct");
+        var inverse = fxBars.Where(value => value.BaseCurrency == appCurrency &&
+                                            value.QuoteCurrency == nativeCurrency &&
+                                            value.MarketDate <= date && value.Rate != 0)
+            .OrderByDescending(value => value.MarketDate).FirstOrDefault();
+        if (inverse is not null)
+            return new ResolvedFx(1m / inverse.Rate, inverse.MarketDate, "Twelve Data inverse");
+
+        var nativeUsd = ResolveProviderLeg(nativeCurrency, "USD", date, fxBars);
+        var usdApp = ResolveProviderLeg("USD", appCurrency, date, fxBars);
+        if (nativeUsd is null || usdApp is null) return null;
+        return new ResolvedFx(
+            nativeUsd.Rate * usdApp.Rate,
+            nativeUsd.Date < usdApp.Date ? nativeUsd.Date : usdApp.Date,
+            "Twelve Data USD cross");
+    }
+
+    private static ResolvedFx? ResolveProviderLeg(
+        string from, string to, DateOnly date, IReadOnlyList<FxRateBar> fxBars)
+    {
+        if (from.Equals(to, StringComparison.OrdinalIgnoreCase)) return new ResolvedFx(1, date, "Same currency");
+        var direct = fxBars.Where(value => value.BaseCurrency == from && value.QuoteCurrency == to &&
+                                           value.MarketDate <= date)
+            .OrderByDescending(value => value.MarketDate).FirstOrDefault();
+        if (direct is not null) return new ResolvedFx(direct.Rate, direct.MarketDate, "Twelve Data direct");
+        var inverse = fxBars.Where(value => value.BaseCurrency == to && value.QuoteCurrency == from &&
+                                            value.MarketDate <= date && value.Rate != 0)
+            .OrderByDescending(value => value.MarketDate).FirstOrDefault();
+        return inverse is null ? null : new ResolvedFx(1m / inverse.Rate, inverse.MarketDate, "Twelve Data inverse");
     }
 
     private static IReadOnlyList<string> BuildInsights(
@@ -488,4 +600,5 @@ public sealed class InvestmentPortfolioService(
         value.Id, value.AccountId, value.Currency, value.Type, value.Amount, value.Date, value.Notes);
 
     private sealed record ResolvedPrice(DateOnly Date, decimal Price, DateTime FetchedAt, bool Manual);
+    private sealed record ResolvedFx(decimal Rate, DateOnly Date, string Source);
 }

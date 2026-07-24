@@ -134,6 +134,7 @@ public sealed class MarketDataRefreshJob : IUserOwnedEntity
     public Guid Id { get; set; } = Guid.NewGuid();
     [Required] public string UserId { get; set; } = string.Empty;
     [Required, MaxLength(24)] public string Status { get; set; } = "Pending";
+    [Required, MaxLength(3)] public string ReportingCurrency { get; set; } = "USD";
     public int UpdatedItems { get; set; }
     public int TotalItems { get; set; }
     [Required] public string PendingItemsJson { get; set; } = "[]";
