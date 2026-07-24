@@ -160,8 +160,10 @@ public sealed class InvestmentMarketDataService(
         var instruments = heldInstruments
             .Where(value => !value.IsCustom && value.ProviderSymbol != null)
             .ToList();
+        var hasInvestmentData = transactions.Count > 0 || cashFlows.Count > 0;
         var currencies = heldInstruments.Select(value => value.Currency)
             .Concat(cashFlows.Select(value => value.Currency))
+            .Concat(appCurrency == "USD" || !hasInvestmentData ? [] : ["USD"])
             .Where(value => !value.Equals(appCurrency, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (instruments.Count == 0 && currencies.Count == 0)
@@ -280,6 +282,9 @@ public sealed class InvestmentMarketDataService(
         var instruments = await context.InvestmentInstruments.AsNoTracking()
             .Where(value => instrumentIds.Contains(value.Id) && !value.IsArchived)
             .ToListAsync(cancellationToken);
+        var hasCashFlows = await context.InvestmentCashFlows.AsNoTracking()
+            .AnyAsync(cancellationToken);
+        var hasInvestmentData = instrumentIds.Count > 0 || hasCashFlows;
         var cutoff = DateTime.UtcNow.AddMinutes(-InvestmentAllocationService.AutomaticRefreshMinutes);
         foreach (var instrument in instruments.Where(value =>
                      !value.IsCustom && !string.IsNullOrWhiteSpace(value.ProviderSymbol)))
@@ -295,6 +300,7 @@ public sealed class InvestmentMarketDataService(
         var currencies = instruments.Select(value => value.Currency)
             .Concat(await context.InvestmentCashFlows.AsNoTracking()
                 .Select(value => value.Currency).ToListAsync(cancellationToken))
+            .Concat(appCurrency == "USD" || !hasInvestmentData ? [] : ["USD"])
             .Where(value => !value.Equals(appCurrency, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase);
         foreach (var currency in currencies)

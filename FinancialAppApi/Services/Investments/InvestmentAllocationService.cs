@@ -158,7 +158,7 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         var cycleDay = await context.FinancialSettings.AsNoTracking()
             .Select(value => (int?)value.CycleDay)
             .SingleOrDefaultAsync(cancellationToken) ?? 28;
-        var usualContribution = UsualCompletedCycleContribution(contributions, cycleDay);
+        var usualGrowthDeposit = UsualCompletedCycleContribution(contributions, cycleDay);
 
         var minimumNewMoney = SleeveDefinitions.Max(definition =>
             values[definition.Key] / (targets[definition.Key] / 100m) - investedValue);
@@ -167,12 +167,13 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         var recommendations = status == "OnTrack" 
             ? new List<InvestmentAllocationRecommendationDto>()
             : BuildRecommendations(
-                appCurrency, investedValue, values, targets, availableCash, usualContribution);
+                appCurrency, investedValue, values, targets, availableCash, usualGrowthDeposit,
+                plan.WatchDrift);
 
         return new InvestmentAllocationOverviewDto(
             status, appCurrency, plan, assignments, sleeves, recommendations, [],
             freshness, RoundMoney(investedValue), RoundMoney(availableCash),
-            RoundMoney(Math.Max(0, minimumNewMoney - availableCash - (usualContribution ?? 0))));
+            RoundMoney(Math.Max(0, minimumNewMoney - availableCash - (usualGrowthDeposit ?? 0))));
     }
 
     public static string? ValidatePlan(InvestmentPlanMutationDto value)
@@ -235,61 +236,83 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         IReadOnlyDictionary<string, decimal> values,
         IReadOnlyDictionary<string, decimal> targets,
         decimal cash,
-        decimal? usualContribution)
+        decimal? usualGrowthDeposit,
+        decimal watchDrift)
     {
         var recommendations = new List<InvestmentAllocationRecommendationDto>();
-        var expectedContribution = usualContribution ?? 0;
-        var newMoney = cash + expectedContribution;
-        var minimumNewMoney = Math.Max(0, SleeveDefinitions.Max(definition =>
-            values[definition.Key] / (targets[definition.Key] / 100m) - investedValue));
-        var contributionCanRebalance = usualContribution is > 0 &&
-                                       newMoney + 0.005m >= minimumNewMoney;
+        var expectedGrowthDeposit = usualGrowthDeposit ?? 0;
+        var funding = Math.Max(0, cash) + expectedGrowthDeposit;
+        var priority = 1;
 
-        if (usualContribution is > 0)
-        {
-            var suffix = contributionCanRebalance
-                ? "can restore your target percentages without selling."
-                : "is not enough to restore your target percentages, so a small sale may still be needed.";
-            recommendations.Add(new InvestmentAllocationRecommendationDto(
-                1, "TopUp", null, RoundMoney(expectedContribution),
-                $"Your usual cycle contribution of {Format(expectedContribution, currency)}, together with available cash, {suffix}"));
-        }
-        else if (cash > 0)
+        if (usualGrowthDeposit is > 0)
         {
             recommendations.Add(new InvestmentAllocationRecommendationDto(
-                1, "UseCash", null, RoundMoney(cash),
-                $"Allocate {Format(cash, currency)} from uninvested cash to begin."));
+                priority++, "TopUp", null, RoundMoney(expectedGrowthDeposit),
+                $"Use the usual completed-cycle Growth deposit of {Format(expectedGrowthDeposit, currency)} before considering any sale."));
+        }
+        if (cash > 0)
+        {
+            recommendations.Add(new InvestmentAllocationRecommendationDto(
+                priority++, "UseCash", null, RoundMoney(cash),
+                $"Invest {Format(cash, currency)} of available cash before selling any holding."));
         }
 
-        var total = investedValue + newMoney;
-        var priority = 2;
-        if (!contributionCanRebalance)
-        {
-            foreach (var definition in SleeveDefinitions)
+        // Apply all expected new money to the most underweight sleeves first. This models the
+        // portfolio after the user's normal Growth deposit and available cash have been invested,
+        // so a sale is only recommended if a configured Watch/Alert drift would still remain.
+        var projectedTotal = investedValue + funding;
+        var projected = values.ToDictionary(value => value.Key, value => value.Value);
+        var remainingFunding = funding;
+        var deficits = SleeveDefinitions
+            .Select(definition => new
             {
-                var targetVal = total * targets[definition.Key] / 100m;
-                var difference = values[definition.Key] - targetVal;
-                if (difference > 0.005m)
-                {
-                    recommendations.Add(new InvestmentAllocationRecommendationDto(
-                        priority++, "Sell", definition.Key, RoundMoney(difference),
-                        $"Sell {Format(difference, currency)} of {definition.Label}."));
-                }
-            }
-        }
-        
-        foreach (var definition in SleeveDefinitions)
+                definition.Key,
+                definition.Label,
+                Amount = Math.Max(0, projectedTotal * targets[definition.Key] / 100m - projected[definition.Key]),
+                Drift = projected[definition.Key] / projectedTotal * 100m - targets[definition.Key]
+            })
+            .Where(value => value.Amount > 0.005m)
+            .OrderBy(value => value.Drift)
+            .ToList();
+        foreach (var deficit in deficits)
         {
-            var targetVal = total * targets[definition.Key] / 100m;
-            var difference = targetVal - values[definition.Key];
-            if (difference > 0.005m)
+            if (remainingFunding <= 0.005m) break;
+            var amount = Math.Min(deficit.Amount, remainingFunding);
+            if (amount <= 0.005m) continue;
+            projected[deficit.Key] += amount;
+            remainingFunding -= amount;
+            recommendations.Add(new InvestmentAllocationRecommendationDto(
+                priority++, "Buy", deficit.Key, RoundMoney(amount),
+                $"Buy {Format(amount, currency)} of {deficit.Label} with new money."));
+        }
+
+        var stillOutsideBand = SleeveDefinitions.Any(definition =>
+            Math.Abs(projected[definition.Key] / projectedTotal * 100m - targets[definition.Key]) >= watchDrift);
+
+        if (stillOutsideBand)
+        {
+            var saleAmounts = SleeveDefinitions.Select(definition => new
+            {
+                definition.Key,
+                definition.Label,
+                Amount = Math.Max(0, projected[definition.Key] - projectedTotal * targets[definition.Key] / 100m)
+            }).Where(value => value.Amount > 0.005m).ToList();
+            foreach (var sale in saleAmounts)
             {
                 recommendations.Add(new InvestmentAllocationRecommendationDto(
-                    priority++, "Buy", definition.Key, RoundMoney(difference),
-                    $"Buy {Format(difference, currency)} of {definition.Label}."));
+                    priority++, "Sell", sale.Key, RoundMoney(sale.Amount),
+                    $"Only after investing new money, sell {Format(sale.Amount, currency)} of {sale.Label}."));
+            }
+            foreach (var definition in SleeveDefinitions)
+            {
+                var difference = projectedTotal * targets[definition.Key] / 100m - projected[definition.Key];
+                if (difference <= 0.005m) continue;
+                recommendations.Add(new InvestmentAllocationRecommendationDto(
+                    priority++, "TransferBuy", definition.Key, RoundMoney(difference),
+                    $"Reinvest {Format(difference, currency)} of sale proceeds into {definition.Label}."));
             }
         }
-        
+
         return recommendations;
     }
 

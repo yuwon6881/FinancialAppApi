@@ -50,6 +50,10 @@ public class AiIntentResolverTests
     [InlineData("Show my limits")]
     [InlineData("Limits")]
     [InlineData("Am I within my spending cap?")]
+    [InlineData("cat lim")]
+    [InlineData("Food budget?")]
+    [InlineData("How's my dining allowance?")]
+    [InlineData("Any room left in my transport cap?")]
     public void ResolveDeterministically_CategoryLimitQuestion_LoadsLimitAndCycleContext(string query)
     {
         var plan = AiAssistantService.ResolveDeterministically(query);
@@ -66,6 +70,10 @@ public class AiIntentResolverTests
     [InlineData("This month so far")]
     [InlineData("Current cycle")]
     [InlineData("Recap")]
+    [InlineData("Ongoing cycle update")]
+    [InlineData("Month to date")]
+    [InlineData("How am I tracking?")]
+    [InlineData("Where do I stand?")]
     public void ResolveDeterministically_CycleSummaryQuestion_LoadsSupplementalInsights(string query)
     {
         var plan = AiAssistantService.ResolveDeterministically(query);

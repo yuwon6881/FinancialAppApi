@@ -62,7 +62,7 @@ public sealed class InvestmentAllocationServiceTests
         Assert.DoesNotContain(portfolio.Allocation.Recommendations, value => value.Kind == "TopUp");
         Assert.Contains(portfolio.Allocation.Recommendations, value => value.Kind == "Sell");
         Assert.Contains(portfolio.Allocation.Recommendations, value => value.Kind == "Buy");
-        Assert.DoesNotContain(portfolio.Allocation.Recommendations, value => value.Kind == "TransferBuy");
+        Assert.Contains(portfolio.Allocation.Recommendations, value => value.Kind == "TransferBuy");
     }
 
     [Fact]
@@ -96,6 +96,7 @@ public sealed class InvestmentAllocationServiceTests
         var bonds = Instrument("BND", "Bonds");
         context.InvestmentAccounts.Add(account);
         context.InvestmentInstruments.AddRange(us, international, bonds);
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "USD", CycleDay = 1 });
         await context.SaveChangesAsync();
         AddPosition(context, account, us, 80);
         AddPosition(context, account, international, 10);
@@ -103,18 +104,17 @@ public sealed class InvestmentAllocationServiceTests
 
         foreach (var monthsAgo in new[] { 1, 2 })
         {
-            var date = DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(-monthsAgo));
-            context.InvestmentCashFlows.AddRange(
-                new InvestmentCashFlow
-                {
-                    AccountId = account.Id, Currency = "USD", Type = "Deposit",
-                    Amount = 100, Date = date
-                },
-                new InvestmentCashFlow
-                {
-                    AccountId = account.Id, Currency = "USD", Type = "Withdrawal",
-                    Amount = -100, Date = date.AddDays(1)
-                });
+            var date = DateTime.UtcNow.AddMonths(-monthsAgo);
+            context.Transactions.Add(new Transaction
+            {
+                Id = $"growth-{monthsAgo}",
+                Date = date,
+                PostedAt = date,
+                Description = "Income allocation",
+                Category = "Income",
+                LedgerCategory = "Growth",
+                Amount = 100
+            });
         }
         await context.SaveChangesAsync();
 
@@ -123,10 +123,70 @@ public sealed class InvestmentAllocationServiceTests
 
         Assert.Equal("TopUp", allocation.Recommendations[0].Kind);
         Assert.Equal(100, allocation.Recommendations[0].Amount);
-        Assert.Contains("without selling", allocation.Recommendations[0].Message);
+        Assert.Contains("before considering any sale", allocation.Recommendations[0].Message);
         Assert.DoesNotContain(allocation.Recommendations, value => value.Kind == "Sell");
         Assert.Contains(allocation.Recommendations, value => value.Kind == "Buy");
         Assert.Equal(0, allocation.MinimumContribution);
+    }
+
+    [Fact]
+    public async Task Allocation_OnTrack_HasNoGuidance()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var us = Instrument("VTI", "USEquity");
+        var international = Instrument("VXUS", "InternationalExUS");
+        var bonds = Instrument("BND", "Bonds");
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.AddRange(us, international, bonds);
+        await context.SaveChangesAsync();
+        AddPosition(context, account, us, 66);
+        AddPosition(context, account, international, 10);
+        AddPosition(context, account, bonds, 24);
+        await context.SaveChangesAsync();
+
+        var allocation = (await NewPortfolioService(context)
+            .GetPortfolioAsync("1m", CancellationToken.None)).Allocation;
+
+        Assert.Equal("OnTrack", allocation.Status);
+        Assert.Empty(allocation.Recommendations);
+    }
+
+    [Fact]
+    public async Task Allocation_OnlySuggestsSalesWhenUsualGrowthDepositCannotRestoreWatchBand()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "USD", CycleDay = 1 });
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var us = Instrument("VTI", "USEquity");
+        var international = Instrument("VXUS", "InternationalExUS");
+        var bonds = Instrument("BND", "Bonds");
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.AddRange(us, international, bonds);
+        await context.SaveChangesAsync();
+        AddPosition(context, account, us, 80);
+        AddPosition(context, account, international, 10);
+        AddPosition(context, account, bonds, 10);
+        var completedCycle = DateTime.UtcNow.AddMonths(-1);
+        context.Transactions.Add(new Transaction
+        {
+            Id = "small-growth",
+            Date = completedCycle,
+            PostedAt = completedCycle,
+            Description = "Income allocation",
+            Category = "Income",
+            LedgerCategory = "Growth",
+            Amount = 5
+        });
+        await context.SaveChangesAsync();
+
+        var allocation = (await NewPortfolioService(context)
+            .GetPortfolioAsync("1m", CancellationToken.None)).Allocation;
+
+        Assert.Equal("TopUp", allocation.Recommendations[0].Kind);
+        Assert.Equal("Buy", allocation.Recommendations[1].Kind);
+        Assert.Contains(allocation.Recommendations, value => value.Kind == "Sell");
+        Assert.Contains(allocation.Recommendations, value => value.Kind == "TransferBuy");
     }
 
     [Fact]

@@ -138,9 +138,9 @@ public partial class AiAssistantService
                     largest.Description, amount = Math.Abs(largest.Amount), largest.Date
                 },
                 biggestSpendingDay = sensitiveMode || biggestDay == null ? null : biggestDay,
-                averageDailySpend = sensitiveMode || totalDays <= 0
+                averageDailySpend = sensitiveMode || observedDays <= 0
                     ? (decimal?)null
-                    : Math.Abs(expenses.Sum(row => row.Amount)) / totalDays,
+                    : Math.Abs(expenses.Sum(row => row.Amount)) / observedDays,
                 velocityFirstHalf = sensitiveMode ? (decimal?)null :
                     expenses.Where(row => row.Timestamp.Ticks <= midpoint).Sum(row => Math.Abs(row.Amount)),
                 velocitySecondHalf = sensitiveMode ? (decimal?)null :

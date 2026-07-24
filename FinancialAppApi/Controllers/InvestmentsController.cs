@@ -58,7 +58,13 @@ public sealed class InvestmentsController(
             .ThenByDescending(value => value.Id)
             .Skip((page - 1) * pageSize).Take(pageSize)
             .ToListAsync(HttpContext.RequestAborted);
-        var items = rows.Select(InvestmentPortfolioService.ToDto).ToList();
+        var rowIds = rows.Select(value => value.Id).ToList();
+        var pairedOutgoingIds = await context.InvestmentTransactions.AsNoTracking()
+            .Where(value => value.LinkedTransferId != null && rowIds.Contains(value.LinkedTransferId.Value))
+            .Select(value => value.LinkedTransferId!.Value)
+            .ToHashSetAsync(HttpContext.RequestAborted);
+        var items = rows.Select(value =>
+            InvestmentPortfolioService.ToDto(value, pairedOutgoingIds.Contains(value.Id))).ToList();
         return Ok(new PagedResult<InvestmentTransactionDto>(items, total, page, pageSize));
     }
 
@@ -132,7 +138,14 @@ public sealed class InvestmentsController(
         account.BaseCurrency = dto.BaseCurrency.Trim().ToUpperInvariant();
         account.IsArchived = dto.IsArchived;
         account.UpdatedAt = DateTime.UtcNow;
-        await context.SaveChangesAsync(HttpContext.RequestAborted);
+        try
+        {
+            await context.SaveChangesAsync(HttpContext.RequestAborted);
+        }
+        catch (DbUpdateException)
+        {
+            return Conflict(new { message = "An investment account with this name already exists." });
+        }
         return NoContent();
     }
 
@@ -219,7 +232,14 @@ public sealed class InvestmentsController(
             });
         }
         ApplyInstrument(instrument, dto);
-        await context.SaveChangesAsync(HttpContext.RequestAborted);
+        try
+        {
+            await context.SaveChangesAsync(HttpContext.RequestAborted);
+        }
+        catch (DbUpdateException)
+        {
+            return Conflict(new { message = "This instrument is already saved." });
+        }
         return NoContent();
     }
 
@@ -270,7 +290,9 @@ public sealed class InvestmentsController(
         var validation = await ValidateHistoryAsync(null);
         if (validation is not null) return BadRequest(new { message = validation });
         await context.SaveChangesAsync(HttpContext.RequestAborted);
-        return Created($"/api/investments/transactions/{transaction.Id}", InvestmentPortfolioService.ToDto(transaction));
+        return Created(
+            $"/api/investments/transactions/{transaction.Id}",
+            InvestmentPortfolioService.ToDto(transaction, transferIn is not null));
     }
 
     [HttpPut("transactions/{id:guid}")]
@@ -310,7 +332,7 @@ public sealed class InvestmentsController(
         }
         var snapshot = new DeletedTransactionsSnapshot(
             linked.Append(transaction).DistinctBy(value => value.Id)
-                .Select(InvestmentPortfolioService.ToDto).ToList());
+                .Select(value => InvestmentPortfolioService.ToDto(value)).ToList());
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return Ok(snapshot);
     }
@@ -416,7 +438,14 @@ public sealed class InvestmentsController(
         manual.Price = dto.Price;
         manual.FxRate = dto.FxRate;
         manual.UpdatedAt = DateTime.UtcNow;
-        await context.SaveChangesAsync(HttpContext.RequestAborted);
+        try
+        {
+            await context.SaveChangesAsync(HttpContext.RequestAborted);
+        }
+        catch (DbUpdateException)
+        {
+            return Conflict(new { message = "A manual price already exists for this instrument and date." });
+        }
         return NoContent();
     }
 
@@ -502,6 +531,7 @@ public sealed class InvestmentsController(
         if (account is null || account.IsArchived) return (null, "Select an active investment account.");
         if (!ValidCurrency(dto.Currency)) return (null, "Select a supported currency from the list.");
         if (dto.Amount <= 0) return (null, "Enter a positive amount.");
+        if (dto.Notes?.Length > 1000) return (null, "Notes cannot exceed 1000 characters.");
         if (dto.Date == default || dto.Date > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)))
             return (null, "Enter a valid date.");
         // Store the net effect signed: withdrawals reduce the balance.
@@ -531,6 +561,8 @@ public sealed class InvestmentsController(
             return (null, "Enter a valid trade date.");
         if (dto.Fees < 0 || dto.Taxes < 0 || dto.TradeFxRate is <= 0)
             return (null, "Fees and taxes cannot be negative, and FX rates must be positive.");
+        if (dto.Notes?.Length > 1000)
+            return (null, "Notes cannot exceed 1000 characters.");
         if (dto.DestinationAccountId == dto.AccountId)
             return (null, "Transfer destination must be a different account.");
         if (dto.DestinationAccountId is Guid destination &&
@@ -557,6 +589,10 @@ public sealed class InvestmentsController(
         }
         if (dto.Type == "TransferIn" && dto.LinkedTransferId is null && cash is not > 0)
             return (null, "External transfer-in requires transferred cost basis.");
+        if (dto.Type == "Dividend" && cash is not > 0)
+            return (null, "Enter a positive gross dividend.");
+        if (dto.Type == "FeeTax" && (cash ?? 0) + dto.Fees + dto.Taxes <= 0)
+            return (null, "Enter a positive fee or tax charge.");
         if (dto.Type == "TransferOut" && dto.DestinationAccountId is null && !string.IsNullOrWhiteSpace(dto.Notes))
         {
             // External transfers are valid; notes are simply retained.
@@ -646,8 +682,10 @@ public sealed class InvestmentsController(
 
     private async Task<string?> ValidateManualPriceAsync(ManualPriceMutationDto dto)
     {
-        if (!await context.InvestmentInstruments.AnyAsync(value => value.Id == dto.InstrumentId, HttpContext.RequestAborted))
-            return "Investment was not found.";
+        if (!await context.InvestmentInstruments.AnyAsync(
+                value => value.Id == dto.InstrumentId && !value.IsArchived,
+                HttpContext.RequestAborted))
+            return "Select an active investment.";
         if (dto.MarketDate == default || dto.MarketDate > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)))
             return "Enter a valid market date.";
         if (dto.Price <= 0 || dto.FxRate is <= 0) return "Prices and FX rates must be positive.";
@@ -667,6 +705,10 @@ public sealed class InvestmentsController(
         if (string.IsNullOrWhiteSpace(dto.Name) || dto.Name.Trim().Length > 200) return "Investment name is required.";
         if (!InvestmentKinds.InstrumentTypes.Contains(dto.Type)) return "Type must be Stock, ETF, or Mutual Fund.";
         if (!ValidCurrency(dto.Currency)) return "Select a supported currency from the list.";
+        if (dto.Exchange?.Trim().Length > 120 || dto.Mic?.Trim().Length > 8 ||
+            dto.Country?.Trim().Length > 80 || dto.ProviderSymbol?.Trim().Length > 32 ||
+            dto.ProviderMic?.Trim().Length > 8)
+            return "Investment market details are too long.";
         if (!dto.IsCustom && string.IsNullOrWhiteSpace(dto.ProviderSymbol)) return "Provider-backed investments require a provider symbol.";
         return null;
     }

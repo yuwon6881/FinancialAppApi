@@ -144,6 +144,65 @@ public sealed class InvestmentPortfolioServiceTests
         Assert.Equal(979m, balance.Amount);
     }
 
+    [Fact]
+    public async Task FundingSummary_SeparatesGrowthContributions_CurrentGrowthBalance_AndBrokerNetDeposits()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        context.InvestmentAccounts.Add(account);
+        await context.SaveChangesAsync();
+
+        var date = new DateOnly(2026, 7, 1);
+        context.Transactions.AddRange(
+            new Transaction
+            {
+                Id = "growth-income",
+                Date = date.ToDateTime(TimeOnly.MinValue),
+                Description = "Income allocation",
+                Category = "Income",
+                LedgerCategory = "Growth",
+                Amount = 1000
+            },
+            new Transaction
+            {
+                Id = "growth-spend",
+                Date = date.AddDays(1).ToDateTime(TimeOnly.MinValue),
+                Description = "Move to Rewards",
+                Category = "Transfer",
+                LedgerCategory = "Transfer:Growth->Rewards",
+                Amount = 100
+            });
+        context.InvestmentCashFlows.AddRange(
+            new InvestmentCashFlow
+            {
+                AccountId = account.Id, Currency = "USD", Type = "Deposit",
+                Amount = 100, Date = date
+            },
+            new InvestmentCashFlow
+            {
+                AccountId = account.Id, Currency = "USD", Type = "Withdrawal",
+                Amount = -20, Date = date.AddDays(1)
+            });
+        context.FxRateBars.Add(new FxRateBar
+        {
+            BaseCurrency = "USD",
+            QuoteCurrency = "MYR",
+            MarketDate = date,
+            Rate = 4
+        });
+        await context.SaveChangesAsync();
+
+        var portfolio = await NewService(context)
+            .GetPortfolioAsync("all", CancellationToken.None);
+        var summary = portfolio.Summary;
+
+        Assert.Equal(900m, summary.GrowthLedgerBalance);
+        Assert.Equal(1000m, summary.GrowthContributions);
+        Assert.Equal(320m, summary.NetDeposits);
+        Assert.Equal(4m, portfolio.UsdRate);
+    }
+
     private static InvestmentPortfolioService NewService(Database.AppDbContext context)
         => new(context, new InvestmentAccountingService(), new StubProvider());
 

@@ -6,6 +6,8 @@ namespace FinancialAppApi.Services.Investments;
 
 public sealed record InvestmentSummaryDto(
     decimal GrowthLedgerBalance,
+    decimal GrowthContributions,
+    decimal? NetDeposits,
     decimal? MarketValue,
     decimal? CostBasis,
     decimal? UnrealisedProfitLoss,
@@ -97,6 +99,7 @@ public sealed record InvestmentInstrumentSetupDto(
 
 public sealed record InvestmentPortfolioDto(
     string AppCurrency,
+    decimal? UsdRate,
     InvestmentSummaryDto Summary,
     IReadOnlyList<InvestmentAccountSetupDto> Accounts,
     IReadOnlyList<InvestmentInstrumentSetupDto> Instruments,
@@ -126,7 +129,8 @@ public sealed record InvestmentTransactionDto(
     decimal? TradeFxRate,
     string? Notes,
     Guid? LinkedTransferId,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    bool IsPairedTransfer = false);
 
 public sealed record ManualPriceDto(
     Guid Id,
@@ -167,6 +171,9 @@ public sealed class InvestmentPortfolioService(
         var cashFlows = await context.InvestmentCashFlows.AsNoTracking()
             .OrderByDescending(value => value.Date)
             .ThenByDescending(value => value.CreatedAt)
+            .ToListAsync(cancellationToken);
+        var ledgerTransactions = await context.Transactions.AsNoTracking()
+            .OrderBy(value => value.Date)
             .ToListAsync(cancellationToken);
 
         var symbols = instruments
@@ -271,7 +278,16 @@ public sealed class InvestmentPortfolioService(
         decimal? realised = convertedComplete ? calculation.Positions.Sum(value => value.RealisedApp ?? 0) : null;
         decimal? dividends = convertedComplete ? calculation.Positions.Sum(value => value.DividendsApp ?? 0) : null;
         decimal? unrealisedTotal = marketValue is not null && costBasis is not null ? marketValue - costBasis : null;
-        const decimal growthLedger = 0;
+        var growthAmounts = ledgerTransactions
+            .Select(value => new
+            {
+                Date = DateOnly.FromDateTime(value.Date),
+                Amount = CategoryAttributionService.GetCategoryAmount(value, "Growth")
+            })
+            .ToList();
+        var growthLedger = growthAmounts.Sum(value => value.Amount);
+        var growthContributions = growthAmounts.Where(value => value.Amount > 0)
+            .Sum(value => value.Amount);
 
         // Uninvested cash per account+currency: explicit deposits/withdrawals plus
         // the implicit cash effect of trades and income. Opening positions declare
@@ -331,18 +347,21 @@ public sealed class InvestmentPortfolioService(
         var cashComplete = cashBalances.All(value => value.AmountApp is not null);
         decimal? cashValue = cashComplete ? cashBalances.Sum(value => value.AmountApp ?? 0) : null;
         decimal? totalValue = marketValue is not null && cashValue is not null ? marketValue + cashValue : null;
-        var contributions = cashFlows
-            .Where(value => value.Type == "Deposit" && value.Amount > 0)
-            .Select(value =>
-            {
-                var fx = CurrencyFx(value.Currency);
-                return fx is null
-                    ? null
-                    : new InvestmentContributionDto(value.Date, value.Amount * fx.Value);
-            })
-            .Where(value => value is not null)
-            .Select(value => value!)
+        var contributionHistory = growthAmounts
+            .Where(value => value.Amount > 0)
+            .Select(value => new InvestmentContributionDto(value.Date, value.Amount))
             .ToList();
+        decimal? netDeposits = 0;
+        foreach (var flow in cashFlows)
+        {
+            var fx = ResolveFx(flow.Currency, appCurrency, flow.Date, fxBars, overrides, null)?.Rate;
+            if (fx is null)
+            {
+                netDeposits = null;
+                break;
+            }
+            netDeposits += flow.Amount * fx.Value;
+        }
 
         var chart = BuildChart(range, transactions, cashFlows, instruments, priceBars, fxBars, overrides, appCurrency);
         var latestFetchedAt = holdings.Where(value => value.PriceFetchedAt is not null)
@@ -350,6 +369,8 @@ public sealed class InvestmentPortfolioService(
             .Max();
         var summary = new InvestmentSummaryDto(
             growthLedger,
+            growthContributions,
+            netDeposits is null ? null : RoundMoney(netDeposits.Value),
             marketValue,
             costBasis,
             unrealisedTotal,
@@ -388,11 +409,15 @@ public sealed class InvestmentPortfolioService(
         }).ToList();
 
         var allocation = await (allocationService ?? new InvestmentAllocationService(context)).BuildAsync(
-            appCurrency, holdings, instrumentDtos, cashBalances, contributions,
+            appCurrency, holdings, instrumentDtos, cashBalances, contributionHistory,
             provider.IsConfigured, cancellationToken);
+        var usdRate = appCurrency.Equals("USD", StringComparison.OrdinalIgnoreCase)
+            ? 1m
+            : ResolveFx("USD", appCurrency, today, fxBars, overrides, null)?.Rate;
 
         return new InvestmentPortfolioDto(
             appCurrency,
+            usdRate,
             summary,
             accountDtos,
             instrumentDtos,
@@ -589,6 +614,9 @@ public sealed class InvestmentPortfolioService(
     private static DateTime? MinFetchedAt(DateTime? first, DateTime? second)
         => first is null ? second : second is null ? first : first < second ? first : second;
 
+    private static decimal RoundMoney(decimal value)
+        => Math.Round(value, 2, MidpointRounding.AwayFromZero);
+
     private static IReadOnlyList<string> BuildInsights(
         IReadOnlyList<InvestmentHoldingDto> holdings,
         IReadOnlyList<string> warnings)
@@ -617,10 +645,11 @@ public sealed class InvestmentPortfolioService(
         return insights;
     }
 
-    public static InvestmentTransactionDto ToDto(InvestmentTransaction value) => new(
+    public static InvestmentTransactionDto ToDto(InvestmentTransaction value, bool isPairedTransfer = false) => new(
         value.Id, value.AccountId, value.InstrumentId, value.Type, value.TradeDate,
         value.Units, value.UnitPrice, value.CashAmount, value.Fees, value.Taxes,
-        value.TradeFxRate, value.Notes, value.LinkedTransferId, value.CreatedAt);
+        value.TradeFxRate, value.Notes, value.LinkedTransferId, value.CreatedAt,
+        isPairedTransfer || value.LinkedTransferId is not null);
 
     public static ManualPriceDto ToDto(ManualPriceOverride value) => new(
         value.Id, value.InstrumentId, value.MarketDate, value.Price, value.FxRate);

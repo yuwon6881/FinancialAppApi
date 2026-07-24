@@ -169,7 +169,12 @@ public partial class AiAssistantService
         if (ExplicitTransactionDomainSignal.IsMatch(message) || TryParseAmountThreshold(message) != null) return TransactionTopic;
         if (intentNames.Any(i => i.StartsWith("wishlist.", StringComparison.OrdinalIgnoreCase))) return WishlistTopic;
         if (intentNames.Any(i => i.StartsWith("recurring.", StringComparison.OrdinalIgnoreCase))) return RecurringTopic;
-        if (intentNames.Any(i => i.StartsWith("ledger.", StringComparison.OrdinalIgnoreCase) || i.StartsWith("allocation.", StringComparison.OrdinalIgnoreCase))) return TransactionTopic;
+        if (intentNames.Any(i =>
+                i.StartsWith("ledger.", StringComparison.OrdinalIgnoreCase) ||
+                i.StartsWith("allocation.", StringComparison.OrdinalIgnoreCase) ||
+                i.Equals("category_limits.analysis", StringComparison.OrdinalIgnoreCase) ||
+                i.Equals("cycle.insights", StringComparison.OrdinalIgnoreCase)))
+            return TransactionTopic;
         return NeedsHistoryContext(message) ? priorState?.LastTopic : null;
     }
 
@@ -179,7 +184,8 @@ public partial class AiAssistantService
 
     private static bool IsSelfContainedFinancialRequest(string message) =>
         WishlistSignal.IsMatch(message) || RecurringSignal.IsMatch(message) ||
-        ExplicitTransactionDomainSignal.IsMatch(message) ||
+        ExplicitTransactionDomainSignal.IsMatch(message) || CategoryLimitSignal.IsMatch(message) ||
+        CycleInsightSignal.IsMatch(message) ||
         Regex.IsMatch(message, @"\b(open|navigate|go to|add|create|edit|update)\b.{0,30}\b(dashboard|settings|wishlist|ledger|bill|subscription|transaction)\b", RegexOptions.IgnoreCase);
 
     private static readonly Regex ContinuationModifierSignal = new(

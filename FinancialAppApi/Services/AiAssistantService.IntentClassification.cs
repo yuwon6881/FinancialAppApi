@@ -16,6 +16,10 @@ public partial class AiAssistantService
         // ("how about last cycle") without shipping the previous message text back to the model.
         var classifierPrompt = $"Classify the user's financial-app request. Return only the JSON schema. " +
             $"Choose one or more intents, extract searchText for a merchant/activity, and preserve cycle wording. " +
+            $"Treat shorthand, omitted nouns, abbreviations, and conversational equivalents by meaning: " +
+            $"category_limits.analysis covers category budgets/caps/allowances and remaining room; " +
+            $"cycle.insights covers a cycle/month recap, progress, health, update, 'so far', 'how am I tracking', " +
+            $"or 'where do I stand', including an ongoing cycle that has no saved end-of-cycle summary. " +
             $"User message: {JsonSerializer.Serialize(message)} " +
             $"Prior request summary: {JsonSerializer.Serialize(SummarizePriorFrame(priorState))}";
         try
@@ -393,27 +397,36 @@ public partial class AiAssistantService
         RegexOptions.Compiled);
 
     private static readonly Regex CategoryLimitSignal = new(
-        @"\b(category limits?|spending limits?|budget limits?|category caps?|spending caps?|budget caps?|" +
+        @"\b(cat(?:egory)?\.?\s*(?:lim(?:it)?s?|caps?)|spend(?:ing)?\s*(?:lim(?:it)?s?|caps?)|" +
+        @"budg(?:et)?\s*(?:lim(?:it)?s?|caps?)|category limits?|spending limits?|budget limits?|category caps?|spending caps?|budget caps?|" +
         @"limit for|limits? (?:did i|do i|have i|am i|was i|are|is)|" +
         @"over (?:my |the )?limit|under (?:my |the )?limit|within (?:my |the )?limit|" +
         @"exceed(?:ed|ing)? (?:my |the )?limit|remaining (?:for|in) [\p{L}\p{N}&' -]+ limit|" +
+        @"(?:how(?:'s| is)|where(?:'s| is)|what(?:'s| is)|status|progress|check)\b.{0,35}\b(?:budget|cap|allowance)|" +
+        @"(?:budget|cap|allowance)\b.{0,20}\b(?:left|remaining|available|status|progress|room)|" +
+        @"(?:room|amount|money)\s+(?:left|remaining|available)\b.{0,30}\b(?:budget|cap|allowance)|" +
         @"(?:what|which|show|tell me|list|check|view|see)\b.{0,40}\b" +
         @"(?:my |current |currently configured |configured |set )?(?:category |spending |budget )?(?:limit|limits|caps?))\b|" +
-        @"^\s*(?:my\s+|current\s+)?(?:category\s+|spending\s+|budget\s+)?(?:limit|limits|caps?)\s*[?!.]*\s*$",
+        @"^\s*(?:my\s+|current\s+)?(?:cat(?:egory)?\.?\s+|spend(?:ing)?\s+|budg(?:et)?\s+)?(?:lim(?:it)?s?|caps?|allowances?)\s*[?!.]*\s*$|" +
+        @"^\s*[\p{L}\p{N}&'-]+(?:\s+[\p{L}\p{N}&'-]+){0,2}\s+(?:budget|cap|allowance)\s*[?!.]*\s*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex CycleInsightSignal = new(
         @"\b(cycle summary|cycle recap|cycle overview|cycle review|" +
+        @"cycle update|month update|cycle health|month health|ongoing cycle|" +
         @"summary|recap|overview|review|progress|status)\s+(?:for|of|on)\s+(?:this|last|previous|current) (?:cycle|month)\b|" +
         @"\b(?:summari[sz]e|recap|review)\s+(?:this|last|previous|current) (?:cycle|month)\b|" +
         @"\b(?:this|last|previous|current) (?:cycle|month)\b.{0,30}\b" +
-        @"(?:so far|to date|summary|recap|overview|review|progress|status|going|looking)\b|" +
-        @"\b(?:how am i doing|how is it going|how's it going|what has happened|what happened)\b.{0,30}\b(?:cycle|month)\b|" +
-        @"\b(?:cycle|month)\s+(?:so far|to date)\b|" +
+        @"(?:so far|to date|month to date|summary|recap|overview|review|progress|status|update|health|going|looking|tracking)\b|" +
+        @"\b(?:how am i doing|how am i tracking|how are things|how is it going|how's it going|" +
+        @"where do i stand|what has happened|what happened)\b(?:.{0,30}\b(?:cycle|month|financially)\b)?|" +
+        @"\b(?:cycle|month)\s+(?:so far|to date|update|health|check)\b|" +
+        @"\b(?:month|cycle)[- ]to[- ]date\b|" +
         @"\b(average daily spend|daily spending average|spending velocity|first half|second half|" +
         @"no[- ]spend days?|committed spend|discretionary spend|biggest spending day)\b|" +
         @"^\s*(?:(?:this|last|previous|current)\s+(?:cycle|month)|(?:cycle\s+)?" +
-        @"(?:summary|recap|overview|review|progress|status))\s*[?!.]*\s*$",
+        @"(?:summary|recap|overview|review|progress|status|update|health)|(?:so far|month to date|" +
+        @"where do i stand|how am i tracking))\s*[?!.]*\s*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex TransactionDetailSignal = new(

@@ -868,7 +868,7 @@ public class AiAssistantHistoricalContextTests
         var service = new AiAssistantService(
             NewClient(handler), context, new TransactionCategoryService(context, cache), financialClock: clock);
 
-        await service.ChatAsync(new AiChatRequest("How am I doing against my category limits this cycle?", []));
+        await service.ChatAsync(new AiChatRequest("Food budget?", []));
 
         Assert.Contains("\"categoryLimits\"", handler.UserContent);
         Assert.Contains("\"category\":\"Food\"", handler.UserContent);
@@ -896,13 +896,14 @@ public class AiAssistantHistoricalContextTests
             NewClient(handler), context, new TransactionCategoryService(context, cache),
             financialClock: TestClock(new DateTimeOffset(2026, 7, 15, 0, 0, 0, TimeSpan.Zero)));
 
-        await service.ChatAsync(new AiChatRequest("Give me a cycle summary for this cycle", []));
+        await service.ChatAsync(new AiChatRequest("How am I tracking?", []));
 
         Assert.Contains("\"cycleSummaries\"", handler.UserContent);
         Assert.Contains("\"cycleInsights\"", handler.UserContent);
         Assert.Contains("\"phase\":\"InProgress\"", handler.UserContent);
         Assert.Contains("\"observedThrough\":\"2026-07-15\"", handler.UserContent);
         Assert.Contains("\"remainingDays\":16", handler.UserContent);
+        Assert.Contains("\"averageDailySpend\":4", handler.UserContent);
     }
 
     [Fact]

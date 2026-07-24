@@ -42,6 +42,8 @@ public sealed class InvestmentMarketDataTests
     public async Task EmptyPortfolioRefreshIsNoOpAndMakesNoProviderCalls()
     {
         await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        await context.SaveChangesAsync();
         var provider = new CountingProvider();
         var service = new InvestmentMarketDataService(
             context,
@@ -54,6 +56,48 @@ public sealed class InvestmentMarketDataTests
         Assert.True(result.Complete);
         Assert.Equal(0, result.Total);
         Assert.Equal(0, provider.CallCount);
+    }
+
+    [Fact]
+    public async Task PortfolioRefresh_LoadsDedicatedUsdDisplayRate_WhenHoldingsUseReportingCurrency()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "MYR" };
+        var instrument = new InvestmentInstrument
+        {
+            Symbol = "LOCAL",
+            Name = "Local fund",
+            Type = "MutualFund",
+            Currency = "MYR",
+            IsCustom = true
+        };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id,
+            InstrumentId = instrument.Id,
+            Instrument = instrument,
+            Type = "OpeningPosition",
+            TradeDate = DateOnly.FromDateTime(DateTime.UtcNow),
+            Units = 10,
+            UnitPrice = 1,
+            CashAmount = 10
+        });
+        await context.SaveChangesAsync();
+        var provider = new CountingProvider();
+        var service = new InvestmentMarketDataService(
+            context,
+            provider,
+            Options.Create(new MarketDataOptions()),
+            NullLogger<InvestmentMarketDataService>.Instance);
+
+        var result = await service.RefreshAsync(CancellationToken.None);
+
+        Assert.True(result.Complete);
+        Assert.Contains(("USD", "MYR"), provider.FxPairs);
     }
 
     [Fact]
@@ -86,6 +130,7 @@ public sealed class InvestmentMarketDataTests
     private sealed class CountingProvider : IMarketDataProvider
     {
         public int CallCount { get; private set; }
+        public List<(string Base, string Quote)> FxPairs { get; } = [];
         public bool IsConfigured => true;
 
         public Task<IReadOnlyList<InstrumentSearchResult>> SearchAsync(string query, CancellationToken cancellationToken)
@@ -103,7 +148,9 @@ public sealed class InvestmentMarketDataTests
         public Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(string baseCurrency, string quoteCurrency, DateOnly startDate, CancellationToken cancellationToken)
         {
             CallCount++;
-            return Task.FromResult<IReadOnlyList<ProviderFxBar>>([]);
+            FxPairs.Add((baseCurrency, quoteCurrency));
+            return Task.FromResult<IReadOnlyList<ProviderFxBar>>(
+                [new ProviderFxBar(DateOnly.FromDateTime(DateTime.UtcNow), 4.2m)]);
         }
     }
 }
