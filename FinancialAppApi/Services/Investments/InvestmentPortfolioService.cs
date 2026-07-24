@@ -23,6 +23,8 @@ public sealed record InvestmentCashBalanceDto(
     decimal Amount,
     decimal? AmountApp);
 
+public sealed record InvestmentContributionDto(DateOnly Date, decimal AmountApp);
+
 public sealed record InvestmentCashFlowDto(
     Guid Id,
     Guid AccountId,
@@ -329,6 +331,18 @@ public sealed class InvestmentPortfolioService(
         var cashComplete = cashBalances.All(value => value.AmountApp is not null);
         decimal? cashValue = cashComplete ? cashBalances.Sum(value => value.AmountApp ?? 0) : null;
         decimal? totalValue = marketValue is not null && cashValue is not null ? marketValue + cashValue : null;
+        var contributions = cashFlows
+            .Where(value => value.Type == "Deposit" && value.Amount > 0)
+            .Select(value =>
+            {
+                var fx = CurrencyFx(value.Currency);
+                return fx is null
+                    ? null
+                    : new InvestmentContributionDto(value.Date, value.Amount * fx.Value);
+            })
+            .Where(value => value is not null)
+            .Select(value => value!)
+            .ToList();
 
         var chart = BuildChart(range, transactions, cashFlows, instruments, priceBars, fxBars, overrides, appCurrency);
         var latestFetchedAt = holdings.Where(value => value.PriceFetchedAt is not null)
@@ -374,7 +388,8 @@ public sealed class InvestmentPortfolioService(
         }).ToList();
 
         var allocation = await (allocationService ?? new InvestmentAllocationService(context)).BuildAsync(
-            appCurrency, holdings, instrumentDtos, cashBalances, provider.IsConfigured, cancellationToken);
+            appCurrency, holdings, instrumentDtos, cashBalances, contributions,
+            provider.IsConfigured, cancellationToken);
 
         return new InvestmentPortfolioDto(
             appCurrency,

@@ -72,6 +72,7 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         IReadOnlyList<InvestmentHoldingDto> holdings,
         IReadOnlyList<InvestmentInstrumentSetupDto> instruments,
         IReadOnlyList<InvestmentCashBalanceDto> cashBalances,
+        IReadOnlyList<InvestmentContributionDto> contributions,
         bool marketDataConfigured,
         CancellationToken cancellationToken)
     {
@@ -154,6 +155,10 @@ public sealed class InvestmentAllocationService(AppDbContext context)
             ? "Alert"
             : sleeves.Any(value => value.Status == "Watch") ? "Watch" : "OnTrack";
         var availableCash = PositiveCash(cashBalances);
+        var cycleDay = await context.FinancialSettings.AsNoTracking()
+            .Select(value => (int?)value.CycleDay)
+            .SingleOrDefaultAsync(cancellationToken) ?? 28;
+        var usualContribution = UsualCompletedCycleContribution(contributions, cycleDay);
 
         var minimumNewMoney = SleeveDefinitions.Max(definition =>
             values[definition.Key] / (targets[definition.Key] / 100m) - investedValue);
@@ -161,12 +166,13 @@ public sealed class InvestmentAllocationService(AppDbContext context)
 
         var recommendations = status == "OnTrack" 
             ? new List<InvestmentAllocationRecommendationDto>()
-            : BuildRecommendations(appCurrency, investedValue, values, targets, availableCash);
+            : BuildRecommendations(
+                appCurrency, investedValue, values, targets, availableCash, usualContribution);
 
         return new InvestmentAllocationOverviewDto(
             status, appCurrency, plan, assignments, sleeves, recommendations, [],
             freshness, RoundMoney(investedValue), RoundMoney(availableCash),
-            RoundMoney(Math.Max(0, minimumNewMoney - availableCash)));
+            RoundMoney(Math.Max(0, minimumNewMoney - availableCash - (usualContribution ?? 0))));
     }
 
     public static string? ValidatePlan(InvestmentPlanMutationDto value)
@@ -228,28 +234,47 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         decimal investedValue,
         IReadOnlyDictionary<string, decimal> values,
         IReadOnlyDictionary<string, decimal> targets,
-        decimal cash)
+        decimal cash,
+        decimal? usualContribution)
     {
         var recommendations = new List<InvestmentAllocationRecommendationDto>();
-        var total = investedValue + cash;
-        
-        if (cash > 0)
+        var expectedContribution = usualContribution ?? 0;
+        var newMoney = cash + expectedContribution;
+        var minimumNewMoney = Math.Max(0, SleeveDefinitions.Max(definition =>
+            values[definition.Key] / (targets[definition.Key] / 100m) - investedValue));
+        var contributionCanRebalance = usualContribution is > 0 &&
+                                       newMoney + 0.005m >= minimumNewMoney;
+
+        if (usualContribution is > 0)
+        {
+            var suffix = contributionCanRebalance
+                ? "can restore your target percentages without selling."
+                : "is not enough to restore your target percentages, so a small sale may still be needed.";
+            recommendations.Add(new InvestmentAllocationRecommendationDto(
+                1, "TopUp", null, RoundMoney(expectedContribution),
+                $"Your usual cycle contribution of {Format(expectedContribution, currency)}, together with available cash, {suffix}"));
+        }
+        else if (cash > 0)
         {
             recommendations.Add(new InvestmentAllocationRecommendationDto(
                 1, "UseCash", null, RoundMoney(cash),
                 $"Allocate {Format(cash, currency)} from uninvested cash to begin."));
         }
-        
-        int priority = 2;
-        foreach (var definition in SleeveDefinitions)
+
+        var total = investedValue + newMoney;
+        var priority = 2;
+        if (!contributionCanRebalance)
         {
-            var targetVal = total * targets[definition.Key] / 100m;
-            var difference = values[definition.Key] - targetVal;
-            if (difference > 0.005m)
+            foreach (var definition in SleeveDefinitions)
             {
-                recommendations.Add(new InvestmentAllocationRecommendationDto(
-                    priority++, "Sell", definition.Key, RoundMoney(difference),
-                    $"Sell {Format(difference, currency)} of {definition.Label}."));
+                var targetVal = total * targets[definition.Key] / 100m;
+                var difference = values[definition.Key] - targetVal;
+                if (difference > 0.005m)
+                {
+                    recommendations.Add(new InvestmentAllocationRecommendationDto(
+                        priority++, "Sell", definition.Key, RoundMoney(difference),
+                        $"Sell {Format(difference, currency)} of {definition.Label}."));
+                }
             }
         }
         
@@ -266,6 +291,34 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         }
         
         return recommendations;
+    }
+
+    private static decimal? UsualCompletedCycleContribution(
+        IReadOnlyList<InvestmentContributionDto> contributions,
+        int cycleDay)
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var currentCycle = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+            today, cycleDay);
+        var cycleTotals = contributions
+            .Where(value => value.AmountApp > 0)
+            .Select(value => new
+            {
+                Cycle = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+                    value.Date, cycleDay),
+                value.AmountApp
+            })
+            .Where(value => value.Cycle != currentCycle)
+            .GroupBy(value => value.Cycle)
+            .Select(group => group.Sum(value => value.AmountApp))
+            .OrderBy(value => value)
+            .ToList();
+
+        if (cycleTotals.Count == 0) return null;
+        var middle = cycleTotals.Count / 2;
+        return RoundMoney(cycleTotals.Count % 2 == 1
+            ? cycleTotals[middle]
+            : (cycleTotals[middle - 1] + cycleTotals[middle]) / 2m);
     }
 
     private static Dictionary<string, decimal> Targets(InvestmentPlanDto plan) => new()

@@ -87,6 +87,49 @@ public sealed class InvestmentAllocationServiceTests
     }
 
     [Fact]
+    public async Task Allocation_UsesUsualCycleContributionBeforeSuggestingSales()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var us = Instrument("VTI", "USEquity");
+        var international = Instrument("VXUS", "InternationalExUS");
+        var bonds = Instrument("BND", "Bonds");
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.AddRange(us, international, bonds);
+        await context.SaveChangesAsync();
+        AddPosition(context, account, us, 80);
+        AddPosition(context, account, international, 10);
+        AddPosition(context, account, bonds, 10);
+
+        foreach (var monthsAgo in new[] { 1, 2 })
+        {
+            var date = DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(-monthsAgo));
+            context.InvestmentCashFlows.AddRange(
+                new InvestmentCashFlow
+                {
+                    AccountId = account.Id, Currency = "USD", Type = "Deposit",
+                    Amount = 100, Date = date
+                },
+                new InvestmentCashFlow
+                {
+                    AccountId = account.Id, Currency = "USD", Type = "Withdrawal",
+                    Amount = -100, Date = date.AddDays(1)
+                });
+        }
+        await context.SaveChangesAsync();
+
+        var allocation = (await NewPortfolioService(context)
+            .GetPortfolioAsync("1m", CancellationToken.None)).Allocation;
+
+        Assert.Equal("TopUp", allocation.Recommendations[0].Kind);
+        Assert.Equal(100, allocation.Recommendations[0].Amount);
+        Assert.Contains("without selling", allocation.Recommendations[0].Message);
+        Assert.DoesNotContain(allocation.Recommendations, value => value.Kind == "Sell");
+        Assert.Contains(allocation.Recommendations, value => value.Kind == "Buy");
+        Assert.Equal(0, allocation.MinimumContribution);
+    }
+
+    [Fact]
     public void MutualFund_IsAFirstClassInstrumentType()
         => Assert.Contains("MutualFund", InvestmentKinds.InstrumentTypes);
 
