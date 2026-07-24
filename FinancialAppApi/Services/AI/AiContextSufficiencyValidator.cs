@@ -59,6 +59,8 @@ public partial class AiAssistantService
         ["wishlist.forecast"] = ([AiDatasetKey.WishlistForecast], true),
         ["recurring.list"] = ([AiDatasetKey.Recurring], false),
         ["recurring.upcoming"] = ([AiDatasetKey.Recurring], false),
+        ["category_limits.analysis"] = ([AiDatasetKey.CycleSummaries], false),
+        ["cycle.insights"] = ([AiDatasetKey.CycleSummaries], false),
         ["allocation.balance"] = ([AiDatasetKey.CycleSummaries, AiDatasetKey.BudgetTargets], false),
         ["allocation.performance"] = ([AiDatasetKey.CycleSummaries, AiDatasetKey.BudgetTargets], false)
     };

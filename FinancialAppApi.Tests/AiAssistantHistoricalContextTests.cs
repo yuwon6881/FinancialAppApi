@@ -44,6 +44,8 @@ public class AiAssistantHistoricalContextTests
         Assert.Contains("\"month\":\"Mar\"", handler.UserContent);
         Assert.Contains("\"outflow\":42", handler.UserContent);
         Assert.Contains("\"aggregatesCoverAllTransactionsInRequestedCycles\":true", handler.UserContent);
+        Assert.DoesNotContain("\"categoryLimits\"", handler.UserContent);
+        Assert.DoesNotContain("\"cycleInsights\"", handler.UserContent);
     }
 
     [Fact]
@@ -841,6 +843,117 @@ public class AiAssistantHistoricalContextTests
         Assert.Contains("dailyExtremes", handler.UserContent);
         Assert.Contains("\"date\":\"2026-07-02\",\"inflow\":1000", handler.UserContent);
         Assert.Contains("\"date\":\"2026-07-04\",\"inflow\":0,\"outflow\":500", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_CategoryLimitQuestionIncludesEffectiveProgress()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false
+        });
+        context.TransactionCategories.Add(new TransactionCategory { Id = "food", Name = "Food" });
+        context.CategorySpendingGuides.Add(new CategorySpendingGuide
+        {
+            Id = "food-limit", CategoryName = "Food", EffectiveFromCycleKey = "2026-07", LimitAmount = 100
+        });
+        context.Transactions.Add(Transaction(
+            "lunch", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "Lunch", -75));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var clock = TestClock(new DateTimeOffset(2026, 7, 15, 0, 0, 0, TimeSpan.Zero));
+        var service = new AiAssistantService(
+            NewClient(handler), context, new TransactionCategoryService(context, cache), financialClock: clock);
+
+        await service.ChatAsync(new AiChatRequest("How am I doing against my category limits this cycle?", []));
+
+        Assert.Contains("\"categoryLimits\"", handler.UserContent);
+        Assert.Contains("\"category\":\"Food\"", handler.UserContent);
+        Assert.Contains("\"limit\":100", handler.UserContent);
+        Assert.Contains("\"spent\":75", handler.UserContent);
+        Assert.Contains("\"isComplete\":false", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_CurrentCycleSummaryKeepsBaseContextAndMarksInsightsInProgress()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false
+        });
+        context.TransactionCategories.Add(new TransactionCategory { Id = "food", Name = "Food" });
+        context.Transactions.Add(Transaction(
+            "dinner", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "Dinner", -60));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(
+            NewClient(handler), context, new TransactionCategoryService(context, cache),
+            financialClock: TestClock(new DateTimeOffset(2026, 7, 15, 0, 0, 0, TimeSpan.Zero)));
+
+        await service.ChatAsync(new AiChatRequest("Give me a cycle summary for this cycle", []));
+
+        Assert.Contains("\"cycleSummaries\"", handler.UserContent);
+        Assert.Contains("\"cycleInsights\"", handler.UserContent);
+        Assert.Contains("\"phase\":\"InProgress\"", handler.UserContent);
+        Assert.Contains("\"observedThrough\":\"2026-07-15\"", handler.UserContent);
+        Assert.Contains("\"remainingDays\":16", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_RecurringReminderAndPayEarlyQuestionIncludesCapabilities()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false,
+            PushRemindersEnabled = true
+        });
+        context.TransactionCategories.Add(new TransactionCategory { Id = "software", Name = "Software" });
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "spotify", Name = "Spotify", Amount = 15, Frequency = "Monthly",
+            Category = "Software", LedgerCategory = "Rewards", NextDueDate = "2026-07-20",
+            DueDate = 20, StartDate = "2026-01-20", Active = true,
+            PushReminderEnabled = true, PushReminderMode = "Daily", PushReminderLeadDays = 3
+        });
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(
+            NewClient(handler), context, new TransactionCategoryService(context, cache),
+            financialClock: TestClock(new DateTimeOffset(2026, 7, 15, 0, 0, 0, TimeSpan.Zero)));
+
+        await service.ChatAsync(new AiChatRequest(
+            "Can I pay Spotify early and are its subscription push reminders enabled?", []));
+
+        Assert.Contains("\"recurringAdvance\"", handler.UserContent);
+        Assert.Contains("\"canPayEarly\":true", handler.UserContent);
+        Assert.Contains("\"nextUnpaidOccurrence\":\"2026-07-20\"", handler.UserContent);
+        Assert.Contains("\"recurringReminderStatus\"", handler.UserContent);
+        Assert.Contains("\"effective\":true", handler.UserContent);
+        Assert.Contains("\"mode\":\"Daily\"", handler.UserContent);
+        Assert.Contains("\"leadDays\":3", handler.UserContent);
+    }
+
+    private static AiClient NewClient(HttpMessageHandler handler) => new(
+        new HttpClient(handler),
+        TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+        NullLogger<AiClient>.Instance);
+
+    private static FinancialClock TestClock(DateTimeOffset now) => new(
+        TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+        new FixedTimeProvider(now));
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
     }
 
     private sealed class CapturingHandler : HttpMessageHandler

@@ -29,6 +29,8 @@ public partial class AiAssistantService
         RecurringUpcoming,
         RecurringAdd,
         RecurringEdit,
+        CategoryLimits,
+        CycleInsights,
         AllocationBalance,
         AllocationPerformance
     }
@@ -54,6 +56,8 @@ public partial class AiAssistantService
         ["recurring.upcoming"] = AiIntent.RecurringUpcoming,
         ["recurring.add"] = AiIntent.RecurringAdd,
         ["recurring.edit"] = AiIntent.RecurringEdit,
+        ["category_limits.analysis"] = AiIntent.CategoryLimits,
+        ["cycle.insights"] = AiIntent.CycleInsights,
         ["allocation.balance"] = AiIntent.AllocationBalance,
         ["allocation.performance"] = AiIntent.AllocationPerformance
     };

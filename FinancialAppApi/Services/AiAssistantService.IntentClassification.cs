@@ -240,7 +240,8 @@ public partial class AiAssistantService
         "ledger.transaction_list", "ledger.comparison", "ledger.edit", "ledger.add",
         "ledger.anomaly", "ledger.duplicates", "wishlist.list", "wishlist.forecast",
         "wishlist.add", "wishlist.edit", "recurring.list", "recurring.upcoming",
-        "recurring.add", "recurring.edit", "allocation.balance", "allocation.performance",
+        "recurring.add", "recurring.edit", "category_limits.analysis", "cycle.insights",
+        "allocation.balance", "allocation.performance",
         "navigation", "general"
     };
 
@@ -391,6 +392,14 @@ public partial class AiAssistantService
         @"\b(spend|spent|spending|budget|income|earnings?|salary|paychecks?|cash ?flow|outflow|inflow|balance|total|average|net|save|saved|savings|essentials|growth|stability|rewards|cycle|this month|last month|how much|money going|doing better|doing worse|afford|financial health|performance|expense|expenses|cost|costs|fee|fees|profit|profits|margin|margins)\b",
         RegexOptions.Compiled);
 
+    private static readonly Regex CategoryLimitSignal = new(
+        @"\b(category limits?|spending limits?|category cap|category caps|limit for|limits? (?:did i|have i|am i|was i)|over (?:my )?limit|under (?:my )?limit|exceed(?:ed|ing)? (?:my )?limit|remaining (?:for|in) [\p{L}\p{N}&' -]+ limit)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex CycleInsightSignal = new(
+        @"\b(cycle summary|summary (?:for|of) (?:this|last|previous|current) (?:cycle|month)|summari[sz]e (?:this|last|previous|current) (?:cycle|month)|average daily spend|daily spending average|spending velocity|first half|second half|no[- ]spend days?|committed spend|discretionary spend|biggest spending day)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex TransactionDetailSignal = new(
         @"\b(transaction|transactions|ledger|purchase|purchased|bought|paid|payment|receipt|charge|charged|expense|expenses|deposit|deposits|withdrawal|withdrawals|refund|refunds|debit|debits|credit|credits|find|search|when did|did i|edit|update|change|modify|delete|remove|erase|export|download|record|entry|merchant|cost me|how often|how frequently|frequency|largest|biggest|highest|lowest|smallest|most expensive|cheapest|invoice|invoices|bill|bills|fee|fees|cost|costs|priced|billed)\b",
         RegexOptions.Compiled);
@@ -430,7 +439,7 @@ public partial class AiAssistantService
         RegexOptions.Compiled);
 
     private static readonly Regex RecurringSignal = new(
-        @"\b(recurring|subscription|subscriptions|sub|subs|membership|memberships|renewal|renewals|renews?|bill|bills|instalments?|installments?|standing orders?|monthly payment|yearly payment|annual payment|autopay|auto-pay|auto-renewal|auto renewal|direct debit|direct debits)\b",
+        @"\b(recurring|subscription|subscriptions|sub|subs|membership|memberships|renewal|renewals|renews?|bill|bills|instalments?|installments?|standing orders?|monthly payment|yearly payment|annual payment|autopay|auto-pay|auto-renewal|auto renewal|direct debit|direct debits|payment reminders?|bill reminders?|subscription reminders?|push reminders?)\b",
         RegexOptions.Compiled);
 
     private static readonly Regex WishlistSignal = new(

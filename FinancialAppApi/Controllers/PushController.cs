@@ -54,6 +54,10 @@ public class PushController : ControllerBase
         {
             return BadRequest(new { message = "deviceId and fcmToken are required." });
         }
+        if (dto.DeviceId.Trim().Length > 200 || dto.FcmToken.Trim().Length > 4096)
+        {
+            return BadRequest(new { message = "deviceId or fcmToken is too long." });
+        }
 
         await _subscriptionService.SubscribeAsync(dto.DeviceId.Trim(), dto.FcmToken.Trim(), HttpContext.RequestAborted);
         return Ok();

@@ -92,7 +92,8 @@ internal static class AiResponseSchemas
         "ledger.transaction_list", "ledger.comparison", "ledger.edit", "ledger.add",
         "ledger.anomaly", "ledger.duplicates", "wishlist.list", "wishlist.forecast",
         "wishlist.add", "wishlist.edit", "recurring.list", "recurring.upcoming",
-        "recurring.add", "recurring.edit", "allocation.balance", "allocation.performance",
+        "recurring.add", "recurring.edit", "category_limits.analysis", "cycle.insights",
+        "allocation.balance", "allocation.performance",
         "navigation", "general"
     ];
 
@@ -198,6 +199,7 @@ internal static class AiResponseSchemas
         ["transferSource"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
         ["transferTarget"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
         ["active"] = Bool(),
+        ["frequency"] = Str(enums: ["Monthly", "Annually"]),
         ["search"] = Str(),
         ["date"] = Str(),
         ["description"] = Str(),
@@ -213,6 +215,7 @@ internal static class AiResponseSchemas
             ["description"] = Str(), ["name"] = Str(), ["amount"] = Num(), ["price"] = Num(),
             ["category"] = Str("Single most fitting category; copy exactly from the App context categories.", enums: categories),
             ["ledgerCategory"] = Str(), ["txType"] = Str(), ["date"] = Str(),
+            ["frequency"] = Str(enums: ["Monthly", "Annually"]),
             ["transferSource"] = Str(), ["transferTarget"] = Str(),
             ["priority"] = Str(), ["isActive"] = Bool(), ["startDate"] = Str(), ["endDate"] = Str()
         })

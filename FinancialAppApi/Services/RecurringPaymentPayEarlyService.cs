@@ -32,15 +32,18 @@ public class RecurringPaymentPayEarlyService
 
     private readonly AppDbContext _context;
     private readonly RecurringOccurrenceService _occurrenceService;
+    private readonly CycleBalanceService _cycleBalanceService;
     private readonly FinancialClock _financialClock;
 
     public RecurringPaymentPayEarlyService(
         AppDbContext context,
         RecurringOccurrenceService occurrenceService,
+        CycleBalanceService cycleBalanceService,
         FinancialClock? financialClock = null)
     {
         _context = context;
         _occurrenceService = occurrenceService;
+        _cycleBalanceService = cycleBalanceService;
         _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
@@ -109,7 +112,10 @@ public class RecurringPaymentPayEarlyService
             Description = payment.Name,
             Category = payment.Category,
             LedgerCategory = payment.LedgerCategory,
-            Amount = payment.Amount,
+            // Recurring templates store a positive cost. Ledger expenses are negative (the
+            // normal confirm-payment flow also applies -Abs), so paying early must not credit
+            // the selected envelope or disappear from spending/category-watch calculations.
+            Amount = -Math.Abs(payment.Amount),
             RecurringPaymentId = payment.Id,
             RecurringOccurrenceDate = occurrence.Value
         };
@@ -118,7 +124,16 @@ public class RecurringPaymentPayEarlyService
 
         try
         {
-            await _context.SaveChangesAsync(cancellationToken);
+            var strategy = _context.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+                await _context.SaveChangesAsync(cancellationToken);
+                var (affectedYear, affectedMonth) =
+                    CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
+                await _cycleBalanceService.InvalidateFromAsync(affectedYear, affectedMonth);
+                await dbTransaction.CommitAsync(cancellationToken);
+            });
         }
         catch (DbUpdateException ex) when (ex.IsUniqueViolation())
         {

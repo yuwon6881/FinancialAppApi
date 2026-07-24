@@ -24,7 +24,9 @@ public partial class AiAssistantService
         bool NeedsWishlist,
         bool NeedsWishlistForecast,
         bool NeedsRecurring,
-        bool NeedsBudgetTargets);
+        bool NeedsBudgetTargets,
+        bool NeedsCategoryLimits,
+        bool NeedsCycleInsights);
 
     private sealed record TargetCycleSelection(IReadOnlyList<CycleKey> Cycles, bool ExplicitlyRequested);
     internal sealed record AiTransactionRow(
@@ -35,7 +37,8 @@ public partial class AiAssistantService
         string Category,
         string LedgerCategory,
         decimal Amount,
-        DateTime? PostedAt = null);
+        DateTime? PostedAt = null,
+        string? RecurringPaymentId = null);
     private sealed record AiTransactionDbRow(
         string Id,
         DateTime Date,
@@ -43,7 +46,8 @@ public partial class AiAssistantService
         string Description,
         string Category,
         string LedgerCategory,
-        decimal Amount);
+        decimal Amount,
+        string? RecurringPaymentId);
     internal sealed record AiWishlistRow(int Id, string Name, decimal Price, string Priority, bool IsActive, bool IsPurchased, DateTime CreatedAt, DateTime? PurchasedAt = null);
     private sealed record TransactionDateRange(DateTime Start, DateTime End);
 
@@ -212,7 +216,14 @@ public partial class AiAssistantService
             RecurringPayments: recurringContext,
             WishlistItems: wishlistContext,
             BudgetTargets: budgetTargets,
-            WishlistForecast: wishlistForecast);
+            WishlistForecast: wishlistForecast,
+            CategoryLimits: await BuildCategoryLimitContextAsync(
+                queryPlan, targetSelection.Cycles, cycleDay, allTransactions, sensitiveMode, cancellationToken),
+            CycleInsights: BuildCycleInsightsContext(
+                queryPlan, targetSelection.Cycles, cycleDay, allTransactions, sensitiveMode),
+            RecurringAdvance: await BuildRecurringAdvanceContextAsync(
+                queryPlan, recurringRows, cycleDay, cancellationToken),
+            RecurringReminderStatus: BuildRecurringReminderStatusContext(queryPlan, setting, recurringRows));
         var missing = sufficiencyResult.Missing.Select(m => m.DatasetKey).ToList();
         var sufficiency = new ContextSufficiency(
             Complete: sufficiencyResult.CanAnswer,
@@ -1162,5 +1173,9 @@ public partial class AiAssistantService
         object RecurringPayments,
         object WishlistItems,
         object? BudgetTargets,
-        object? WishlistForecast);
+        object? WishlistForecast,
+        object? CategoryLimits,
+        object? CycleInsights,
+        object? RecurringAdvance,
+        object? RecurringReminderStatus);
 }

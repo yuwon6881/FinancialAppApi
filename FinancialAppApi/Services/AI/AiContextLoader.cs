@@ -16,7 +16,8 @@ public partial class AiAssistantService
     internal sealed record AiRecurringRow(
         string Id, string Name, decimal Amount, string Category, string LedgerCategory,
         string StartDate, string? EndDate, int DueDate, bool Active,
-        string Frequency, string NextDueDate);
+        string Frequency, string NextDueDate, bool PushReminderEnabled = false,
+        string PushReminderMode = "Once", int PushReminderLeadDays = 1);
 
     private sealed record AiLedgerEditMatch(string Id, string Description, DateTime Date);
 
@@ -57,7 +58,8 @@ public partial class AiAssistantService
             .Select(r => new AiRecurringRow(
                 r.Id, r.Name, r.Amount, r.Category, r.LedgerCategory,
                 r.StartDate, r.EndDate, r.DueDate, r.Active,
-                r.Frequency, r.NextDueDate))
+                r.Frequency, r.NextDueDate, r.PushReminderEnabled,
+                r.PushReminderMode, r.PushReminderLeadDays))
             .Take(100)
             .ToListAsync(cancellationToken);
 
@@ -175,7 +177,7 @@ public partial class AiAssistantService
             .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
             .Take(500)
-            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.PostedAt, t.Description, t.Category, t.LedgerCategory, t.Amount))
+            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.PostedAt, t.Description, t.Category, t.LedgerCategory, t.Amount, t.RecurringPaymentId))
             .ToListAsync(cancellationToken);
         return rows.Select(ToAiTransactionRow).ToList();
     }
@@ -214,7 +216,7 @@ public partial class AiAssistantService
             // One beyond the cap so the caller can tell "exactly at the cap" (complete) apart
             // from "over the cap" (truncated); the caller drops the sentinel row.
             .Take(MaxTransactionsPerRange + 1)
-            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.PostedAt, t.Description, t.Category, t.LedgerCategory, t.Amount))
+            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.PostedAt, t.Description, t.Category, t.LedgerCategory, t.Amount, t.RecurringPaymentId))
             .ToListAsync(cancellationToken);
         return rows.Select(ToAiTransactionRow).ToList();
     }
@@ -252,5 +254,6 @@ public partial class AiAssistantService
         row.Category,
         row.LedgerCategory,
         row.Amount,
-        row.PostedAt);
+        row.PostedAt,
+        row.RecurringPaymentId);
 }

@@ -209,12 +209,14 @@ public sealed class InvestmentsController(
                     .Positions.Any(value => value.Units != 0))
                 return Conflict(new { message = "Close all units before archiving this investment." });
         }
-        if (!instrument.IsCustom &&
-            await context.InvestmentTransactions.AnyAsync(value => value.InstrumentId == id, HttpContext.RequestAborted) &&
-            (!instrument.Symbol.Equals(dto.Symbol, StringComparison.OrdinalIgnoreCase) ||
-             !string.Equals(instrument.ProviderMic, dto.ProviderMic, StringComparison.OrdinalIgnoreCase)))
+        var hasActivity = await context.InvestmentTransactions
+            .AnyAsync(value => value.InstrumentId == id, HttpContext.RequestAborted);
+        if (hasActivity && HasHistoricalMarketIdentityChange(instrument, dto))
         {
-            return Conflict(new { message = "A provider-backed instrument with activity cannot change its market mapping." });
+            return Conflict(new
+            {
+                message = "An investment with activity cannot change its currency or market-data mapping. Create a new investment instead."
+            });
         }
         ApplyInstrument(instrument, dto);
         await context.SaveChangesAsync(HttpContext.RequestAborted);
@@ -318,22 +320,34 @@ public sealed class InvestmentsController(
     {
         if (snapshot.Transactions.Count is < 1 or > 2)
             return BadRequest(new { message = "The activity snapshot is invalid." });
+        var snapshotError = ValidateTransactionSnapshot(snapshot.Transactions);
+        if (snapshotError is not null)
+            return BadRequest(new { message = snapshotError });
         var accountIds = snapshot.Transactions.Select(value => value.AccountId).Distinct().ToList();
         var instrumentIds = snapshot.Transactions.Select(value => value.InstrumentId).Distinct().ToList();
+        var restoredInstruments = await context.InvestmentInstruments
+            .Where(value => instrumentIds.Contains(value.Id))
+            .ToDictionaryAsync(value => value.Id, HttpContext.RequestAborted);
         if (await context.InvestmentAccounts.CountAsync(value => accountIds.Contains(value.Id), HttpContext.RequestAborted) != accountIds.Count ||
-            await context.InvestmentInstruments.CountAsync(value => instrumentIds.Contains(value.Id), HttpContext.RequestAborted) != instrumentIds.Count)
+            restoredInstruments.Count != instrumentIds.Count)
             return Conflict(new { message = "The account or investment required by this activity no longer exists." });
-        if (await context.InvestmentTransactions.AnyAsync(value =>
-                snapshot.Transactions.Select(item => item.Id).Contains(value.Id), HttpContext.RequestAborted))
+        var snapshotIds = snapshot.Transactions.Select(item => item.Id).ToList();
+        var existingCount = await context.InvestmentTransactions.CountAsync(value =>
+            snapshotIds.Contains(value.Id), HttpContext.RequestAborted);
+        if (existingCount == snapshotIds.Count)
             return NoContent();
+        if (existingCount > 0)
+            return Conflict(new { message = "Only part of this activity already exists; refresh before restoring it." });
 
+        var restored = new List<InvestmentTransaction>();
         foreach (var item in snapshot.Transactions)
         {
-            context.InvestmentTransactions.Add(new InvestmentTransaction
+            var transaction = new InvestmentTransaction
             {
                 Id = item.Id,
                 AccountId = item.AccountId,
                 InstrumentId = item.InstrumentId,
+                Instrument = restoredInstruments[item.InstrumentId],
                 Type = item.Type,
                 TradeDate = item.TradeDate,
                 Units = item.Units,
@@ -345,7 +359,15 @@ public sealed class InvestmentsController(
                 Notes = item.Notes,
                 LinkedTransferId = item.LinkedTransferId,
                 CreatedAt = item.CreatedAt
-            });
+            };
+            restored.Add(transaction);
+            context.InvestmentTransactions.Add(transaction);
+        }
+        var historyError = await ValidateHistoryAsync(null);
+        if (historyError is not null)
+        {
+            foreach (var transaction in restored) context.Entry(transaction).State = EntityState.Detached;
+            return Conflict(new { message = $"This activity can no longer be restored: {historyError}" });
         }
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return NoContent();
@@ -442,7 +464,11 @@ public sealed class InvestmentsController(
     {
         if (!CurrencyCatalog.Contains(snapshot.Currency) ||
             !InvestmentKinds.CashFlowTypes.Contains(snapshot.Type) ||
-            snapshot.Amount == 0 ||
+            (snapshot.Type.Equals("Deposit", StringComparison.OrdinalIgnoreCase) && snapshot.Amount <= 0) ||
+            (snapshot.Type.Equals("Withdrawal", StringComparison.OrdinalIgnoreCase) && snapshot.Amount >= 0) ||
+            snapshot.Date == default ||
+            snapshot.Date > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)) ||
+            snapshot.Notes?.Length > 1000 ||
             !await context.InvestmentAccounts.AnyAsync(value => value.Id == snapshot.AccountId, HttpContext.RequestAborted))
             return BadRequest(new { message = "The cash-flow snapshot is invalid." });
         if (await context.InvestmentCashFlows.AnyAsync(value => value.Id == snapshot.Id, HttpContext.RequestAborted))
@@ -451,8 +477,10 @@ public sealed class InvestmentsController(
         {
             Id = snapshot.Id,
             AccountId = snapshot.AccountId,
-            Currency = snapshot.Currency,
-            Type = snapshot.Type,
+            Currency = snapshot.Currency.ToUpperInvariant(),
+            Type = snapshot.Type.Equals("Withdrawal", StringComparison.OrdinalIgnoreCase)
+                ? "Withdrawal"
+                : "Deposit",
             Amount = snapshot.Amount,
             Date = snapshot.Date,
             Notes = snapshot.Notes
@@ -551,6 +579,44 @@ public sealed class InvestmentsController(
         return (value, null);
     }
 
+    internal static string? ValidateTransactionSnapshot(IReadOnlyList<InvestmentTransactionDto> items)
+    {
+        if (items.Any(item =>
+                !InvestmentKinds.TransactionTypes.Contains(item.Type) ||
+                item.TradeDate == default ||
+                item.TradeDate > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)) ||
+                item.Fees < 0 ||
+                item.Taxes < 0 ||
+                item.TradeFxRate is <= 0 ||
+                item.Notes?.Length > 1000))
+        {
+            return "The activity snapshot contains invalid values.";
+        }
+
+        if (items.Count == 1)
+        {
+            var item = items[0];
+            if (item.Type == "TransferIn" && item.LinkedTransferId is not null)
+                return "A linked transfer must restore both activity legs.";
+            return null;
+        }
+
+        var outgoing = items.SingleOrDefault(item => item.Type == "TransferOut");
+        var incoming = items.SingleOrDefault(item => item.Type == "TransferIn");
+        if (outgoing is null || incoming is null ||
+            incoming.LinkedTransferId != outgoing.Id ||
+            outgoing.LinkedTransferId is not null ||
+            outgoing.AccountId == incoming.AccountId ||
+            outgoing.InstrumentId != incoming.InstrumentId ||
+            outgoing.TradeDate != incoming.TradeDate ||
+            outgoing.Units != incoming.Units)
+        {
+            return "The linked transfer snapshot is inconsistent.";
+        }
+
+        return null;
+    }
+
     private async Task<string?> ValidateHistoryAsync(Guid? excludedId)
     {
         var all = await context.InvestmentTransactions
@@ -602,6 +668,18 @@ public sealed class InvestmentsController(
         if (!ValidCurrency(dto.Currency)) return "Select a supported currency from the list.";
         if (!dto.IsCustom && string.IsNullOrWhiteSpace(dto.ProviderSymbol)) return "Provider-backed investments require a provider symbol.";
         return null;
+    }
+
+    internal static bool HasHistoricalMarketIdentityChange(
+        InvestmentInstrument existing,
+        InstrumentMutationDto updated)
+    {
+        var providerSymbol = updated.IsCustom ? null : Clean(updated.ProviderSymbol)?.ToUpperInvariant();
+        var providerMic = updated.IsCustom ? null : Clean(updated.ProviderMic)?.ToUpperInvariant();
+        return !existing.Currency.Equals(updated.Currency.Trim(), StringComparison.OrdinalIgnoreCase) ||
+               existing.IsCustom != updated.IsCustom ||
+               !string.Equals(existing.ProviderSymbol, providerSymbol, StringComparison.OrdinalIgnoreCase) ||
+               !string.Equals(existing.ProviderMic, providerMic, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ValidCurrency(string value)

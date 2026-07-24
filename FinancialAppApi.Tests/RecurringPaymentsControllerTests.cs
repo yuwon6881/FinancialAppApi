@@ -201,7 +201,10 @@ public class RecurringPaymentsControllerTests
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance);
         return new RecurringPaymentsController(
             new RecurringPaymentService(context),
-            new RecurringPaymentPayEarlyService(context, occurrenceService))
+            new RecurringPaymentPayEarlyService(
+                context,
+                occurrenceService,
+                new CycleBalanceService(context)))
         {
             ControllerContext = new ControllerContext
             {

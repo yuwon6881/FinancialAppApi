@@ -51,10 +51,7 @@ public sealed class InvestmentAccountingService
         var transferBasis = new Dictionary<Guid, TransferBasis>();
         var warnings = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var transaction in transactions
-                     .OrderBy(value => value.TradeDate)
-                     .ThenBy(value => value.CreatedAt)
-                     .ThenBy(value => value.Id))
+        foreach (var transaction in OrderTransactions(transactions))
         {
             var key = (transaction.AccountId, transaction.InstrumentId);
             if (!positions.TryGetValue(key, out var position))
@@ -136,9 +133,19 @@ public sealed class InvestmentAccountingService
                     RequirePositive(transaction.Units, "Units must be greater than zero.");
                     TransferBasis transferred;
                     if (transaction.LinkedTransferId is Guid linkedId &&
-                        transferBasis.TryGetValue(linkedId, out var linked))
+                        transferBasis.Remove(linkedId, out var linked))
                     {
+                        if (linked.Units != transaction.Units)
+                        {
+                            throw new InvestmentValidationException(
+                                "Linked transfer-in units must match the transfer-out units.");
+                        }
                         transferred = linked;
+                    }
+                    else if (transaction.LinkedTransferId is not null)
+                    {
+                        throw new InvestmentValidationException(
+                            "A linked transfer-in must reference one unused transfer-out.");
                     }
                     else
                     {
@@ -176,6 +183,33 @@ public sealed class InvestmentAccountingService
                     pair.Value.ContributionsApp))
                 .ToList(),
             warnings.Order().ToList());
+    }
+
+    private static IReadOnlyList<InvestmentTransaction> OrderTransactions(
+        IEnumerable<InvestmentTransaction> transactions)
+    {
+        var ordered = transactions
+            .OrderBy(value => value.TradeDate)
+            .ThenBy(value => value.CreatedAt)
+            .ThenBy(value => value.Id)
+            .ToList();
+
+        // PostgreSQL timestamp precision can make paired legs tie, leaving GUID ordering to put
+        // the dependent transfer-in first. Move only that leg behind its own transfer-out;
+        // unrelated same-day activity retains its stable chronological order.
+        for (var index = 0; index < ordered.Count; index++)
+        {
+            var incoming = ordered[index];
+            if (incoming.Type != "TransferIn" || incoming.LinkedTransferId is not Guid sourceId)
+                continue;
+            var sourceIndex = ordered.FindIndex(index + 1, value => value.Id == sourceId);
+            if (sourceIndex < 0) continue;
+            ordered.RemoveAt(index);
+            sourceIndex--;
+            ordered.Insert(sourceIndex + 1, incoming);
+        }
+
+        return ordered;
     }
 
     private static decimal? ResolveTradeFx(

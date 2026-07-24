@@ -28,7 +28,8 @@ public partial class AiAssistantService
                 ? recurringRows.Select(row => new
                 {
                     row.Id, row.Name, row.Category, row.LedgerCategory,
-                    row.StartDate, row.EndDate, row.DueDate, row.Active, row.Frequency, row.NextDueDate
+                    row.StartDate, row.EndDate, row.DueDate, row.Active, row.Frequency, row.NextDueDate,
+                    row.PushReminderEnabled, row.PushReminderMode, row.PushReminderLeadDays
                 }).ToList()
                 : recurringRows;
         }

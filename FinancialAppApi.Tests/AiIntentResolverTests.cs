@@ -45,6 +45,35 @@ public class AiIntentResolverTests
     }
 
     [Fact]
+    public void ResolveDeterministically_CategoryLimitQuestion_LoadsLimitAndCycleContext()
+    {
+        var plan = AiAssistantService.ResolveDeterministically("Which category limits am I likely to exceed this cycle?");
+
+        Assert.Contains(AiAssistantService.AiIntent.CategoryLimits, plan.Intents);
+        Assert.True(plan.QueryPlan.NeedsCategoryLimits);
+        Assert.True(plan.QueryPlan.NeedsCycleSummary);
+    }
+
+    [Fact]
+    public void ResolveDeterministically_CycleSummaryQuestion_LoadsSupplementalInsights()
+    {
+        var plan = AiAssistantService.ResolveDeterministically("Give me a cycle summary for this cycle");
+
+        Assert.Contains(AiAssistantService.AiIntent.CycleInsights, plan.Intents);
+        Assert.True(plan.QueryPlan.NeedsCycleInsights);
+        Assert.True(plan.QueryPlan.NeedsCycleSummary);
+    }
+
+    [Fact]
+    public void ResolveDeterministically_PushReminderQuestion_LoadsRecurringContext()
+    {
+        var plan = AiAssistantService.ResolveDeterministically("Are my subscription push reminders enabled?");
+
+        Assert.Contains(AiAssistantService.AiIntent.RecurringList, plan.Intents);
+        Assert.True(plan.QueryPlan.NeedsRecurring);
+    }
+
+    [Fact]
     public void ResolveDeterministically_NegatedTopics_AreExcludedFromQueryPlan()
     {
         // "excluding recurring" forces NeedsRecurring = false even if the system normally pulls it

@@ -156,6 +156,7 @@ public partial class AiAssistantService
             !HasKnownOptionalString(payload, "txType", ["inflow", "outflow", "transfer"]) ||
             !HasKnownOptionalString(payload, "transferSource", ["Essentials", "Growth", "Stability", "Rewards"]) ||
             !HasKnownOptionalString(payload, "transferTarget", ["Essentials", "Growth", "Stability", "Rewards"]) ||
+            !HasKnownOptionalString(payload, "frequency", ["Monthly", "Annually"]) ||
             !HasKnownOptionalString(payload, "range", ["monthly", "3month", "6month", "yearly"]) ||
             !HasKnownOptionalString(payload, "month", FinancialConstants.MonthAbbreviations) ||
             !HasValidOptionalInteger(payload, "year", 1900, 2100) ||
@@ -179,6 +180,7 @@ public partial class AiAssistantService
                 !HasKnownOptionalString(changes, "txType", ["inflow", "outflow", "transfer"]) ||
                 !HasKnownOptionalString(changes, "transferSource", ["Essentials", "Growth", "Stability", "Rewards"]) ||
                 !HasKnownOptionalString(changes, "transferTarget", ["Essentials", "Growth", "Stability", "Rewards"]) ||
+                !HasKnownOptionalString(changes, "frequency", ["Monthly", "Annually"]) ||
                 !HasValidOptionalNonNegativeNumber(changes, "amount") ||
                 !HasValidOptionalNonNegativeNumber(changes, "price") ||
                 !HasValidOptionalIsoDate(changes, "date") ||

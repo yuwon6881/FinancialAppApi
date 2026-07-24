@@ -32,6 +32,8 @@ public partial class AiAssistantService
         bool NeedsRecurring,
         bool NeedsWishlist,
         bool NeedsWishlistForecast,
+        bool NeedsCategoryLimits,
+        bool NeedsCycleInsights,
         bool NeedsCount);
 
     private enum QueryFamily { Transactional, Wishlist, Recurring }
@@ -69,7 +71,8 @@ public partial class AiAssistantService
     // total/list). A modifier-only follow-up ("how about previous cycle") must keep running these.
     private static bool IsAnalyticalIntent(AiIntent intent) => intent is
         AiIntent.LedgerAnomaly or AiIntent.LedgerDuplicates or AiIntent.LedgerActivityCount or
-        AiIntent.LedgerComparison or AiIntent.AllocationPerformance;
+        AiIntent.LedgerComparison or AiIntent.CategoryLimits or AiIntent.CycleInsights or
+        AiIntent.AllocationPerformance;
 
     // On a transactional continuation that introduced no analysis of its own, re-apply the prior
     // turn's analytical intents to the new scope (fixes "unusual spending this cycle" -> "how about
@@ -229,6 +232,8 @@ public partial class AiAssistantService
         var needsWishlist = WishlistSignal.IsMatch(lower);
         var needsWishlistForecast = needsWishlist && WishlistForecastSignal.IsMatch(lower);
         var needsRecurring = RecurringSignal.IsMatch(lower);
+        var needsCategoryLimits = CategoryLimitSignal.IsMatch(lower);
+        var needsCycleInsights = CycleInsightSignal.IsMatch(lower);
 
         // The per-row detail sample is the largest prompt block, so it is only loaded when the
         // user actually wants individual records; a pure "how much/how many/total" question is
@@ -242,7 +247,8 @@ public partial class AiAssistantService
         var needsTransactionDetail = (TransactionDetailSignal.IsMatch(lower) || needsCount || asksDailyExtreme || hasAmountThreshold) &&
             (!aggregateOnly || needsCount || hasAmountThreshold);
 
-        var needsCycleSummary = needsCycleAnalysis || needsCycleComparison || needsImprovement || needsCount || needsWishlistForecast || asksDailyExtreme;
+        var needsCycleSummary = needsCycleAnalysis || needsCycleComparison || needsImprovement || needsCount ||
+            needsWishlistForecast || asksDailyExtreme || needsCategoryLimits || needsCycleInsights;
         var needsBudgetTargets = needsCycleAnalysis || needsImprovement;
 
         // Negated topics ("I'm not asking about my wishlist") drop the matching data block so the
@@ -269,6 +275,8 @@ public partial class AiAssistantService
             needsRecurring,
             needsWishlist,
             needsWishlistForecast,
+            needsCategoryLimits,
+            needsCycleInsights,
             needsCount);
     }
 
@@ -312,6 +320,8 @@ public partial class AiAssistantService
         if (s.NeedsWishlistForecast) intents.Add(AiIntent.WishlistForecast);
         else if (s.NeedsWishlist) intents.Add(AiIntent.WishlistList);
         if (s.NeedsRecurring) intents.Add(Regex.IsMatch(lower, @"\b(next|upcoming|due|renew|renewal)\b") ? AiIntent.RecurringUpcoming : AiIntent.RecurringList);
+        if (s.NeedsCategoryLimits) intents.Add(AiIntent.CategoryLimits);
+        if (s.NeedsCycleInsights) intents.Add(AiIntent.CycleInsights);
         if (s.NeedsBudgetTargets) intents.Add(ImprovementSignal.IsMatch(lower) ? AiIntent.AllocationPerformance : AiIntent.AllocationBalance);
         if (Regex.IsMatch(lower, @"\b(open|show|go to|navigate|take me)\b")) intents.Add(AiIntent.Navigation);
         if (intents.Count == 0) intents.Add(AiIntent.General);
@@ -357,7 +367,7 @@ public partial class AiAssistantService
         var transactionIds = UsesPriorTransactionState(message) ? priorState?.LastMatchedTransactionIds : null;
         var needsWishlist = s.NeedsWishlist || distinct.Any(i => i is AiIntent.WishlistList or AiIntent.WishlistForecast or AiIntent.WishlistAdd or AiIntent.WishlistEdit);
         var needsRecurring = s.NeedsRecurring || distinct.Any(i => i is AiIntent.RecurringList or AiIntent.RecurringUpcoming or AiIntent.RecurringAdd or AiIntent.RecurringEdit);
-        var needsCycleSummary = s.NeedsCycleSummary || distinct.Any(i => i is AiIntent.LedgerActivityCount or AiIntent.LedgerSpendingTotal or AiIntent.LedgerComparison or AiIntent.LedgerAnomaly or AiIntent.LedgerDuplicates or AiIntent.AllocationBalance or AiIntent.AllocationPerformance);
+        var needsCycleSummary = s.NeedsCycleSummary || distinct.Any(i => i is AiIntent.LedgerActivityCount or AiIntent.LedgerSpendingTotal or AiIntent.LedgerComparison or AiIntent.LedgerAnomaly or AiIntent.LedgerDuplicates or AiIntent.CategoryLimits or AiIntent.CycleInsights or AiIntent.AllocationBalance or AiIntent.AllocationPerformance);
         var needsBudgetTargets = s.NeedsBudgetTargets || distinct.Any(i => i is AiIntent.AllocationBalance or AiIntent.AllocationPerformance or AiIntent.WishlistForecast);
         var needsWishlistForecast = s.NeedsWishlistForecast || distinct.Contains(AiIntent.WishlistForecast);
         var wishlistItemId = needsWishlist || UsesPriorTransactionState(message) ? priorState?.LastWishlistItemId : null;
@@ -368,6 +378,8 @@ public partial class AiAssistantService
         var plan = BuildQueryPlan(
             distinct, needsTransactionDetail, needsCycleSummary, needsCycleComparison,
             needsWishlist, needsWishlistForecast, needsRecurring, needsBudgetTargets,
+            s.NeedsCategoryLimits || distinct.Contains(AiIntent.CategoryLimits),
+            s.NeedsCycleInsights || distinct.Contains(AiIntent.CycleInsights),
             searchText, cycleHint, queryText, transactionIds, wishlistItemId);
         return new AiIntentPlan(
             distinct,
@@ -416,11 +428,14 @@ public partial class AiAssistantService
         var needsTransactionDetail = s.NeedsTransactionDetail || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerMerchantSearch) ||
             Has(AiIntent.LedgerTransactionList) || Has(AiIntent.LedgerEdit) || Has(AiIntent.LedgerAnomaly) || Has(AiIntent.LedgerDuplicates);
         var needsCycleSummary = s.NeedsCycleSummary || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerSpendingTotal) ||
-            Has(AiIntent.LedgerComparison) || Has(AiIntent.WishlistForecast) || Has(AiIntent.AllocationBalance) || Has(AiIntent.AllocationPerformance);
+            Has(AiIntent.LedgerComparison) || Has(AiIntent.WishlistForecast) || Has(AiIntent.CategoryLimits) ||
+            Has(AiIntent.CycleInsights) || Has(AiIntent.AllocationBalance) || Has(AiIntent.AllocationPerformance);
         var needsBudgetTargets = s.NeedsBudgetTargets || Has(AiIntent.AllocationBalance) || Has(AiIntent.AllocationPerformance) || Has(AiIntent.WishlistForecast);
         var needsRecurring = s.NeedsRecurring || typedIntents.Any(i => i is AiIntent.RecurringList or AiIntent.RecurringUpcoming or AiIntent.RecurringAdd or AiIntent.RecurringEdit);
         var needsWishlist = s.NeedsWishlist || typedIntents.Any(i => i is AiIntent.WishlistList or AiIntent.WishlistForecast or AiIntent.WishlistAdd or AiIntent.WishlistEdit);
         var needsWishlistForecast = s.NeedsWishlistForecast || Has(AiIntent.WishlistForecast);
+        var needsCategoryLimits = s.NeedsCategoryLimits || Has(AiIntent.CategoryLimits);
+        var needsCycleInsights = s.NeedsCycleInsights || Has(AiIntent.CycleInsights);
 
         // Same transactional-continuation gating as the deterministic path.
         var inheritsTxn = InheritsTransactionalContext(message, priorState);
@@ -433,6 +448,7 @@ public partial class AiAssistantService
         var plan = BuildQueryPlan(
             typedIntents, needsTransactionDetail, needsCycleSummary, needsCycleComparison,
             needsWishlist, needsWishlistForecast, needsRecurring, needsBudgetTargets,
+            needsCategoryLimits, needsCycleInsights,
             searchText, cycleHint, queryText, transactionIds, wishlistItemId);
         return new AiIntentPlan(
             typedIntents,

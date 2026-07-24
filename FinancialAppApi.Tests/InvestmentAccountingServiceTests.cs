@@ -47,11 +47,11 @@ public sealed class InvestmentAccountingServiceTests
         var transferIn = Tx("TransferIn", new DateOnly(2025, 2, 1), units: 4);
         transferIn.AccountId = destination;
         transferIn.LinkedTransferId = transferOut.Id;
-        // The in-leg is always recorded after the out-leg. Make CreatedAt reflect
-        // that so ordering is deterministic: both legs share a TradeDate, and
-        // without a distinct CreatedAt the sort falls back to the random Guid Id,
-        // which would process TransferIn first ~half the time and fail to link.
-        transferIn.CreatedAt = transferOut.CreatedAt.AddSeconds(1);
+        // Deliberately tie the timestamps and make the incoming GUID sort first. Accounting must
+        // still honor the explicit transfer dependency rather than random GUID order.
+        transferOut.Id = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff");
+        transferIn.Id = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        transferIn.LinkedTransferId = transferOut.Id;
         var transactions = new[]
         {
             Tx("Buy", new DateOnly(2025, 1, 1), units: 10, price: 15),
@@ -68,6 +68,51 @@ public sealed class InvestmentAccountingServiceTests
         Assert.Equal(4m, target.Units);
         Assert.Equal(60m, target.CostBasisNative);
         Assert.All(result.Positions, value => Assert.Equal(0m, value.RealisedNative));
+    }
+
+    [Fact]
+    public void InternalTransfer_CannotConsumeTheSameBasisTwice()
+    {
+        var transferOut = Tx("TransferOut", new DateOnly(2025, 2, 1), units: 4);
+        var firstIn = Tx("TransferIn", new DateOnly(2025, 2, 1), units: 4);
+        firstIn.AccountId = Guid.NewGuid();
+        firstIn.LinkedTransferId = transferOut.Id;
+        firstIn.CreatedAt = transferOut.CreatedAt.AddSeconds(1);
+        var duplicateIn = Tx("TransferIn", new DateOnly(2025, 2, 1), units: 4);
+        duplicateIn.AccountId = Guid.NewGuid();
+        duplicateIn.LinkedTransferId = transferOut.Id;
+        duplicateIn.CreatedAt = transferOut.CreatedAt.AddSeconds(2);
+
+        var error = Assert.Throws<InvestmentValidationException>(() => _service.Calculate(
+            [
+                Tx("Buy", new DateOnly(2025, 1, 1), units: 10, price: 15),
+                transferOut,
+                firstIn,
+                duplicateIn
+            ],
+            "USD"));
+
+        Assert.Contains("one unused transfer-out", error.Message);
+    }
+
+    [Fact]
+    public void InternalTransfer_RequiresMatchingUnits()
+    {
+        var transferOut = Tx("TransferOut", new DateOnly(2025, 2, 1), units: 4);
+        var transferIn = Tx("TransferIn", new DateOnly(2025, 2, 1), units: 5);
+        transferIn.AccountId = Guid.NewGuid();
+        transferIn.LinkedTransferId = transferOut.Id;
+        transferIn.CreatedAt = transferOut.CreatedAt.AddSeconds(1);
+
+        var error = Assert.Throws<InvestmentValidationException>(() => _service.Calculate(
+            [
+                Tx("Buy", new DateOnly(2025, 1, 1), units: 10, price: 15),
+                transferOut,
+                transferIn
+            ],
+            "USD"));
+
+        Assert.Contains("must match", error.Message);
     }
 
     [Fact]

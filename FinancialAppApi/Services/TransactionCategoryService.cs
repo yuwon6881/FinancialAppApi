@@ -186,6 +186,37 @@ public class TransactionCategoryService
             }
         }
 
+        // Category spending guides are keyed by the category name rather than a foreign key so
+        // historical reports survive category deletion. Close the guide as of the current cycle,
+        // otherwise the dashboard would keep showing a tracked category that no longer exists.
+        if (category.CycleLimit.HasValue ||
+            await _context.CategorySpendingGuides.AnyAsync(guide => guide.CategoryName == category.Name))
+        {
+            var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
+            var cycleDay = setting?.CycleDay ?? 28;
+            var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+                _financialClock.Today,
+                cycleDay);
+            var cycleKey = $"{year:D4}-{monthIndex:D2}";
+            var currentGuide = await _context.CategorySpendingGuides.FirstOrDefaultAsync(guide =>
+                guide.CategoryName == category.Name &&
+                guide.EffectiveFromCycleKey == cycleKey);
+            if (currentGuide == null)
+            {
+                _context.CategorySpendingGuides.Add(new CategorySpendingGuide
+                {
+                    Id = $"guide-{Guid.NewGuid():N}",
+                    CategoryName = category.Name,
+                    EffectiveFromCycleKey = cycleKey,
+                    LimitAmount = null
+                });
+            }
+            else
+            {
+                currentGuide.LimitAmount = null;
+            }
+        }
+
         _context.TransactionCategories.Remove(category);
         await _context.SaveChangesAsync();
         _cache.Remove(CacheKey);

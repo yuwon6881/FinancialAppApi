@@ -1,5 +1,5 @@
-using System.Net;
 using System.Net.Http.Headers;
+using System.Text.Json;
 using Google.Apis.Auth.OAuth2;
 
 namespace FinancialAppApi.Services.Push;
@@ -96,10 +96,7 @@ public sealed class FcmHttpV1PushSender : IFcmPushSender
             }
 
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (response.StatusCode == HttpStatusCode.NotFound ||
-                body.Contains("UNREGISTERED", StringComparison.OrdinalIgnoreCase) ||
-                body.Contains("INVALID_ARGUMENT", StringComparison.OrdinalIgnoreCase) ||
-                body.Contains("SENDER_ID_MISMATCH", StringComparison.OrdinalIgnoreCase))
+            if (IsInvalidOrUnregistered(body))
             {
                 return new FcmSendResult(FcmSendStatus.InvalidOrUnregistered);
             }
@@ -107,6 +104,49 @@ public sealed class FcmHttpV1PushSender : IFcmPushSender
             _logger.LogWarning("FCM send failed with status {StatusCode}.", response.StatusCode);
             return new FcmSendResult(FcmSendStatus.TransientFailure, $"FCM responded {(int)response.StatusCode}.");
         }
+    }
+
+    // FCM can return the same HTTP status for a bad registration token and for a bad project or
+    // payload. Only the structured FcmError detail identifies a device-specific failure; treating
+    // a generic 404/INVALID_ARGUMENT as a dead token would disable every valid subscription.
+    internal static bool IsInvalidOrUnregistered(string body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (!document.RootElement.TryGetProperty("error", out var error) ||
+                !error.TryGetProperty("details", out var details) ||
+                details.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            foreach (var detail in details.EnumerateArray())
+            {
+                if (!detail.TryGetProperty("@type", out var type) ||
+                    type.GetString() is not string typeName ||
+                    !typeName.EndsWith("google.firebase.fcm.v1.FcmError", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (detail.TryGetProperty("errorCode", out var errorCode) &&
+                    errorCode.GetString() is string code &&
+                    (code.Equals("UNREGISTERED", StringComparison.OrdinalIgnoreCase) ||
+                     code.Equals("INVALID_ARGUMENT", StringComparison.OrdinalIgnoreCase) ||
+                     code.Equals("SENDER_ID_MISMATCH", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // An unstructured provider/proxy error is retryable, not evidence that the device
+            // registration itself is invalid.
+        }
+
+        return false;
     }
 
     private async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)

@@ -158,6 +158,39 @@ public class TransactionCategoryServiceTests
         Assert.Null((await context.CategorySpendingGuides.SingleAsync()).LimitAmount);
     }
 
+    [Fact]
+    public async Task DeleteCategoryAsync_ClosesItsGuideWithoutRewritingEarlierCycles()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.TransactionCategories.Add(new TransactionCategory
+        {
+            Id = "cat-transport",
+            Name = "Transport",
+            CycleLimit = 400m
+        });
+        context.CategorySpendingGuides.Add(new CategorySpendingGuide
+        {
+            Id = "guide-old",
+            CategoryName = "Transport",
+            EffectiveFromCycleKey = "2026-06",
+            LimitAmount = 400m
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context, new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero));
+
+        var result = await service.DeleteCategoryAsync("cat-transport");
+
+        Assert.Equal(DeleteTransactionCategoryStatus.Deleted, result.Status);
+        var guides = await context.CategorySpendingGuides
+            .OrderBy(guide => guide.EffectiveFromCycleKey)
+            .ToListAsync();
+        Assert.Equal(2, guides.Count);
+        Assert.Equal(400m, guides[0].LimitAmount);
+        Assert.Equal("2026-07", guides[1].EffectiveFromCycleKey);
+        Assert.Null(guides[1].LimitAmount);
+    }
+
     private static TransactionCategoryService NewService(
         Database.AppDbContext context,
         DateTimeOffset? utcNow = null)

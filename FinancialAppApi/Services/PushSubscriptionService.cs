@@ -72,8 +72,25 @@ public class PushSubscriptionService
         };
 
         _context.PushSubscriptions.Add(subscription);
-        await _context.SaveChangesAsync(cancellationToken);
-        return subscription;
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            return subscription;
+        }
+        catch (DbUpdateException ex) when (ex.IsUniqueViolation())
+        {
+            // Two tabs can register the same browser device concurrently. The unique
+            // (user, device) index decides the winner; converge the losing request onto that
+            // row instead of returning a transient 500 to the client.
+            _context.Entry(subscription).State = EntityState.Detached;
+            var winner = await _context.PushSubscriptions
+                .FirstAsync(s => s.DeviceId == deviceId, cancellationToken);
+            winner.FcmToken = fcmToken;
+            winner.Enabled = true;
+            winner.UpdatedAt = now;
+            await _context.SaveChangesAsync(cancellationToken);
+            return winner;
+        }
     }
 
     public async Task<bool> UnsubscribeAsync(string deviceId, CancellationToken cancellationToken = default)

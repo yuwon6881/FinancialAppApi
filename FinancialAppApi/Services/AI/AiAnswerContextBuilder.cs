@@ -31,7 +31,7 @@ public partial class AiAssistantService
 
         var needsLedgerAggregates = has("ledger.activity_count", "ledger.merchant_search", "ledger.spending_total",
             "ledger.comparison", "ledger.transaction_list", "ledger.anomaly", "ledger.duplicates",
-            "allocation.balance", "allocation.performance");
+            "category_limits.analysis", "cycle.insights", "allocation.balance", "allocation.performance");
         if (needsLedgerAggregates)
         {
             result["dataScope"] = context.DataScope;
@@ -52,6 +52,8 @@ public partial class AiAssistantService
         if (has("recurring.list", "recurring.upcoming", "recurring.add", "recurring.edit"))
         {
             result["recurringPayments"] = context.RecurringPayments;
+            if (context.RecurringAdvance != null) result["recurringAdvance"] = context.RecurringAdvance;
+            if (context.RecurringReminderStatus != null) result["recurringReminderStatus"] = context.RecurringReminderStatus;
         }
         if (has("wishlist.list", "wishlist.forecast", "wishlist.add", "wishlist.edit"))
         {
@@ -61,6 +63,14 @@ public partial class AiAssistantService
         if (has("allocation.balance", "allocation.performance"))
         {
             result["budgetTargets"] = context.BudgetTargets;
+        }
+        if (has("category_limits.analysis"))
+        {
+            result["categoryLimits"] = context.CategoryLimits;
+        }
+        if (has("cycle.insights"))
+        {
+            result["cycleInsights"] = context.CycleInsights;
         }
         return result;
     }

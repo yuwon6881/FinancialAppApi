@@ -54,7 +54,7 @@ public class RecurringPaymentPayEarlyServiceTests
         Assert.Equal(new DateOnly(2026, 7, 15), result.SettledOccurrenceDate);
 
         var transaction = result.Transaction!;
-        Assert.Equal(49.99m, transaction.Amount);
+        Assert.Equal(-49.99m, transaction.Amount);
         Assert.Equal("Bills", transaction.Category);
         Assert.Equal("Essentials", transaction.LedgerCategory);
         Assert.Equal("rec-1", transaction.RecurringPaymentId);
@@ -81,6 +81,26 @@ public class RecurringPaymentPayEarlyServiceTests
         Assert.Equal(PayEarlyStatus.Success, result.Status);
         Assert.Equal(new DateOnly(2026, 7, 20), result.SettledOccurrenceDate);
         Assert.Equal(new DateOnly(2026, 7, 20), result.Transaction!.RecurringOccurrenceDate);
+    }
+
+    [Fact]
+    public async Task PayEarlyAsync_InvalidatesCachedCycleBalancesFromThePostingCycle()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.RecurringPayments.Add(NewPayment("rec-1", dueDate: 15));
+        context.CycleBalances.AddRange(
+            new CycleBalance { Year = 2026, MonthIndex = 6, EssentialsBalance = 10m },
+            new CycleBalance { Year = 2026, MonthIndex = 7, EssentialsBalance = 20m },
+            new CycleBalance { Year = 2026, MonthIndex = 8, EssentialsBalance = 30m });
+        await context.SaveChangesAsync();
+        var service = NewService(context, Today(2026, 7, 10));
+
+        var result = await service.PayEarlyAsync("rec-1");
+
+        Assert.Equal(PayEarlyStatus.Success, result.Status);
+        var snapshots = await context.CycleBalances.OrderBy(value => value.MonthIndex).ToListAsync();
+        Assert.Collection(snapshots, snapshot => Assert.Equal(6, snapshot.MonthIndex));
     }
 
     [Fact]
@@ -217,7 +237,11 @@ public class RecurringPaymentPayEarlyServiceTests
     private static RecurringPaymentPayEarlyService NewService(AppDbContext context, FinancialClock clock)
     {
         var occurrenceService = new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
-        return new RecurringPaymentPayEarlyService(context, occurrenceService, clock);
+        return new RecurringPaymentPayEarlyService(
+            context,
+            occurrenceService,
+            new CycleBalanceService(context),
+            clock);
     }
 
     private static FinancialClock Today(int year, int month, int day)

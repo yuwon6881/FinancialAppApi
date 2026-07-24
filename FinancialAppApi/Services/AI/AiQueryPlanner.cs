@@ -31,6 +31,8 @@ public partial class AiAssistantService
         bool needsWishlistForecast,
         bool needsRecurring,
         bool needsBudgetTargets,
+        bool needsCategoryLimits,
+        bool needsCycleInsights,
         string? searchText,
         string? cycleHint,
         string queryText,
@@ -78,6 +80,8 @@ public partial class AiAssistantService
             needsWishlist,
             needsWishlistForecast,
             needsRecurring,
-            needsBudgetTargets);
+            needsBudgetTargets,
+            needsCategoryLimits,
+            needsCycleInsights);
     }
 }
