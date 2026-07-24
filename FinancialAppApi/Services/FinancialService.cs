@@ -326,7 +326,7 @@ public class FinancialService
         }
         if (!CurrencyCatalog.Contains(update.Currency))
         {
-            return "Select a supported ISO 4217 currency.";
+            return "Select a supported currency from the list.";
         }
 
         var setting = await GetOrCreateSettingAsync();

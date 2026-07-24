@@ -230,21 +230,76 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    private static string NormalizeConnectionString(string connectionString, bool migrateOnly)
+    {
+        if (connectionString.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase) ||
+            connectionString.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase))
+        {
+            var uri = new Uri(connectionString);
+            var userInfoParts = uri.UserInfo.Split(':', 2);
+            var username = Uri.UnescapeDataString(userInfoParts[0]);
+            var password = userInfoParts.Length > 1 ? Uri.UnescapeDataString(userInfoParts[1]) : "";
+            var database = uri.AbsolutePath.TrimStart('/');
+            var port = uri.Port > 0 ? uri.Port : 5432;
+
+            if (migrateOnly && port == 6543)
+            {
+                port = 5432;
+            }
+
+            var builder = new NpgsqlConnectionStringBuilder
+            {
+                Host = uri.Host,
+                Port = port,
+                Database = database,
+                Username = username,
+                Password = password,
+                SslMode = SslMode.Require
+            };
+
+            if (!string.IsNullOrEmpty(uri.Query))
+            {
+                var query = uri.Query.TrimStart('?');
+                foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var kv = pair.Split('=', 2);
+                    if (kv.Length == 2)
+                    {
+                        builder[Uri.UnescapeDataString(kv[0])] = Uri.UnescapeDataString(kv[1]);
+                    }
+                }
+            }
+
+            return builder.ConnectionString;
+        }
+
+        if (migrateOnly)
+        {
+            if (connectionString.Contains("Port=6543", StringComparison.OrdinalIgnoreCase))
+            {
+                connectionString = connectionString.Replace("Port=6543", "Port=5432", StringComparison.OrdinalIgnoreCase);
+            }
+            else if (connectionString.Contains(":6543", StringComparison.OrdinalIgnoreCase))
+            {
+                connectionString = connectionString.Replace(":6543", ":5432", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        return connectionString;
+    }
+
     public static IServiceCollection AddPersistence(
         this IServiceCollection services,
         IConfiguration configuration,
         bool migrateOnly)
     {
-        var connectionString = configuration.GetConnectionString("DefaultConnection");
-        if (string.IsNullOrWhiteSpace(connectionString))
+        var rawConnectionString = configuration.GetConnectionString("DefaultConnection");
+        if (string.IsNullOrWhiteSpace(rawConnectionString))
         {
             throw new InvalidOperationException("ConnectionStrings:DefaultConnection must be configured.");
         }
 
-        if (migrateOnly && connectionString.Contains("Port=6543", StringComparison.OrdinalIgnoreCase))
-        {
-            connectionString = connectionString.Replace("Port=6543", "Port=5432", StringComparison.OrdinalIgnoreCase);
-        }
+        var connectionString = NormalizeConnectionString(rawConnectionString, migrateOnly);
 
         var npgsqlConnectionString = new NpgsqlConnectionStringBuilder(connectionString)
         {
@@ -257,6 +312,7 @@ public static class ServiceCollectionExtensions
             NoResetOnClose = true,
             Timeout = 5,
             CommandTimeout = 15,
+            SslMode = SslMode.Require,
         }.ConnectionString;
 
         services.AddDbContext<AppDbContext>(options =>

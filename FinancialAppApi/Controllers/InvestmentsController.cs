@@ -92,8 +92,15 @@ public sealed class InvestmentsController(
     {
         var error = ValidateAccount(dto);
         if (error is not null) return BadRequest(new { message = error });
+        if (dto.Id is Guid requestedId)
+        {
+            var existing = await context.InvestmentAccounts.AsNoTracking()
+                .FirstOrDefaultAsync(value => value.Id == requestedId, HttpContext.RequestAborted);
+            if (existing is not null) return Ok(existing);
+        }
         var account = new InvestmentAccount
         {
+            Id = dto.Id ?? Guid.NewGuid(),
             Name = dto.Name.Trim(),
             BaseCurrency = dto.BaseCurrency.Trim().ToUpperInvariant()
         };
@@ -143,7 +150,7 @@ public sealed class InvestmentsController(
     }
 
     [HttpDelete("accounts/{id:guid}")]
-    public async Task<IActionResult> DeleteAccount(Guid id)
+    public async Task<ActionResult<InvestmentAccount>> DeleteAccount(Guid id)
     {
         var account = await context.InvestmentAccounts.FindAsync([id], HttpContext.RequestAborted);
         if (account is null) return NotFound();
@@ -152,7 +159,7 @@ public sealed class InvestmentsController(
             return Conflict(new { message = "Accounts with activity cannot be deleted. Archive this account instead." });
         context.InvestmentAccounts.Remove(account);
         await context.SaveChangesAsync(HttpContext.RequestAborted);
-        return NoContent();
+        return Ok(account);
     }
 
     [HttpGet("instruments/search")]
@@ -164,7 +171,14 @@ public sealed class InvestmentsController(
     {
         var error = ValidateInstrument(dto);
         if (error is not null) return BadRequest(new { message = error });
+        if (dto.Id is Guid requestedId)
+        {
+            var existing = await context.InvestmentInstruments.AsNoTracking()
+                .FirstOrDefaultAsync(value => value.Id == requestedId, HttpContext.RequestAborted);
+            if (existing is not null) return Ok(existing);
+        }
         var instrument = MapInstrument(dto);
+        instrument.Id = dto.Id ?? Guid.NewGuid();
         context.InvestmentInstruments.Add(instrument);
         try
         {
@@ -208,7 +222,7 @@ public sealed class InvestmentsController(
     }
 
     [HttpDelete("instruments/{id:guid}")]
-    public async Task<IActionResult> DeleteInstrument(Guid id)
+    public async Task<ActionResult<InvestmentInstrument>> DeleteInstrument(Guid id)
     {
         var instrument = await context.InvestmentInstruments.FindAsync([id], HttpContext.RequestAborted);
         if (instrument is null) return NotFound();
@@ -217,21 +231,29 @@ public sealed class InvestmentsController(
             return Conflict(new { message = "Investments with activity or manual prices cannot be deleted. Archive this investment after closing all units." });
         context.InvestmentInstruments.Remove(instrument);
         await context.SaveChangesAsync(HttpContext.RequestAborted);
-        return NoContent();
+        return Ok(instrument);
     }
 
     [HttpPost("transactions")]
     public async Task<ActionResult<InvestmentTransactionDto>> CreateTransaction(InvestmentTransactionMutationDto dto)
     {
+        if (dto.Id is Guid requestedId)
+        {
+            var existing = await context.InvestmentTransactions.AsNoTracking()
+                .FirstOrDefaultAsync(value => value.Id == requestedId, HttpContext.RequestAborted);
+            if (existing is not null) return Ok(InvestmentPortfolioService.ToDto(existing));
+        }
         var result = await BuildTransactionAsync(dto, null);
         if (result.Error is not null) return BadRequest(new { message = result.Error });
         var transaction = result.Transaction!;
+        transaction.Id = dto.Id ?? Guid.NewGuid();
         context.InvestmentTransactions.Add(transaction);
         InvestmentTransaction? transferIn = null;
         if (transaction.Type == "TransferOut" && dto.DestinationAccountId is Guid destination)
         {
             transferIn = new InvestmentTransaction
             {
+                Id = dto.DestinationLegId ?? Guid.NewGuid(),
                 AccountId = destination,
                 InstrumentId = transaction.InstrumentId,
                 Type = "TransferIn",
@@ -303,7 +325,7 @@ public sealed class InvestmentsController(
             return Conflict(new { message = "The account or investment required by this activity no longer exists." });
         if (await context.InvestmentTransactions.AnyAsync(value =>
                 snapshot.Transactions.Select(item => item.Id).Contains(value.Id), HttpContext.RequestAborted))
-            return Conflict(new { message = "This activity has already been restored." });
+            return NoContent();
 
         foreach (var item in snapshot.Transactions)
         {
@@ -334,8 +356,15 @@ public sealed class InvestmentsController(
     {
         var error = await ValidateManualPriceAsync(dto);
         if (error is not null) return BadRequest(new { message = error });
+        if (dto.Id is Guid requestedId)
+        {
+            var existing = await context.ManualPriceOverrides.AsNoTracking()
+                .FirstOrDefaultAsync(value => value.Id == requestedId, HttpContext.RequestAborted);
+            if (existing is not null) return Ok(InvestmentPortfolioService.ToDto(existing));
+        }
         var manual = new ManualPriceOverride
         {
+            Id = dto.Id ?? Guid.NewGuid(),
             InstrumentId = dto.InstrumentId,
             MarketDate = dto.MarketDate,
             Price = dto.Price,
@@ -370,21 +399,29 @@ public sealed class InvestmentsController(
     }
 
     [HttpDelete("manual-prices/{id:guid}")]
-    public async Task<IActionResult> DeleteManualPrice(Guid id)
+    public async Task<ActionResult<ManualPriceDto>> DeleteManualPrice(Guid id)
     {
         var manual = await context.ManualPriceOverrides.FindAsync([id], HttpContext.RequestAborted);
         if (manual is null) return NotFound();
+        var snapshot = InvestmentPortfolioService.ToDto(manual);
         context.ManualPriceOverrides.Remove(manual);
         await context.SaveChangesAsync(HttpContext.RequestAborted);
-        return NoContent();
+        return Ok(snapshot);
     }
 
     [HttpPost("cash-flows")]
     public async Task<ActionResult<InvestmentCashFlowDto>> CreateCashFlow(CashFlowMutationDto dto)
     {
+        if (dto.Id is Guid requestedId)
+        {
+            var existing = await context.InvestmentCashFlows.AsNoTracking()
+                .FirstOrDefaultAsync(value => value.Id == requestedId, HttpContext.RequestAborted);
+            if (existing is not null) return Ok(InvestmentPortfolioService.ToDto(existing));
+        }
         var (flow, error) = await BuildCashFlowAsync(dto);
         if (error is not null) return BadRequest(new { message = error });
         context.InvestmentCashFlows.Add(flow!);
+        flow!.Id = dto.Id ?? Guid.NewGuid();
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return Created($"/api/investments/cash-flows/{flow!.Id}", InvestmentPortfolioService.ToDto(flow));
     }
@@ -409,7 +446,7 @@ public sealed class InvestmentsController(
             !await context.InvestmentAccounts.AnyAsync(value => value.Id == snapshot.AccountId, HttpContext.RequestAborted))
             return BadRequest(new { message = "The cash-flow snapshot is invalid." });
         if (await context.InvestmentCashFlows.AnyAsync(value => value.Id == snapshot.Id, HttpContext.RequestAborted))
-            return Conflict(new { message = "This cash flow has already been restored." });
+            return NoContent();
         context.InvestmentCashFlows.Add(new InvestmentCashFlow
         {
             Id = snapshot.Id,
@@ -434,7 +471,7 @@ public sealed class InvestmentsController(
             return (null, "Cash flow type must be Deposit or Withdrawal.");
         var account = await context.InvestmentAccounts.FindAsync([dto.AccountId], HttpContext.RequestAborted);
         if (account is null || account.IsArchived) return (null, "Select an active investment account.");
-        if (!ValidCurrency(dto.Currency)) return (null, "Use a three-letter cash currency.");
+        if (!ValidCurrency(dto.Currency)) return (null, "Select a supported currency from the list.");
         if (dto.Amount <= 0) return (null, "Enter a positive amount.");
         if (dto.Date == default || dto.Date > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)))
             return (null, "Enter a valid date.");
@@ -553,7 +590,7 @@ public sealed class InvestmentsController(
     private static string? ValidateAccount(AccountMutationDto dto)
     {
         if (string.IsNullOrWhiteSpace(dto.Name) || dto.Name.Trim().Length > 120) return "Account name is required.";
-        if (!ValidCurrency(dto.BaseCurrency)) return "Use a three-letter account currency.";
+        if (!ValidCurrency(dto.BaseCurrency)) return "Select a supported currency from the list.";
         return null;
     }
 
@@ -562,7 +599,7 @@ public sealed class InvestmentsController(
         if (string.IsNullOrWhiteSpace(dto.Symbol) || dto.Symbol.Trim().Length > 32) return "Symbol is required.";
         if (string.IsNullOrWhiteSpace(dto.Name) || dto.Name.Trim().Length > 200) return "Investment name is required.";
         if (!InvestmentKinds.InstrumentTypes.Contains(dto.Type)) return "Type must be Stock or ETF.";
-        if (!ValidCurrency(dto.Currency)) return "Use a three-letter investment currency.";
+        if (!ValidCurrency(dto.Currency)) return "Select a supported currency from the list.";
         if (!dto.IsCustom && string.IsNullOrWhiteSpace(dto.ProviderSymbol)) return "Provider-backed investments require a provider symbol.";
         return null;
     }
@@ -632,7 +669,7 @@ public sealed class InvestmentsController(
     private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
 
-public sealed record AccountMutationDto(string Name, string BaseCurrency, bool IsArchived = false);
+public sealed record AccountMutationDto(string Name, string BaseCurrency, bool IsArchived = false, Guid? Id = null);
 
 public sealed record InstrumentMutationDto(
     string Symbol,
@@ -645,7 +682,8 @@ public sealed record InstrumentMutationDto(
     string? ProviderSymbol,
     string? ProviderMic,
     bool IsCustom,
-    bool IsArchived = false);
+    bool IsArchived = false,
+    Guid? Id = null);
 
 public sealed record InvestmentTransactionMutationDto(
     Guid AccountId,
@@ -660,13 +698,16 @@ public sealed record InvestmentTransactionMutationDto(
     decimal? TradeFxRate,
     string? Notes,
     Guid? LinkedTransferId,
-    Guid? DestinationAccountId);
+    Guid? DestinationAccountId,
+    Guid? Id = null,
+    Guid? DestinationLegId = null);
 
 public sealed record ManualPriceMutationDto(
     Guid InstrumentId,
     DateOnly MarketDate,
     decimal Price,
-    decimal? FxRate);
+    decimal? FxRate,
+    Guid? Id = null);
 
 public sealed record CashFlowMutationDto(
     Guid AccountId,
@@ -674,7 +715,8 @@ public sealed record CashFlowMutationDto(
     string Type,
     decimal Amount,
     DateOnly Date,
-    string? Notes);
+    string? Notes,
+    Guid? Id = null);
 
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
 public sealed record DeletedTransactionsSnapshot(IReadOnlyList<InvestmentTransactionDto> Transactions);
