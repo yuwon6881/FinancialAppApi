@@ -34,6 +34,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<InvestmentInstrument> InvestmentInstruments => Set<InvestmentInstrument>();
     public DbSet<InvestmentTransaction> InvestmentTransactions => Set<InvestmentTransaction>();
     public DbSet<InvestmentCashFlow> InvestmentCashFlows => Set<InvestmentCashFlow>();
+    public DbSet<InvestmentPlan> InvestmentPlans => Set<InvestmentPlan>();
     public DbSet<MarketPriceBar> MarketPriceBars => Set<MarketPriceBar>();
     public DbSet<FxRateBar> FxRateBars => Set<FxRateBar>();
     public DbSet<ManualPriceOverride> ManualPriceOverrides => Set<ManualPriceOverride>();
@@ -229,6 +230,30 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(e => new { e.UserId, e.Symbol, e.ProviderMic }).IsUnique();
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
+            entity.ToTable(t => t.HasCheckConstraint(
+                "ck_investmentinstruments_allocationsleeve",
+                "\"AllocationSleeve\" IS NULL OR \"AllocationSleeve\" IN ('USEquity', 'InternationalExUS', 'Bonds')"));
+        });
+
+        modelBuilder.Entity<InvestmentPlan>(entity =>
+        {
+            entity.Property(e => e.UsEquityTarget).HasColumnType("numeric(5,2)");
+            entity.Property(e => e.InternationalExUsTarget).HasColumnType("numeric(5,2)");
+            entity.Property(e => e.BondsTarget).HasColumnType("numeric(5,2)");
+            entity.Property(e => e.WatchDrift).HasColumnType("numeric(5,2)");
+            entity.Property(e => e.AlertDrift).HasColumnType("numeric(5,2)");
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => e.UserId).IsUnique();
+            entity.ToTable(t =>
+            {
+                t.HasCheckConstraint("ck_investmentplans_targets_positive",
+                    "\"UsEquityTarget\" > 0 AND \"InternationalExUsTarget\" > 0 AND \"BondsTarget\" > 0");
+                t.HasCheckConstraint("ck_investmentplans_targets_total",
+                    "\"UsEquityTarget\" + \"InternationalExUsTarget\" + \"BondsTarget\" = 100");
+                t.HasCheckConstraint("ck_investmentplans_drift_bands",
+                    "\"WatchDrift\" > 0 AND \"AlertDrift\" > \"WatchDrift\" AND \"AlertDrift\" <= 100");
+            });
         });
 
         modelBuilder.Entity<InvestmentTransaction>(entity =>
@@ -329,6 +354,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentInstrument>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentTransaction>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentCashFlow>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<InvestmentPlan>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<ManualPriceOverride>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<MarketDataRefreshJob>(), applyQueryFilter: true);
     }

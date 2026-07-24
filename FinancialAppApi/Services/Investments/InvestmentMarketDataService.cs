@@ -125,13 +125,24 @@ public sealed class InvestmentMarketDataService(
         }
     }
 
-    public async Task<MarketRefreshResponse> RefreshAsync(CancellationToken cancellationToken)
+    public Task<MarketRefreshResponse> RefreshAsync(CancellationToken cancellationToken)
+        => RefreshAsync(false, cancellationToken);
+
+    public async Task<MarketRefreshResponse> RefreshAsync(
+        bool automatic,
+        CancellationToken cancellationToken)
     {
         if (!provider.IsConfigured)
         {
             return new MarketRefreshResponse(
                 null, "ConfigurationRequired", 0, 0, null, true, [],
                 "Market refresh is not configured. Manual prices remain available.");
+        }
+
+        if (automatic && !await AutomaticRefreshRequiredAsync(cancellationToken))
+        {
+            return new MarketRefreshResponse(
+                null, "Fresh", 0, 0, null, true, [], "Market data is less than one hour old.");
         }
 
         var appCurrency = (await context.FinancialSettings.AsNoTracking()
@@ -254,6 +265,48 @@ public sealed class InvestmentMarketDataService(
         }
         await context.SaveChangesAsync(cancellationToken);
         return ToResponse(activeJob, warnings, items.Count > 0 ? SecondsUntilNextMinute() : null);
+    }
+
+    internal async Task<bool> AutomaticRefreshRequiredAsync(CancellationToken cancellationToken)
+    {
+        var appCurrency = (await context.FinancialSettings.AsNoTracking()
+                .Select(value => value.Currency)
+                .FirstOrDefaultAsync(cancellationToken) ?? "USD")
+            .ToUpperInvariant();
+        var instrumentIds = await context.InvestmentTransactions.AsNoTracking()
+            .Select(value => value.InstrumentId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        var instruments = await context.InvestmentInstruments.AsNoTracking()
+            .Where(value => instrumentIds.Contains(value.Id) && !value.IsArchived)
+            .ToListAsync(cancellationToken);
+        var cutoff = DateTime.UtcNow.AddMinutes(-InvestmentAllocationService.AutomaticRefreshMinutes);
+        foreach (var instrument in instruments.Where(value =>
+                     !value.IsCustom && !string.IsNullOrWhiteSpace(value.ProviderSymbol)))
+        {
+            var fetchedAt = await context.MarketPriceBars.AsNoTracking()
+                .Where(value => value.Provider == "twelvedata" &&
+                                value.Symbol == instrument.ProviderSymbol &&
+                                value.Mic == (instrument.ProviderMic ?? ""))
+                .MaxAsync(value => (DateTime?)value.FetchedAt, cancellationToken);
+            if (fetchedAt is null || fetchedAt < cutoff) return true;
+        }
+
+        var currencies = instruments.Select(value => value.Currency)
+            .Concat(await context.InvestmentCashFlows.AsNoTracking()
+                .Select(value => value.Currency).ToListAsync(cancellationToken))
+            .Where(value => !value.Equals(appCurrency, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        foreach (var currency in currencies)
+        {
+            var fetchedAt = await context.FxRateBars.AsNoTracking()
+                .Where(value => value.Provider == "twelvedata" &&
+                                value.BaseCurrency == currency &&
+                                value.QuoteCurrency == appCurrency)
+                .MaxAsync(value => (DateTime?)value.FetchedAt, cancellationToken);
+            if (fetchedAt is null || fetchedAt < cutoff) return true;
+        }
+        return false;
     }
 
     private async Task RefreshInstrumentAsync(

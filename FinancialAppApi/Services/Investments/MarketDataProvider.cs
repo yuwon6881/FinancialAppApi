@@ -88,8 +88,12 @@ public sealed class TwelveDataMarketDataProvider(
         {
             var type = ReadString(item, "instrument_type");
             if (type.Equals("Common Stock", StringComparison.OrdinalIgnoreCase)) type = "Stock";
+            if (type.Equals("Mutual Fund", StringComparison.OrdinalIgnoreCase) ||
+                type.Equals("MutualFund", StringComparison.OrdinalIgnoreCase))
+                type = "MutualFund";
             if (!type.Equals("Stock", StringComparison.OrdinalIgnoreCase) &&
-                !type.Equals("ETF", StringComparison.OrdinalIgnoreCase))
+                !type.Equals("ETF", StringComparison.OrdinalIgnoreCase) &&
+                !type.Equals("MutualFund", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -100,7 +104,9 @@ public sealed class TwelveDataMarketDataProvider(
             results.Add(new InstrumentSearchResult(
                 symbol,
                 ReadString(item, "instrument_name", symbol),
-                type.Equals("ETF", StringComparison.OrdinalIgnoreCase) ? "ETF" : "Stock",
+                type.Equals("ETF", StringComparison.OrdinalIgnoreCase)
+                    ? "ETF"
+                    : type.Equals("MutualFund", StringComparison.OrdinalIgnoreCase) ? "MutualFund" : "Stock",
                 ReadNullableString(item, "exchange"),
                 ReadNullableString(item, "mic_code"),
                 ReadNullableString(item, "country"),

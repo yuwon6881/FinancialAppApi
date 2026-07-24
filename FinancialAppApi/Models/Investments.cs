@@ -6,7 +6,12 @@ public static class InvestmentKinds
 {
     public static readonly HashSet<string> InstrumentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Stock", "ETF"
+        "Stock", "ETF", "MutualFund"
+    };
+
+    public static readonly HashSet<string> AllocationSleeves = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "USEquity", "InternationalExUS", "Bonds"
     };
 
     public static readonly HashSet<string> TransactionTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -47,6 +52,20 @@ public sealed class InvestmentInstrument : IUserOwnedEntity
     [MaxLength(8)] public string? ProviderMic { get; set; }
     public bool IsCustom { get; set; }
     public bool IsArchived { get; set; }
+    [MaxLength(32)] public string? AllocationSleeve { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class InvestmentPlan : IUserOwnedEntity
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    [Required] public string UserId { get; set; } = string.Empty;
+    public decimal UsEquityTarget { get; set; } = 66;
+    public decimal InternationalExUsTarget { get; set; } = 10;
+    public decimal BondsTarget { get; set; } = 24;
+    public decimal WatchDrift { get; set; } = 3;
+    public decimal AlertDrift { get; set; } = 5;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }

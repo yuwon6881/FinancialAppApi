@@ -490,8 +490,9 @@ public sealed class InvestmentsController(
     }
 
     [HttpPost("market-data/refresh")]
-    public async Task<ActionResult<MarketRefreshResponse>> RefreshMarketData()
-        => Ok(await marketDataService.RefreshAsync(HttpContext.RequestAborted));
+    public async Task<ActionResult<MarketRefreshResponse>> RefreshMarketData(
+        [FromQuery] bool automatic = false)
+        => Ok(await marketDataService.RefreshAsync(automatic, HttpContext.RequestAborted));
 
     private async Task<(InvestmentCashFlow? Flow, string? Error)> BuildCashFlowAsync(CashFlowMutationDto dto)
     {
@@ -664,7 +665,7 @@ public sealed class InvestmentsController(
     {
         if (string.IsNullOrWhiteSpace(dto.Symbol) || dto.Symbol.Trim().Length > 32) return "Symbol is required.";
         if (string.IsNullOrWhiteSpace(dto.Name) || dto.Name.Trim().Length > 200) return "Investment name is required.";
-        if (!InvestmentKinds.InstrumentTypes.Contains(dto.Type)) return "Type must be Stock or ETF.";
+        if (!InvestmentKinds.InstrumentTypes.Contains(dto.Type)) return "Type must be Stock, ETF, or Mutual Fund.";
         if (!ValidCurrency(dto.Currency)) return "Select a supported currency from the list.";
         if (!dto.IsCustom && string.IsNullOrWhiteSpace(dto.ProviderSymbol)) return "Provider-backed investments require a provider symbol.";
         return null;
@@ -732,7 +733,9 @@ public sealed class InvestmentsController(
     {
         value.Symbol = dto.Symbol.Trim().ToUpperInvariant();
         value.Name = dto.Name.Trim();
-        value.Type = dto.Type.Equals("ETF", StringComparison.OrdinalIgnoreCase) ? "ETF" : "Stock";
+        value.Type = dto.Type.Equals("ETF", StringComparison.OrdinalIgnoreCase)
+            ? "ETF"
+            : dto.Type.Equals("MutualFund", StringComparison.OrdinalIgnoreCase) ? "MutualFund" : "Stock";
         value.Exchange = Clean(dto.Exchange);
         value.Mic = Clean(dto.Mic)?.ToUpperInvariant();
         value.Country = Clean(dto.Country);
