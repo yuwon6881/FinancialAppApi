@@ -102,7 +102,6 @@ public class InvestmentSnapshotValidationTests
             0,
             0,
             1,
-            null,
             linkedTransferId,
             DateTime.UtcNow);
 }

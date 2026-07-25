@@ -282,13 +282,14 @@ public sealed class InvestmentsController(
                 TradeDate = transaction.TradeDate,
                 Units = transaction.Units,
                 LinkedTransferId = transaction.Id,
-                Notes = transaction.Notes,
                 Instrument = transaction.Instrument
             };
             context.InvestmentTransactions.Add(transferIn);
         }
         var validation = await ValidateHistoryAsync(null);
         if (validation is not null) return BadRequest(new { message = validation });
+        var cashValidation = await ValidateCashHistoryAsync();
+        if (cashValidation is not null) return BadRequest(new { message = cashValidation });
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return Created(
             $"/api/investments/transactions/{transaction.Id}",
@@ -309,6 +310,8 @@ public sealed class InvestmentsController(
         if (result.Error is not null) return BadRequest(new { message = result.Error });
         var validation = await ValidateHistoryAsync(null);
         if (validation is not null) return BadRequest(new { message = validation });
+        var cashValidation = await ValidateCashHistoryAsync();
+        if (cashValidation is not null) return BadRequest(new { message = cashValidation });
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return NoContent();
     }
@@ -378,7 +381,6 @@ public sealed class InvestmentsController(
                 Fees = item.Fees,
                 Taxes = item.Taxes,
                 TradeFxRate = item.TradeFxRate,
-                Notes = item.Notes,
                 LinkedTransferId = item.LinkedTransferId,
                 CreatedAt = item.CreatedAt
             };
@@ -473,6 +475,8 @@ public sealed class InvestmentsController(
         if (error is not null) return BadRequest(new { message = error });
         context.InvestmentCashFlows.Add(flow!);
         flow!.Id = dto.Id ?? Guid.NewGuid();
+        var validation = await ValidateCashHistoryAsync();
+        if (validation is not null) return BadRequest(new { message = validation });
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return Created($"/api/investments/cash-flows/{flow!.Id}", InvestmentPortfolioService.ToDto(flow));
     }
@@ -485,6 +489,8 @@ public sealed class InvestmentsController(
         if (existing is null) return NotFound();
         var (flow, error) = await BuildCashFlowAsync(dto, existing);
         if (error is not null) return BadRequest(new { message = error });
+        var validation = await ValidateCashHistoryAsync();
+        if (validation is not null) return BadRequest(new { message = validation });
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return Ok(InvestmentPortfolioService.ToDto(flow!));
     }
@@ -496,6 +502,12 @@ public sealed class InvestmentsController(
         if (flow is null) return NotFound();
         var snapshot = InvestmentPortfolioService.ToDto(flow);
         context.InvestmentCashFlows.Remove(flow);
+        var validation = await ValidateCashHistoryAsync();
+        if (validation is not null)
+        {
+            context.ChangeTracker.Clear();
+            return Conflict(new { message = $"This cash movement cannot be deleted because later activity would become invalid: {validation}" });
+        }
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return Ok(snapshot);
     }
@@ -513,15 +525,12 @@ public sealed class InvestmentsController(
                 snapshot.ToCurrency is null ||
                 !CurrencyCatalog.Contains(snapshot.ToCurrency) ||
                 snapshot.ToCurrency.Equals(snapshot.Currency, StringComparison.OrdinalIgnoreCase) ||
-                snapshot.ToAmount is not > 0 ||
-                snapshot.FxRate is not > 0)) ||
+                snapshot.ToAmount is not > 0)) ||
             (!restoringConversion && (
                 snapshot.ToCurrency is not null ||
-                snapshot.ToAmount is not null ||
-                snapshot.FxRate is not null)) ||
+                snapshot.ToAmount is not null)) ||
             snapshot.Date == default ||
             snapshot.Date > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)) ||
-            snapshot.Notes?.Length > 1000 ||
             !await context.InvestmentAccounts.AnyAsync(value => value.Id == snapshot.AccountId, HttpContext.RequestAborted))
             return BadRequest(new { message = "The cash-flow snapshot is invalid." });
         if (await context.InvestmentCashFlows.AnyAsync(value => value.Id == snapshot.Id, HttpContext.RequestAborted))
@@ -539,10 +548,10 @@ public sealed class InvestmentsController(
             Amount = snapshot.Amount,
             ToCurrency = snapshot.ToCurrency?.ToUpperInvariant(),
             ToAmount = snapshot.ToAmount,
-            FxRate = snapshot.FxRate,
-            Date = snapshot.Date,
-            Notes = snapshot.Notes
+            Date = snapshot.Date
         });
+        var validation = await ValidateCashHistoryAsync();
+        if (validation is not null) return Conflict(new { message = validation });
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return NoContent();
     }
@@ -562,7 +571,6 @@ public sealed class InvestmentsController(
         if (account is null || account.IsArchived) return (null, "Select an active investment account.");
         if (!ValidCurrency(dto.Currency)) return (null, "Select a supported currency from the list.");
         if (dto.Amount <= 0) return (null, "Enter a positive amount.");
-        if (dto.Notes?.Length > 1000) return (null, "Notes cannot exceed 1000 characters.");
         if (dto.Date == default || dto.Date > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)))
             return (null, "Enter a valid date.");
 
@@ -573,7 +581,6 @@ public sealed class InvestmentsController(
         var from = dto.Currency.Trim().ToUpperInvariant();
         string? toCurrency = null;
         decimal? toAmount = null;
-        decimal? fxRate = null;
         // Store the net effect signed: withdrawals and the sold leg of a
         // conversion reduce the balance.
         var signed = type is "Deposit" ? dto.Amount : -dto.Amount;
@@ -588,15 +595,6 @@ public sealed class InvestmentsController(
             if (dto.ToAmount is not > 0)
                 return (null, "Enter a positive converted amount.");
             toAmount = dto.ToAmount.Value;
-            var derived = toAmount.Value / dto.Amount;
-            if (dto.FxRate is not null)
-            {
-                if (dto.FxRate is not > 0) return (null, "Enter a positive FX rate.");
-                // Never store a rate that contradicts the two amounts.
-                if (Math.Abs(dto.FxRate.Value - derived) > derived * 0.001m)
-                    return (null, "The FX rate does not match the amounts entered.");
-            }
-            fxRate = dto.FxRate ?? derived;
         }
 
         var flow = existing ?? new InvestmentCashFlow();
@@ -606,9 +604,7 @@ public sealed class InvestmentsController(
         flow.Amount = signed;
         flow.ToCurrency = toCurrency;
         flow.ToAmount = toAmount;
-        flow.FxRate = fxRate;
         flow.Date = dto.Date;
-        flow.Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
         if (existing is not null) flow.UpdatedAt = DateTime.UtcNow;
         return (flow, null);
     }
@@ -627,8 +623,6 @@ public sealed class InvestmentsController(
             return (null, "Enter a valid trade date.");
         if (dto.Fees < 0 || dto.Taxes < 0 || dto.TradeFxRate is <= 0)
             return (null, "Fees and taxes cannot be negative, and FX rates must be positive.");
-        if (dto.Notes?.Length > 1000)
-            return (null, "Notes cannot exceed 1000 characters.");
         if (dto.DestinationAccountId == dto.AccountId)
             return (null, "Transfer destination must be a different account.");
         if (dto.DestinationAccountId is Guid destination &&
@@ -659,11 +653,6 @@ public sealed class InvestmentsController(
             return (null, "Enter a positive gross dividend.");
         if (dto.Type == "FeeTax" && (cash ?? 0) + dto.Fees + dto.Taxes <= 0)
             return (null, "Enter a positive fee or tax charge.");
-        if (dto.Type == "TransferOut" && dto.DestinationAccountId is null && !string.IsNullOrWhiteSpace(dto.Notes))
-        {
-            // External transfers are valid; notes are simply retained.
-        }
-
         var value = existing ?? new InvestmentTransaction();
         value.AccountId = dto.AccountId;
         value.InstrumentId = dto.InstrumentId;
@@ -676,7 +665,6 @@ public sealed class InvestmentsController(
         value.Fees = dto.Fees;
         value.Taxes = dto.Taxes;
         value.TradeFxRate = instrument.Currency == (await GetAppCurrencyAsync()) ? 1 : dto.TradeFxRate;
-        value.Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
         value.LinkedTransferId = dto.LinkedTransferId;
         value.UpdatedAt = DateTime.UtcNow;
         return (value, null);
@@ -690,8 +678,7 @@ public sealed class InvestmentsController(
                 item.TradeDate > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)) ||
                 item.Fees < 0 ||
                 item.Taxes < 0 ||
-                item.TradeFxRate is <= 0 ||
-                item.Notes?.Length > 1000))
+                item.TradeFxRate is <= 0))
         {
             return "The activity snapshot contains invalid values.";
         }
@@ -739,6 +726,57 @@ public sealed class InvestmentsController(
         {
             return exception.Message;
         }
+    }
+
+    private async Task<string?> ValidateCashHistoryAsync()
+    {
+        var transactions = await context.InvestmentTransactions
+            .Include(value => value.Instrument)
+            .ToListAsync(HttpContext.RequestAborted);
+        var flows = await context.InvestmentCashFlows.ToListAsync(HttpContext.RequestAborted);
+
+        foreach (var entry in context.ChangeTracker.Entries<InvestmentTransaction>()
+                     .Where(entry => entry.State == EntityState.Added)
+                     .Select(entry => entry.Entity)
+                     .Where(value => transactions.All(existing => existing.Id != value.Id)))
+            transactions.Add(entry);
+        foreach (var entry in context.ChangeTracker.Entries<InvestmentCashFlow>()
+                     .Where(entry => entry.State == EntityState.Added)
+                     .Select(entry => entry.Entity)
+                     .Where(value => flows.All(existing => existing.Id != value.Id)))
+            flows.Add(entry);
+
+        var events = new List<(DateOnly Date, Guid Id, Guid AccountId, string Currency, decimal Amount)>();
+        foreach (var flow in flows)
+        {
+            events.Add((flow.Date, flow.Id, flow.AccountId, flow.Currency, flow.Amount));
+            if (InvestmentPortfolioService.IsConversion(flow) && flow.ToCurrency is not null && flow.ToAmount is not null)
+                events.Add((flow.Date, flow.Id, flow.AccountId, flow.ToCurrency, flow.ToAmount.Value));
+        }
+        foreach (var transaction in transactions)
+        {
+            var currency = transaction.Instrument.Currency;
+            var feesAndTaxes = transaction.Fees + transaction.Taxes;
+            var amount = transaction.Type switch
+            {
+                "Buy" => -((transaction.CashAmount ?? 0) + feesAndTaxes),
+                "Sell" or "Dividend" => (transaction.CashAmount ?? 0) - feesAndTaxes,
+                "FeeTax" => -((transaction.CashAmount ?? 0) + feesAndTaxes),
+                _ => 0
+            };
+            if (amount != 0) events.Add((transaction.TradeDate, transaction.Id, transaction.AccountId, currency, amount));
+        }
+
+        var balances = new Dictionary<(Guid AccountId, string Currency), decimal>();
+        foreach (var cashEvent in events.OrderBy(value => value.Date).ThenBy(value => value.Id))
+        {
+            var key = (cashEvent.AccountId, cashEvent.Currency.ToUpperInvariant());
+            var balance = balances.GetValueOrDefault(key) + cashEvent.Amount;
+            if (balance < 0)
+                return $"Insufficient {key.Item2} cash in this account on {cashEvent.Date:yyyy-MM-dd}. Deposit or convert funds before recording this activity.";
+            balances[key] = balance;
+        }
+        return null;
     }
 
     private async Task<string> GetAppCurrencyAsync()
@@ -891,7 +929,6 @@ public sealed record InvestmentTransactionMutationDto(
     decimal Fees,
     decimal Taxes,
     decimal? TradeFxRate,
-    string? Notes,
     Guid? LinkedTransferId,
     Guid? DestinationAccountId,
     Guid? Id = null,
@@ -910,11 +947,9 @@ public sealed record CashFlowMutationDto(
     string Type,
     decimal Amount,
     DateOnly Date,
-    string? Notes,
     Guid? Id = null,
     string? ToCurrency = null,
-    decimal? ToAmount = null,
-    decimal? FxRate = null);
+    decimal? ToAmount = null);
 
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
 public sealed record DeletedTransactionsSnapshot(IReadOnlyList<InvestmentTransactionDto> Transactions);

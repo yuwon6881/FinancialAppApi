@@ -34,10 +34,8 @@ public sealed record InvestmentCashFlowDto(
     string Type,
     decimal Amount,
     DateOnly Date,
-    string? Notes,
     string? ToCurrency = null,
-    decimal? ToAmount = null,
-    decimal? FxRate = null);
+    decimal? ToAmount = null);
 
 public sealed record InvestmentHoldingDto(
     Guid AccountId,
@@ -130,7 +128,6 @@ public sealed record InvestmentTransactionDto(
     decimal Fees,
     decimal Taxes,
     decimal? TradeFxRate,
-    string? Notes,
     Guid? LinkedTransferId,
     DateTime CreatedAt,
     bool IsPairedTransfer = false);
@@ -663,15 +660,15 @@ public sealed class InvestmentPortfolioService(
     public static InvestmentTransactionDto ToDto(InvestmentTransaction value, bool isPairedTransfer = false) => new(
         value.Id, value.AccountId, value.InstrumentId, value.Type, value.TradeDate,
         value.Units, value.UnitPrice, value.CashAmount, value.Fees, value.Taxes,
-        value.TradeFxRate, value.Notes, value.LinkedTransferId, value.CreatedAt,
+        value.TradeFxRate, value.LinkedTransferId, value.CreatedAt,
         isPairedTransfer || value.LinkedTransferId is not null);
 
     public static ManualPriceDto ToDto(ManualPriceOverride value) => new(
         value.Id, value.InstrumentId, value.MarketDate, value.Price, value.FxRate);
 
     public static InvestmentCashFlowDto ToDto(InvestmentCashFlow value) => new(
-        value.Id, value.AccountId, value.Currency, value.Type, value.Amount, value.Date, value.Notes,
-        value.ToCurrency, value.ToAmount, value.FxRate);
+        value.Id, value.AccountId, value.Currency, value.Type, value.Amount, value.Date,
+        value.ToCurrency, value.ToAmount);
 
     internal static bool IsConversion(InvestmentCashFlow value)
         => value.Type.Equals("Conversion", StringComparison.OrdinalIgnoreCase);

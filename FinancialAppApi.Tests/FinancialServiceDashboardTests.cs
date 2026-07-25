@@ -287,6 +287,35 @@ public class FinancialServiceDashboardTests
     }
 
     [Fact]
+    public async Task GetDashboardDataAsync_KeepsPaidOccurrenceAfterSubscriptionIsDeleted()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "deleted-streaming-jul-payment",
+            Date = new DateTime(2026, 7, 10),
+            Description = "Streaming service",
+            Amount = -19m,
+            Category = "Entertainment",
+            LedgerCategory = "Essentials",
+            RecurringPaymentId = "deleted-streaming",
+            RecurringOccurrenceDate = new DateOnly(2026, 7, 10)
+        });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context).GetDashboardDataAsync("Jul", 2026);
+        var occurrence = Assert.Single(GetObjects(response, "activeRecurringPayments"));
+        var occurrenceType = occurrence.GetType();
+
+        Assert.Equal("deleted-streaming", occurrenceType.GetProperty("recurringPaymentId")!.GetValue(occurrence));
+        Assert.Equal("Streaming service", occurrenceType.GetProperty("name")!.GetValue(occurrence));
+        Assert.Equal("Paid", occurrenceType.GetProperty("status")!.GetValue(occurrence));
+        Assert.Equal("2026-07-10", occurrenceType.GetProperty("dueDate")!.GetValue(occurrence));
+        Assert.Equal(19m, ObfuscationHelper.Deobfuscate((string)occurrenceType.GetProperty("amount")!.GetValue(occurrence)!));
+    }
+
+    [Fact]
     public async Task GetDashboardDataAsync_PayEarlyForNextCycleDoesNotOverturnThisCyclesDiscard()
     {
         await using var context = TestHelpers.NewInMemoryContext();

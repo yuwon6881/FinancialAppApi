@@ -86,7 +86,6 @@ public sealed class InvestmentTransaction : IUserOwnedEntity
     public decimal Fees { get; set; }
     public decimal Taxes { get; set; }
     public decimal? TradeFxRate { get; set; }
-    [MaxLength(1000)] public string? Notes { get; set; }
     public Guid? LinkedTransferId { get; set; }
     public InvestmentTransaction? LinkedTransfer { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
@@ -101,10 +100,11 @@ public sealed class InvestmentTransaction : IUserOwnedEntity
 //
 // A "Conversion" is a currency exchange inside the same account and uses both
 // legs: Currency/Amount is the debited side (negative, like a withdrawal) and
-// ToCurrency/ToAmount is the credited side (positive). FxRate is ToAmount over
-// the absolute Amount, stored for display and audit. Deposits and withdrawals
-// leave all three conversion columns null. Because a conversion only moves
-// value between currencies, it must never count as a net deposit.
+// ToCurrency/ToAmount is the credited side (positive). The rate is always
+// derivable from ToAmount over the absolute Amount, so it is not stored
+// separately. Deposits and withdrawals leave both conversion columns null.
+// Because a conversion only moves value between currencies, it must never
+// count as a net deposit.
 public sealed class InvestmentCashFlow : IUserOwnedEntity
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -116,9 +116,7 @@ public sealed class InvestmentCashFlow : IUserOwnedEntity
     public decimal Amount { get; set; }
     [MaxLength(3)] public string? ToCurrency { get; set; }
     public decimal? ToAmount { get; set; }
-    public decimal? FxRate { get; set; }
     public DateOnly Date { get; set; }
-    [MaxLength(1000)] public string? Notes { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }

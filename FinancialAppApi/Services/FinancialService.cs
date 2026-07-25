@@ -574,6 +574,35 @@ public class FinancialService
             }
         }
 
+        // A recurring transaction deliberately keeps its denormalized payment id after the
+        // subscription template is deleted. It is therefore the only source of truth for that
+        // paid historical occurrence and must still appear in the selected-cycle report.
+        var existingPaymentIds = allRecurring.Select(payment => payment.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var paidTx in recurringMatchTxs
+                     .Where(transaction => transaction.RecurringPaymentId != null)
+                     .Where(transaction => !existingPaymentIds.Contains(transaction.RecurringPaymentId!))
+                     .Where(transaction => !string.Equals(transaction.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(transaction => transaction.RecurringOccurrenceDate ?? TransactionDate.ToDateOnly(transaction.Date))
+                     .ThenBy(transaction => transaction.Date)
+                     .ThenBy(transaction => transaction.Id, StringComparer.Ordinal))
+        {
+            var occurrenceDate = paidTx.RecurringOccurrenceDate ?? TransactionDate.ToDateOnly(paidTx.Date);
+            activeRecurringList.Add(new
+            {
+                id = $"{paidTx.RecurringPaymentId}-{occurrenceDate:yyyy-MM-dd}-{paidTx.Id}",
+                recurringPaymentId = paidTx.RecurringPaymentId,
+                name = paidTx.Description,
+                amount = ObfuscationHelper.Obfuscate(Math.Abs(paidTx.Amount)),
+                category = paidTx.Category,
+                ledgerCategory = paidTx.LedgerCategory,
+                dueDate = occurrenceDate.ToString("yyyy-MM-dd"),
+                isPaid = true,
+                isDiscarded = false,
+                status = "Paid",
+                paidDate = TransactionDate.ToDateOnly(paidTx.Date).ToString("yyyy-MM-dd")
+            });
+        }
+
         return activeRecurringList;
     }
 
