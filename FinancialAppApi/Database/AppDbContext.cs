@@ -264,7 +264,6 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.CashAmount).HasColumnType("numeric(28,10)");
             entity.Property(e => e.Fees).HasColumnType("numeric(28,10)");
             entity.Property(e => e.Taxes).HasColumnType("numeric(28,10)");
-            entity.Property(e => e.TradeFxRate).HasColumnType("numeric(28,10)");
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
             entity.HasIndex(e => new { e.UserId, e.AccountId, e.InstrumentId, e.TradeDate });
@@ -303,7 +302,6 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.Property(e => e.MarketDate).HasColumnType("date");
             entity.Property(e => e.Price).HasColumnType("numeric(28,10)");
-            entity.Property(e => e.FxRate).HasColumnType("numeric(28,10)");
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
             entity.HasIndex(e => new { e.UserId, e.InstrumentId, e.MarketDate }).IsUnique();

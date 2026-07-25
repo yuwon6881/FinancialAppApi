@@ -380,7 +380,6 @@ public sealed class InvestmentsController(
                 CashAmount = item.CashAmount,
                 Fees = item.Fees,
                 Taxes = item.Taxes,
-                TradeFxRate = item.TradeFxRate,
                 LinkedTransferId = item.LinkedTransferId,
                 CreatedAt = item.CreatedAt
             };
@@ -413,8 +412,7 @@ public sealed class InvestmentsController(
             Id = dto.Id ?? Guid.NewGuid(),
             InstrumentId = dto.InstrumentId,
             MarketDate = dto.MarketDate,
-            Price = dto.Price,
-            FxRate = dto.FxRate
+            Price = dto.Price
         };
         context.ManualPriceOverrides.Add(manual);
         try
@@ -438,7 +436,6 @@ public sealed class InvestmentsController(
         manual.InstrumentId = dto.InstrumentId;
         manual.MarketDate = dto.MarketDate;
         manual.Price = dto.Price;
-        manual.FxRate = dto.FxRate;
         manual.UpdatedAt = DateTime.UtcNow;
         try
         {
@@ -621,8 +618,8 @@ public sealed class InvestmentsController(
         if (instrument is null || instrument.IsArchived) return (null, "Select an active investment.");
         if (dto.TradeDate == default || dto.TradeDate > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)))
             return (null, "Enter a valid trade date.");
-        if (dto.Fees < 0 || dto.Taxes < 0 || dto.TradeFxRate is <= 0)
-            return (null, "Fees and taxes cannot be negative, and FX rates must be positive.");
+        if (dto.Fees < 0 || dto.Taxes < 0)
+            return (null, "Fees and taxes cannot be negative.");
         if (dto.DestinationAccountId == dto.AccountId)
             return (null, "Transfer destination must be a different account.");
         if (dto.DestinationAccountId is Guid destination &&
@@ -664,7 +661,6 @@ public sealed class InvestmentsController(
         value.CashAmount = cash;
         value.Fees = dto.Fees;
         value.Taxes = dto.Taxes;
-        value.TradeFxRate = instrument.Currency == (await GetAppCurrencyAsync()) ? 1 : dto.TradeFxRate;
         value.LinkedTransferId = dto.LinkedTransferId;
         value.UpdatedAt = DateTime.UtcNow;
         return (value, null);
@@ -677,8 +673,7 @@ public sealed class InvestmentsController(
                 item.TradeDate == default ||
                 item.TradeDate > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)) ||
                 item.Fees < 0 ||
-                item.Taxes < 0 ||
-                item.TradeFxRate is <= 0))
+                item.Taxes < 0))
         {
             return "The activity snapshot contains invalid values.";
         }
@@ -792,7 +787,7 @@ public sealed class InvestmentsController(
             return "Select an active investment.";
         if (dto.MarketDate == default || dto.MarketDate > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)))
             return "Enter a valid market date.";
-        if (dto.Price <= 0 || dto.FxRate is <= 0) return "Prices and FX rates must be positive.";
+        if (dto.Price <= 0) return "Prices must be positive.";
         return null;
     }
 
@@ -928,7 +923,6 @@ public sealed record InvestmentTransactionMutationDto(
     decimal? CashAmount,
     decimal Fees,
     decimal Taxes,
-    decimal? TradeFxRate,
     Guid? LinkedTransferId,
     Guid? DestinationAccountId,
     Guid? Id = null,
@@ -938,7 +932,6 @@ public sealed record ManualPriceMutationDto(
     Guid InstrumentId,
     DateOnly MarketDate,
     decimal Price,
-    decimal? FxRate,
     Guid? Id = null);
 
 public sealed record CashFlowMutationDto(

@@ -85,7 +85,6 @@ public sealed class InvestmentTransaction : IUserOwnedEntity
     public decimal? CashAmount { get; set; }
     public decimal Fees { get; set; }
     public decimal Taxes { get; set; }
-    public decimal? TradeFxRate { get; set; }
     public Guid? LinkedTransferId { get; set; }
     public InvestmentTransaction? LinkedTransfer { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
@@ -151,7 +150,6 @@ public sealed class ManualPriceOverride : IUserOwnedEntity
     public InvestmentInstrument Instrument { get; set; } = null!;
     public DateOnly MarketDate { get; set; }
     public decimal Price { get; set; }
-    public decimal? FxRate { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }

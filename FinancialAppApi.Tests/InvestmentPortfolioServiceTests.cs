@@ -23,7 +23,7 @@ public sealed class InvestmentPortfolioServiceTests
         {
             AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
             Type = "OpeningPosition", TradeDate = new DateOnly(2026, 7, 1),
-            Units = 0.7642m, UnitPrice = 650m, CashAmount = 496.73m, TradeFxRate = 4.1m
+            Units = 0.7642m, UnitPrice = 650m, CashAmount = 496.73m
         });
         context.InvestmentCashFlows.Add(new InvestmentCashFlow
         {
@@ -34,11 +34,17 @@ public sealed class InvestmentPortfolioServiceTests
         {
             Symbol = "VOO", Mic = "ARCX", MarketDate = new DateOnly(2026, 7, 23), Close = 678.61m
         });
-        context.FxRateBars.Add(new FxRateBar
-        {
-            BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 23),
-            Rate = 4.0968097876965978622781814333m
-        });
+        context.FxRateBars.AddRange(
+            new FxRateBar
+            {
+                BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 1),
+                Rate = 4.1m
+            },
+            new FxRateBar
+            {
+                BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 23),
+                Rate = 4.0968097876965978622781814333m
+            });
         await context.SaveChangesAsync();
 
         var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
@@ -52,7 +58,7 @@ public sealed class InvestmentPortfolioServiceTests
     }
 
     [Fact]
-    public async Task NewerProviderFx_SupersedesOlderManualFx()
+    public async Task ManualPriceOverrides_DoNotAffectFx_ProviderRateIsUsed()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
@@ -68,10 +74,10 @@ public sealed class InvestmentPortfolioServiceTests
         {
             AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
             Type = "OpeningPosition", TradeDate = new DateOnly(2026, 7, 1),
-            Units = 1, UnitPrice = 10, CashAmount = 10, TradeFxRate = 4
+            Units = 1, UnitPrice = 10, CashAmount = 10
         });
         context.ManualPriceOverrides.AddRange(
-            new ManualPriceOverride { InstrumentId = instrument.Id, MarketDate = new DateOnly(2026, 7, 20), Price = 10, FxRate = 4m },
+            new ManualPriceOverride { InstrumentId = instrument.Id, MarketDate = new DateOnly(2026, 7, 20), Price = 10 },
             new ManualPriceOverride { InstrumentId = instrument.Id, MarketDate = new DateOnly(2026, 7, 23), Price = 10 });
         context.FxRateBars.Add(new FxRateBar
         {

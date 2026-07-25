@@ -37,11 +37,10 @@ public sealed class InvestmentAccountingService
     private sealed record TransferBasis(decimal Units, decimal Native, decimal? App);
 
     // historicalFx: optional fallback supplying the reporting FX rate for a
-    // transaction whose instrument currency differs from the app currency and that
-    // carries no explicit TradeFxRate. Lets foreign-currency dividends, fees, and
-    // trades be valued at the market rate on the trade date (e.g. a stored provider
-    // daily close) instead of forcing the user to type a rate they never executed.
-    // An explicit per-trade rate still takes precedence.
+    // transaction whose instrument currency differs from the app currency. Lets
+    // foreign-currency dividends, fees, and trades be valued at the market rate on
+    // the trade date (e.g. a stored provider daily close) instead of forcing the
+    // user to type a rate they never executed.
     public InvestmentCalculation Calculate(
         IEnumerable<InvestmentTransaction> transactions,
         string appCurrency,
@@ -219,10 +218,7 @@ public sealed class InvestmentAccountingService
     {
         if (transaction.Instrument.Currency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase))
             return 1m;
-        // An explicit executed rate the user entered always wins.
-        if (transaction.TradeFxRate is > 0)
-            return transaction.TradeFxRate;
-        // Otherwise value the amount at the market rate for its trade date.
+        // Value the amount at the market rate for its trade date.
         var fallback = historicalFx?.Invoke(transaction);
         return fallback is > 0 ? fallback : null;
     }
