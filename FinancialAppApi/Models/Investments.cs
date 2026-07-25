@@ -22,7 +22,7 @@ public static class InvestmentKinds
 
     public static readonly HashSet<string> CashFlowTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Deposit", "Withdrawal"
+        "Deposit", "Withdrawal", "Conversion"
     };
 }
 
@@ -98,6 +98,13 @@ public sealed class InvestmentTransaction : IUserOwnedEntity
 // negative. Combined with the implicit cash effects of trades and dividends,
 // this gives a per-account, per-currency cash balance that counts toward the
 // portfolio's total value -- mirroring a broker app like Moomoo.
+//
+// A "Conversion" is a currency exchange inside the same account and uses both
+// legs: Currency/Amount is the debited side (negative, like a withdrawal) and
+// ToCurrency/ToAmount is the credited side (positive). FxRate is ToAmount over
+// the absolute Amount, stored for display and audit. Deposits and withdrawals
+// leave all three conversion columns null. Because a conversion only moves
+// value between currencies, it must never count as a net deposit.
 public sealed class InvestmentCashFlow : IUserOwnedEntity
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -107,6 +114,9 @@ public sealed class InvestmentCashFlow : IUserOwnedEntity
     [Required, MaxLength(3)] public string Currency { get; set; } = "USD";
     [Required, MaxLength(16)] public string Type { get; set; } = "Deposit";
     public decimal Amount { get; set; }
+    [MaxLength(3)] public string? ToCurrency { get; set; }
+    public decimal? ToAmount { get; set; }
+    public decimal? FxRate { get; set; }
     public DateOnly Date { get; set; }
     [MaxLength(1000)] public string? Notes { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

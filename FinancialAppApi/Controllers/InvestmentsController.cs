@@ -477,6 +477,18 @@ public sealed class InvestmentsController(
         return Created($"/api/investments/cash-flows/{flow!.Id}", InvestmentPortfolioService.ToDto(flow));
     }
 
+    [HttpPut("cash-flows/{id:guid}")]
+    public async Task<ActionResult<InvestmentCashFlowDto>> UpdateCashFlow(Guid id, CashFlowMutationDto dto)
+    {
+        var existing = await context.InvestmentCashFlows
+            .FirstOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
+        if (existing is null) return NotFound();
+        var (flow, error) = await BuildCashFlowAsync(dto, existing);
+        if (error is not null) return BadRequest(new { message = error });
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+        return Ok(InvestmentPortfolioService.ToDto(flow!));
+    }
+
     [HttpDelete("cash-flows/{id:guid}")]
     public async Task<ActionResult<InvestmentCashFlowDto>> DeleteCashFlow(Guid id)
     {
@@ -491,10 +503,22 @@ public sealed class InvestmentsController(
     [HttpPost("cash-flows/restore")]
     public async Task<IActionResult> RestoreCashFlow(InvestmentCashFlowDto snapshot)
     {
+        var restoringConversion = snapshot.Type.Equals("Conversion", StringComparison.OrdinalIgnoreCase);
         if (!CurrencyCatalog.Contains(snapshot.Currency) ||
             !InvestmentKinds.CashFlowTypes.Contains(snapshot.Type) ||
             (snapshot.Type.Equals("Deposit", StringComparison.OrdinalIgnoreCase) && snapshot.Amount <= 0) ||
             (snapshot.Type.Equals("Withdrawal", StringComparison.OrdinalIgnoreCase) && snapshot.Amount >= 0) ||
+            (restoringConversion && (
+                snapshot.Amount >= 0 ||
+                snapshot.ToCurrency is null ||
+                !CurrencyCatalog.Contains(snapshot.ToCurrency) ||
+                snapshot.ToCurrency.Equals(snapshot.Currency, StringComparison.OrdinalIgnoreCase) ||
+                snapshot.ToAmount is not > 0 ||
+                snapshot.FxRate is not > 0)) ||
+            (!restoringConversion && (
+                snapshot.ToCurrency is not null ||
+                snapshot.ToAmount is not null ||
+                snapshot.FxRate is not null)) ||
             snapshot.Date == default ||
             snapshot.Date > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)) ||
             snapshot.Notes?.Length > 1000 ||
@@ -507,10 +531,15 @@ public sealed class InvestmentsController(
             Id = snapshot.Id,
             AccountId = snapshot.AccountId,
             Currency = snapshot.Currency.ToUpperInvariant(),
-            Type = snapshot.Type.Equals("Withdrawal", StringComparison.OrdinalIgnoreCase)
-                ? "Withdrawal"
-                : "Deposit",
+            Type = restoringConversion
+                ? "Conversion"
+                : snapshot.Type.Equals("Withdrawal", StringComparison.OrdinalIgnoreCase)
+                    ? "Withdrawal"
+                    : "Deposit",
             Amount = snapshot.Amount,
+            ToCurrency = snapshot.ToCurrency?.ToUpperInvariant(),
+            ToAmount = snapshot.ToAmount,
+            FxRate = snapshot.FxRate,
             Date = snapshot.Date,
             Notes = snapshot.Notes
         });
@@ -523,10 +552,12 @@ public sealed class InvestmentsController(
         [FromQuery] bool automatic = false)
         => Ok(await marketDataService.RefreshAsync(automatic, HttpContext.RequestAborted));
 
-    private async Task<(InvestmentCashFlow? Flow, string? Error)> BuildCashFlowAsync(CashFlowMutationDto dto)
+    private async Task<(InvestmentCashFlow? Flow, string? Error)> BuildCashFlowAsync(
+        CashFlowMutationDto dto,
+        InvestmentCashFlow? existing = null)
     {
         if (!InvestmentKinds.CashFlowTypes.Contains(dto.Type))
-            return (null, "Cash flow type must be Deposit or Withdrawal.");
+            return (null, "Cash flow type must be Deposit, Withdrawal, or Conversion.");
         var account = await context.InvestmentAccounts.FindAsync([dto.AccountId], HttpContext.RequestAborted);
         if (account is null || account.IsArchived) return (null, "Select an active investment account.");
         if (!ValidCurrency(dto.Currency)) return (null, "Select a supported currency from the list.");
@@ -534,17 +565,52 @@ public sealed class InvestmentsController(
         if (dto.Notes?.Length > 1000) return (null, "Notes cannot exceed 1000 characters.");
         if (dto.Date == default || dto.Date > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)))
             return (null, "Enter a valid date.");
-        // Store the net effect signed: withdrawals reduce the balance.
-        var signed = dto.Type.Equals("Withdrawal", StringComparison.OrdinalIgnoreCase) ? -dto.Amount : dto.Amount;
-        return (new InvestmentCashFlow
+
+        var isConversion = dto.Type.Equals("Conversion", StringComparison.OrdinalIgnoreCase);
+        var type = isConversion
+            ? "Conversion"
+            : dto.Type.Equals("Withdrawal", StringComparison.OrdinalIgnoreCase) ? "Withdrawal" : "Deposit";
+        var from = dto.Currency.Trim().ToUpperInvariant();
+        string? toCurrency = null;
+        decimal? toAmount = null;
+        decimal? fxRate = null;
+        // Store the net effect signed: withdrawals and the sold leg of a
+        // conversion reduce the balance.
+        var signed = type is "Deposit" ? dto.Amount : -dto.Amount;
+
+        if (isConversion)
         {
-            AccountId = dto.AccountId,
-            Currency = dto.Currency.Trim().ToUpperInvariant(),
-            Type = dto.Type.Equals("Withdrawal", StringComparison.OrdinalIgnoreCase) ? "Withdrawal" : "Deposit",
-            Amount = signed,
-            Date = dto.Date,
-            Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim()
-        }, null);
+            if (string.IsNullOrWhiteSpace(dto.ToCurrency) || !ValidCurrency(dto.ToCurrency))
+                return (null, "Select a supported currency to convert into.");
+            toCurrency = dto.ToCurrency.Trim().ToUpperInvariant();
+            if (toCurrency == from)
+                return (null, "A conversion must use two different currencies.");
+            if (dto.ToAmount is not > 0)
+                return (null, "Enter a positive converted amount.");
+            toAmount = dto.ToAmount.Value;
+            var derived = toAmount.Value / dto.Amount;
+            if (dto.FxRate is not null)
+            {
+                if (dto.FxRate is not > 0) return (null, "Enter a positive FX rate.");
+                // Never store a rate that contradicts the two amounts.
+                if (Math.Abs(dto.FxRate.Value - derived) > derived * 0.001m)
+                    return (null, "The FX rate does not match the amounts entered.");
+            }
+            fxRate = dto.FxRate ?? derived;
+        }
+
+        var flow = existing ?? new InvestmentCashFlow();
+        flow.AccountId = dto.AccountId;
+        flow.Currency = from;
+        flow.Type = type;
+        flow.Amount = signed;
+        flow.ToCurrency = toCurrency;
+        flow.ToAmount = toAmount;
+        flow.FxRate = fxRate;
+        flow.Date = dto.Date;
+        flow.Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
+        if (existing is not null) flow.UpdatedAt = DateTime.UtcNow;
+        return (flow, null);
     }
 
     private async Task<(InvestmentTransaction? Transaction, string? Error)> BuildTransactionAsync(
@@ -745,8 +811,14 @@ public sealed class InvestmentsController(
         }
         var flows = await context.InvestmentCashFlows.AsNoTracking()
             .Where(value => value.AccountId == accountId).ToListAsync(HttpContext.RequestAborted);
-        var cash = flows.GroupBy(value => value.Currency)
-            .ToDictionary(group => group.Key, group => group.Sum(value => value.Amount));
+        var cash = new Dictionary<string, decimal>();
+        foreach (var flow in flows)
+        {
+            cash[flow.Currency] = cash.GetValueOrDefault(flow.Currency) + flow.Amount;
+            // A conversion's credited leg is a separate currency bucket.
+            if (flow.ToCurrency is not null && flow.ToAmount is not null)
+                cash[flow.ToCurrency] = cash.GetValueOrDefault(flow.ToCurrency) + flow.ToAmount.Value;
+        }
         foreach (var transaction in transactions)
         {
             var currency = transaction.Instrument.Currency;
@@ -839,7 +911,10 @@ public sealed record CashFlowMutationDto(
     decimal Amount,
     DateOnly Date,
     string? Notes,
-    Guid? Id = null);
+    Guid? Id = null,
+    string? ToCurrency = null,
+    decimal? ToAmount = null,
+    decimal? FxRate = null);
 
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
 public sealed record DeletedTransactionsSnapshot(IReadOnlyList<InvestmentTransactionDto> Transactions);

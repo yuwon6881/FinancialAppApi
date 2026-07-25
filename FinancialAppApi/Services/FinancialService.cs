@@ -87,6 +87,25 @@ public class FinancialService
             .Where(t => t.Date >= activeRangeStartDate && t.Date < activeRangeEndExclusive)
             .ToListAsync();
 
+        // A transaction "settles" whichever recurring occurrence its RecurringOccurrenceDate names,
+        // which is not always the cycle its own posting Date falls in -- a pay-early payment is
+        // posted today but can settle a future cycle's occurrence. Matching recurring-payment status
+        // by posting-date range (like activeCycleTxs above) would wrongly attribute it to today's
+        // cycle instead. Build the set actually relevant to *this* cycle's occurrences: transactions
+        // whose RecurringOccurrenceDate falls in this cycle, plus legacy transactions (no occurrence
+        // tag at all) matched the old way by posting date.
+        var activeRangeStartOnly = DateOnly.FromDateTime(activeRange.start);
+        var activeRangeEndOnly = DateOnly.FromDateTime(activeRange.end);
+        var occurrenceTaggedTxs = await _context.Transactions
+            .AsNoTracking()
+            .Where(t => t.RecurringOccurrenceDate != null
+                        && t.RecurringOccurrenceDate >= activeRangeStartOnly
+                        && t.RecurringOccurrenceDate <= activeRangeEndOnly)
+            .ToListAsync();
+        var recurringMatchTxs = occurrenceTaggedTxs
+            .Concat(activeCycleTxs.Where(t => t.RecurringOccurrenceDate == null))
+            .ToList();
+
         string selectedCycleLabel = activeRange.label;
 
         var (selectedBudgetEssentials, selectedBudgetGrowth, selectedBudgetStability, selectedBudgetRewards) =
@@ -153,7 +172,7 @@ public class FinancialService
         var growthPercentAchieved = selectedNetGrowth / (targetGrowth > 0 ? targetGrowth : 1m);
         var stabilityPercentReached = selectedRemStability / (setting.TargetStabilityFund > 0 ? setting.TargetStabilityFund : 1m);
 
-        var activeRecurringList = BuildActiveRecurringList(allRecurring, activeCycleTxs, activeRange.start, activeRange.end, cycleDay, activeYear, activeMonthIndex);
+        var activeRecurringList = BuildActiveRecurringList(allRecurring, recurringMatchTxs, activeRange.start, activeRange.end, cycleDay, activeYear, activeMonthIndex);
         var selectedMonthRecurring = activeRecurringList
             .OrderBy(r => ((dynamic)r).status == "Pending" ? 0 : ((dynamic)r).status == "Paid" ? 1 : 2)
             .ThenBy(r => ((dynamic)r).dueDate)
@@ -161,7 +180,7 @@ public class FinancialService
 
         var pendingRecurring = BuildPendingRecurringItems(
             allRecurring,
-            activeCycleTxs,
+            recurringMatchTxs,
             activeRange.start,
             activeRange.end,
             cycleDay);
@@ -495,14 +514,14 @@ public class FinancialService
 
     private List<object> BuildActiveRecurringList(
         List<RecurringPayment> allRecurring,
-        List<Transaction> activeCycleTxs,
+        List<Transaction> recurringMatchTxs,
         DateTime activeRangeStart,
         DateTime activeRangeEnd,
         int cycleDay,
         int activeYear,
         int activeMonthIndex)
     {
-        var txsByRecurringId = activeCycleTxs
+        var txsByRecurringId = recurringMatchTxs
             .Where(t => t.RecurringPaymentId != null)
             .GroupBy(t => t.RecurringPaymentId!)
             .ToDictionary(g => g.Key, g => g.ToList());
@@ -517,9 +536,16 @@ public class FinancialService
                          cycleDay))
             {
                 var instanceId = $"{rp.Id}-{activeYear}-{activeMonthIndex}";
+                var billingDateOnly = DateOnly.FromDateTime(billingDate);
                 var relatedTxs = txsByRecurringId.GetValueOrDefault(rp.Id);
+                // A transaction tagged with a *different* occurrence's RecurringOccurrenceDate (e.g.
+                // a pay-early payment posted this cycle that settles next cycle's occurrence) must
+                // never be picked here -- only an exact occurrence match, or an untagged legacy
+                // transaction (matched by posting date the old way), can settle this billingDate.
                 var paidTx = relatedTxs?
-                    .OrderBy(t => string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                    .Where(t => t.RecurringOccurrenceDate == null || t.RecurringOccurrenceDate == billingDateOnly)
+                    .OrderBy(t => t.RecurringOccurrenceDate == billingDateOnly ? 0 : 1)
+                    .ThenBy(t => string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
                     .ThenBy(t => t.Date)
                     .ThenBy(t => t.Id, StringComparer.Ordinal)
                     .FirstOrDefault();
@@ -679,12 +705,12 @@ public class FinancialService
 
     private List<PendingRecurringItem> BuildPendingRecurringItems(
         List<RecurringPayment> allRecurring,
-        List<Transaction> activeCycleTxs,
+        List<Transaction> recurringMatchTxs,
         DateTime rangeStart,
         DateTime rangeEnd,
         int cycleDay)
     {
-        var resolvedRecurringIds = activeCycleTxs
+        var resolvedRecurringIds = recurringMatchTxs
             .Where(transaction => !string.IsNullOrWhiteSpace(transaction.RecurringPaymentId))
             .Select(transaction => transaction.RecurringPaymentId!)
             .ToHashSet(StringComparer.Ordinal);

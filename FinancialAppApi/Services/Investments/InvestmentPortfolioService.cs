@@ -34,7 +34,10 @@ public sealed record InvestmentCashFlowDto(
     string Type,
     decimal Amount,
     DateOnly Date,
-    string? Notes);
+    string? Notes,
+    string? ToCurrency = null,
+    decimal? ToAmount = null,
+    decimal? FxRate = null);
 
 public sealed record InvestmentHoldingDto(
     Guid AccountId,
@@ -188,6 +191,7 @@ public sealed class InvestmentPortfolioService(
                 .ToListAsync(cancellationToken);
         var currencies = instruments.Select(value => value.Currency)
             .Concat(cashFlows.Select(value => value.Currency))
+            .Concat(cashFlows.Where(value => value.ToCurrency is not null).Select(value => value.ToCurrency!))
             .Distinct()
             .ToList();
         var fxBars = await context.FxRateBars.AsNoTracking()
@@ -301,6 +305,10 @@ public sealed class InvestmentPortfolioService(
         foreach (var flow in cashFlows)
         {
             AddCash(flow.AccountId, flow.Currency, flow.Amount);
+            // A conversion also credits the bought currency; its Amount leg is
+            // already stored negative, so the pair nets to zero in value terms.
+            if (flow.ToCurrency is not null && flow.ToAmount is not null)
+                AddCash(flow.AccountId, flow.ToCurrency, flow.ToAmount.Value);
         }
         foreach (var transaction in transactions)
         {
@@ -354,6 +362,9 @@ public sealed class InvestmentPortfolioService(
         decimal? netDeposits = 0;
         foreach (var flow in cashFlows)
         {
+            // Conversions move value between currencies without adding any, so
+            // counting them here would book a phantom contribution.
+            if (IsConversion(flow)) continue;
             var fx = ResolveFx(flow.Currency, appCurrency, flow.Date, fxBars, overrides, null)?.Rate;
             if (fx is null)
             {
@@ -509,6 +520,10 @@ public sealed class InvestmentPortfolioService(
             foreach (var flow in cashFlows.Where(value => value.Date <= date))
             {
                 AddCash(flow.AccountId, flow.Currency, flow.Amount);
+                if (flow.ToCurrency is not null && flow.ToAmount is not null)
+                    AddCash(flow.AccountId, flow.ToCurrency, flow.ToAmount.Value);
+                // Conversions are value-neutral and never count as deposits.
+                if (IsConversion(flow)) continue;
                 var flowFx = ResolveFx(flow.Currency, appCurrency, flow.Date, fxBars, overrides, null);
                 if (flowFx is null) complete = false;
                 else deposits += flow.Amount * flowFx.Rate;
@@ -655,7 +670,11 @@ public sealed class InvestmentPortfolioService(
         value.Id, value.InstrumentId, value.MarketDate, value.Price, value.FxRate);
 
     public static InvestmentCashFlowDto ToDto(InvestmentCashFlow value) => new(
-        value.Id, value.AccountId, value.Currency, value.Type, value.Amount, value.Date, value.Notes);
+        value.Id, value.AccountId, value.Currency, value.Type, value.Amount, value.Date, value.Notes,
+        value.ToCurrency, value.ToAmount, value.FxRate);
+
+    internal static bool IsConversion(InvestmentCashFlow value)
+        => value.Type.Equals("Conversion", StringComparison.OrdinalIgnoreCase);
 
     private sealed record ResolvedPrice(DateOnly Date, decimal Price, DateTime FetchedAt, bool Manual);
     private sealed record ResolvedFx(decimal Rate, DateOnly Date, string Source, DateTime? FetchedAt);

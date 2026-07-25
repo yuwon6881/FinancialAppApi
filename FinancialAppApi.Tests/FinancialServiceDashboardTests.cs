@@ -287,6 +287,62 @@ public class FinancialServiceDashboardTests
     }
 
     [Fact]
+    public async Task GetDashboardDataAsync_PayEarlyForNextCycleDoesNotOverturnThisCyclesDiscard()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "household",
+            Name = "Household",
+            Amount = -870m,
+            Frequency = "Monthly",
+            Category = "Bills",
+            LedgerCategory = "Essentials",
+            StartDate = "2026-01-28",
+            NextDueDate = "2026-06-28",
+            DueDate = 28,
+            Active = true
+        });
+        // The June occurrence was discarded on its due date...
+        context.Transactions.Add(new Transaction
+        {
+            Id = "household-jun-discard",
+            Date = new DateTime(2026, 6, 28),
+            Description = "[Discarded] Household",
+            Amount = 0,
+            Category = "Bills",
+            LedgerCategory = "Discarded",
+            RecurringPaymentId = "household",
+            RecurringOccurrenceDate = new DateOnly(2026, 6, 28)
+        });
+        // ...then, two days later (still within the June cycle), the user paid the next
+        // (July) occurrence early. Its posting date falls in June, but it settles July.
+        context.Transactions.Add(new Transaction
+        {
+            Id = "household-payearly",
+            Date = new DateTime(2026, 6, 30),
+            Description = "Household",
+            Amount = -870m,
+            Category = "Bills",
+            LedgerCategory = "Essentials",
+            RecurringPaymentId = "household",
+            RecurringOccurrenceDate = new DateOnly(2026, 7, 28)
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var june = await service.GetDashboardDataAsync("Jun", 2026);
+        var july = await service.GetDashboardDataAsync("Jul", 2026);
+
+        var juneOccurrence = Assert.Single(GetObjects(june, "activeRecurringPayments"));
+        Assert.Equal("Discarded", juneOccurrence.GetType().GetProperty("status")!.GetValue(juneOccurrence));
+
+        var julyOccurrence = Assert.Single(GetObjects(july, "activeRecurringPayments"));
+        Assert.Equal("Paid", julyOccurrence.GetType().GetProperty("status")!.GetValue(julyOccurrence));
+    }
+
+    [Fact]
     public async Task GetDashboardDataAsync_ComputesTodayPlanInsightsFromUnpaidBillsAndCurrentPace()
     {
         await using var context = TestHelpers.NewInMemoryContext();
