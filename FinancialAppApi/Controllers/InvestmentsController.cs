@@ -741,12 +741,12 @@ public sealed class InvestmentsController(
                      .Where(value => flows.All(existing => existing.Id != value.Id)))
             flows.Add(entry);
 
-        var events = new List<(DateOnly Date, Guid Id, Guid AccountId, string Currency, decimal Amount)>();
+        var events = new List<(DateOnly Date, DateTime CreatedAt, Guid Id, Guid AccountId, string Currency, decimal Amount)>();
         foreach (var flow in flows)
         {
-            events.Add((flow.Date, flow.Id, flow.AccountId, flow.Currency, flow.Amount));
+            events.Add((flow.Date, flow.CreatedAt, flow.Id, flow.AccountId, flow.Currency, flow.Amount));
             if (InvestmentPortfolioService.IsConversion(flow) && flow.ToCurrency is not null && flow.ToAmount is not null)
-                events.Add((flow.Date, flow.Id, flow.AccountId, flow.ToCurrency, flow.ToAmount.Value));
+                events.Add((flow.Date, flow.CreatedAt, flow.Id, flow.AccountId, flow.ToCurrency, flow.ToAmount.Value));
         }
         foreach (var transaction in transactions)
         {
@@ -759,11 +759,17 @@ public sealed class InvestmentsController(
                 "FeeTax" => -((transaction.CashAmount ?? 0) + feesAndTaxes),
                 _ => 0
             };
-            if (amount != 0) events.Add((transaction.TradeDate, transaction.Id, transaction.AccountId, currency, amount));
+            if (amount != 0) events.Add((transaction.TradeDate, transaction.CreatedAt, transaction.Id, transaction.AccountId, currency, amount));
         }
 
+        return ValidateCashEvents(events);
+    }
+
+    internal static string? ValidateCashEvents(
+        IEnumerable<(DateOnly Date, DateTime CreatedAt, Guid Id, Guid AccountId, string Currency, decimal Amount)> events)
+    {
         var balances = new Dictionary<(Guid AccountId, string Currency), decimal>();
-        foreach (var cashEvent in events.OrderBy(value => value.Date).ThenBy(value => value.Id))
+        foreach (var cashEvent in events.OrderBy(value => value.Date).ThenBy(value => value.CreatedAt).ThenBy(value => value.Id))
         {
             var key = (cashEvent.AccountId, cashEvent.Currency.ToUpperInvariant());
             var balance = balances.GetValueOrDefault(key) + cashEvent.Amount;

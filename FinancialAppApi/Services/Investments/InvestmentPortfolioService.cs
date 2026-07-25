@@ -35,7 +35,8 @@ public sealed record InvestmentCashFlowDto(
     decimal Amount,
     DateOnly Date,
     string? ToCurrency = null,
-    decimal? ToAmount = null);
+    decimal? ToAmount = null,
+    DateTime? CreatedAt = null);
 
 public sealed record InvestmentHoldingDto(
     Guid AccountId,
@@ -658,7 +659,7 @@ public sealed class InvestmentPortfolioService(
 
     public static InvestmentCashFlowDto ToDto(InvestmentCashFlow value) => new(
         value.Id, value.AccountId, value.Currency, value.Type, value.Amount, value.Date,
-        value.ToCurrency, value.ToAmount);
+        value.ToCurrency, value.ToAmount, value.CreatedAt);
 
     internal static bool IsConversion(InvestmentCashFlow value)
         => value.Type.Equals("Conversion", StringComparison.OrdinalIgnoreCase);
