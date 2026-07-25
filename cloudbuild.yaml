@@ -70,8 +70,6 @@ steps:
 
 options:
   logging: CLOUD_LOGGING_ONLY
-  # E2_STANDARD_2 build minutes are eligible for Cloud Build's monthly free allowance.
-  machineType: 'E2_STANDARD_2'
 
 availableSecrets:
   secretManager:
