@@ -525,10 +525,12 @@ public sealed class InvestmentsController(
         return NoContent();
     }
 
+    // The provider quota is a globally shared pool, so the freshness gate is applied to every
+    // user-initiated refresh. It used to hang off a client-supplied `automatic` query flag,
+    // which let any authenticated caller loop this endpoint and drain the ceiling for everyone.
     [HttpPost("market-data/refresh")]
-    public async Task<ActionResult<MarketRefreshResponse>> RefreshMarketData(
-        [FromQuery] bool automatic = false)
-        => Ok(await marketDataService.RefreshAsync(automatic, HttpContext.RequestAborted));
+    public async Task<ActionResult<MarketRefreshResponse>> RefreshMarketData()
+        => Ok(await marketDataService.RefreshAsync(HttpContext.RequestAborted));
 
     private async Task<(InvestmentCashFlow? Flow, string? Error)> BuildCashFlowAsync(
         CashFlowMutationDto dto,

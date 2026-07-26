@@ -229,7 +229,7 @@ public sealed class InvestmentPortfolioService(
             decimal? daily = latest is not null && previous is not null && fx is not null
                 ? (latest.Price - previous.Price) * position.Units * fx.Rate
                 : null;
-            var incomplete = instrument.Currency != appCurrency && fx is null;
+            var incomplete = !instrument.Currency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase) && fx is null;
             if (incomplete)
             {
                 warnings.Add($"Current FX is missing for {instrument.Currency}/{appCurrency}; converted totals are incomplete.");
@@ -573,16 +573,19 @@ public sealed class InvestmentPortfolioService(
     {
         if (nativeCurrency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase))
             return new ResolvedFx(1, date, "Same currency", null);
+        // Currency comparisons stay case-insensitive throughout: a single lowercase row would
+        // otherwise resolve no FX, which cascades into null MarketValue/CostBasis/TotalValue
+        // and shows the user an empty portfolio rather than an error.
         var direct = fxBars
             .Where(value =>
-                value.BaseCurrency == nativeCurrency &&
-                value.QuoteCurrency == appCurrency &&
+                value.BaseCurrency.Equals(nativeCurrency, StringComparison.OrdinalIgnoreCase) &&
+                value.QuoteCurrency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase) &&
                 value.MarketDate <= date)
             .OrderByDescending(value => value.MarketDate)
             .FirstOrDefault();
         if (direct is not null) return new ResolvedFx(direct.Rate, direct.MarketDate, "Twelve Data direct", direct.FetchedAt);
-        var inverse = fxBars.Where(value => value.BaseCurrency == appCurrency &&
-                                            value.QuoteCurrency == nativeCurrency &&
+        var inverse = fxBars.Where(value => value.BaseCurrency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase) &&
+                                            value.QuoteCurrency.Equals(nativeCurrency, StringComparison.OrdinalIgnoreCase) &&
                                             value.MarketDate <= date && value.Rate != 0)
             .OrderByDescending(value => value.MarketDate).FirstOrDefault();
         if (inverse is not null)
@@ -602,11 +605,13 @@ public sealed class InvestmentPortfolioService(
         string from, string to, DateOnly date, IReadOnlyList<FxRateBar> fxBars)
     {
         if (from.Equals(to, StringComparison.OrdinalIgnoreCase)) return new ResolvedFx(1, date, "Same currency", null);
-        var direct = fxBars.Where(value => value.BaseCurrency == from && value.QuoteCurrency == to &&
+        var direct = fxBars.Where(value => value.BaseCurrency.Equals(from, StringComparison.OrdinalIgnoreCase) &&
+                                           value.QuoteCurrency.Equals(to, StringComparison.OrdinalIgnoreCase) &&
                                            value.MarketDate <= date)
             .OrderByDescending(value => value.MarketDate).FirstOrDefault();
         if (direct is not null) return new ResolvedFx(direct.Rate, direct.MarketDate, "Twelve Data direct", direct.FetchedAt);
-        var inverse = fxBars.Where(value => value.BaseCurrency == to && value.QuoteCurrency == from &&
+        var inverse = fxBars.Where(value => value.BaseCurrency.Equals(to, StringComparison.OrdinalIgnoreCase) &&
+                                            value.QuoteCurrency.Equals(from, StringComparison.OrdinalIgnoreCase) &&
                                             value.MarketDate <= date && value.Rate != 0)
             .OrderByDescending(value => value.MarketDate).FirstOrDefault();
         return inverse is null ? null : new ResolvedFx(1m / inverse.Rate, inverse.MarketDate, "Twelve Data inverse", inverse.FetchedAt);

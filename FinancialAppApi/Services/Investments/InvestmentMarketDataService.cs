@@ -43,6 +43,21 @@ public sealed class InvestmentMarketDataService(
 {
     private readonly MarketDataOptions _options = options.Value;
 
+    /// <summary>How many times a single pending item is retried before it is abandoned.</summary>
+    private const int MaxItemAttempts = 3;
+    private const string AttemptsMarker = "|attempts=";
+
+    private static (string Key, int Attempts) ParseItem(string item)
+    {
+        var separator = item.LastIndexOf(AttemptsMarker, StringComparison.Ordinal);
+        if (separator < 0) return (item, 0);
+        var parsed = int.TryParse(item[(separator + AttemptsMarker.Length)..], out var attempts) ? attempts : 0;
+        return (item[..separator], parsed);
+    }
+
+    private static string WithAttempts(string key, int attempts)
+        => attempts <= 0 ? key : $"{key}{AttemptsMarker}{attempts}";
+
     public async Task<InvestmentSearchResponse> SearchAsync(
         string query,
         CancellationToken cancellationToken)
@@ -125,11 +140,17 @@ public sealed class InvestmentMarketDataService(
         }
     }
 
+    /// <summary>
+    /// Refreshes market data for the current user, subject to the freshness gate. The gate is
+    /// deliberately not caller-controllable: it is the only thing stopping one tenant from
+    /// looping this call and draining the shared provider ceiling.
+    /// </summary>
     public Task<MarketRefreshResponse> RefreshAsync(CancellationToken cancellationToken)
-        => RefreshAsync(false, cancellationToken);
+        => RefreshAsync(true, cancellationToken);
 
-    public async Task<MarketRefreshResponse> RefreshAsync(
-        bool automatic,
+    // respectFreshnessGate: only an internal or scheduled caller may pass false, and none does today.
+    private async Task<MarketRefreshResponse> RefreshAsync(
+        bool respectFreshnessGate,
         CancellationToken cancellationToken)
     {
         if (!provider.IsConfigured)
@@ -139,7 +160,7 @@ public sealed class InvestmentMarketDataService(
                 "Market refresh is not configured. Manual prices remain available.");
         }
 
-        if (automatic && !await AutomaticRefreshRequiredAsync(cancellationToken))
+        if (respectFreshnessGate && !await AutomaticRefreshRequiredAsync(cancellationToken))
         {
             return new MarketRefreshResponse(
                 null, "Fresh", 0, 0, null, true, [], "Market data is less than one hour old.");
@@ -220,27 +241,47 @@ public sealed class InvestmentMarketDataService(
         var warnings = WarningList(activeJob.Warning);
         foreach (var item in items.Take(allowance).ToList())
         {
+            var (key, attempts) = ParseItem(item);
             var succeeded = true;
             try
             {
-                if (item.StartsWith("instrument:", StringComparison.Ordinal))
+                if (key.StartsWith("instrument:", StringComparison.Ordinal))
                 {
-                    var id = Guid.Parse(item["instrument:".Length..]);
-                    var instrument = instruments.First(value => value.Id == id);
-                    await RefreshInstrumentAsync(instrument, transactions, cancellationToken);
+                    // A job outlives the rows it references: an instrument can be archived,
+                    // deleted, or converted to custom between creation and resumption. Treat
+                    // an unresolvable item as dropped -- throwing here would wedge the job
+                    // permanently, since the item would never leave the pending list.
+                    if (!Guid.TryParse(key["instrument:".Length..], out var id) ||
+                        instruments.FirstOrDefault(value => value.Id == id) is not { } instrument)
+                    {
+                        logger.LogInformation("Dropping stale market refresh item {Item}.", key);
+                        items.Remove(item);
+                        continue;
+                    }
+                    var warning = await RefreshInstrumentAsync(instrument, transactions, cancellationToken);
+                    if (warning is not null) warnings.Add(warning);
                 }
                 else
                 {
-                    var pair = item.Split(':');
+                    var pair = key.Split(':');
+                    if (pair.Length != 3 || !key.StartsWith("fx:", StringComparison.Ordinal))
+                    {
+                        logger.LogInformation("Dropping malformed market refresh item {Item}.", key);
+                        items.Remove(item);
+                        continue;
+                    }
                     var relevantDates = transactions.Where(value =>
                             heldInstruments.Any(instrument => instrument.Id == value.InstrumentId &&
-                                                          instrument.Currency == pair[1]))
+                                                          instrument.Currency.Equals(pair[1], StringComparison.OrdinalIgnoreCase)))
                         .Select(value => value.TradeDate)
-                        .Concat(cashFlows.Where(value => value.Currency == pair[1]).Select(value => value.Date))
+                        .Concat(cashFlows
+                            .Where(value => value.Currency.Equals(pair[1], StringComparison.OrdinalIgnoreCase))
+                            .Select(value => value.Date))
                         .ToList();
-                    await RefreshFxAsync(pair[1], pair[2],
+                    var warning = await RefreshFxAsync(pair[1], pair[2],
                         relevantDates.Count == 0 ? DateOnly.FromDateTime(DateTime.UtcNow) : relevantDates.Min(),
                         cancellationToken);
+                    if (warning is not null) warnings.Add(warning);
                 }
             }
             catch (MarketDataProviderException exception)
@@ -250,7 +291,22 @@ public sealed class InvestmentMarketDataService(
                 warnings.Add(exception.Message);
             }
             items.Remove(item);
-            if (succeeded) activeJob.UpdatedItems++;
+            if (succeeded)
+            {
+                activeJob.UpdatedItems++;
+            }
+            else if (attempts + 1 < MaxItemAttempts)
+            {
+                // A transient provider error must not silently drop the symbol and let the
+                // job report Complete with fewer updates than it promised. Requeue it with
+                // an attempt counter so it is retried a bounded number of times.
+                items.Add(WithAttempts(key, attempts + 1));
+            }
+            else
+            {
+                logger.LogWarning("Giving up on market refresh item {Item} after {Attempts} attempts.", key, MaxItemAttempts);
+                warnings.Add($"Could not refresh {key} after {MaxItemAttempts} attempts.");
+            }
         }
 
         activeJob.PendingItemsJson = JsonSerializer.Serialize(items);
@@ -315,7 +371,8 @@ public sealed class InvestmentMarketDataService(
         return false;
     }
 
-    private async Task RefreshInstrumentAsync(
+    /// <returns>A user-facing warning when the provider returned nothing, otherwise null.</returns>
+    private async Task<string?> RefreshInstrumentAsync(
         InvestmentInstrument instrument,
         IReadOnlyList<InvestmentTransaction> transactions,
         CancellationToken cancellationToken)
@@ -329,7 +386,7 @@ public sealed class InvestmentMarketDataService(
         if (latest is not null &&
             DateTime.UtcNow - latest.FetchedAt < TimeSpan.FromMinutes(Math.Max(1, _options.FreshnessMinutes)))
         {
-            return;
+            return null;
         }
         var earliest = transactions.Where(value => value.InstrumentId == instrument.Id).Min(value => value.TradeDate);
         var start = latest is null ? earliest : latest.MarketDate.AddDays(-7);
@@ -338,6 +395,16 @@ public sealed class InvestmentMarketDataService(
             instrument.ProviderMic,
             start,
             cancellationToken);
+        if (bars.Count == 0)
+        {
+            // Delisted symbol, market holiday, or a wrong ProviderSymbol mapping. Record the
+            // attempt anyway; otherwise the freshness gate never advances and this symbol
+            // re-burns a provider call on every refresh, forever.
+            if (latest is not null) latest.FetchedAt = DateTime.UtcNow;
+            logger.LogInformation(
+                "Provider returned no price bars for {Symbol}.", instrument.ProviderSymbol);
+            return $"No recent prices were available for {instrument.Symbol}. Check the symbol mapping if this persists.";
+        }
         foreach (var bar in bars)
         {
             var existing = await context.MarketPriceBars.FirstOrDefaultAsync(value =>
@@ -361,9 +428,11 @@ public sealed class InvestmentMarketDataService(
                 existing.FetchedAt = DateTime.UtcNow;
             }
         }
+        return null;
     }
 
-    private async Task RefreshFxAsync(
+    /// <returns>A user-facing warning when the provider returned nothing, otherwise null.</returns>
+    private async Task<string?> RefreshFxAsync(
         string baseCurrency,
         string quoteCurrency,
         DateOnly earliest,
@@ -378,13 +447,22 @@ public sealed class InvestmentMarketDataService(
         if (latest is not null &&
             DateTime.UtcNow - latest.FetchedAt < TimeSpan.FromMinutes(Math.Max(1, _options.FreshnessMinutes)))
         {
-            return;
+            return null;
         }
         var bars = await provider.GetFxSeriesAsync(
             baseCurrency,
             quoteCurrency,
             latest is null ? earliest : latest.MarketDate.AddDays(-7),
             cancellationToken);
+        if (bars.Count == 0)
+        {
+            // See RefreshInstrumentAsync: record the attempt so the freshness gate advances
+            // even when the provider has nothing for this pair.
+            if (latest is not null) latest.FetchedAt = DateTime.UtcNow;
+            logger.LogInformation(
+                "Provider returned no FX bars for {Base}/{Quote}.", baseCurrency, quoteCurrency);
+            return $"No recent {baseCurrency}/{quoteCurrency} exchange rates were available.";
+        }
         foreach (var bar in bars)
         {
             var existing = await context.FxRateBars.FirstOrDefaultAsync(value =>
@@ -408,6 +486,7 @@ public sealed class InvestmentMarketDataService(
                 existing.FetchedAt = DateTime.UtcNow;
             }
         }
+        return null;
     }
 
     private async Task<int> ReserveQuotaAsync(int requested, CancellationToken cancellationToken)
@@ -421,14 +500,20 @@ public sealed class InvestmentMarketDataService(
             var dayStart = new DateTime(now.Year, now.Month, now.Day, 0, 0, 0, DateTimeKind.Utc);
             await using var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
             await AcquireQuotaLockAsync(cancellationToken);
+            await PruneExpiredWindowsAsync(now, cancellationToken);
             var minute = await GetOrCreateWindowAsync("refresh-minute", minuteStart, cancellationToken);
             var providerMinute = await GetOrCreateWindowAsync("provider-minute", minuteStart, cancellationToken);
             var day = await GetOrCreateWindowAsync("provider-day", dayStart, cancellationToken);
+            // The provider pool is shared by every tenant, so the right to spend it is metered
+            // per user as well as globally. Price data itself stays global and shared.
+            var userDay = await GetOrCreateWindowAsync(UserDayScope(), dayStart, cancellationToken);
             var allowed = Math.Min(requested, Math.Min(
                 Math.Max(0, _options.RefreshCallsPerMinute - minute.Used),
                 Math.Min(
                     Math.Max(0, _options.RefreshCallsPerMinute + 2 - providerMinute.Used),
-                    Math.Max(0, _options.DailyCallCeiling - day.Used))));
+                    Math.Min(
+                        Math.Max(0, _options.DailyCallCeiling - day.Used),
+                        Math.Max(0, _options.PerUserDailyCallCeiling - userDay.Used)))));
             if (allowed > 0)
             {
                 minute.Used += allowed;
@@ -437,6 +522,8 @@ public sealed class InvestmentMarketDataService(
                 providerMinute.UpdatedAt = now;
                 day.Used += allowed;
                 day.UpdatedAt = now;
+                userDay.Used += allowed;
+                userDay.UpdatedAt = now;
                 await context.SaveChangesAsync(cancellationToken);
             }
             await transaction.CommitAsync(cancellationToken);
@@ -455,12 +542,15 @@ public sealed class InvestmentMarketDataService(
             var dayStart = new DateTime(now.Year, now.Month, now.Day, 0, 0, 0, DateTimeKind.Utc);
             await using var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
             await AcquireQuotaLockAsync(cancellationToken);
+            await PruneExpiredWindowsAsync(now, cancellationToken);
             var providerMinute = await GetOrCreateWindowAsync("provider-minute", minuteStart, cancellationToken);
             var discoveryMinute = await GetOrCreateWindowAsync("discovery-minute", minuteStart, cancellationToken);
             var day = await GetOrCreateWindowAsync("provider-day", dayStart, cancellationToken);
+            var userDay = await GetOrCreateWindowAsync(UserDayScope(), dayStart, cancellationToken);
             var allowed = discoveryMinute.Used < 2 &&
                           providerMinute.Used < _options.RefreshCallsPerMinute + 2 &&
-                          day.Used < _options.DailyCallCeiling;
+                          day.Used < _options.DailyCallCeiling &&
+                          userDay.Used < _options.PerUserDailyCallCeiling;
             if (allowed)
             {
                 discoveryMinute.Used++;
@@ -469,6 +559,8 @@ public sealed class InvestmentMarketDataService(
                 providerMinute.UpdatedAt = now;
                 day.Used++;
                 day.UpdatedAt = now;
+                userDay.Used++;
+                userDay.UpdatedAt = now;
                 await context.SaveChangesAsync(cancellationToken);
             }
             await transaction.CommitAsync(cancellationToken);
@@ -483,6 +575,25 @@ public sealed class InvestmentMarketDataService(
                 "SELECT pg_advisory_xact_lock(741923601)",
                 cancellationToken)
             : Task.CompletedTask;
+
+    private string UserDayScope() => $"user-day:{context.RequireCurrentUserId()}";
+
+    /// <summary>
+    /// Quota windows are write-once-per-minute-per-scope and never read again after their
+    /// window closes, so they are pruned lazily on the same path that reserves quota -- the
+    /// pattern already used for expired sessions and WebAuthn challenges.
+    /// </summary>
+    private async Task PruneExpiredWindowsAsync(DateTime now, CancellationToken cancellationToken)
+    {
+        // One day is the longest window in use; anything older can never be reserved against.
+        var cutoff = now.AddDays(-1).AddHours(-1);
+        var expired = await context.MarketDataQuotaWindows
+            .Where(value => value.WindowStart < cutoff)
+            .Take(500)
+            .ToListAsync(cancellationToken);
+        if (expired.Count == 0) return;
+        context.MarketDataQuotaWindows.RemoveRange(expired);
+    }
 
     private async Task<MarketDataQuotaWindow> GetOrCreateWindowAsync(
         string scope,

@@ -13,6 +13,9 @@ public sealed class MarketDataOptions
     public int FreshnessMinutes { get; set; } = 15;
     public int RefreshCallsPerMinute { get; set; } = 6;
     public int DailyCallCeiling { get; set; } = 750;
+    // The provider quota is a globally shared pool, so a single tenant must not be able to
+    // drain it for everyone. This caps what one user may spend out of DailyCallCeiling.
+    public int PerUserDailyCallCeiling { get; set; } = 200;
 }
 
 public sealed record InstrumentSearchResult(

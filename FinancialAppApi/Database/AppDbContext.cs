@@ -387,6 +387,49 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         }
     }
 
+    /// <summary>
+    /// Currency codes carry an invariant -- uppercase ISO-4217 -- that used to be re-asserted
+    /// ad hoc at each call site. Enforcing it once on write means a lowercase code can never
+    /// reach a comparison that silently fails to match (e.g. FX resolution in the portfolio
+    /// service, which returns null totals rather than an error when a lookup misses).
+    /// </summary>
+    private void NormalizeCurrencies()
+    {
+        static string Upper(string value) => value.Trim().ToUpperInvariant();
+
+        foreach (var entry in ChangeTracker.Entries<InvestmentAccount>()
+                     .Where(entry => entry.State is EntityState.Added or EntityState.Modified))
+        {
+            entry.Entity.BaseCurrency = Upper(entry.Entity.BaseCurrency);
+        }
+
+        foreach (var entry in ChangeTracker.Entries<InvestmentInstrument>()
+                     .Where(entry => entry.State is EntityState.Added or EntityState.Modified))
+        {
+            entry.Entity.Currency = Upper(entry.Entity.Currency);
+        }
+
+        foreach (var entry in ChangeTracker.Entries<InvestmentCashFlow>()
+                     .Where(entry => entry.State is EntityState.Added or EntityState.Modified))
+        {
+            entry.Entity.Currency = Upper(entry.Entity.Currency);
+            if (entry.Entity.ToCurrency is not null) entry.Entity.ToCurrency = Upper(entry.Entity.ToCurrency);
+        }
+
+        foreach (var entry in ChangeTracker.Entries<FxRateBar>()
+                     .Where(entry => entry.State is EntityState.Added or EntityState.Modified))
+        {
+            entry.Entity.BaseCurrency = Upper(entry.Entity.BaseCurrency);
+            entry.Entity.QuoteCurrency = Upper(entry.Entity.QuoteCurrency);
+        }
+
+        foreach (var entry in ChangeTracker.Entries<FinancialSetting>()
+                     .Where(entry => entry.State is EntityState.Added or EntityState.Modified))
+        {
+            entry.Entity.Currency = Upper(entry.Entity.Currency);
+        }
+    }
+
     private void ApplyUserOwnership()
     {
         foreach (var entry in ChangeTracker.Entries<AppUser>()
@@ -395,6 +438,8 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entry.Entity.Username = entry.Entity.Username.Trim();
             entry.Entity.NormalizedUsername = entry.Entity.Username.ToUpperInvariant();
         }
+
+        NormalizeCurrencies();
 
         foreach (var entry in ChangeTracker.Entries<IUserOwnedEntity>()
                      .Where(entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
