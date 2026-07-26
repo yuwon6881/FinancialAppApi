@@ -95,6 +95,7 @@ public sealed record InvestmentInstrumentSetupDto(
     bool IsCustom,
     bool IsArchived,
     string? AllocationSleeve,
+    int AllocationOrder,
     bool CanDelete,
     bool CanArchive,
     string? ArchiveUnavailableReason);
@@ -411,7 +412,7 @@ public sealed class InvestmentPortfolioService(
             return new InvestmentInstrumentSetupDto(
                 value.Id, value.Symbol, value.Name, value.Type, value.Exchange, value.Mic, value.Country,
                 value.Currency, value.ProviderSymbol, value.ProviderMic, value.IsCustom, value.IsArchived,
-                value.AllocationSleeve,
+                value.AllocationSleeve, value.AllocationOrder,
                 !hasHistory, canArchive, canArchive ? null : "Close all units before archiving this investment.");
         }).ToList();
 

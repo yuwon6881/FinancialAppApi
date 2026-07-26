@@ -55,4 +55,28 @@ public sealed class InvestmentAllocationController(
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return NoContent();
     }
+
+    [HttpPut("allocation/order")]
+    public async Task<IActionResult> UpdateAllocationOrder(AllocationOrderMutationDto dto)
+    {
+        if (dto.InstrumentIds.Count != dto.InstrumentIds.Distinct().Count())
+            return BadRequest(new { message = "Each investment may appear only once in the classification order." });
+
+        var instruments = await context.InvestmentInstruments
+            .Where(value => dto.InstrumentIds.Contains(value.Id))
+            .ToDictionaryAsync(value => value.Id, HttpContext.RequestAborted);
+        if (instruments.Count != dto.InstrumentIds.Count)
+            return BadRequest(new { message = "The classification order contains an unknown investment." });
+
+        for (var index = 0; index < dto.InstrumentIds.Count; index++)
+        {
+            var instrument = instruments[dto.InstrumentIds[index]];
+            instrument.AllocationOrder = index;
+            instrument.UpdatedAt = DateTime.UtcNow;
+        }
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+        return NoContent();
+    }
 }
+
+public sealed record AllocationOrderMutationDto(IReadOnlyList<Guid> InstrumentIds);

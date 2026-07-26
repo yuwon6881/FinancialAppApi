@@ -17,7 +17,8 @@ public sealed record InvestmentAllocationAssignmentDto(
     Guid InstrumentId,
     string Symbol,
     string Name,
-    string? Sleeve);
+    string? Sleeve,
+    int Order);
 
 public sealed record InvestmentSleeveAllocationDto(
     string Sleeve,
@@ -80,8 +81,9 @@ public sealed class InvestmentAllocationService(AppDbContext context)
             .SingleOrDefaultAsync(cancellationToken);
         var plan = ToDto(planEntity);
         var assignments = instruments.Select(value => new InvestmentAllocationAssignmentDto(
-                value.Id, value.Symbol, value.Name, value.AllocationSleeve))
-            .OrderBy(value => value.Symbol)
+                value.Id, value.Symbol, value.Name, value.AllocationSleeve, value.AllocationOrder))
+            .OrderBy(value => value.Order)
+            .ThenBy(value => value.Symbol)
             .ToList();
         var reasons = new List<string>();
         var freshnessInputs = new List<(string Label, DateTime? FetchedAt)>();

@@ -53,6 +53,7 @@ public sealed class InvestmentInstrument : IUserOwnedEntity
     public bool IsCustom { get; set; }
     public bool IsArchived { get; set; }
     [MaxLength(32)] public string? AllocationSleeve { get; set; }
+    public int AllocationOrder { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }

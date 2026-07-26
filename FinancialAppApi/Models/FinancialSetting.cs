@@ -56,9 +56,8 @@ public class FinancialSetting : IUserOwnedEntity
     // guarantees the summary fires exactly once per cycle across all of a user's devices.
     public string? LastSummaryCycleSeen { get; set; }
 
-    // Account-level kill switch for recurring-payment push reminders. Defaults to false so
-    // reminders stay opt-in: existing accounts (and brand-new ones) never receive a push until
-    // the user explicitly enables it, even if individual recurring payments have reminders on.
+    // Legacy/denormalized account status retained for compatibility. Enabled device
+    // subscriptions are authoritative; subscribe/unsubscribe keeps this value in sync.
     [Required]
     public bool PushRemindersEnabled { get; set; }
 }

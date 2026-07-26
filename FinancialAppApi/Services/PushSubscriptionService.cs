@@ -19,8 +19,11 @@ public class PushSubscriptionService
 
     public async Task<PushStatusResult> GetStatusAsync(string? deviceId, CancellationToken cancellationToken = default)
     {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
-        var accountEnabled = setting?.PushRemindersEnabled ?? false;
+        // Live device subscriptions are the source of truth. This also self-heals accounts where
+        // the legacy account-wide toggle was turned off by one device while another stayed opted in.
+        var hasEnabledSubscription = await _context.PushSubscriptions
+            .AnyAsync(s => s.Enabled, cancellationToken);
+        var accountEnabled = hasEnabledSubscription;
 
         var deviceSubscribed = false;
         if (!string.IsNullOrWhiteSpace(deviceId))
@@ -57,6 +60,7 @@ public class PushSubscriptionService
             existing.FcmToken = fcmToken;
             existing.Enabled = true;
             existing.UpdatedAt = now;
+            await EnableAccountAsync(cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
             return existing;
         }
@@ -72,6 +76,7 @@ public class PushSubscriptionService
         };
 
         _context.PushSubscriptions.Add(subscription);
+        await EnableAccountAsync(cancellationToken);
         try
         {
             await _context.SaveChangesAsync(cancellationToken);
@@ -102,7 +107,26 @@ public class PushSubscriptionService
         }
 
         _context.PushSubscriptions.Remove(existing);
+        var hasAnotherEnabledDevice = await _context.PushSubscriptions
+            .AnyAsync(s => s.Id != existing.Id && s.Enabled, cancellationToken);
+        if (!hasAnotherEnabledDevice)
+        {
+            var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
+            if (setting != null)
+            {
+                setting.PushRemindersEnabled = false;
+            }
+        }
         await _context.SaveChangesAsync(cancellationToken);
         return true;
+    }
+
+    private async Task EnableAccountAsync(CancellationToken cancellationToken)
+    {
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
+        if (setting != null)
+        {
+            setting.PushRemindersEnabled = true;
+        }
     }
 }

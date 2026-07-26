@@ -192,6 +192,9 @@ public sealed class InvestmentsController(
         }
         var instrument = MapInstrument(dto);
         instrument.Id = dto.Id ?? Guid.NewGuid();
+        instrument.AllocationOrder = (await context.InvestmentInstruments
+            .Select(value => (int?)value.AllocationOrder)
+            .MaxAsync(HttpContext.RequestAborted) ?? -1) + 1;
         context.InvestmentInstruments.Add(instrument);
         try
         {

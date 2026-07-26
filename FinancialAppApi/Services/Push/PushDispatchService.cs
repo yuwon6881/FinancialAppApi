@@ -316,9 +316,23 @@ public class PushDispatchService
     {
         // This job spans every account, so it must bypass the per-request tenant query filter
         // (there is no "current user" yet) purely to discover who is opted in.
+        var subscribedUserIds = await context.PushSubscriptions
+            .IgnoreQueryFilters()
+            .Where(s => s.Enabled)
+            .Select(s => s.UserId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        if (subscribedUserIds.Count == 0)
+        {
+            return new Dictionary<string, DispatchCandidateUser>();
+        }
+
+        // Enabled device subscriptions, rather than the legacy account flag, are authoritative.
+        // This preserves delivery to mobile when an older desktop client previously cleared the
+        // account flag and left the mobile subscription intact.
         var settings = await context.FinancialSettings
             .IgnoreQueryFilters()
-            .Where(s => s.PushRemindersEnabled)
+            .Where(s => subscribedUserIds.Contains(s.UserId))
             .Select(s => new { s.UserId, s.CycleDay })
             .ToListAsync(cancellationToken);
         if (settings.Count == 0)

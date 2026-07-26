@@ -32,20 +32,20 @@ public class PushDispatchServiceTests
     }
 
     [Fact]
-    public async Task DispatchAsync_SkipsAccount_WhenGlobalPushRemindersAreDisabled()
+    public async Task DispatchAsync_UsesLiveDeviceWhenLegacyGlobalFlagIsDisabled()
     {
         var dbName = NewDbName();
         var today = new DateOnly(2026, 7, 10);
         await SeedAsync(dbName, "user-a",
-            NewPayment("rec-1", dueDate: today.Day, leadDays: 3),
+            NewPayment("rec-1", dueDate: today.AddDays(3).Day, leadDays: 3),
             pushRemindersEnabled: false);
         var sender = new FakeFcmPushSender();
         var service = NewDispatchService(dbName, Clock(today), sender);
 
         var summary = await service.DispatchAsync();
 
-        Assert.Equal(0, summary.Sent);
-        Assert.Empty(sender.Sent);
+        Assert.Equal(1, summary.Sent);
+        Assert.Single(sender.Sent);
     }
 
     [Fact]
