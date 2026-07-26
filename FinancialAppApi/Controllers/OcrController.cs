@@ -78,6 +78,44 @@ public class OcrController : ControllerBase
     }
 
     [AuthorizeToken]
+    [EnableRateLimiting("ocr")]
+    [HttpPost("scan-investment/jobs")]
+    [RequestSizeLimit(11 * 1024 * 1024)]
+    public async Task<IActionResult> CreateInvestmentScanJobEndpoint(IFormFile? image)
+    {
+        var username = GetUsername();
+        var userId = GetUserId();
+        if (username == null || userId == null)
+            return Unauthorized(new { message = "Invalid session" });
+
+        var created = await _scanJobService.CreateScanJobAsync(
+            userId,
+            username,
+            image,
+            HttpContext.RequestAborted,
+            scanType: "investment");
+        if (created.Status == CreateScanJobStatus.TooManyOutstandingJobs)
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = created.Message });
+        if (created.Status == CreateScanJobStatus.StorageUnavailable)
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = created.Message });
+        if (created.Status != CreateScanJobStatus.Created)
+            return BadRequest(new { message = created.Message });
+
+        try
+        {
+            await _dispatcher.DispatchAsync(created.JobId!);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to dispatch investment scan job {JobId}.", created.JobId);
+            await _scanJobService.MarkDispatchFailedAsync(created.JobId!);
+            return StatusCode(503, new { message = "Could not start investment scan. Please try again." });
+        }
+
+        return Accepted(new { scanId = created.JobId, status = "queued" });
+    }
+
+    [AuthorizeToken]
     [HttpGet("scan-receipt/jobs/{jobId}")]
     public async Task<IActionResult> GetScanJob(string jobId)
     {

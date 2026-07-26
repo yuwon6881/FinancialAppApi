@@ -34,7 +34,7 @@ public sealed class InvestmentAccountingService
         public decimal? ContributionsApp = 0;
     }
 
-    private sealed record TransferBasis(decimal Units, decimal Native, decimal? App);
+    private sealed record BasisAllocation(decimal Native, decimal? App);
 
     // historicalFx: optional fallback supplying the reporting FX rate for a
     // transaction whose instrument currency differs from the app currency. Lets
@@ -47,7 +47,6 @@ public sealed class InvestmentAccountingService
         Func<InvestmentTransaction, decimal?>? historicalFx = null)
     {
         var positions = new Dictionary<(Guid AccountId, Guid InstrumentId), MutablePosition>();
-        var transferBasis = new Dictionary<Guid, TransferBasis>();
         var warnings = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var transaction in OrderTransactions(transactions))
@@ -67,7 +66,6 @@ public sealed class InvestmentAccountingService
             var feesAndTaxes = transaction.Fees + transaction.Taxes;
             switch (transaction.Type)
             {
-                case "OpeningPosition":
                 case "Buy":
                 {
                     RequirePositive(transaction.Units, "Units must be greater than zero.");
@@ -114,54 +112,6 @@ public sealed class InvestmentAccountingService
                     AddConverted(ref position.RealisedApp, -charge, fx);
                     break;
                 }
-                case "Split":
-                {
-                    RequirePositive(transaction.Units, "Split ratio must be greater than zero.");
-                    position.Units *= transaction.Units;
-                    break;
-                }
-                case "TransferOut":
-                {
-                    RequireAvailableUnits(position, transaction.Units);
-                    var allocated = AllocateBasis(position, transaction.Units);
-                    transferBasis[transaction.Id] = new TransferBasis(transaction.Units, allocated.Native, allocated.App);
-                    break;
-                }
-                case "TransferIn":
-                {
-                    RequirePositive(transaction.Units, "Units must be greater than zero.");
-                    TransferBasis transferred;
-                    if (transaction.LinkedTransferId is Guid linkedId &&
-                        transferBasis.Remove(linkedId, out var linked))
-                    {
-                        if (linked.Units != transaction.Units)
-                        {
-                            throw new InvestmentValidationException(
-                                "Linked transfer-in units must match the transfer-out units.");
-                        }
-                        transferred = linked;
-                    }
-                    else if (transaction.LinkedTransferId is not null)
-                    {
-                        throw new InvestmentValidationException(
-                            "A linked transfer-in must reference one unused transfer-out.");
-                    }
-                    else
-                    {
-                        var basis = transaction.CashAmount ??
-                            throw new InvestmentValidationException("External transfer-in requires transferred cost basis.");
-                        RequirePositive(basis, "Transferred cost basis must be greater than zero.");
-                        transferred = new TransferBasis(
-                            transaction.Units,
-                            basis,
-                            fx is null ? null : basis * fx.Value);
-                    }
-                    position.Units += transaction.Units;
-                    position.Basis += transferred.Native;
-                    if (position.BasisApp is null || transferred.App is null) position.BasisApp = null;
-                    else position.BasisApp += transferred.App.Value;
-                    break;
-                }
                 default:
                     throw new InvestmentValidationException($"Unsupported investment transaction type '{transaction.Type}'.");
             }
@@ -193,21 +143,6 @@ public sealed class InvestmentAccountingService
             .ThenBy(value => value.Id)
             .ToList();
 
-        // PostgreSQL timestamp precision can make paired legs tie, leaving GUID ordering to put
-        // the dependent transfer-in first. Move only that leg behind its own transfer-out;
-        // unrelated same-day activity retains its stable chronological order.
-        for (var index = 0; index < ordered.Count; index++)
-        {
-            var incoming = ordered[index];
-            if (incoming.Type != "TransferIn" || incoming.LinkedTransferId is not Guid sourceId)
-                continue;
-            var sourceIndex = ordered.FindIndex(index + 1, value => value.Id == sourceId);
-            if (sourceIndex < 0) continue;
-            ordered.RemoveAt(index);
-            sourceIndex--;
-            ordered.Insert(sourceIndex + 1, incoming);
-        }
-
         return ordered;
     }
 
@@ -231,7 +166,7 @@ public sealed class InvestmentAccountingService
         return gross;
     }
 
-    private static TransferBasis AllocateBasis(MutablePosition position, decimal units)
+    private static BasisAllocation AllocateBasis(MutablePosition position, decimal units)
     {
         var ratio = units / position.Units;
         var basis = position.Basis * ratio;
@@ -245,7 +180,7 @@ public sealed class InvestmentAccountingService
             position.Basis = 0;
             if (position.BasisApp is not null) position.BasisApp = 0;
         }
-        return new TransferBasis(units, basis, app);
+        return new BasisAllocation(basis, app);
     }
 
     private static void RequireAvailableUnits(MutablePosition position, decimal units)

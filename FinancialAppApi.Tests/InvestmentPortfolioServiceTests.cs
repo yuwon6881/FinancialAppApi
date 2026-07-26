@@ -22,13 +22,18 @@ public sealed class InvestmentPortfolioServiceTests
         context.InvestmentTransactions.Add(new InvestmentTransaction
         {
             AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
-            Type = "OpeningPosition", TradeDate = new DateOnly(2026, 7, 1),
+            Type = "Buy", TradeDate = new DateOnly(2026, 7, 1),
             Units = 0.7642m, UnitPrice = 650m, CashAmount = 496.73m
         });
         context.InvestmentCashFlows.Add(new InvestmentCashFlow
         {
             AccountId = account.Id, Currency = "MYR", Type = "Deposit",
             Amount = 2.13m, Date = new DateOnly(2026, 7, 23)
+        });
+        context.InvestmentCashFlows.Add(new InvestmentCashFlow
+        {
+            AccountId = account.Id, Currency = "USD", Type = "Deposit",
+            Amount = 496.73m, Date = new DateOnly(2026, 7, 1)
         });
         context.MarketPriceBars.Add(new MarketPriceBar
         {
@@ -73,7 +78,7 @@ public sealed class InvestmentPortfolioServiceTests
         context.InvestmentTransactions.Add(new InvestmentTransaction
         {
             AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
-            Type = "OpeningPosition", TradeDate = new DateOnly(2026, 7, 1),
+            Type = "Buy", TradeDate = new DateOnly(2026, 7, 1),
             Units = 1, UnitPrice = 10, CashAmount = 10
         });
         context.ManualPriceOverrides.AddRange(
@@ -128,7 +133,7 @@ public sealed class InvestmentPortfolioServiceTests
     }
 
     [Fact]
-    public async Task Buy_ReducesCash_WhileOpeningPositionDoesNot()
+    public async Task Buy_ReducesDepositedCash()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
@@ -138,15 +143,14 @@ public sealed class InvestmentPortfolioServiceTests
         await context.SaveChangesAsync();
 
         context.InvestmentCashFlows.Add(new InvestmentCashFlow { AccountId = account.Id, Currency = "USD", Type = "Deposit", Amount = 1000, Date = new DateOnly(2025, 1, 1) });
-        context.InvestmentTransactions.AddRange(
-            new InvestmentTransaction { AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument, Type = "OpeningPosition", TradeDate = new DateOnly(2025, 1, 1), Units = 5, UnitPrice = 10, CashAmount = 50 },
+        context.InvestmentTransactions.Add(
             new InvestmentTransaction { AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument, Type = "Buy", TradeDate = new DateOnly(2025, 2, 1), Units = 2, UnitPrice = 10, CashAmount = 20, Fees = 1 });
         await context.SaveChangesAsync();
 
         var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
 
         var balance = Assert.Single(portfolio.CashBalances);
-        // deposit 1000; opening position moves no cash; buy costs 20 + 1 fee => 979
+        // deposit 1000; buy costs 20 + 1 fee => 979
         Assert.Equal(979m, balance.Amount);
     }
 

@@ -19,6 +19,9 @@ public class ReceiptScanJob : IUserOwnedEntity
     [Required]
     public string MimeType { get; set; } = "image/jpeg";
 
+    [Required]
+    public string ScanType { get; set; } = "receipt";
+
     // Jobs keep only this private Supabase Storage object path in Postgres. The
     // object itself is deleted as soon as OCR reaches a terminal state.
     [StringLength(512)]

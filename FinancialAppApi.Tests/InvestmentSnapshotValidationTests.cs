@@ -7,43 +7,17 @@ namespace FinancialAppApi.Tests;
 public class InvestmentSnapshotValidationTests
 {
     [Fact]
-    public void ValidateTransactionSnapshot_AcceptsAConsistentInternalTransfer()
+    public void ValidateTransactionSnapshot_AcceptsASupportedActivity()
     {
-        var outgoing = Transaction("TransferOut", accountId: Guid.NewGuid(), units: 5);
-        var incoming = Transaction(
-            "TransferIn",
-            accountId: Guid.NewGuid(),
-            units: 5,
-            linkedTransferId: outgoing.Id,
-            instrumentId: outgoing.InstrumentId);
-
-        Assert.Null(InvestmentsController.ValidateTransactionSnapshot([outgoing, incoming]));
+        Assert.Null(InvestmentsController.ValidateTransactionSnapshot(
+            [Transaction("Buy", accountId: Guid.NewGuid(), units: 5)]));
     }
 
     [Fact]
-    public void ValidateTransactionSnapshot_RejectsAMismatchedInternalTransfer()
+    public void ValidateTransactionSnapshot_RejectsARemovedActivityType()
     {
-        var outgoing = Transaction("TransferOut", accountId: Guid.NewGuid(), units: 5);
-        var incoming = Transaction(
-            "TransferIn",
-            accountId: Guid.NewGuid(),
-            units: 50,
-            linkedTransferId: outgoing.Id,
-            instrumentId: outgoing.InstrumentId);
-
-        Assert.NotNull(InvestmentsController.ValidateTransactionSnapshot([outgoing, incoming]));
-    }
-
-    [Fact]
-    public void ValidateTransactionSnapshot_RejectsALoneLinkedTransferLeg()
-    {
-        var incoming = Transaction(
-            "TransferIn",
-            accountId: Guid.NewGuid(),
-            units: 5,
-            linkedTransferId: Guid.NewGuid());
-
-        Assert.NotNull(InvestmentsController.ValidateTransactionSnapshot([incoming]));
+        Assert.NotNull(InvestmentsController.ValidateTransactionSnapshot(
+            [Transaction("Unsupported", accountId: Guid.NewGuid(), units: 5)]));
     }
 
     [Fact]
@@ -88,7 +62,6 @@ public class InvestmentSnapshotValidationTests
         string type,
         Guid accountId,
         decimal units,
-        Guid? linkedTransferId = null,
         Guid? instrumentId = null)
         => new(
             Guid.NewGuid(),
@@ -101,6 +74,5 @@ public class InvestmentSnapshotValidationTests
             null,
             0,
             0,
-            linkedTransferId,
             DateTime.UtcNow);
 }

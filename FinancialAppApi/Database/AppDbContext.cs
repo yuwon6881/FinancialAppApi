@@ -190,6 +190,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.Property(e => e.Status).HasDefaultValue("queued");
             entity.Property(e => e.MimeType).HasDefaultValue("image/jpeg");
+            entity.Property(e => e.ScanType).HasDefaultValue("receipt");
             entity.Property(e => e.StorageObjectPath).HasMaxLength(512);
             entity.HasIndex(e => new { e.UserId, e.Status, e.UpdatedAt });
             // Supports lease recovery and retention cleanup without scanning image/result data.
@@ -269,7 +270,6 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(e => new { e.UserId, e.AccountId, e.InstrumentId, e.TradeDate });
             entity.HasOne(e => e.Account).WithMany().HasForeignKey(e => e.AccountId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.Instrument).WithMany().HasForeignKey(e => e.InstrumentId).OnDelete(DeleteBehavior.Restrict);
-            entity.HasOne(e => e.LinkedTransfer).WithMany().HasForeignKey(e => e.LinkedTransferId).OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<InvestmentCashFlow>(entity =>

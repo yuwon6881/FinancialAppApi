@@ -58,13 +58,7 @@ public sealed class InvestmentsController(
             .ThenByDescending(value => value.Id)
             .Skip((page - 1) * pageSize).Take(pageSize)
             .ToListAsync(HttpContext.RequestAborted);
-        var rowIds = rows.Select(value => value.Id).ToList();
-        var pairedOutgoingIds = await context.InvestmentTransactions.AsNoTracking()
-            .Where(value => value.LinkedTransferId != null && rowIds.Contains(value.LinkedTransferId.Value))
-            .Select(value => value.LinkedTransferId!.Value)
-            .ToHashSetAsync(HttpContext.RequestAborted);
-        var items = rows.Select(value =>
-            InvestmentPortfolioService.ToDto(value, pairedOutgoingIds.Contains(value.Id))).ToList();
+        var items = rows.Select(InvestmentPortfolioService.ToDto).ToList();
         return Ok(new PagedResult<InvestmentTransactionDto>(items, total, page, pageSize));
     }
 
@@ -273,22 +267,6 @@ public sealed class InvestmentsController(
         var transaction = result.Transaction!;
         transaction.Id = dto.Id ?? Guid.NewGuid();
         context.InvestmentTransactions.Add(transaction);
-        InvestmentTransaction? transferIn = null;
-        if (transaction.Type == "TransferOut" && dto.DestinationAccountId is Guid destination)
-        {
-            transferIn = new InvestmentTransaction
-            {
-                Id = dto.DestinationLegId ?? Guid.NewGuid(),
-                AccountId = destination,
-                InstrumentId = transaction.InstrumentId,
-                Type = "TransferIn",
-                TradeDate = transaction.TradeDate,
-                Units = transaction.Units,
-                LinkedTransferId = transaction.Id,
-                Instrument = transaction.Instrument
-            };
-            context.InvestmentTransactions.Add(transferIn);
-        }
         var validation = await ValidateHistoryAsync(null);
         if (validation is not null) return BadRequest(new { message = validation });
         var cashValidation = await ValidateCashHistoryAsync();
@@ -296,7 +274,7 @@ public sealed class InvestmentsController(
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return Created(
             $"/api/investments/transactions/{transaction.Id}",
-            InvestmentPortfolioService.ToDto(transaction, transferIn is not null));
+            InvestmentPortfolioService.ToDto(transaction));
     }
 
     [HttpPut("transactions/{id:guid}")]
@@ -306,9 +284,6 @@ public sealed class InvestmentsController(
             .Include(value => value.Instrument)
             .FirstOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
         if (existing is null) return NotFound();
-        if (existing.LinkedTransferId is not null ||
-            await context.InvestmentTransactions.AnyAsync(value => value.LinkedTransferId == id, HttpContext.RequestAborted))
-            return Conflict(new { message = "Paired internal transfers must be deleted and recreated." });
         var result = await BuildTransactionAsync(dto, existing);
         if (result.Error is not null) return BadRequest(new { message = result.Error });
         var validation = await ValidateHistoryAsync(null);
@@ -325,10 +300,6 @@ public sealed class InvestmentsController(
         var transaction = await context.InvestmentTransactions
             .FirstOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
         if (transaction is null) return NotFound();
-        var linked = await context.InvestmentTransactions
-            .Where(value => value.LinkedTransferId == id || value.Id == transaction.LinkedTransferId)
-            .ToListAsync(HttpContext.RequestAborted);
-        context.InvestmentTransactions.RemoveRange(linked);
         context.InvestmentTransactions.Remove(transaction);
         var validation = await ValidateHistoryAsync(id);
         if (validation is not null)
@@ -337,8 +308,7 @@ public sealed class InvestmentsController(
             return Conflict(new { message = $"This activity cannot be deleted because later activity would become invalid: {validation}" });
         }
         var snapshot = new DeletedTransactionsSnapshot(
-            linked.Append(transaction).DistinctBy(value => value.Id)
-                .Select(value => InvestmentPortfolioService.ToDto(value)).ToList());
+            [InvestmentPortfolioService.ToDto(transaction)]);
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return Ok(snapshot);
     }
@@ -346,7 +316,7 @@ public sealed class InvestmentsController(
     [HttpPost("transactions/restore")]
     public async Task<IActionResult> RestoreTransactions(DeletedTransactionsSnapshot snapshot)
     {
-        if (snapshot.Transactions.Count is < 1 or > 2)
+        if (snapshot.Transactions.Count != 1)
             return BadRequest(new { message = "The activity snapshot is invalid." });
         var snapshotError = ValidateTransactionSnapshot(snapshot.Transactions);
         if (snapshotError is not null)
@@ -383,7 +353,6 @@ public sealed class InvestmentsController(
                 CashAmount = item.CashAmount,
                 Fees = item.Fees,
                 Taxes = item.Taxes,
-                LinkedTransferId = item.LinkedTransferId,
                 CreatedAt = item.CreatedAt
             };
             restored.Add(transaction);
@@ -623,16 +592,10 @@ public sealed class InvestmentsController(
             return (null, "Enter a valid trade date.");
         if (dto.Fees < 0 || dto.Taxes < 0)
             return (null, "Fees and taxes cannot be negative.");
-        if (dto.DestinationAccountId == dto.AccountId)
-            return (null, "Transfer destination must be a different account.");
-        if (dto.DestinationAccountId is Guid destination &&
-            !await context.InvestmentAccounts.AnyAsync(value => value.Id == destination && !value.IsArchived, HttpContext.RequestAborted))
-            return (null, "Transfer destination account was not found.");
-
         decimal units = dto.Units ?? 0;
         decimal? unitPrice = dto.UnitPrice;
         decimal? cash = dto.CashAmount;
-        if (dto.Type is "Buy" or "Sell" or "OpeningPosition")
+        if (dto.Type is "Buy" or "Sell")
         {
             var supplied = new[] { dto.Units is > 0, dto.UnitPrice is > 0, dto.CashAmount is > 0 }.Count(value => value);
             if (supplied < 2) return (null, "Enter any two of units, unit price, and gross amount.");
@@ -643,12 +606,6 @@ public sealed class InvestmentsController(
             if (Math.Abs(expected - cash.Value) > Math.Max(0.01m, cash.Value * 0.000001m))
                 return (null, "Units, unit price, and gross amount do not agree.");
         }
-        else if (dto.Type is "Split" or "TransferIn" or "TransferOut")
-        {
-            if (units <= 0) return (null, dto.Type == "Split" ? "Enter a positive split ratio." : "Enter positive units.");
-        }
-        if (dto.Type == "TransferIn" && dto.LinkedTransferId is null && cash is not > 0)
-            return (null, "External transfer-in requires transferred cost basis.");
         if (dto.Type == "Dividend" && cash is not > 0)
             return (null, "Enter a positive gross dividend.");
         if (dto.Type == "FeeTax" && (cash ?? 0) + dto.Fees + dto.Taxes <= 0)
@@ -664,7 +621,6 @@ public sealed class InvestmentsController(
         value.CashAmount = cash;
         value.Fees = dto.Fees;
         value.Taxes = dto.Taxes;
-        value.LinkedTransferId = dto.LinkedTransferId;
         value.UpdatedAt = DateTime.UtcNow;
         return (value, null);
     }
@@ -679,27 +635,6 @@ public sealed class InvestmentsController(
                 item.Taxes < 0))
         {
             return "The activity snapshot contains invalid values.";
-        }
-
-        if (items.Count == 1)
-        {
-            var item = items[0];
-            if (item.Type == "TransferIn" && item.LinkedTransferId is not null)
-                return "A linked transfer must restore both activity legs.";
-            return null;
-        }
-
-        var outgoing = items.SingleOrDefault(item => item.Type == "TransferOut");
-        var incoming = items.SingleOrDefault(item => item.Type == "TransferIn");
-        if (outgoing is null || incoming is null ||
-            incoming.LinkedTransferId != outgoing.Id ||
-            outgoing.LinkedTransferId is not null ||
-            outgoing.AccountId == incoming.AccountId ||
-            outgoing.InstrumentId != incoming.InstrumentId ||
-            outgoing.TradeDate != incoming.TradeDate ||
-            outgoing.Units != incoming.Units)
-        {
-            return "The linked transfer snapshot is inconsistent.";
         }
 
         return null;
@@ -932,10 +867,7 @@ public sealed record InvestmentTransactionMutationDto(
     decimal? CashAmount,
     decimal Fees,
     decimal Taxes,
-    Guid? LinkedTransferId,
-    Guid? DestinationAccountId,
-    Guid? Id = null,
-    Guid? DestinationLegId = null);
+    Guid? Id = null);
 
 public sealed record ManualPriceMutationDto(
     Guid InstrumentId,

@@ -129,9 +129,7 @@ public sealed record InvestmentTransactionDto(
     decimal? CashAmount,
     decimal Fees,
     decimal Taxes,
-    Guid? LinkedTransferId,
-    DateTime CreatedAt,
-    bool IsPairedTransfer = false);
+    DateTime CreatedAt);
 
 public sealed record ManualPriceDto(
     Guid Id,
@@ -291,8 +289,7 @@ public sealed class InvestmentPortfolioService(
             .Sum(value => value.Amount);
 
         // Uninvested cash per account+currency: explicit deposits/withdrawals plus
-        // the implicit cash effect of trades and income. Opening positions declare
-        // existing holdings and do not move cash.
+        // the implicit cash effect of trades and income.
         var cashByKey = new Dictionary<(Guid AccountId, string Currency), decimal>();
         void AddCash(Guid accountId, string currency, decimal amount)
         {
@@ -625,7 +622,7 @@ public sealed class InvestmentPortfolioService(
         IReadOnlyList<InvestmentHoldingDto> holdings,
         IReadOnlyList<string> warnings)
     {
-        if (holdings.Count == 0) return ["Add an opening position or transaction to begin portfolio analysis."];
+        if (holdings.Count == 0) return ["Add a buy transaction to begin portfolio analysis."];
         var insights = new List<string>();
         var valued = holdings.Where(value => value.ValueApp is not null).ToList();
         if (valued.Count > 0)
@@ -649,11 +646,10 @@ public sealed class InvestmentPortfolioService(
         return insights;
     }
 
-    public static InvestmentTransactionDto ToDto(InvestmentTransaction value, bool isPairedTransfer = false) => new(
+    public static InvestmentTransactionDto ToDto(InvestmentTransaction value) => new(
         value.Id, value.AccountId, value.InstrumentId, value.Type, value.TradeDate,
         value.Units, value.UnitPrice, value.CashAmount, value.Fees, value.Taxes,
-        value.LinkedTransferId, value.CreatedAt,
-        isPairedTransfer || value.LinkedTransferId is not null);
+        value.CreatedAt);
 
     public static ManualPriceDto ToDto(ManualPriceOverride value) => new(
         value.Id, value.InstrumentId, value.MarketDate, value.Price);

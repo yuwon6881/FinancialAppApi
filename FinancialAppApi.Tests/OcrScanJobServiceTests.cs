@@ -25,8 +25,25 @@ public class OcrScanJobServiceTests
         Assert.Equal("alice", job.Username);
         Assert.Equal("queued", job.Status);
         Assert.Equal("image/heic", job.MimeType);
+        Assert.Equal("receipt", job.ScanType);
         Assert.EndsWith(".heic", job.StorageObjectPath, StringComparison.Ordinal);
         Assert.Equal(HeicBytes(), imageStore.Objects[job.StorageObjectPath!]);
+    }
+
+    [Fact]
+    public async Task CreateScanJobAsync_PersistsInvestmentScanType()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = NewService(context, new FakeReceiptImageStore());
+
+        var result = await service.CreateScanJobAsync(
+            TestHelpers.DefaultUserId,
+            "alice",
+            NewFormFile("activity.heic", "application/octet-stream", HeicBytes()),
+            scanType: "investment");
+
+        Assert.Equal(CreateScanJobStatus.Created, result.Status);
+        Assert.Equal("investment", (await context.ReceiptScanJobs.SingleAsync()).ScanType);
     }
 
     [Fact]

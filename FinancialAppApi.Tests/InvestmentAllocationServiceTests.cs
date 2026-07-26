@@ -46,7 +46,8 @@ public sealed class InvestmentAllocationServiceTests
             AccountId = first.Id,
             Currency = "USD",
             Type = "Deposit",
-            Amount = 5,
+            // Fund this account's $50 of buys and leave $5 available for allocation.
+            Amount = 55,
             Date = DateOnly.FromDateTime(DateTime.UtcNow)
         });
         await context.SaveChangesAsync();
@@ -222,7 +223,7 @@ public sealed class InvestmentAllocationServiceTests
             AccountId = account.Id,
             InstrumentId = instrument.Id,
             Instrument = instrument,
-            Type = "OpeningPosition",
+            Type = "Buy",
             TradeDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-2)),
             Units = value,
             UnitPrice = 1,

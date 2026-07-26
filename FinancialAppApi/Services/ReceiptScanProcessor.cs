@@ -15,6 +15,18 @@ public record ReceiptScanResult(
     string TxType,
     double Confidence);
 
+public record InvestmentActivityScanResult(
+    string? Type,
+    Guid? AccountId,
+    Guid? InstrumentId,
+    string? TradeDate,
+    decimal? Units,
+    decimal? UnitPrice,
+    decimal? CashAmount,
+    decimal? Fees,
+    decimal? Taxes,
+    double Confidence);
+
 public enum ReceiptScanProcessStatus
 {
     Processed,
@@ -132,7 +144,9 @@ public class ReceiptScanProcessor
 
         try
         {
-            var outcome = await ScanImageAsync(Convert.ToBase64String(imageData), job.MimeType);
+            var outcome = job.ScanType == "investment"
+                ? await ScanInvestmentImageAsync(Convert.ToBase64String(imageData), job.MimeType)
+                : await ScanReceiptImageAsync(Convert.ToBase64String(imageData), job.MimeType);
             if (outcome.ErrorMessage != null)
             {
                 _logger.LogWarning("Receipt scan job {JobId} failed with user-facing error: {Message}", jobId, outcome.ErrorMessage);
@@ -220,7 +234,7 @@ Rules:
 - ledgerCategory: pick the single most fitting ledger category (Essentials is typically for food/transport/bills, Rewards for entertainment/shopping, Growth for investments/education, Stability for savings/insurance, Income for salary/inflows).
 - If critical text is unclear, return the best supported value with low confidence; never invent receipt details.";
 
-    private async Task<ScanOutcome> ScanImageAsync(string base64Image, string mimeType)
+    private async Task<ScanOutcome> ScanReceiptImageAsync(string base64Image, string mimeType)
     {
         if (!_aiClient.IsConfigured)
         {
@@ -294,9 +308,131 @@ Rules:
         return ScanOutcome.Ok(new ReceiptScanResult(description, amount, date, category, ledgerCategory, "outflow", confidence));
     }
 
-    private sealed record ScanOutcome(ReceiptScanResult? Result, string? ErrorMessage)
+    private const string InvestmentScanSystemInstruction = @"Extract one investment activity from a broker confirmation, statement, or screenshot.
+Only these activity types are supported: Buy, Sell, Dividend, FeeTax.
+Rules:
+- Choose an accountId or instrumentId only from the supplied options and only when the image clearly supports the match.
+- Use FeeTax for a standalone broker fee or tax charge, not fees/taxes attached to a buy, sell, or dividend.
+- cashAmount is the positive gross trade amount, gross dividend, or standalone charge amount.
+- fees and taxes are separate non-negative amounts.
+- Return null for every field that is unclear, absent, or not applicable. Never guess.
+- For dropdown fields, choose the single most confident supported option; otherwise return null.
+- Dates must be YYYY-MM-DD and must be visibly supported by the image.";
+
+    private async Task<ScanOutcome> ScanInvestmentImageAsync(string base64Image, string mimeType)
     {
-        public static ScanOutcome Ok(ReceiptScanResult result) => new(result, null);
+        if (!_aiClient.IsConfigured)
+            return ScanOutcome.Failed("Investment scanning is not configured for this app.");
+
+        var accounts = await _context.InvestmentAccounts.AsNoTracking()
+            .Where(value => !value.IsArchived)
+            .OrderBy(value => value.Name)
+            .Select(value => new { id = value.Id, name = value.Name, baseCurrency = value.BaseCurrency })
+            .ToListAsync();
+        var instruments = await _context.InvestmentInstruments.AsNoTracking()
+            .Where(value => !value.IsArchived)
+            .OrderBy(value => value.Symbol)
+            .Select(value => new
+            {
+                id = value.Id,
+                symbol = value.Symbol,
+                name = value.Name,
+                currency = value.Currency,
+                exchange = value.Exchange
+            })
+            .ToListAsync();
+        if (accounts.Count == 0 || instruments.Count == 0)
+            return ScanOutcome.Failed("Add an investment account and investment before scanning activity.");
+
+        var context = JsonSerializer.Serialize(new { accounts, instruments });
+        string text;
+        try
+        {
+            text = await _aiClient.GenerateTextAsync(
+                [AiPart.FromImage(mimeType, base64Image), AiPart.FromText($"Available options JSON: {context}")],
+                new AiGenerationOptions(
+                    Feature: "investment-ocr",
+                    Temperature: 0,
+                    MaxOutputTokens: 280,
+                    SystemInstruction: InvestmentScanSystemInstruction,
+                    ResponseJsonSchema: AiResponseSchemas.InvestmentActivityScan,
+                    ThinkingLevel: "low",
+                    ModelConfigurationKey: "AiModels:ReceiptOcr"));
+        }
+        catch (AiClientException ex)
+        {
+            return ScanOutcome.Failed(ex.Message);
+        }
+
+        using var resultDoc = JsonDocument.Parse(text);
+        var root = resultDoc.RootElement;
+        string? ReadString(string name) =>
+            root.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null;
+        decimal? ReadNonNegative(string name, bool positive = false)
+        {
+            if (!root.TryGetProperty(name, out var property) || property.ValueKind != JsonValueKind.Number)
+                return null;
+            var value = property.GetDecimal();
+            return positive ? value > 0 ? value : null : value >= 0 ? value : null;
+        }
+
+        var rawType = ReadString("type");
+        var type = InvestmentKinds.TransactionTypes.FirstOrDefault(value =>
+            string.Equals(value, rawType, StringComparison.OrdinalIgnoreCase));
+        Guid? accountId = Guid.TryParse(ReadString("accountId"), out var parsedAccount) &&
+            accounts.Any(value => value.id == parsedAccount) ? parsedAccount : null;
+        Guid? instrumentId = Guid.TryParse(ReadString("instrumentId"), out var parsedInstrument) &&
+            instruments.Any(value => value.id == parsedInstrument) ? parsedInstrument : null;
+        string? tradeDate = null;
+        if (DateOnly.TryParseExact(ReadString("tradeDate"), "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var parsedDate) &&
+            parsedDate <= DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)))
+        {
+            tradeDate = parsedDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        }
+        var confidence = root.TryGetProperty("confidence", out var confidenceProperty) &&
+            confidenceProperty.ValueKind == JsonValueKind.Number
+                ? Math.Clamp(confidenceProperty.GetDouble(), 0, 1)
+                : 0.5;
+        var units = ReadNonNegative("units", positive: true);
+        var unitPrice = ReadNonNegative("unitPrice", positive: true);
+        var cashAmount = ReadNonNegative("cashAmount", positive: true);
+        var fees = ReadNonNegative("fees");
+        var taxes = ReadNonNegative("taxes");
+        if (type == "FeeTax")
+        {
+            var charge = (fees ?? 0) + (taxes ?? 0);
+            if (cashAmount is null && charge > 0) cashAmount = charge;
+            fees = null;
+            taxes = null;
+        }
+
+        var result = new InvestmentActivityScanResult(
+            type,
+            accountId,
+            instrumentId,
+            tradeDate,
+            units,
+            unitPrice,
+            cashAmount,
+            fees,
+            taxes,
+            confidence);
+        if (result.Type is null && result.AccountId is null && result.InstrumentId is null &&
+            result.TradeDate is null && result.Units is null && result.UnitPrice is null &&
+            result.CashAmount is null && result.Fees is null && result.Taxes is null)
+        {
+            return ScanOutcome.Failed("Could not identify investment activity in this image. Please try a clearer image.");
+        }
+
+        return ScanOutcome.Ok(result);
+    }
+
+    private sealed record ScanOutcome(object? Result, string? ErrorMessage)
+    {
+        public static ScanOutcome Ok(object result) => new(result, null);
         public static ScanOutcome Failed(string message) => new(null, message);
     }
 }

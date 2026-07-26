@@ -52,7 +52,8 @@ public class OcrScanJobService
         string userId,
         string username,
         IFormFile? image,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string scanType = "receipt")
     {
         if (image == null || image.Length == 0)
         {
@@ -112,6 +113,7 @@ public class OcrScanJobService
             Username = username,
             Status = "queued",
             MimeType = mimeType,
+            ScanType = scanType,
             StorageObjectPath = storageObjectPath,
             CreatedAt = now,
             UpdatedAt = now
@@ -157,7 +159,7 @@ public class OcrScanJobService
         object? result = null;
         if (!string.IsNullOrWhiteSpace(job.ResultJson))
         {
-            result = ObfuscateReceiptScanAmount(job.ResultJson);
+            result = ObfuscateScanNumbers(job.ResultJson, job.ScanType);
         }
 
         return new ScanJobResponse(
@@ -297,15 +299,22 @@ public class OcrScanJobService
         _ => ".img"
     };
 
-    private static object? ObfuscateReceiptScanAmount(string resultJson)
+    private static object? ObfuscateScanNumbers(string resultJson, string scanType)
     {
         var node = JsonNode.Parse(resultJson);
-        if (node is JsonObject obj &&
-            obj.TryGetPropertyValue("amount", out var amountNode) &&
-            amountNode is JsonValue amountValue &&
-            amountValue.TryGetValue<decimal>(out var amount))
+        if (node is not JsonObject obj) return node;
+
+        var fields = scanType == "investment"
+            ? new[] { "units", "unitPrice", "cashAmount", "fees", "taxes" }
+            : new[] { "amount" };
+        foreach (var field in fields)
         {
-            obj["amount"] = ObfuscationHelper.Obfuscate(amount);
+            if (obj.TryGetPropertyValue(field, out var amountNode) &&
+                amountNode is JsonValue amountValue &&
+                amountValue.TryGetValue<decimal>(out var amount))
+            {
+                obj[field] = ObfuscationHelper.Obfuscate(amount);
+            }
         }
 
         return node;

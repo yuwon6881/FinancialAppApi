@@ -185,6 +185,23 @@ internal static class AiResponseSchemas
         },
         ["description", "amount", "date", "category", "ledgerCategory", "confidence"]);
 
+    public static readonly object InvestmentActivityScan = Obj(
+        new Dictionary<string, object>
+        {
+            ["type"] = NullableString("Buy, Sell, Dividend, or FeeTax; null if unclear."),
+            ["accountId"] = NullableString("Exact available account id; null if unclear."),
+            ["instrumentId"] = NullableString("Exact available investment id; null if unclear."),
+            ["tradeDate"] = NullableString("Visible activity date in YYYY-MM-DD; null if unclear."),
+            ["units"] = NullableNumber("Positive units; null if unclear or not applicable."),
+            ["unitPrice"] = NullableNumber("Positive price per unit; null if unclear or not applicable."),
+            ["cashAmount"] = NullableNumber("Positive gross amount, dividend, or charge; null if unclear."),
+            ["fees"] = NullableNumber("Non-negative fee amount; null if not explicitly supported."),
+            ["taxes"] = NullableNumber("Non-negative tax amount; null if not explicitly supported."),
+            ["confidence"] = Num("Overall extraction confidence from 0 to 1.", 0, 1)
+        },
+        ["type", "accountId", "instrumentId", "tradeDate", "units", "unitPrice",
+            "cashAmount", "fees", "taxes", "confidence"]);
+
     private static object ActionPayload(IReadOnlyList<string> categories) => Obj(new Dictionary<string, object>
     {
         ["id"] = Str(),

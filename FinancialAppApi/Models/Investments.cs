@@ -16,8 +16,7 @@ public static class InvestmentKinds
 
     public static readonly HashSet<string> TransactionTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        "OpeningPosition", "Buy", "Sell", "Dividend", "FeeTax", "Split",
-        "TransferIn", "TransferOut"
+        "Buy", "Sell", "Dividend", "FeeTax"
     };
 
     public static readonly HashSet<string> CashFlowTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -86,8 +85,6 @@ public sealed class InvestmentTransaction : IUserOwnedEntity
     public decimal? CashAmount { get; set; }
     public decimal Fees { get; set; }
     public decimal Taxes { get; set; }
-    public Guid? LinkedTransferId { get; set; }
-    public InvestmentTransaction? LinkedTransfer { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }

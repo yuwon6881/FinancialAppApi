@@ -80,7 +80,7 @@ public sealed class InvestmentMarketDataTests
             AccountId = account.Id,
             InstrumentId = instrument.Id,
             Instrument = instrument,
-            Type = "OpeningPosition",
+            Type = "Buy",
             TradeDate = DateOnly.FromDateTime(DateTime.UtcNow),
             Units = 10,
             UnitPrice = 1,
