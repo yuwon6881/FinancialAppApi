@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
 using Microsoft.AspNetCore.Http;
@@ -136,6 +137,34 @@ public class OcrScanJobServiceTests
         Assert.NotNull(repeatedResult);
         Assert.Equal("completed", repeatedResult.Status);
         Assert.NotNull(await context.ReceiptScanJobs.FindAsync("job-1"));
+    }
+
+    [Fact]
+    public async Task GetScanJobAsync_PreservesFullInvestmentScanPrecision()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.ReceiptScanJobs.Add(new ReceiptScanJob
+        {
+            Id = "investment-precision",
+            UserId = TestHelpers.DefaultUserId,
+            Username = "alice",
+            Status = "completed",
+            ScanType = "investment",
+            ResultJson = """{"units":1.234567891,"unitPrice":123.456789123,"cashAmount":152.415787501} """,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            CompletedAt = DateTime.UtcNow
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context, new FakeReceiptImageStore());
+
+        var response = await service.GetScanJobAsync(TestHelpers.DefaultUserId, "investment-precision");
+
+        Assert.NotNull(response?.Result);
+        using var result = JsonDocument.Parse(JsonSerializer.Serialize(response.Result));
+        Assert.Equal(1.234567891m, FinancialAppApi.Database.ObfuscationHelper.Deobfuscate(result.RootElement.GetProperty("units").GetString()!));
+        Assert.Equal(123.456789123m, FinancialAppApi.Database.ObfuscationHelper.Deobfuscate(result.RootElement.GetProperty("unitPrice").GetString()!));
+        Assert.Equal(152.415787501m, FinancialAppApi.Database.ObfuscationHelper.Deobfuscate(result.RootElement.GetProperty("cashAmount").GetString()!));
     }
 
     [Fact]

@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.Json.Nodes;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
@@ -313,10 +315,22 @@ public class OcrScanJobService
                 amountNode is JsonValue amountValue &&
                 amountValue.TryGetValue<decimal>(out var amount))
             {
-                obj[field] = ObfuscationHelper.Obfuscate(amount);
+                // The general amount obfuscator intentionally formats money to
+                // cents, but scan results must retain every digit the model
+                // extracted so the review form can show the source value.
+                obj[field] = ObfuscateScanNumber(amount);
             }
         }
 
         return node;
+    }
+
+    private static string ObfuscateScanNumber(decimal value)
+    {
+        var bytes = Encoding.UTF8.GetBytes(value.ToString("G29", CultureInfo.InvariantCulture));
+        const string key = "FinancialAppObfuscationKey";
+        for (var index = 0; index < bytes.Length; index++)
+            bytes[index] = (byte)(bytes[index] ^ key[index % key.Length]);
+        return Convert.ToBase64String(bytes);
     }
 }
