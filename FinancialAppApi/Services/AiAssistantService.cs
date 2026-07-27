@@ -93,6 +93,7 @@ public partial class AiAssistantService
         "requestPurchaseWishlist",
         "requestUnpurchaseWishlist",
         "toggleRecurring",
+        "updateRecurringReminder",
         "openLedgerExport"
     };
 

@@ -67,6 +67,8 @@ public partial class AiAssistantService
     {
         payload.Remove("amount");
         payload.Remove("price");
+        payload.Remove("minAmount");
+        payload.Remove("maxAmount");
         if (payload.TryGetValue("changes", out var changesObj) && changesObj is JsonElement changesElement && changesElement.ValueKind == JsonValueKind.Object)
         {
             var changes = JsonSerializer.Deserialize<Dictionary<string, object?>>(changesElement.GetRawText()) ?? [];
@@ -91,8 +93,13 @@ public partial class AiAssistantService
         "openAddLedgerDraft", "openEditLedgerDraft", "openAddRecurringDraft", "openEditRecurringDraft", "openAddWishlistDraft", "openEditWishlistDraft",
         "requestDeleteLedger", "requestDeleteRecurring", "requestDeleteWishlist",
         "requestConfirmRecurringBill", "requestDiscardRecurringBill",
-        "requestPurchaseWishlist", "requestUnpurchaseWishlist", "toggleRecurring"
+        "requestPurchaseWishlist", "requestUnpurchaseWishlist", "toggleRecurring", "updateRecurringReminder"
     };
+
+    // The lead-day choices the Recurring card actually offers. A value outside this set would
+    // be silently clamped by the UI, so reject it here instead of applying something the user
+    // never asked for.
+    private static readonly int[] ReminderLeadDayOptions = [7, 3, 2, 1];
 
     private static bool IsNavigationAction(string type) => NavigationActionTypes.Contains(type);
     private static bool IsMutationAction(string type) => MutationActionTypes.Contains(type);
@@ -160,8 +167,11 @@ public partial class AiAssistantService
             !HasKnownOptionalString(payload, "range", ["monthly", "3month", "6month", "yearly"]) ||
             !HasKnownOptionalString(payload, "month", FinancialConstants.MonthAbbreviations) ||
             !HasValidOptionalInteger(payload, "year", 1900, 2100) ||
+            !HasKnownOptionalString(payload, "reminderMode", ["Once", "Daily"]) ||
             !HasValidOptionalNonNegativeNumber(payload, "amount") ||
             !HasValidOptionalNonNegativeNumber(payload, "price") ||
+            !HasValidOptionalNonNegativeNumber(payload, "minAmount") ||
+            !HasValidOptionalNonNegativeNumber(payload, "maxAmount") ||
             !HasValidOptionalIsoDate(payload, "date") ||
             !HasValidOptionalIsoDate(payload, "startDate") ||
             !HasValidOptionalIsoDate(payload, "endDate"))
@@ -191,7 +201,29 @@ public partial class AiAssistantService
             }
         }
 
+        // An inverted amount range matches nothing and the filter bar refuses to apply it, so a
+        // reversed pair is a mistake to reject rather than something to hand to the ledger.
+        if (ReadPayloadNumber(payload, "minAmount") is { } minAmount &&
+            ReadPayloadNumber(payload, "maxAmount") is { } maxAmount &&
+            minAmount > maxAmount)
+        {
+            return false;
+        }
+
         if (type.Equals("toggleRecurring", StringComparison.OrdinalIgnoreCase) && !HasBoolean(payload, "active")) return false;
+
+        if (type.Equals("updateRecurringReminder", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!HasBoolean(payload, "enabled")) return false;
+            // Mode and lead time only exist while the reminder is on; when turning it off the
+            // model is expected to omit them rather than invent a pair the user never chose.
+            if (ReadPayloadNumber(payload, "leadDays") is { } leadDays &&
+                !ReminderLeadDayOptions.Contains((int)leadDays))
+            {
+                return false;
+            }
+            return HasKnownId(payload, "id", context.RecurringPayments);
+        }
 
         if (type.Equals("openEditRecurringDraft", StringComparison.OrdinalIgnoreCase) ||
             type.Equals("requestDeleteRecurring", StringComparison.OrdinalIgnoreCase) ||
@@ -373,6 +405,20 @@ public partial class AiAssistantService
         return value is JsonElement element && element.ValueKind == JsonValueKind.String
             ? element.GetString()
             : value as string;
+    }
+
+    private static double? ReadPayloadNumber(IReadOnlyDictionary<string, object?> payload, string key)
+    {
+        if (!payload.TryGetValue(key, out var value) || value == null) return null;
+        if (value is JsonElement element)
+        {
+            return element.ValueKind == JsonValueKind.Number && element.TryGetDouble(out var jsonNumber)
+                ? jsonNumber
+                : null;
+        }
+        return double.TryParse(value.ToString(), NumberStyles.Number, CultureInfo.InvariantCulture, out var number)
+            ? number
+            : null;
     }
 
     private static bool HasBoolean(IReadOnlyDictionary<string, object?> payload, string key)

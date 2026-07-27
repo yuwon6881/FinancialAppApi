@@ -40,7 +40,7 @@ internal static class AiResponseSchemas
                         "requestDeleteLedger", "requestDeleteRecurring", "requestDeleteWishlist",
                         "requestConfirmRecurringBill", "requestDiscardRecurringBill",
                         "requestPurchaseWishlist", "requestUnpurchaseWishlist", "toggleRecurring",
-                        "openLedgerExport"
+                        "updateRecurringReminder", "openLedgerExport"
                     ]),
                     ["payload"] = ActionPayload(categories)
                 },
@@ -219,6 +219,17 @@ internal static class AiResponseSchemas
         ["frequency"] = Str(enums: ["Monthly", "Annually"]),
         ["search"] = Str(),
         ["date"] = Str(),
+        // Ledger filter-bar fields. These mirror the app's advanced filter panel; without them
+        // in the schema the model physically cannot express "show purchases over 200" and the
+        // filter silently does nothing.
+        ["minAmount"] = Num(),
+        ["maxAmount"] = Num(),
+        ["recurringOnly"] = Bool(),
+        ["wishlistOnly"] = Bool(),
+        // Per-subscription push reminder settings (updateRecurringReminder).
+        ["enabled"] = Bool(),
+        ["reminderMode"] = Str(enums: ["Once", "Daily"]),
+        ["leadDays"] = Int(),
         ["description"] = Str(),
         ["name"] = Str(),
         ["amount"] = Num(),
