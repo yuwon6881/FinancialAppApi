@@ -170,7 +170,8 @@ public sealed class MarketDataRefreshJob : IUserOwnedEntity
 public sealed class MarketDataQuotaWindow
 {
     public long Id { get; set; }
-    [Required, MaxLength(16)] public string Scope { get; set; } = string.Empty;
+    // Wide enough for the per-user scopes ("user-day:{guid}"), not just the global window names.
+    [Required, MaxLength(64)] public string Scope { get; set; } = string.Empty;
     public DateTime WindowStart { get; set; }
     public int Used { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
