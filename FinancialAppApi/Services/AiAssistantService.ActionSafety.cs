@@ -269,15 +269,21 @@ public partial class AiAssistantService
         // ledgerCategorySpecified is an internal safety signal rather than user data. Gemini may
         // omit optional payload fields even when its reply says the draft was staged, so normalize
         // omission to the safe default instead of silently dropping the entire UI action.
+        var isInflow = txType.Equals("inflow", StringComparison.OrdinalIgnoreCase);
         var requestedLedger = ReadPayloadString(payload, "ledgerCategory");
-        var canonicalLedger = new[] { "Essentials", "Growth", "Stability", "Rewards" }
+        // Income is only meaningful on an inflow -- it is what drives the income auto-split
+        // the manual form applies, and it has no meaning for an outflow or a transfer leg.
+        var allowedLedgers = isInflow
+            ? new[] { "Essentials", "Growth", "Stability", "Rewards", "Income" }
+            : ["Essentials", "Growth", "Stability", "Rewards"];
+        var canonicalLedger = allowedLedgers
             .FirstOrDefault(candidate => candidate.Equals(requestedLedger, StringComparison.OrdinalIgnoreCase));
         if (ledgerCategorySpecified && canonicalLedger == null) ledgerCategorySpecified = false;
         payload["ledgerCategorySpecified"] = ledgerCategorySpecified;
 
         if (!ledgerCategorySpecified && !txType.Equals("transfer", StringComparison.OrdinalIgnoreCase))
         {
-            payload["ledgerCategory"] = "Essentials";
+            payload["ledgerCategory"] = isInflow ? "Income" : "Essentials";
         }
         else if (canonicalLedger != null)
         {

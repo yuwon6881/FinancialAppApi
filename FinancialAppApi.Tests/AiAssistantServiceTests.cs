@@ -401,7 +401,26 @@ public class AiAssistantServiceTests
         Assert.Equal("openAddLedgerDraft", action.Type);
         Assert.Equal("inflow", action.Payload["txType"]?.ToString());
         Assert.Equal("Food", action.Payload["category"]?.ToString());
+        // An inflow defaults to the Income ledger so the staged draft has the same shape
+        // the manual form produces for a positive amount (and can drive the auto-split).
+        Assert.Equal("Income", action.Payload["ledgerCategory"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ChatAsync_OutflowDraft_StillDefaultsToEssentials()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Opening outflow draft.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Lunch\",\"amount\":25,\"txType\":\"outflow\",\"category\":\"Food\",\"ledgerCategory\":\"Income\",\"ledgerCategorySpecified\":true}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("add a 25 lunch", []));
+
+        var action = Assert.Single(outcome.Response.Actions);
+        // Income is rejected on an outflow, so the unspecified default applies.
         Assert.Equal("Essentials", action.Payload["ledgerCategory"]?.ToString());
+        Assert.Equal(false, action.Payload["ledgerCategorySpecified"]);
     }
 
     [Fact]

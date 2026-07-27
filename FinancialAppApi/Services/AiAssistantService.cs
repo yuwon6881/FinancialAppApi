@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Text.Json;
 
 namespace FinancialAppApi.Services;
 
@@ -110,6 +111,7 @@ public partial class AiAssistantService
     private readonly CategorySuggestionService? _categorySuggestionService;
     private readonly RecurringOccurrenceService _recurringOccurrenceService;
     private readonly FinancialClock _financialClock;
+    private readonly ILogger<AiAssistantService> _logger;
 
     public AiAssistantService(
         AiClient aiClient,
@@ -117,8 +119,10 @@ public partial class AiAssistantService
         TransactionCategoryService categoryService,
         CategorySuggestionService? categorySuggestionService = null,
         RecurringOccurrenceService? recurringOccurrenceService = null,
-        FinancialClock? financialClock = null)
+        FinancialClock? financialClock = null,
+        ILogger<AiAssistantService>? logger = null)
     {
+        _logger = logger ?? NullLogger<AiAssistantService>.Instance;
         _aiClient = aiClient;
         _context = context;
         _categoryService = categoryService;
@@ -248,7 +252,17 @@ public partial class AiAssistantService
         }
 
         var parsed = ParseAndValidateResponse(text, context, message, intentPlan.Constraints);
-        parsed = await EnrichLedgerDraftActionsAsync(parsed, message, context, cancellationToken);
+        // Enrichment is a best-effort second pass over an already-valid answer. Its own
+        // provider call must never turn a complete reply into a 503, so it degrades to
+        // the unenriched drafts instead of propagating.
+        try
+        {
+            parsed = await EnrichLedgerDraftActionsAsync(parsed, message, context, cancellationToken);
+        }
+        catch (Exception ex) when (ex is AiClientException or JsonException or HttpRequestException)
+        {
+            _logger.LogWarning(ex, "Ledger draft enrichment failed; returning unenriched drafts.");
+        }
         // Phase 5: an incomplete aggregate must never surface as a bare exact figure.
         parsed = parsed with { Reply = EnforceApproximateWording(parsed.Reply, contextResult.Sufficiency.Approximate) };
         // Round-trip the structured references so the client can echo them back on the next

@@ -29,6 +29,12 @@ public class AiController : ControllerBase
             var outcome = await _aiAssistantService.ChatAsync(request, cancellationToken);
             return outcome.IsProviderError ? StatusCode(503, outcome.Response) : Ok(outcome.Response);
         }
+        // A browser disconnect surfaces as a plain OperationCanceledException from the
+        // pipeline; that is not a server fault and must not be logged as an error.
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return StatusCode(499);
+        }
         catch (TaskCanceledException ex)
         {
             _logger.LogWarning(ex, "AI chat request timed out.");

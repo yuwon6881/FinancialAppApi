@@ -97,6 +97,9 @@ public partial class AiAssistantService
         var appliesTransactionTypeFilter = transactionDomain.AppliesTransactionTypeFilter;
 
         var recentTransactions = BuildRecentTransactionsPayload(queryPlan, sensitiveMode, allTransactions);
+        var recentTransactionIds = queryPlan.NeedsTransactionDetail
+            ? allTransactions.Take(120).Select(t => t.Id).ToList()
+            : [];
 
         var ledgerDomain = await BuildLedgerDomainContextAsync(
             intentPlan,
@@ -213,6 +216,7 @@ public partial class AiAssistantService
             DerivedMetrics: derivedMetrics,
             CycleSummaries: cycleSummaries,
             RecentTransactions: recentTransactions,
+            RecentTransactionIds: recentTransactionIds,
             RecurringPayments: recurringContext,
             WishlistItems: wishlistContext,
             BudgetTargets: budgetTargets,
@@ -1170,6 +1174,9 @@ public partial class AiAssistantService
         object DerivedMetrics,
         object CycleSummaries,
         object RecentTransactions,
+        // Just the ids of RecentTransactions. Action validation needs only these, so the
+        // actionContext block carries this instead of a second copy of the full rows.
+        IReadOnlyList<string> RecentTransactionIds,
         object RecurringPayments,
         object WishlistItems,
         object? BudgetTargets,

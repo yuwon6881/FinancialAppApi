@@ -25,7 +25,9 @@ public partial class AiAssistantService
             {
                 categories = context.Categories,
                 ledgerCategories = context.LedgerCategories,
-                knownTransactionIds = context.RecentTransactions
+                // Action validation only ever needs the ids; the full rows are already
+                // emitted as `recentTransactions` below for the intents that need them.
+                knownTransactionIds = context.RecentTransactionIds
             }
         };
 

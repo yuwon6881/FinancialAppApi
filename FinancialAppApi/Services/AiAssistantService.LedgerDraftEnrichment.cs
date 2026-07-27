@@ -38,13 +38,16 @@ public partial class AiAssistantService
             }
 
             var payload = new Dictionary<string, object?>(action.Payload, StringComparer.OrdinalIgnoreCase);
-            var sourceText = sourceLines.Count == draftCount ? sourceLines[draftIndex] : userMessage;
+            // Only a one-line-per-draft message lets us attribute a keyword to a single
+            // draft. Otherwise a "growth" anywhere in the message would tag every draft.
+            var perDraftSource = sourceLines.Count == draftCount;
+            var sourceText = perDraftSource ? sourceLines[draftIndex] : userMessage;
             draftIndex++;
 
             var txType = ReadPayloadString(payload, "txType") ?? "outflow";
             if (!txType.Equals("transfer", StringComparison.OrdinalIgnoreCase))
             {
-                ApplyExplicitLedgerCategory(sourceText, payload);
+                if (perDraftSource) ApplyExplicitLedgerCategory(sourceText, payload, txType);
                 await ApplyBestNormalCategoryAsync(
                     sourceText,
                     txType,
@@ -59,17 +62,22 @@ public partial class AiAssistantService
         return response with { Actions = enriched };
     }
 
-    private static void ApplyExplicitLedgerCategory(string sourceText, Dictionary<string, object?> payload)
+    private static void ApplyExplicitLedgerCategory(string sourceText, Dictionary<string, object?> payload, string txType)
     {
+        var isInflow = txType.Equals("inflow", StringComparison.OrdinalIgnoreCase);
         string? ledger = null;
-        if (Regex.IsMatch(sourceText, @"\brewards?\b", RegexOptions.IgnoreCase)) ledger = "Rewards";
+        if (isInflow && Regex.IsMatch(sourceText, @"\bincome\b", RegexOptions.IgnoreCase)) ledger = "Income";
+        else if (Regex.IsMatch(sourceText, @"\brewards?\b", RegexOptions.IgnoreCase)) ledger = "Rewards";
         else if (Regex.IsMatch(sourceText, @"\bgrowth\b", RegexOptions.IgnoreCase)) ledger = "Growth";
         else if (Regex.IsMatch(sourceText, @"\bstability\b", RegexOptions.IgnoreCase)) ledger = "Stability";
         else if (Regex.IsMatch(sourceText, @"\bessentials?\b", RegexOptions.IgnoreCase)) ledger = "Essentials";
 
         if (ledger == null)
         {
-            payload["ledgerCategory"] = "Essentials";
+            // No keyword in this line: keep whatever the model chose rather than
+            // downgrading a deliberate pick back to Essentials.
+            if (ReadPayloadString(payload, "ledgerCategory") is { Length: > 0 }) return;
+            payload["ledgerCategory"] = isInflow ? "Income" : "Essentials";
             payload["ledgerCategorySpecified"] = false;
             return;
         }

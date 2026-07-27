@@ -140,9 +140,14 @@ public static class ServiceCollectionExtensions
             static string PartitionKeyFor(HttpContext httpContext)
             {
                 var authorization = httpContext.Request.Headers.Authorization.ToString();
-                return string.IsNullOrWhiteSpace(authorization)
-                    ? httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous"
-                    : authorization;
+                if (!string.IsNullOrWhiteSpace(authorization)) return authorization;
+                // Web PWA clients authenticate with a cookie and send no Authorization
+                // header. Falling through to RemoteIpAddress would put every one of them
+                // behind the Vercel proxy -> Cloud Run into a single shared bucket, so one
+                // user's chat session would rate-limit everybody else.
+                var sessionCookie = httpContext.Request.Cookies[AuthCookieService.AuthCookieName];
+                if (!string.IsNullOrWhiteSpace(sessionCookie)) return "cookie:" + sessionCookie;
+                return httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous";
             }
 
             options.AddPolicy("ai", httpContext =>

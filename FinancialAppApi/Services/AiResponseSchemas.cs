@@ -71,7 +71,7 @@ internal static class AiResponseSchemas
                                 ["amount"] = Num("Positive transaction magnitude."),
                                 ["txType"] = Str(enums: ["inflow", "outflow", "transfer"]),
                                 ["category"] = Str("Explicit or single most likely normal category.", enums: categories),
-                                ["ledgerCategory"] = Str("Essentials unless explicitly requested otherwise.", enums: ["Essentials", "Growth", "Stability", "Rewards"]),
+                                ["ledgerCategory"] = Str("Income for inflows; Essentials for outflows unless explicitly requested otherwise.", enums: ["Essentials", "Growth", "Stability", "Rewards", "Income"]),
                                 ["ledgerCategorySpecified"] = Bool(),
                                 ["transferSource"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
                                 ["transferTarget"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
