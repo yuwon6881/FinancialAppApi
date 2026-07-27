@@ -82,26 +82,36 @@ public class FinancialService
         var activeRange = CategoryAttributionService.GetCycleRange(year, activeMonthIndex, cycleDay);
         var activeRangeStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(activeRange.start));
         var activeRangeEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(activeRange.end));
-        var activeCycleTxs = await _context.Transactions
-            .AsNoTracking()
-            .Where(t => t.Date >= activeRangeStartDate && t.Date < activeRangeEndExclusive)
-            .ToListAsync();
-
         // A transaction "settles" whichever recurring occurrence its RecurringOccurrenceDate names,
         // which is not always the cycle its own posting Date falls in -- a pay-early payment is
         // posted today but can settle a future cycle's occurrence. Matching recurring-payment status
-        // by posting-date range (like activeCycleTxs above) would wrongly attribute it to today's
-        // cycle instead. Build the set actually relevant to *this* cycle's occurrences: transactions
-        // whose RecurringOccurrenceDate falls in this cycle, plus legacy transactions (no occurrence
-        // tag at all) matched the old way by posting date.
+        // by posting-date range (like activeCycleTxs below) would wrongly attribute it to today's
+        // cycle instead. So two sets are needed: transactions posted in this cycle, and
+        // transactions whose RecurringOccurrenceDate falls in this cycle.
+        //
+        // They are fetched in ONE query with an OR predicate and partitioned in memory rather
+        // than as two round trips. The two sets overlap heavily (a normally-paid recurring
+        // charge is in both), so a single scan serves both and the dashboard makes one fewer
+        // round trip to Cloud SQL. The partition predicates below are deliberately identical to
+        // the two halves of the OR.
         var activeRangeStartOnly = DateOnly.FromDateTime(activeRange.start);
         var activeRangeEndOnly = DateOnly.FromDateTime(activeRange.end);
-        var occurrenceTaggedTxs = await _context.Transactions
+        var cycleRelevantTxs = await _context.Transactions
             .AsNoTracking()
+            .Where(t => (t.Date >= activeRangeStartDate && t.Date < activeRangeEndExclusive)
+                        || (t.RecurringOccurrenceDate != null
+                            && t.RecurringOccurrenceDate >= activeRangeStartOnly
+                            && t.RecurringOccurrenceDate <= activeRangeEndOnly))
+            .ToListAsync();
+
+        var activeCycleTxs = cycleRelevantTxs
+            .Where(t => t.Date >= activeRangeStartDate && t.Date < activeRangeEndExclusive)
+            .ToList();
+        var occurrenceTaggedTxs = cycleRelevantTxs
             .Where(t => t.RecurringOccurrenceDate != null
                         && t.RecurringOccurrenceDate >= activeRangeStartOnly
                         && t.RecurringOccurrenceDate <= activeRangeEndOnly)
-            .ToListAsync();
+            .ToList();
         var recurringMatchTxs = occurrenceTaggedTxs
             .Concat(activeCycleTxs.Where(t => t.RecurringOccurrenceDate == null))
             .ToList();
@@ -448,6 +458,24 @@ public class FinancialService
     // while insights is a pure reader (persist: false) so the two endpoints -- fetched in
     // parallel by the frontend with the same explicit month/year -- don't both redundantly
     // re-save the identical values.
+    /// <summary>
+    /// Resolves the cycle the client should be shown, for callers that need the period up
+    /// front rather than as a side effect of building a payload.
+    /// </summary>
+    /// <remarks>
+    /// The bootstrap endpoint uses this: when the client sends no month/year, the active
+    /// period comes from today's date and the cycle day, which the frontend previously had
+    /// to learn by awaiting the dashboard response before it could request transactions and
+    /// insights. Resolving once here lets the whole boot payload be built for one known
+    /// period with no waterfall.
+    /// </remarks>
+    public async Task<(string month, int year)> ResolveActivePeriodAsync(
+        string? queryMonth, int? queryYear, bool persist)
+    {
+        var context = await ResolveCycleContextAsync(queryMonth, queryYear, persist);
+        return (context.activeMonth, context.activeYear);
+    }
+
     private async Task<(FinancialSetting setting, int cycleDay, string activeMonth, int activeYear, int activeMonthIndex)>
         ResolveCycleContextAsync(string? queryMonth, int? queryYear, bool persist)
     {

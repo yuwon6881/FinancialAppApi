@@ -27,7 +27,9 @@ public class RecurringPaymentAlertService
         if (setting == null) return new List<object>();
         var cycleDay = setting.CycleDay;
 
-        var activeRecurring = await _context.RecurringPayments.Where(r => r.Active).ToListAsync();
+        // AsNoTracking: this method only reads. It runs on the dashboard request, so the
+        // change-tracker snapshot it used to take for every active payment was pure overhead.
+        var activeRecurring = await _context.RecurringPayments.AsNoTracking().Where(r => r.Active).ToListAsync();
         // Confirmed bills are persisted with a freshly generated transaction id, so paid-detection
         // has to go through the RecurringPaymentId link rather than an id match.
         var recurringTransactionDates = await _context.Transactions

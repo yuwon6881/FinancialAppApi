@@ -36,6 +36,11 @@ app.Use(async (context, next) =>
 });
 
 app.UseResponseCompression();
+
+// Inside compression on purpose: the ETag is computed over the uncompressed body, so the same
+// payload keeps one identity regardless of which encoding a client negotiated.
+app.UseMiddleware<ConditionalGetMiddleware>();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();

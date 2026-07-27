@@ -245,7 +245,7 @@ public class TransactionCategoriesController : ControllerBase
 
     public sealed record CategoryCleanupApplyRequest(IReadOnlyList<CategoryCleanupAction>? Actions);
 
-    private static object ToResponse(TransactionCategory category) => new
+    internal static object ToResponse(TransactionCategory category) => new
     {
         category.Id,
         category.Name,

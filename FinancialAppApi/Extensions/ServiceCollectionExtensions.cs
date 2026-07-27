@@ -79,6 +79,12 @@ public static class ServiceCollectionExtensions
             options.Providers.Add<GzipCompressionProvider>();
             options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(["application/json"]);
         });
+        // Fastest, deliberately and measured. Raising Brotli to Optimal was evaluated on a
+        // representative ledger payload (85 kB of JSON): Fastest produced 3.85 kB and Optimal
+        // 3.84 kB — no meaningful size reduction — for roughly double the compression CPU.
+        // This API's JSON is repetitive enough that the cheapest quality already gets ~95% of
+        // the way, and CPU is the constrained resource on Cloud Run. SmallestSize is far worse
+        // still (~120 ms for the same payload). Re-measure before changing this.
         services.Configure<BrotliCompressionProviderOptions>(options => options.Level = CompressionLevel.Fastest);
         services.Configure<GzipCompressionProviderOptions>(options => options.Level = CompressionLevel.Fastest);
 

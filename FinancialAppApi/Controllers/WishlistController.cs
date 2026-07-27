@@ -134,7 +134,7 @@ public class WishlistController : ControllerBase
         };
     }
 
-    private static WishlistItemDto MapToDto(WishlistItem item)
+    internal static WishlistItemDto MapToDto(WishlistItem item)
     {
         return new WishlistItemDto
         {
@@ -150,7 +150,7 @@ public class WishlistController : ControllerBase
         };
     }
 
-    private static WishlistItemDto MapToDto(WishlistItemProjection item)
+    internal static WishlistItemDto MapToDto(WishlistItemProjection item)
     {
         return new WishlistItemDto
         {

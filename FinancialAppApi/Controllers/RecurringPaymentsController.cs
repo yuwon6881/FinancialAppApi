@@ -26,16 +26,27 @@ public class RecurringPaymentsController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<IEnumerable<RecurringPaymentDto>>> GetRecurringPayments()
     {
-        var list = await _recurringPaymentService.GetRecurringPaymentsAsync(HttpContext.RequestAborted);
+        return Ok(await BuildRecurringPaymentDtosAsync(
+            _recurringPaymentService, _payEarlyService, HttpContext.RequestAborted));
+    }
+
+    // Shared with BootstrapController so the composite boot payload cannot drift from what
+    // this endpoint returns. Kept here, next to the mapper it uses.
+    internal static async Task<List<RecurringPaymentDto>> BuildRecurringPaymentDtosAsync(
+        RecurringPaymentService recurringPaymentService,
+        RecurringPaymentPayEarlyService payEarlyService,
+        CancellationToken cancellationToken)
+    {
+        var list = await recurringPaymentService.GetRecurringPaymentsAsync(cancellationToken);
         var result = new List<RecurringPaymentDto>(list.Count);
         foreach (var payment in list)
         {
             var dto = MapToDto(payment);
-            var nextUnpaid = await _payEarlyService.GetNextUnpaidOccurrenceAsync(payment.Id, HttpContext.RequestAborted);
+            var nextUnpaid = await payEarlyService.GetNextUnpaidOccurrenceAsync(payment.Id, cancellationToken);
             if (nextUnpaid != null) dto.NextDueDate = nextUnpaid.Value.ToString("yyyy-MM-dd");
             result.Add(dto);
         }
-        return Ok(result);
+        return result;
     }
 
     // POST: api/recurring-payments
@@ -203,7 +214,7 @@ public class RecurringPaymentsController : ControllerBase
         };
     }
 
-    private static RecurringPaymentDto MapToDto(RecurringPayment rp)
+    internal static RecurringPaymentDto MapToDto(RecurringPayment rp)
     {
         return new RecurringPaymentDto
         {
@@ -241,7 +252,7 @@ public class RecurringPaymentsController : ControllerBase
         return false;
     }
 
-    private static RecurringPaymentDto MapToDto(RecurringPaymentProjection rp)
+    internal static RecurringPaymentDto MapToDto(RecurringPaymentProjection rp)
     {
         return new RecurringPaymentDto
         {
