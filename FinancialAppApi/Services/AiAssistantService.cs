@@ -239,7 +239,10 @@ public partial class AiAssistantService
                     SystemInstruction: systemInstruction,
                     ResponseJsonSchema: isLedgerAdd
                         ? AiResponseSchemas.LedgerDraftChat(context.Categories, structuredLedgerDraftCount)
-                        : AiResponseSchemas.Chat(context.Categories),
+                        : AiResponseSchemas.Chat(
+                            context.Categories,
+                            includeLedgerFilters: WantsLedgerFilterControls(intentPlan),
+                            includeReminderControls: WantsReminderControls(intentPlan)),
                     ThinkingLevel: intentPlan.QueryPlan.NeedsCycleComparison ? "medium" : "low",
                     ModelConfigurationKey: "AiModels:Chat"),
                 cancellationToken);
@@ -273,4 +276,25 @@ public partial class AiAssistantService
     }
 
     private static AiChatOutcome Ok(AiChatResponse response) => new(response, IsProviderError: false);
+
+    // Which optional payload groups this turn is allowed to spend schema budget on. Keep these
+    // narrow: every group added to a turn's payload union costs structured-output complexity, and
+    // the lite chat model answers 400 INVALID_ARGUMENT rather than degrading when the total is
+    // too high. See AiResponseSchemas.Chat.
+    private static readonly HashSet<AiIntent> LedgerFilterIntents =
+    [
+        AiIntent.Navigation, AiIntent.LedgerTransactionList, AiIntent.LedgerMerchantSearch,
+        AiIntent.LedgerActivityCount, AiIntent.LedgerSpendingTotal
+    ];
+
+    private static readonly HashSet<AiIntent> ReminderIntents =
+    [
+        AiIntent.RecurringList, AiIntent.RecurringUpcoming, AiIntent.RecurringEdit
+    ];
+
+    private static bool WantsLedgerFilterControls(AiIntentPlan plan) =>
+        plan.Intents.Any(LedgerFilterIntents.Contains);
+
+    private static bool WantsReminderControls(AiIntentPlan plan) =>
+        plan.Intents.Any(ReminderIntents.Contains);
 }

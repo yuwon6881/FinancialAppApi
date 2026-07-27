@@ -24,7 +24,15 @@ internal static class AiResponseSchemas
     // so the model is forced to emit a real category name for add/edit drafts and ledger filters --
     // otherwise a free-string guess that doesn't match gets the whole action dropped in
     // AiAssistantService.IsActionSafe. Falls back to a plain string when the caller has no categories.
-    public static object Chat(IReadOnlyList<string> categories) => Obj(
+    // The payload union is right at gemini-3.5-flash-lite's structured-output complexity ceiling
+    // (see MaxChatActions), so field groups that only matter to one kind of request are opted into
+    // per turn rather than carried on every call. Adding the ledger-filter and reminder groups
+    // unconditionally pushed a plain ledger-add turn over the wall and the API answered 400
+    // INVALID_ARGUMENT. With both flags false this is byte-for-byte the long-standing schema.
+    public static object Chat(
+        IReadOnlyList<string> categories,
+        bool includeLedgerFilters = false,
+        bool includeReminderControls = false) => Obj(
         new Dictionary<string, object>
         {
             ["reply"] = Str("Concise user-facing reply."),
@@ -40,9 +48,10 @@ internal static class AiResponseSchemas
                         "requestDeleteLedger", "requestDeleteRecurring", "requestDeleteWishlist",
                         "requestConfirmRecurringBill", "requestDiscardRecurringBill",
                         "requestPurchaseWishlist", "requestUnpurchaseWishlist", "toggleRecurring",
-                        "updateRecurringReminder", "openLedgerExport"
+                        ..(includeReminderControls ? new[] { "updateRecurringReminder" } : []),
+                        "openLedgerExport"
                     ]),
-                    ["payload"] = ActionPayload(categories)
+                    ["payload"] = ActionPayload(categories, includeLedgerFilters, includeReminderControls)
                 },
                 ["type", "payload"]), maxItems: MaxChatActions)
         },
@@ -202,7 +211,33 @@ internal static class AiResponseSchemas
         ["type", "accountId", "instrumentId", "tradeDate", "units", "unitPrice",
             "cashAmount", "fees", "taxes", "confidence"]);
 
-    private static object ActionPayload(IReadOnlyList<string> categories) => Obj(new Dictionary<string, object>
+    private static object ActionPayload(
+        IReadOnlyList<string> categories,
+        bool includeLedgerFilters,
+        bool includeReminderControls)
+    {
+        var properties = BaseActionPayloadProperties(categories);
+        if (includeLedgerFilters)
+        {
+            // Ledger filter-bar fields. These mirror the app's advanced filter panel; without them
+            // in the schema the model physically cannot express "show purchases over 200" and the
+            // filter silently does nothing.
+            properties["minAmount"] = Num();
+            properties["maxAmount"] = Num();
+            properties["recurringOnly"] = Bool();
+            properties["wishlistOnly"] = Bool();
+        }
+        if (includeReminderControls)
+        {
+            // Per-subscription push reminder settings (updateRecurringReminder).
+            properties["enabled"] = Bool();
+            properties["reminderMode"] = Str(enums: ["Once", "Daily"]);
+            properties["leadDays"] = Int();
+        }
+        return Obj(properties);
+    }
+
+    private static Dictionary<string, object> BaseActionPayloadProperties(IReadOnlyList<string> categories) => new()
     {
         ["id"] = Str(),
         ["month"] = Str(),
@@ -219,17 +254,6 @@ internal static class AiResponseSchemas
         ["frequency"] = Str(enums: ["Monthly", "Annually"]),
         ["search"] = Str(),
         ["date"] = Str(),
-        // Ledger filter-bar fields. These mirror the app's advanced filter panel; without them
-        // in the schema the model physically cannot express "show purchases over 200" and the
-        // filter silently does nothing.
-        ["minAmount"] = Num(),
-        ["maxAmount"] = Num(),
-        ["recurringOnly"] = Bool(),
-        ["wishlistOnly"] = Bool(),
-        // Per-subscription push reminder settings (updateRecurringReminder).
-        ["enabled"] = Bool(),
-        ["reminderMode"] = Str(enums: ["Once", "Daily"]),
-        ["leadDays"] = Int(),
         ["description"] = Str(),
         ["name"] = Str(),
         ["amount"] = Num(),
@@ -247,7 +271,7 @@ internal static class AiResponseSchemas
             ["transferSource"] = Str(), ["transferTarget"] = Str(),
             ["priority"] = Str(), ["isActive"] = Bool(), ["startDate"] = Str(), ["endDate"] = Str()
         })
-    });
+    };
 
     private static Dictionary<string, object> Obj(Dictionary<string, object> properties, string[]? required = null)
     {
