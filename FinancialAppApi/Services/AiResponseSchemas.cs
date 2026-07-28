@@ -208,7 +208,7 @@ internal static class AiResponseSchemas
                 new Dictionary<string, object>
                 {
                     ["name"] = Str("Receipt line description."),
-                    ["quantity"] = Num("Printed quantity. Use 1 when the line is not grouped.", 0.000001),
+                    ["quantity"] = Int(),
                     ["unitPrice"] = NullableNumber("Printed or directly derivable unit price; null if unclear."),
                     ["lineTotal"] = NullableNumber("Printed line total before receipt-level charges; null if unclear."),
                     ["confidence"] = Num("Line extraction confidence from 0 to 1.", 0, 1)

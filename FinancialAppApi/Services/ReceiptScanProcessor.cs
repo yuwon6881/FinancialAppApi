@@ -280,7 +280,7 @@ Rules:
 
     private const string ReceiptSplitScanSystemInstruction = @"Extract the visible structure of one receipt for a personal expense-share calculator.
 Rules:
-- Extract every visible purchasable line into items. Keep grouped quantities when printed.
+- Extract every visible purchasable line into items. Quantity is a whole-item count; use 1 for weighted items or when the line is not grouped.
 - Do not include subtotal, total, tender, tax, service, tip, discount, or rounding rows as items.
 - unitPrice and lineTotal must be non-negative. Return null when not visibly supported or directly derivable.
 - Extract every receipt-level tax, service charge, tip, discount, rounding, and other adjustment into charges.
@@ -430,7 +430,7 @@ Rules:
             .Take(80)
             .Select(item => new ReceiptSplitItem(
                 string.IsNullOrWhiteSpace(item.Name) ? "Unclear item" : item.Name.Trim()[..Math.Min(item.Name.Trim().Length, 120)],
-                item.Quantity > 0 ? item.Quantity : 1,
+                item.Quantity > 0 ? Math.Max(1, decimal.Truncate(item.Quantity)) : 1,
                 item.UnitPrice is >= 0 ? item.UnitPrice : null,
                 item.LineTotal is >= 0 ? item.LineTotal : null,
                 Math.Clamp(item.Confidence, 0, 1)))

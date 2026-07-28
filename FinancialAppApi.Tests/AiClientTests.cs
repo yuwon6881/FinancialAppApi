@@ -14,6 +14,14 @@ public class AiClientTests
         var json = JsonSerializer.Serialize(AiResponseSchemas.ReceiptSplit(["Food", "Other"]));
 
         Assert.DoesNotContain("\"maxItems\"", json, StringComparison.Ordinal);
+        using var schema = JsonDocument.Parse(json);
+        var quantity = schema.RootElement
+            .GetProperty("properties")
+            .GetProperty("items")
+            .GetProperty("items")
+            .GetProperty("properties")
+            .GetProperty("quantity");
+        Assert.Equal("integer", quantity.GetProperty("type").GetString());
     }
 
     [Fact]
