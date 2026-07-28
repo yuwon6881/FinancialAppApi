@@ -55,6 +55,12 @@ steps:
       # `gcloud run deploy` may have left the service at.
       - '--min-instances=0'
       - '--max-instances=2'
+      # Both are the current defaults for a 1Gi container, pinned for the same reason
+      # as the instance bounds: a stray manual deploy must not be able to drift them.
+      # --cpu=2 would double billed CPU-seconds; a LOWER --concurrency costs MORE, not
+      # less, because fewer requests per instance means more billed instance-seconds.
+      - '--cpu=1'
+      - '--concurrency=80'
       # Startup CPU boost only bills during instance startup under request-based
       # billing, so it stays free-tier eligible while cutting cold-start latency.
       - '--cpu-boost'

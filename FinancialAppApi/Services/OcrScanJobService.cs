@@ -313,7 +313,7 @@ public class OcrScanJobService
         }
 
         var fields = scanType == "investment"
-            ? new[] { "units", "unitPrice", "cashAmount", "fees", "taxes" }
+            ? new[] { "units", "unitPrice", "cashAmount", "fees", "taxes", "toAmount" }
             : new[] { "amount" };
         foreach (var field in fields)
         {

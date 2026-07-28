@@ -287,14 +287,12 @@ public partial class AiAssistantService
         AiIntent.LedgerActivityCount, AiIntent.LedgerSpendingTotal
     ];
 
-    private static readonly HashSet<AiIntent> ReminderIntents =
-    [
-        AiIntent.RecurringList, AiIntent.RecurringUpcoming, AiIntent.RecurringEdit
-    ];
-
     private static bool WantsLedgerFilterControls(AiIntentPlan plan) =>
         plan.Intents.Any(LedgerFilterIntents.Contains);
 
     private static bool WantsReminderControls(AiIntentPlan plan) =>
-        plan.Intents.Any(ReminderIntents.Contains);
+        // Read-only recurring questions (cost, list, upcoming bills) do not need reminder-edit
+        // fields. Adding that optional group pushes gemini-3.5-flash-lite's chat schema over its
+        // structured-output complexity ceiling and makes the whole request fail with HTTP 400.
+        plan.Intents.Contains(AiIntent.RecurringEdit);
 }

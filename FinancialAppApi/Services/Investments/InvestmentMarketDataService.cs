@@ -389,7 +389,15 @@ public sealed class InvestmentMarketDataService(
             return null;
         }
         var earliest = transactions.Where(value => value.InstrumentId == instrument.Id).Min(value => value.TradeDate);
-        var start = latest is null ? earliest : latest.MarketDate.AddDays(-7);
+        // A user's local calendar can already be on tomorrow while the provider (and the
+        // instrument's exchange) is still on today. Twelve Data rejects a future start_date
+        // with HTTP 400. Starting no later than UTC yesterday is deliberately conservative:
+        // it keeps the real trade date intact, works across exchange time zones/weekends, and
+        // still lets the provider return its latest completed daily close.
+        var providerSafeInitialStart = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1);
+        var start = latest is null
+            ? Min(earliest, providerSafeInitialStart)
+            : latest.MarketDate.AddDays(-7);
         var bars = await provider.GetDailySeriesAsync(
             instrument.ProviderSymbol!,
             instrument.ProviderMic,
@@ -430,6 +438,8 @@ public sealed class InvestmentMarketDataService(
         }
         return null;
     }
+
+    private static DateOnly Min(DateOnly left, DateOnly right) => left <= right ? left : right;
 
     /// <returns>A user-facing warning when the provider returned nothing, otherwise null.</returns>
     private async Task<string?> RefreshFxAsync(

@@ -449,6 +449,43 @@ public class AiAssistantServiceTests
     }
 
     [Fact]
+    public async Task ChatAsync_SubscriptionCostQuestionUsesSchemaWithoutReminderEditFields()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "spotify",
+            Name = "Spotify",
+            Amount = 15,
+            Frequency = "Monthly",
+            Category = "Entertainment",
+            LedgerCategory = "Rewards",
+            NextDueDate = "2026-07-20",
+            DueDate = 20,
+            StartDate = "2026-01-01",
+            Active = true
+        });
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("Your subscriptions cost 15 per month."));
+        var service = NewService(context, handler);
+
+        await service.ChatAsync(new AiChatRequest("How much do my subscriptions cost me a month?", []));
+
+        using var request = JsonDocument.Parse(handler.RequestBodies[^1]);
+        var payloadProperties = request.RootElement.GetProperty("generationConfig")
+            .GetProperty("responseJsonSchema")
+            .GetProperty("properties")
+            .GetProperty("actions")
+            .GetProperty("items")
+            .GetProperty("properties")
+            .GetProperty("payload")
+            .GetProperty("properties");
+        Assert.False(payloadProperties.TryGetProperty("enabled", out _));
+        Assert.False(payloadProperties.TryGetProperty("reminderMode", out _));
+        Assert.False(payloadProperties.TryGetProperty("leadDays", out _));
+    }
+
+    [Fact]
     public async Task ChatAsync_LedgerAdd_DefaultsMissingLedgerMetadataToEssentials()
     {
         await using var context = NewContextWithSettings(hideSensitive: false);

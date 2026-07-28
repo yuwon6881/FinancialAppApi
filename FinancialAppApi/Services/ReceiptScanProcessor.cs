@@ -65,6 +65,9 @@ public record InvestmentActivityScanResult(
     decimal? CashAmount,
     decimal? Fees,
     decimal? Taxes,
+    string? Currency,
+    string? ToCurrency,
+    decimal? ToAmount,
     double Confidence);
 
 public enum ReceiptScanProcessStatus
@@ -488,12 +491,14 @@ Rules:
         });
     }
 
-    private const string InvestmentScanSystemInstruction = @"Extract one investment activity from a broker confirmation, statement, or screenshot.
-Only these activity types are supported: Buy, Sell, Dividend, FeeTax.
+    private const string InvestmentScanSystemInstruction = @"Extract one investment activity or cash movement from a broker confirmation, statement, or screenshot.
+Only these activity types are supported: Buy, Sell, Dividend, FeeTax, Deposit, Withdrawal, Conversion.
 Rules:
 - Choose an accountId or instrumentId only from the supplied options and only when the image clearly supports the match.
 - Use FeeTax for a standalone broker fee or tax charge, not fees/taxes attached to a buy, sell, or dividend.
-- cashAmount is the positive gross trade amount, gross dividend, or standalone charge amount.
+- Use Deposit or Withdrawal for money moved into or out of the broker account.
+- Use Conversion only for an exchange between two currencies; currency/cashAmount are the source leg and toCurrency/toAmount are the destination leg.
+- cashAmount is the positive gross trade amount, gross dividend, standalone charge, deposit, withdrawal, or source conversion amount.
 - fees and taxes are separate non-negative amounts.
 - Return null for every field that is unclear, absent, or not applicable. Never guess.
 - For dropdown fields, choose the single most confident supported option; otherwise return null.
@@ -521,8 +526,8 @@ Rules:
                 exchange = value.Exchange
             })
             .ToListAsync();
-        if (accounts.Count == 0 || instruments.Count == 0)
-            return ScanOutcome.Failed("Add an investment account and investment before scanning activity.");
+        if (accounts.Count == 0)
+            return ScanOutcome.Failed("Add an investment account before scanning activity.");
 
         var context = JsonSerializer.Serialize(new { accounts, instruments });
         string text;
@@ -559,7 +564,8 @@ Rules:
         }
 
         var rawType = ReadString("type");
-        var type = InvestmentKinds.TransactionTypes.FirstOrDefault(value =>
+        var supportedTypes = InvestmentKinds.TransactionTypes.Concat(["Deposit", "Withdrawal", "Conversion"]);
+        var type = supportedTypes.FirstOrDefault(value =>
             string.Equals(value, rawType, StringComparison.OrdinalIgnoreCase));
         Guid? accountId = Guid.TryParse(ReadString("accountId"), out var parsedAccount) &&
             accounts.Any(value => value.id == parsedAccount) ? parsedAccount : null;
@@ -581,6 +587,11 @@ Rules:
         var cashAmount = ReadNonNegative("cashAmount", positive: true);
         var fees = ReadNonNegative("fees");
         var taxes = ReadNonNegative("taxes");
+        var currency = ReadString("currency")?.Trim().ToUpperInvariant();
+        var toCurrency = ReadString("toCurrency")?.Trim().ToUpperInvariant();
+        var toAmount = ReadNonNegative("toAmount", positive: true);
+        if (currency is { Length: not 3 }) currency = null;
+        if (toCurrency is { Length: not 3 }) toCurrency = null;
         if (type == "FeeTax")
         {
             var charge = (fees ?? 0) + (taxes ?? 0);
@@ -599,10 +610,14 @@ Rules:
             cashAmount,
             fees,
             taxes,
+            currency,
+            toCurrency,
+            toAmount,
             confidence);
         if (result.Type is null && result.AccountId is null && result.InstrumentId is null &&
             result.TradeDate is null && result.Units is null && result.UnitPrice is null &&
-            result.CashAmount is null && result.Fees is null && result.Taxes is null)
+            result.CashAmount is null && result.Fees is null && result.Taxes is null &&
+            result.Currency is null && result.ToCurrency is null && result.ToAmount is null)
         {
             return ScanOutcome.Failed("Could not identify investment activity in this image. Please try a clearer image.");
         }

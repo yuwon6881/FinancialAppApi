@@ -249,19 +249,22 @@ internal static class AiResponseSchemas
     public static readonly object InvestmentActivityScan = Obj(
         new Dictionary<string, object>
         {
-            ["type"] = NullableString("Buy, Sell, Dividend, or FeeTax; null if unclear."),
+            ["type"] = NullableString("Buy, Sell, Dividend, FeeTax, Deposit, Withdrawal, or Conversion; null if unclear."),
             ["accountId"] = NullableString("Exact available account id; null if unclear."),
             ["instrumentId"] = NullableString("Exact available investment id; null if unclear."),
             ["tradeDate"] = NullableString("Visible activity date in YYYY-MM-DD; null if unclear."),
             ["units"] = NullableNumber("Positive units; null if unclear or not applicable."),
             ["unitPrice"] = NullableNumber("Positive price per unit; null if unclear or not applicable."),
-            ["cashAmount"] = NullableNumber("Positive gross amount, dividend, or charge; null if unclear."),
+            ["cashAmount"] = NullableNumber("Positive gross amount, dividend, charge, deposit, withdrawal, or source conversion amount; null if unclear."),
             ["fees"] = NullableNumber("Non-negative fee amount; null if not explicitly supported."),
             ["taxes"] = NullableNumber("Non-negative tax amount; null if not explicitly supported."),
+            ["currency"] = NullableString("Visible source currency code; null if unclear or not applicable."),
+            ["toCurrency"] = NullableString("Visible destination currency code for a conversion; null otherwise."),
+            ["toAmount"] = NullableNumber("Positive destination amount for a conversion; null otherwise."),
             ["confidence"] = Num("Overall extraction confidence from 0 to 1.", 0, 1)
         },
         ["type", "accountId", "instrumentId", "tradeDate", "units", "unitPrice",
-            "cashAmount", "fees", "taxes", "confidence"]);
+            "cashAmount", "fees", "taxes", "currency", "toCurrency", "toAmount", "confidence"]);
 
     private static object ActionPayload(
         IReadOnlyList<string> categories,

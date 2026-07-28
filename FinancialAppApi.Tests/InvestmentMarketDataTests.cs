@@ -221,6 +221,22 @@ public sealed class InvestmentMarketDataTests
     }
 
     [Fact]
+    public async Task NewHoldingDatedInUsersTomorrowStartsFromProviderSafeDate()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (_, instrument) = await SeedProviderBackedHoldingAsync(context);
+        var transaction = context.InvestmentTransactions.Single(value => value.InstrumentId == instrument.Id);
+        transaction.TradeDate = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1);
+        await context.SaveChangesAsync();
+        var provider = new CountingProvider();
+        var service = NewService(context, provider);
+
+        await service.RefreshAsync(CancellationToken.None);
+
+        Assert.Equal(DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1), provider.PriceStartDates.Single());
+    }
+
+    [Fact]
     public async Task PerUserDailyCeilingDoesNotConsumeAnotherUsersAllowance()
     {
         await using var context = TestHelpers.NewInMemoryContext("alice");
@@ -369,6 +385,7 @@ public sealed class InvestmentMarketDataTests
     {
         public int CallCount { get; private set; }
         public int PriceCallCount { get; private set; }
+        public List<DateOnly> PriceStartDates { get; } = [];
         public List<(string Base, string Quote)> FxPairs { get; } = [];
         public bool IsConfigured => true;
 
@@ -382,6 +399,7 @@ public sealed class InvestmentMarketDataTests
         {
             CallCount++;
             PriceCallCount++;
+            PriceStartDates.Add(startDate);
             return Task.FromResult<IReadOnlyList<ProviderPriceBar>>([]);
         }
 
