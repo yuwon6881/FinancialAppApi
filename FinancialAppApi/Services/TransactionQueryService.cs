@@ -53,6 +53,7 @@ public class TransactionQueryService
         decimal? maxAmount = null,
         bool recurringOnly = false,
         bool wishlistOnly = false,
+        string? sort = null,
         CancellationToken cancellationToken = default)
     {
         page = Math.Max(1, page);
@@ -75,10 +76,7 @@ public class TransactionQueryService
                 wishlistOnly);
             var total = await query.CountAsync(cancellationToken);
 
-            var txs = await query
-                .OrderByDescending(t => t.Date)
-                .ThenByDescending(t => t.PostedAt)
-                .ThenByDescending(t => t.Id)
+            var txs = await ApplySort(query, sort)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .Select(t => new TransactionProjection(
@@ -377,6 +375,33 @@ public class TransactionQueryService
         }
 
         return query;
+    }
+
+    private static IOrderedQueryable<Transaction> ApplySort(
+        IQueryable<Transaction> query,
+        string? sort)
+    {
+        return sort switch
+        {
+            "date-asc" => query
+                .OrderBy(t => t.Date)
+                .ThenBy(t => t.PostedAt)
+                .ThenBy(t => t.Id),
+            "amount-desc" => query
+                .OrderByDescending(t => t.Amount < 0 ? -t.Amount : t.Amount)
+                .ThenByDescending(t => t.Date)
+                .ThenByDescending(t => t.PostedAt)
+                .ThenByDescending(t => t.Id),
+            "amount-asc" => query
+                .OrderBy(t => t.Amount < 0 ? -t.Amount : t.Amount)
+                .ThenByDescending(t => t.Date)
+                .ThenByDescending(t => t.PostedAt)
+                .ThenByDescending(t => t.Id),
+            _ => query
+                .OrderByDescending(t => t.Date)
+                .ThenByDescending(t => t.PostedAt)
+                .ThenByDescending(t => t.Id)
+        };
     }
 
     // Escapes the ILIKE special characters so user-typed text is matched literally.

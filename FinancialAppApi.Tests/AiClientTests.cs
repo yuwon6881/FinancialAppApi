@@ -9,6 +9,14 @@ namespace FinancialAppApi.Tests;
 public class AiClientTests
 {
     [Fact]
+    public void ReceiptSplitSchema_DoesNotSendLargeArrayGrammarLimitsToLiteModel()
+    {
+        var json = JsonSerializer.Serialize(AiResponseSchemas.ReceiptSplit(["Food", "Other"]));
+
+        Assert.DoesNotContain("\"maxItems\"", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GenerateTextAsync_SendsStructuredSchemaThinkingAndHeaderKey()
     {
         var handler = new RecordingHandler(_ => SuccessResponse("{\"ok\":true}"));

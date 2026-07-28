@@ -213,7 +213,7 @@ internal static class AiResponseSchemas
                     ["lineTotal"] = NullableNumber("Printed line total before receipt-level charges; null if unclear."),
                     ["confidence"] = Num("Line extraction confidence from 0 to 1.", 0, 1)
                 },
-                ["name", "quantity", "unitPrice", "lineTotal", "confidence"]), maxItems: 80),
+                ["name", "quantity", "unitPrice", "lineTotal", "confidence"])),
             ["charges"] = Arr(Obj(
                 new Dictionary<string, object>
                 {
@@ -224,11 +224,11 @@ internal static class AiResponseSchemas
                     ["amount"] = NullableNumber("Printed absolute charge amount; null when only a rate is visible."),
                     ["ratePercent"] = NullableNumber("Printed percentage such as 10 for 10%; null when absent."),
                     ["sequence"] = Int(),
-                    ["eligibleItemIndexes"] = Arr(Int(), maxItems: 80),
+                    ["eligibleItemIndexes"] = Arr(Int()),
                     ["confidence"] = Num("Charge extraction confidence from 0 to 1.", 0, 1)
                 },
                 ["label", "kind", "operation", "basis", "amount", "ratePercent",
-                    "sequence", "eligibleItemIndexes", "confidence"]), maxItems: 20),
+                    "sequence", "eligibleItemIndexes", "confidence"])),
             ["fieldConfidence"] = Obj(
                 new Dictionary<string, object>
                 {
@@ -240,7 +240,7 @@ internal static class AiResponseSchemas
                 },
                 ["description", "date", "currency", "subtotal", "total"]),
             ["truncated"] = Bool(),
-            ["warnings"] = Arr(Str("Short review warning about unclear receipt content."), maxItems: 10),
+            ["warnings"] = Arr(Str("Short review warning about unclear receipt content.")),
             ["confidence"] = Num("Overall extraction confidence from 0 to 1.", 0, 1)
         },
         ["description", "date", "currency", "subtotal", "total", "category", "ledgerCategory",

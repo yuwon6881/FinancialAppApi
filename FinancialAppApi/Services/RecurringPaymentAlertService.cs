@@ -32,9 +32,9 @@ public class RecurringPaymentAlertService
         var activeRecurring = await _context.RecurringPayments.AsNoTracking().Where(r => r.Active).ToListAsync();
         // Confirmed bills are persisted with a freshly generated transaction id, so paid-detection
         // has to go through the RecurringPaymentId link rather than an id match.
-        var recurringTransactionDates = await _context.Transactions
+        var recurringTransactions = await _context.Transactions
             .Where(t => t.RecurringPaymentId != null)
-            .Select(t => new { t.RecurringPaymentId, t.Date })
+            .Select(t => new { t.RecurringPaymentId, t.Date, t.RecurringOccurrenceDate })
             .ToListAsync();
         var today = _financialClock.LocalNow.Date;
         var (todayMonth, todayYear) = CategoryAttributionService.GetCycleMonthAndYearForDate(today, cycleDay);
@@ -57,10 +57,15 @@ public class RecurringPaymentAlertService
                     {
                         if (billingDate > today) continue;
                         var instanceId = $"{rp.Id}-{y}-{m}";
-                        var isPaid = recurringTransactionDates.Any(t =>
+                        var billingDateOnly = DateOnly.FromDateTime(billingDate);
+                        var cycleStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart));
+                        var cycleEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleEnd));
+                        var isPaid = recurringTransactions.Any(t =>
                             t.RecurringPaymentId == rp.Id &&
-                            t.Date >= TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart)) &&
-                            t.Date < TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleEnd)));
+                            (t.RecurringOccurrenceDate == billingDateOnly ||
+                             (t.RecurringOccurrenceDate == null &&
+                              t.Date >= cycleStartDate &&
+                              t.Date < cycleEndExclusive)));
                         if (!isPaid)
                         {
                             var item = new

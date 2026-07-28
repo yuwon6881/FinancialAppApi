@@ -75,7 +75,7 @@ public class BootstrapController : ControllerBase
         var insights = await _financialService.GetDashboardInsightsAsync(month, year);
 
         var transactions = await _transactionQueryService.GetTransactionsAsync(
-            month, year, false, 1, 10, null, null, null, null, null, null, null, null, false, false,
+            month, year, false, 1, 10, null, null, null, null, null, null, null, null, false, false, null,
             cancellationToken);
 
         var recurringPayments = await RecurringPaymentsController.BuildRecurringPaymentDtosAsync(

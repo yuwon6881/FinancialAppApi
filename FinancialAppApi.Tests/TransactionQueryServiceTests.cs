@@ -100,6 +100,26 @@ public class TransactionQueryServiceTests
         Assert.Equal(["newer", "older"], result.Items.Select(item => item.Id));
     }
 
+    [Theory]
+    [InlineData("amount-desc", "largest", "middle", "smallest")]
+    [InlineData("amount-asc", "smallest", "middle", "largest")]
+    public async Task GetTransactionsAsync_SortsPagedResultsByAbsoluteAmount(
+        string sort,
+        params string[] expectedIds)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("smallest", "Coffee", "Food", "Rewards", -10m),
+            NewTransaction("middle", "Refund", "Other", "Rewards", 50m),
+            NewTransaction("largest", "Rent", "Housing", "Essentials", -1000m));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var result = await service.GetTransactionsAsync(all: true, pageSize: 10, sort: sort);
+
+        Assert.Equal(expectedIds, result.Items.Select(item => item.Id));
+    }
+
     [Fact]
     public async Task GetTransactionsAsync_SearchMatchesDescriptionCategoryAndLedgerCaseInsensitively()
     {

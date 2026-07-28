@@ -39,7 +39,8 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "minAmount")] decimal? minAmount = null,
         [FromQuery(Name = "maxAmount")] decimal? maxAmount = null,
         [FromQuery(Name = "recurringOnly")] bool recurringOnly = false,
-        [FromQuery(Name = "wishlistOnly")] bool wishlistOnly = false)
+        [FromQuery(Name = "wishlistOnly")] bool wishlistOnly = false,
+        [FromQuery(Name = "sort")] string? sort = null)
     {
         if (queryMonth != null && !FinancialConstants.MonthAbbreviations.Contains(queryMonth, StringComparer.Ordinal))
             return BadRequest(new { message = "Month must be a valid three-letter abbreviation." });
@@ -60,6 +61,7 @@ public class TransactionsController : ControllerBase
             maxAmount,
             recurringOnly,
             wishlistOnly,
+            sort,
             HttpContext.RequestAborted);
 
         if (result.Total.HasValue)
