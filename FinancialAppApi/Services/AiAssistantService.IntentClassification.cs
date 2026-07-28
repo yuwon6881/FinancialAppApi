@@ -130,7 +130,9 @@ public partial class AiAssistantService
     // as the subject when the message has no real subject ("how many did I do?").
     private static readonly HashSet<string> SearchNoiseTerms = new(StringComparer.OrdinalIgnoreCase)
     {
-        "did", "do", "does", "have", "has", "i", "we", "it", "that", "this", "them", "those", "these", "the", "a", "an"
+        "did", "do", "does", "have", "has", "i", "we", "it", "that", "this", "them", "those", "these", "the", "a", "an",
+        // Request scaffolding that only ever surfaces as residue after an analysis word is stripped.
+        "any", "some", "me", "my", "show", "find", "list", "search", "all", "there", "other", "same"
     };
 
     private static bool IsNoiseSearchTerm(string? term) =>
@@ -146,6 +148,31 @@ public partial class AiAssistantService
 
     private static bool LooksLikeCycleOrAmountPhrase(string? term) =>
         !string.IsNullOrWhiteSpace(term) && NonSearchPhraseSignal.IsMatch(term);
+
+    // Analysis vocabulary names the KIND of analysis being asked for, never a merchant. The
+    // "any X transactions" shape captures it as a search term ("any duplicate transactions this
+    // cycle" -> "duplicate"), which then filters the cycle down to descriptions containing that
+    // word -- matching nothing -- so the assistant reported an empty cycle over a full ledger.
+    private static readonly Regex AnalysisVocabularySignal = new(
+        @"\b(?:duplicates?|duplicated|duplicate[ds]|dupes?|repeats?|repeated|repeating|doubles?|doubled|charged|twice|unusual|odd|strange|weird|anomal(?:y|ies|ous)|outliers?|suspicious|abnormal|irregular)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Removes analysis words from an extracted term, keeping any real subject that remains
+    // ("duplicate Digi" -> "Digi") and dropping the term entirely when nothing else is left.
+    private static string? StripAnalysisVocabulary(string? term)
+    {
+        if (string.IsNullOrWhiteSpace(term)) return term;
+        var remainder = AnalysisVocabularySignal.Replace(term, " ");
+        if (remainder == term) return term;
+        // What surrounds an analysis word is usually the request's own scaffolding ("show me any
+        // duplicate transactions"), so drop bare noise tokens from the residue as well -- keeping
+        // them would reinstate exactly the match-nothing filter this strip exists to remove.
+        var kept = remainder
+            .Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(token => !SearchNoiseTerms.Contains(token))
+            .ToArray();
+        return kept.Length == 0 ? null : string.Join(' ', kept);
+    }
 
     private static string NormalizeSearchText(string value) =>
         Regex.Replace(value.Trim(), @"^(?:my|the)\s+", string.Empty, RegexOptions.IgnoreCase);

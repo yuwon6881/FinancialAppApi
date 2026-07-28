@@ -358,6 +358,7 @@ public partial class AiAssistantService
         var extractedSearch = ExtractLikelySearchText(message, intentNames);
         if (InheritsTransactionalContext(message, priorState))
             extractedSearch ??= ExtractStandaloneFollowUpSearchText(message);
+        extractedSearch = StripAnalysisVocabulary(extractedSearch);
         if (IsNoiseSearchTerm(extractedSearch) || LooksLikeCycleOrAmountPhrase(extractedSearch)) extractedSearch = null;
         // Inherit prior search/cycle only on a transactional follow-up -- a wishlist/recurring turn
         // must not drag the previous transaction search or cycle in.
@@ -428,7 +429,8 @@ public partial class AiAssistantService
         var needsTransactionDetail = s.NeedsTransactionDetail || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerMerchantSearch) ||
             Has(AiIntent.LedgerTransactionList) || Has(AiIntent.LedgerEdit) || Has(AiIntent.LedgerAnomaly) || Has(AiIntent.LedgerDuplicates);
         var needsCycleSummary = s.NeedsCycleSummary || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerSpendingTotal) ||
-            Has(AiIntent.LedgerComparison) || Has(AiIntent.WishlistForecast) || Has(AiIntent.CategoryLimits) ||
+            Has(AiIntent.LedgerComparison) || Has(AiIntent.LedgerAnomaly) || Has(AiIntent.LedgerDuplicates) ||
+            Has(AiIntent.WishlistForecast) || Has(AiIntent.CategoryLimits) ||
             Has(AiIntent.CycleInsights) || Has(AiIntent.AllocationBalance) || Has(AiIntent.AllocationPerformance);
         var needsBudgetTargets = s.NeedsBudgetTargets || Has(AiIntent.AllocationBalance) || Has(AiIntent.AllocationPerformance) || Has(AiIntent.WishlistForecast);
         var needsRecurring = s.NeedsRecurring || typedIntents.Any(i => i is AiIntent.RecurringList or AiIntent.RecurringUpcoming or AiIntent.RecurringAdd or AiIntent.RecurringEdit);
@@ -441,7 +443,10 @@ public partial class AiAssistantService
         var inheritsTxn = InheritsTransactionalContext(message, priorState);
         var needsCycleComparison = s.NeedsCycleComparison || Has(AiIntent.LedgerComparison)
             || (inheritsTxn && priorState?.LastComparison == true);
-        var searchText = classification.SearchText ?? (inheritsTxn ? priorState?.LastSearchText : null);
+        // The classifier can echo the analysis word back as a search entity too; sanitize it the
+        // same way the deterministic path does rather than trusting the model's extraction.
+        var classifiedSearch = StripAnalysisVocabulary(classification.SearchText);
+        var searchText = classifiedSearch ?? (inheritsTxn ? priorState?.LastSearchText : null);
         var cycleHint = classification.CycleHint ?? (inheritsTxn ? priorState?.LastCycleHint : null);
         var transactionIds = UsesPriorTransactionState(message) ? priorState?.LastMatchedTransactionIds : null;
         var wishlistItemId = needsWishlist || UsesPriorTransactionState(message) ? priorState?.LastWishlistItemId : null;
@@ -455,7 +460,7 @@ public partial class AiAssistantService
             classification.Confidence,
             true,
             plan,
-            ResolveConversationState(message, typedIntents.Select(ToIntentName).ToList(), classification.SearchText, classification.CycleHint, priorState),
+            ResolveConversationState(message, typedIntents.Select(ToIntentName).ToList(), classifiedSearch, classification.CycleHint, priorState),
             constraints,
             new AiIntentEntities(searchText, cycleHint, classification.Date, classification.Category,
                 classification.LedgerCategory, classification.Amount, wishlistItemId, classification.WishlistReference,

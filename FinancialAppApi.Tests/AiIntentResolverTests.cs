@@ -226,4 +226,38 @@ public class AiIntentResolverTests
             Assert.True(plan.QueryPlan.NeedsBudgetTargets, $"Failed for query: {query}");
         }
     }
+
+    // Analysis vocabulary must never become a merchant search term: filtering the cycle down to
+    // descriptions containing "duplicate" matches nothing, so the assistant answered "there are no
+    // transactions recorded for this cycle" on a ledger that was full.
+    [Theory]
+    [InlineData("Are there any duplicate transactions this cycle?")]
+    [InlineData("any duplicated payments this cycle")]
+    [InlineData("show me any double charged transactions")]
+    [InlineData("find any unusual transactions this cycle")]
+    [InlineData("any repeated charges this cycle?")]
+    public void ResolveDeterministically_AnalysisQuestion_DoesNotCarryAnalysisWordAsSearchText(string query)
+    {
+        var plan = AiAssistantService.ResolveDeterministically(query);
+        // A null search term is the invariant that matters: the MatchingRows level applies no
+        // filter without one, so the whole cycle still loads for the analysis to run over.
+        Assert.Null(plan.QueryPlan.SearchText);
+    }
+
+    [Fact]
+    public void ResolveDeterministically_AnalysisQuestionWithMerchant_KeepsTheMerchantTerm()
+    {
+        var plan = AiAssistantService.ResolveDeterministically("are there any duplicate Digi transactions this cycle?");
+        Assert.Equal("Digi", plan.QueryPlan.SearchText);
+    }
+
+    [Fact]
+    public void ResolveDeterministically_DuplicatesQuestion_LoadsCycleSummaryAndDetail()
+    {
+        var plan = AiAssistantService.ResolveDeterministically("Are there any duplicate transactions this cycle?");
+        Assert.Contains(AiAssistantService.AiIntent.LedgerDuplicates, plan.Intents);
+        Assert.Contains(AiAssistantService.DerivedMetric.DuplicateDetection, plan.QueryPlan.Metrics);
+        Assert.True(plan.QueryPlan.NeedsTransactionDetail);
+        Assert.True(plan.QueryPlan.NeedsCycleSummary);
+    }
 }
