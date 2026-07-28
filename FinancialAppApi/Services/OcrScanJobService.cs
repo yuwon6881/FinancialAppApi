@@ -306,6 +306,12 @@ public class OcrScanJobService
         var node = JsonNode.Parse(resultJson);
         if (node is not JsonObject obj) return node;
 
+        if (scanType == "receipt-split")
+        {
+            ObfuscateReceiptSplitNumbers(obj);
+            return node;
+        }
+
         var fields = scanType == "investment"
             ? new[] { "units", "unitPrice", "cashAmount", "fees", "taxes" }
             : new[] { "amount" };
@@ -323,6 +329,34 @@ public class OcrScanJobService
         }
 
         return node;
+    }
+
+    private static void ObfuscateReceiptSplitNumbers(JsonObject obj)
+    {
+        ObfuscateObjectFields(obj, ["subtotal", "total"]);
+        if (obj["items"] is JsonArray items)
+        {
+            foreach (var item in items.OfType<JsonObject>())
+                ObfuscateObjectFields(item, ["unitPrice", "lineTotal"]);
+        }
+        if (obj["charges"] is JsonArray charges)
+        {
+            foreach (var charge in charges.OfType<JsonObject>())
+                ObfuscateObjectFields(charge, ["amount"]);
+        }
+    }
+
+    private static void ObfuscateObjectFields(JsonObject obj, IReadOnlyList<string> fields)
+    {
+        foreach (var field in fields)
+        {
+            if (obj.TryGetPropertyValue(field, out var valueNode) &&
+                valueNode is JsonValue value &&
+                value.TryGetValue<decimal>(out var amount))
+            {
+                obj[field] = ObfuscateScanNumber(amount);
+            }
+        }
     }
 
     private static string ObfuscateScanNumber(decimal value)

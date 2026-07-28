@@ -194,6 +194,58 @@ internal static class AiResponseSchemas
         },
         ["description", "amount", "date", "category", "ledgerCategory", "confidence"]);
 
+    public static object ReceiptSplit(IReadOnlyList<string> categories) => Obj(
+        new Dictionary<string, object>
+        {
+            ["description"] = Str("Merchant name or short purchase description."),
+            ["date"] = NullableString("Visible receipt date in YYYY-MM-DD format; null if unclear."),
+            ["currency"] = NullableString("Visible ISO 4217 currency code or currency symbol; null if unclear."),
+            ["subtotal"] = NullableNumber("Printed subtotal before receipt-level charges; null if absent or unclear."),
+            ["total"] = NullableNumber("Printed final total; null if absent or unclear."),
+            ["category"] = Str(enums: categories),
+            ["ledgerCategory"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
+            ["items"] = Arr(Obj(
+                new Dictionary<string, object>
+                {
+                    ["name"] = Str("Receipt line description."),
+                    ["quantity"] = Num("Printed quantity. Use 1 when the line is not grouped.", 0.000001),
+                    ["unitPrice"] = NullableNumber("Printed or directly derivable unit price; null if unclear."),
+                    ["lineTotal"] = NullableNumber("Printed line total before receipt-level charges; null if unclear."),
+                    ["confidence"] = Num("Line extraction confidence from 0 to 1.", 0, 1)
+                },
+                ["name", "quantity", "unitPrice", "lineTotal", "confidence"]), maxItems: 80),
+            ["charges"] = Arr(Obj(
+                new Dictionary<string, object>
+                {
+                    ["label"] = Str("Printed charge or discount label."),
+                    ["kind"] = Str(enums: ["tax", "service", "tip", "discount", "rounding", "other"]),
+                    ["operation"] = Str(enums: ["add", "subtract", "included"]),
+                    ["basis"] = Str(enums: ["subtotal", "runningTotal"]),
+                    ["amount"] = NullableNumber("Printed absolute charge amount; null when only a rate is visible."),
+                    ["ratePercent"] = NullableNumber("Printed percentage such as 10 for 10%; null when absent."),
+                    ["sequence"] = Int(),
+                    ["eligibleItemIndexes"] = Arr(Int(), maxItems: 80),
+                    ["confidence"] = Num("Charge extraction confidence from 0 to 1.", 0, 1)
+                },
+                ["label", "kind", "operation", "basis", "amount", "ratePercent",
+                    "sequence", "eligibleItemIndexes", "confidence"]), maxItems: 20),
+            ["fieldConfidence"] = Obj(
+                new Dictionary<string, object>
+                {
+                    ["description"] = Num("Merchant confidence from 0 to 1.", 0, 1),
+                    ["date"] = Num("Date confidence from 0 to 1.", 0, 1),
+                    ["currency"] = Num("Currency confidence from 0 to 1.", 0, 1),
+                    ["subtotal"] = Num("Subtotal confidence from 0 to 1.", 0, 1),
+                    ["total"] = Num("Final total confidence from 0 to 1.", 0, 1)
+                },
+                ["description", "date", "currency", "subtotal", "total"]),
+            ["truncated"] = Bool(),
+            ["warnings"] = Arr(Str("Short review warning about unclear receipt content."), maxItems: 10),
+            ["confidence"] = Num("Overall extraction confidence from 0 to 1.", 0, 1)
+        },
+        ["description", "date", "currency", "subtotal", "total", "category", "ledgerCategory",
+            "items", "charges", "fieldConfidence", "truncated", "warnings", "confidence"]);
+
     public static readonly object InvestmentActivityScan = Obj(
         new Dictionary<string, object>
         {

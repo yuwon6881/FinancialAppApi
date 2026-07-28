@@ -15,6 +15,46 @@ public record ReceiptScanResult(
     string TxType,
     double Confidence);
 
+public sealed record ReceiptSplitItem(
+    string Name,
+    decimal Quantity,
+    decimal? UnitPrice,
+    decimal? LineTotal,
+    double Confidence);
+
+public sealed record ReceiptSplitCharge(
+    string Label,
+    string Kind,
+    string Operation,
+    string Basis,
+    decimal? Amount,
+    decimal? RatePercent,
+    int Sequence,
+    IReadOnlyList<int> EligibleItemIndexes,
+    double Confidence);
+
+public sealed record ReceiptSplitFieldConfidence(
+    double Description,
+    double Date,
+    double Currency,
+    double Subtotal,
+    double Total);
+
+public sealed record ReceiptSplitScanResult(
+    string Description,
+    string? Date,
+    string? Currency,
+    decimal? Subtotal,
+    decimal? Total,
+    string Category,
+    string LedgerCategory,
+    IReadOnlyList<ReceiptSplitItem> Items,
+    IReadOnlyList<ReceiptSplitCharge> Charges,
+    ReceiptSplitFieldConfidence FieldConfidence,
+    bool Truncated,
+    IReadOnlyList<string> Warnings,
+    double Confidence);
+
 public record InvestmentActivityScanResult(
     string? Type,
     Guid? AccountId,
@@ -144,9 +184,13 @@ public class ReceiptScanProcessor
 
         try
         {
-            var outcome = job.ScanType == "investment"
-                ? await ScanInvestmentImageAsync(Convert.ToBase64String(imageData), job.MimeType)
-                : await ScanReceiptImageAsync(Convert.ToBase64String(imageData), job.MimeType);
+            var encodedImage = Convert.ToBase64String(imageData);
+            var outcome = job.ScanType switch
+            {
+                "investment" => await ScanInvestmentImageAsync(encodedImage, job.MimeType),
+                "receipt-split" => await ScanReceiptSplitImageAsync(encodedImage, job.MimeType),
+                _ => await ScanReceiptImageAsync(encodedImage, job.MimeType)
+            };
             if (outcome.ErrorMessage != null)
             {
                 _logger.LogWarning("Receipt scan job {JobId} failed with user-facing error: {Message}", jobId, outcome.ErrorMessage);
@@ -234,6 +278,22 @@ Rules:
 - ledgerCategory: pick the single most fitting ledger category (Essentials is typically for food/transport/bills, Rewards for entertainment/shopping, Growth for investments/education, Stability for savings/insurance, Income for salary/inflows).
 - If critical text is unclear, return the best supported value with low confidence; never invent receipt details.";
 
+    private const string ReceiptSplitScanSystemInstruction = @"Extract the visible structure of one receipt for a personal expense-share calculator.
+Rules:
+- Extract every visible purchasable line into items. Keep grouped quantities when printed.
+- Do not include subtotal, total, tender, tax, service, tip, discount, or rounding rows as items.
+- unitPrice and lineTotal must be non-negative. Return null when not visibly supported or directly derivable.
+- Extract every receipt-level tax, service charge, tip, discount, rounding, and other adjustment into charges.
+- amount is the printed absolute amount. ratePercent is the printed percentage as a number such as 10 for 10%.
+- operation is add for added charges, subtract for discounts/negative adjustments, and included when already included in item prices.
+- basis is runningTotal only when the receipt clearly applies the percentage after an earlier charge; otherwise subtotal.
+- sequence follows the printed calculation order.
+- eligibleItemIndexes contains zero-based item indexes only when the receipt clearly limits a charge to particular items; otherwise return an empty array to mean all items.
+- subtotal and total are printed receipt values, not values you calculate.
+- truncated is true when visible lines could not all be extracted. Add short warnings for unclear or ambiguous content.
+- fieldConfidence reports confidence separately for merchant, date, currency, subtotal, and total.
+- Never invent an item, amount, rate, charge rule, date, or currency. Use low confidence and null values for unclear fields.";
+
     private async Task<ScanOutcome> ScanReceiptImageAsync(string base64Image, string mimeType)
     {
         if (!_aiClient.IsConfigured)
@@ -306,6 +366,126 @@ Rules:
         }
 
         return ScanOutcome.Ok(new ReceiptScanResult(description, amount, date, category, ledgerCategory, "outflow", confidence));
+    }
+
+    private async Task<ScanOutcome> ScanReceiptSplitImageAsync(string base64Image, string mimeType)
+    {
+        if (!_aiClient.IsConfigured)
+            return ScanOutcome.Failed("Receipt splitting is not configured for this app.");
+
+        var categories = (await _categoryService.GetCategoriesAsync())
+            .Select(c => c.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name)
+            .ToList();
+        if (categories.Count == 0)
+            return ScanOutcome.Failed("No transaction categories are configured.");
+
+        string text;
+        try
+        {
+            text = await _aiClient.GenerateTextAsync(
+                [
+                    AiPart.FromImage(mimeType, base64Image),
+                    AiPart.FromText($"Available categories JSON array: {JsonSerializer.Serialize(categories)}")
+                ],
+                new AiGenerationOptions(
+                    Feature: "receipt-split-ocr",
+                    Temperature: 0,
+                    MaxOutputTokens: 2500,
+                    SystemInstruction: ReceiptSplitScanSystemInstruction,
+                    ResponseJsonSchema: AiResponseSchemas.ReceiptSplit(categories),
+                    ThinkingLevel: "low",
+                    ModelConfigurationKey: "AiModels:ReceiptOcr"));
+        }
+        catch (AiClientException ex)
+        {
+            return ScanOutcome.Failed(ex.Message);
+        }
+
+        var result = JsonSerializer.Deserialize<ReceiptSplitScanResult>(text, new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        });
+        if (result == null)
+            return ScanOutcome.Failed("Could not read item details from the receipt. Please try a clearer photo.");
+
+        var description = (result.Description ?? string.Empty).Trim();
+        if (description.Length > 120) description = description[..120].Trim();
+        string? date = null;
+        if (DateOnly.TryParseExact(result.Date, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var parsedDate))
+        {
+            date = parsedDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        }
+        var category = categories.FirstOrDefault(c =>
+                string.Equals(c, result.Category, StringComparison.OrdinalIgnoreCase))
+            ?? categories.FirstOrDefault(c => string.Equals(c, "Other", StringComparison.OrdinalIgnoreCase))
+            ?? categories[0];
+        var ledgerCategory = ValidLedgerCategories.FirstOrDefault(c =>
+                string.Equals(c, result.LedgerCategory, StringComparison.OrdinalIgnoreCase))
+            ?? "Essentials";
+        var items = (result.Items ?? [])
+            .Take(80)
+            .Select(item => new ReceiptSplitItem(
+                string.IsNullOrWhiteSpace(item.Name) ? "Unclear item" : item.Name.Trim()[..Math.Min(item.Name.Trim().Length, 120)],
+                item.Quantity > 0 ? item.Quantity : 1,
+                item.UnitPrice is >= 0 ? item.UnitPrice : null,
+                item.LineTotal is >= 0 ? item.LineTotal : null,
+                Math.Clamp(item.Confidence, 0, 1)))
+            .ToList();
+        var charges = (result.Charges ?? [])
+            .Take(20)
+            .Select((charge, index) => new ReceiptSplitCharge(
+                string.IsNullOrWhiteSpace(charge.Label) ? "Other charge" : charge.Label.Trim()[..Math.Min(charge.Label.Trim().Length, 80)],
+                charge.Kind is "tax" or "service" or "tip" or "discount" or "rounding" or "other"
+                    ? charge.Kind : "other",
+                charge.Operation is "add" or "subtract" or "included"
+                    ? charge.Operation : charge.Kind == "discount" ? "subtract" : "add",
+                charge.Basis == "runningTotal" ? "runningTotal" : "subtotal",
+                charge.Amount is >= 0 ? charge.Amount : null,
+                charge.RatePercent is >= 0 ? charge.RatePercent : null,
+                charge.Sequence >= 0 ? charge.Sequence : index,
+                (charge.EligibleItemIndexes ?? [])
+                    .Where(itemIndex => itemIndex >= 0 && itemIndex < items.Count)
+                    .Distinct()
+                    .ToList(),
+                Math.Clamp(charge.Confidence, 0, 1)))
+            .OrderBy(charge => charge.Sequence)
+            .ToList();
+        var warnings = (result.Warnings ?? [])
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Take(10)
+            .ToList();
+        var fieldConfidence = result.FieldConfidence ?? new ReceiptSplitFieldConfidence(0, 0, 0, 0, 0);
+
+        if (items.Count == 0)
+            warnings.Add("No line items were confidently extracted. Add them manually before calculating your share.");
+        if (string.IsNullOrWhiteSpace(description) && items.Count == 0 && result.Total == null)
+            return ScanOutcome.Failed("Could not read item details from the receipt. Please try a clearer photo.");
+
+        return ScanOutcome.Ok(result with
+        {
+            Description = description,
+            Date = date,
+            Currency = string.IsNullOrWhiteSpace(result.Currency) ? null : result.Currency.Trim()[..Math.Min(result.Currency.Trim().Length, 12)],
+            Subtotal = result.Subtotal is >= 0 ? result.Subtotal : null,
+            Total = result.Total is >= 0 ? result.Total : null,
+            Category = category,
+            LedgerCategory = ledgerCategory,
+            Items = items,
+            Charges = charges,
+            FieldConfidence = new ReceiptSplitFieldConfidence(
+                Math.Clamp(fieldConfidence.Description, 0, 1),
+                Math.Clamp(fieldConfidence.Date, 0, 1),
+                Math.Clamp(fieldConfidence.Currency, 0, 1),
+                Math.Clamp(fieldConfidence.Subtotal, 0, 1),
+                Math.Clamp(fieldConfidence.Total, 0, 1)),
+            Warnings = warnings,
+            Confidence = Math.Clamp(result.Confidence, 0, 1)
+        });
     }
 
     private const string InvestmentScanSystemInstruction = @"Extract one investment activity from a broker confirmation, statement, or screenshot.

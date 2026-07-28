@@ -48,6 +48,22 @@ public class OcrScanJobServiceTests
     }
 
     [Fact]
+    public async Task CreateScanJobAsync_PersistsReceiptSplitScanType()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = NewService(context, new FakeReceiptImageStore());
+
+        var result = await service.CreateScanJobAsync(
+            TestHelpers.DefaultUserId,
+            "alice",
+            NewFormFile("shared-receipt.jpg", "image/jpeg", JpegBytes()),
+            scanType: "receipt-split");
+
+        Assert.Equal(CreateScanJobStatus.Created, result.Status);
+        Assert.Equal("receipt-split", (await context.ReceiptScanJobs.SingleAsync()).ScanType);
+    }
+
+    [Fact]
     public async Task CreateScanJobAsync_RejectsMissingImage()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -165,6 +181,46 @@ public class OcrScanJobServiceTests
         Assert.Equal(1.234567891m, FinancialAppApi.Database.ObfuscationHelper.Deobfuscate(result.RootElement.GetProperty("units").GetString()!));
         Assert.Equal(123.456789123m, FinancialAppApi.Database.ObfuscationHelper.Deobfuscate(result.RootElement.GetProperty("unitPrice").GetString()!));
         Assert.Equal(152.415787501m, FinancialAppApi.Database.ObfuscationHelper.Deobfuscate(result.RootElement.GetProperty("cashAmount").GetString()!));
+    }
+
+    [Fact]
+    public async Task GetScanJobAsync_ObfuscatesNestedReceiptSplitAmounts()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.ReceiptScanJobs.Add(new ReceiptScanJob
+        {
+            Id = "receipt-split-precision",
+            UserId = TestHelpers.DefaultUserId,
+            Username = "alice",
+            Status = "completed",
+            ScanType = "receipt-split",
+            ResultJson = """
+                {
+                  "subtotal":20.123456,
+                  "total":23.323456,
+                  "items":[{"name":"Meal","quantity":1,"unitPrice":16.123456,"lineTotal":16.123456}],
+                  "charges":[{"label":"Tax","amount":3.2,"ratePercent":16}]
+                }
+                """,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            CompletedAt = DateTime.UtcNow
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context, new FakeReceiptImageStore());
+
+        var response = await service.GetScanJobAsync(TestHelpers.DefaultUserId, "receipt-split-precision");
+
+        Assert.NotNull(response?.Result);
+        using var result = JsonDocument.Parse(JsonSerializer.Serialize(response.Result));
+        decimal Decode(JsonElement element) =>
+            FinancialAppApi.Database.ObfuscationHelper.Deobfuscate(element.GetString()!);
+        Assert.Equal(20.123456m, Decode(result.RootElement.GetProperty("subtotal")));
+        Assert.Equal(23.323456m, Decode(result.RootElement.GetProperty("total")));
+        Assert.Equal(16.123456m, Decode(result.RootElement.GetProperty("items")[0].GetProperty("unitPrice")));
+        Assert.Equal(16.123456m, Decode(result.RootElement.GetProperty("items")[0].GetProperty("lineTotal")));
+        Assert.Equal(3.2m, Decode(result.RootElement.GetProperty("charges")[0].GetProperty("amount")));
+        Assert.Equal(16m, result.RootElement.GetProperty("charges")[0].GetProperty("ratePercent").GetDecimal());
     }
 
     [Fact]
