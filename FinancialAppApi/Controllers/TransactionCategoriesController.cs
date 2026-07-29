@@ -31,7 +31,7 @@ public class TransactionCategoriesController : ControllerBase
     public async Task<ActionResult<IEnumerable<object>>> GetCategories()
     {
         var categories = await _categoryService.GetCategoriesAsync();
-        return categories.Select(ToResponse).ToList();
+        return Ok(categories.Select(ToResponse).ToList());
     }
 
     // POST: api/categories

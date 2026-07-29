@@ -16,7 +16,11 @@ public sealed class VaultDocumentTypesController : ControllerBase
     public VaultDocumentTypesController(VaultDocumentTypeService service) => _service = service;
 
     [HttpGet]
-    public async Task<IActionResult> List(CancellationToken ct) => Ok(await _service.ListAsync(ct));
+    public async Task<IActionResult> List(CancellationToken ct)
+    {
+        var types = await _service.ListAsync(ct);
+        return Ok(types);
+    }
 
     [HttpPost]
     public async Task<IActionResult> Create(DocumentTypeMutation request, CancellationToken ct)
