@@ -1,5 +1,6 @@
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
+using FinancialAppApi.Services.Documents;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Database;
@@ -66,6 +67,22 @@ public static class DbSeeder
                     Id = $"cat-{userId}-{index + 1}",
                     UserId = userId,
                     Name = DefaultCategoryNames[index]
+                });
+            }
+        }
+
+        var hasDocumentTypes = context.VaultDocumentTypes
+            .IgnoreQueryFilters()
+            .Any(type => type.UserId == userId);
+        if (!hasDocumentTypes)
+        {
+            for (var index = 0; index < VaultDocumentTypeService.DefaultNames.Length; index++)
+            {
+                context.VaultDocumentTypes.Add(new VaultDocumentTypeDefinition
+                {
+                    Id = $"doctype-{userId}-{index + 1}",
+                    UserId = userId,
+                    Name = VaultDocumentTypeService.DefaultNames[index]
                 });
             }
         }

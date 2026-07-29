@@ -29,6 +29,10 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         Assert.Equal("application/pdf", listed.GetProperty("contentType").GetString());
         Assert.Equal("2033-12-31", listed.GetProperty("retentionUntil").GetString());
 
+        var years = await client.GetFromJsonAsync<int[]>("/api/documents/years");
+        Assert.NotNull(years);
+        Assert.Equal([2026], years);
+
         var usageResponse = await client.GetAsync("/api/documents/usage");
         Assert.Equal(HttpStatusCode.OK, usageResponse.StatusCode);
         var usage = await usageResponse.Content.ReadFromJsonAsync<JsonElement>();
@@ -67,6 +71,23 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         var deleteResponse = await client.DeleteAsync($"/api/documents/{documentId}");
         Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/documents/{documentId}/content")).StatusCode);
+    }
+
+    [Fact]
+    public async Task DocumentTypes_CanBeAddedSearchedClientSideAndDeletedWhenUnused()
+    {
+        var client = await CreateSignedInClientAsync();
+
+        var defaults = await client.GetFromJsonAsync<JsonElement>("/api/document-types");
+        Assert.Contains(defaults.EnumerateArray(), item => item.GetProperty("name").GetString() == "Receipt");
+
+        var create = await client.PostAsJsonAsync("/api/document-types", new { name = "Education Receipt" });
+        Assert.Equal(HttpStatusCode.OK, create.StatusCode);
+        var created = await create.Content.ReadFromJsonAsync<JsonElement>();
+        var id = created.GetProperty("id").GetString();
+
+        var delete = await client.DeleteAsync($"/api/document-types/{id}");
+        Assert.Equal(HttpStatusCode.NoContent, delete.StatusCode);
     }
 
     [Fact]

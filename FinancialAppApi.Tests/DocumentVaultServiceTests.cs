@@ -45,6 +45,37 @@ public class DocumentVaultServiceTests
     }
 
     [Fact]
+    public async Task CreateAsync_RejectsTaxYearOlderThanSevenPriorYears()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        await context.SaveChangesAsync();
+
+        var service = NewService(context, new FakeDocumentVaultStore());
+        var data = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D };
+
+        var result = await service.CreateAsync("file.pdf", data, 2018, "Receipt", null, null, null);
+
+        Assert.Equal(DocumentVaultCreateStatus.InvalidMetadata, result.Status);
+    }
+
+    [Fact]
+    public async Task GetAvailableTaxYearsAsync_ReturnsOnlyDistinctYearsWithDocuments()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        context.VaultDocuments.AddRange(
+            VaultDocumentForYear(2025, 1),
+            VaultDocumentForYear(2026, 2),
+            VaultDocumentForYear(2025, 3));
+        await context.SaveChangesAsync();
+
+        var service = NewService(context, new FakeDocumentVaultStore());
+
+        Assert.Equal([2026, 2025], await service.GetAvailableTaxYearsAsync());
+    }
+
+    [Fact]
     public async Task CreateAsync_RejectsOverQuota()
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");
@@ -179,6 +210,21 @@ public class DocumentVaultServiceTests
         });
         return new DocumentVaultService(context, store, options, NullLogger<DocumentVaultService>.Instance);
     }
+
+    private static VaultDocument VaultDocumentForYear(int year, int id) => new()
+    {
+        Id = id,
+        UserId = "test-user",
+        StorageObjectPath = $"test-user/{year}/{id}.pdf",
+        OriginalFileName = $"{id}.pdf",
+        ContentType = "application/pdf",
+        SizeBytes = 10,
+        Sha256 = $"hash-{id}",
+        TaxYear = year,
+        DocumentType = "Receipt",
+        UploadedAt = DateTime.UtcNow.AddMinutes(-id),
+        RetentionUntil = new DateOnly(year, 12, 31).AddYears(7)
+    };
 
     private sealed class FailVaultDocumentSaveInterceptor : SaveChangesInterceptor
     {

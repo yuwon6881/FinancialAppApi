@@ -42,6 +42,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<MarketDataQuotaWindow> MarketDataQuotaWindows => Set<MarketDataQuotaWindow>();
     public DbSet<InstrumentSearchCache> InstrumentSearchCaches => Set<InstrumentSearchCache>();
     public DbSet<VaultDocument> VaultDocuments => Set<VaultDocument>();
+    public DbSet<VaultDocumentTypeDefinition> VaultDocumentTypes => Set<VaultDocumentTypeDefinition>();
     public DbSet<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey> DataProtectionKeys => Set<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey>();
 
     public void SetCurrentUser(string userId)
@@ -335,11 +336,19 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<VaultDocument>(entity =>
         {
-            entity.HasIndex(e => new { e.UserId, e.TaxYear });
+            entity.HasIndex(e => new { e.UserId, e.UploadedAt, e.Id })
+                .IsDescending(false, true, true);
+            entity.HasIndex(e => new { e.UserId, e.TaxYear, e.UploadedAt, e.Id })
+                .IsDescending(false, false, true, true);
             entity.HasIndex(e => new { e.UserId, e.TransactionId });
             entity.HasIndex(e => new { e.UserId, e.ClientKey })
                 .IsUnique()
                 .HasFilter("\"ClientKey\" IS NOT NULL");
+        });
+
+        modelBuilder.Entity<VaultDocumentTypeDefinition>(entity =>
+        {
+            entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
         });
 
         ConfigureUserOwnership(modelBuilder.Entity<Transaction>(), applyQueryFilter: true);
@@ -366,6 +375,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<ManualPriceOverride>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<MarketDataRefreshJob>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<VaultDocument>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<VaultDocumentTypeDefinition>(), applyQueryFilter: true);
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

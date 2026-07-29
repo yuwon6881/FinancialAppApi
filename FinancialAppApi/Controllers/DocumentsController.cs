@@ -94,6 +94,10 @@ public class DocumentsController : ControllerBase
         return File(result.Value.Data, result.Value.ContentType, result.Value.FileName);
     }
 
+    [HttpGet("years")]
+    public async Task<IActionResult> GetAvailableTaxYears(CancellationToken ct) =>
+        Ok(await _service.GetAvailableTaxYearsAsync(ct));
+
     [HttpPatch("{id}")]
     public async Task<IActionResult> Update(
         int id,
@@ -102,8 +106,7 @@ public class DocumentsController : ControllerBase
     {
         var notes = ReadOptionalString(request.Notes);
         var transactionId = ReadOptionalString(request.TransactionId);
-        if (request.TaxYear is < 1900 or > 9999 ||
-            request.DocumentType is { Length: > 40 } ||
+        if (request.DocumentType is { Length: > 40 } ||
             request.DocumentType is not null && string.IsNullOrWhiteSpace(request.DocumentType) ||
             !IsOptionalString(request.Notes) ||
             !IsOptionalString(request.TransactionId) ||

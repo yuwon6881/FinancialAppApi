@@ -57,17 +57,23 @@ public sealed class DocumentVaultService
     private readonly IDocumentVaultStore _store;
     private readonly IOptionsMonitor<DocumentVaultOptions> _options;
     private readonly ILogger<DocumentVaultService> _logger;
+    private readonly VaultDocumentTypeService? _documentTypes;
+    private readonly FinancialClock _financialClock;
 
     public DocumentVaultService(
         AppDbContext context,
         IDocumentVaultStore store,
         IOptionsMonitor<DocumentVaultOptions> options,
-        ILogger<DocumentVaultService> logger)
+        ILogger<DocumentVaultService> logger,
+        VaultDocumentTypeService? documentTypes = null,
+        FinancialClock? financialClock = null)
     {
         _context = context;
         _store = store;
         _options = options;
         _logger = logger;
+        _documentTypes = documentTypes;
+        _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
     public async Task<DocumentVaultCreateResult> CreateAsync(
@@ -88,13 +94,20 @@ public sealed class DocumentVaultService
         }
 
         if (string.IsNullOrWhiteSpace(originalFileName) || originalFileName.Length > 255 ||
-            taxYear is < 1900 or > 9999 ||
+            !IsAllowedTaxYear(taxYear) ||
             string.IsNullOrWhiteSpace(documentType) || documentType.Length > 40 ||
             notes?.Length > 500 ||
             transactionId?.Length > 450 ||
             clientKey?.Length > 64)
         {
             return new DocumentVaultCreateResult(DocumentVaultCreateStatus.InvalidMetadata, Message: "Document metadata is invalid.");
+        }
+
+        if (_documentTypes != null && !await _documentTypes.ExistsAsync(documentType, ct))
+        {
+            return new DocumentVaultCreateResult(
+                DocumentVaultCreateStatus.InvalidMetadata,
+                Message: "Choose an existing document type.");
         }
 
         if (fileData.LongLength > options.MaxDocumentBytes)
@@ -218,7 +231,7 @@ public sealed class DocumentVaultService
         int take,
         CancellationToken ct = default)
     {
-        var query = _context.VaultDocuments.AsQueryable();
+        var query = _context.VaultDocuments.AsNoTracking().AsQueryable();
 
         if (taxYear.HasValue)
         {
@@ -240,6 +253,7 @@ public sealed class DocumentVaultService
 
         var items = await query
             .OrderByDescending(d => d.UploadedAt)
+            .ThenByDescending(d => d.Id)
             .Skip(skip)
             .Take(take)
             .Select(d => new VaultDocumentDto(
@@ -257,6 +271,14 @@ public sealed class DocumentVaultService
 
         return (items, totalCount);
     }
+
+    public Task<List<int>> GetAvailableTaxYearsAsync(CancellationToken ct = default) =>
+        _context.VaultDocuments
+            .AsNoTracking()
+            .Select(document => document.TaxYear)
+            .Distinct()
+            .OrderByDescending(year => year)
+            .ToListAsync(ct);
 
     public async Task<(byte[] Data, string ContentType, string FileName)?> GetContentAsync(
         int id,
@@ -291,6 +313,15 @@ public sealed class DocumentVaultService
         var doc = await _context.VaultDocuments.FirstOrDefaultAsync(d => d.Id == id, ct);
         if (doc == null) return null;
 
+        if (taxYear.HasValue && !IsAllowedTaxYear(taxYear.Value))
+        {
+            return null;
+        }
+        if (documentType != null && _documentTypes != null &&
+            !await _documentTypes.ExistsAsync(documentType, ct))
+        {
+            return null;
+        }
         if (taxYear.HasValue && taxYear.Value != doc.TaxYear)
         {
             doc.TaxYear = taxYear.Value;
@@ -323,9 +354,21 @@ public sealed class DocumentVaultService
 
     public async Task<DocumentVaultUsage> GetUsageAsync(CancellationToken ct = default)
     {
-        var totalBytes = await _context.VaultDocuments.SumAsync(d => d.SizeBytes, ct);
-        var documentCount = await _context.VaultDocuments.CountAsync(ct);
+        var aggregate = await _context.VaultDocuments
+            .AsNoTracking()
+            .GroupBy(_ => 1)
+            .Select(group => new { TotalBytes = group.Sum(document => document.SizeBytes), Count = group.Count() })
+            .FirstOrDefaultAsync(ct);
 
-        return new DocumentVaultUsage(totalBytes, documentCount, _options.CurrentValue.MaxTotalBytesPerUser);
+        return new DocumentVaultUsage(
+            aggregate?.TotalBytes ?? 0,
+            aggregate?.Count ?? 0,
+            _options.CurrentValue.MaxTotalBytesPerUser);
+    }
+
+    private bool IsAllowedTaxYear(int taxYear)
+    {
+        var currentYear = _financialClock.Today.Year;
+        return taxYear >= currentYear - 7 && taxYear <= currentYear;
     }
 }
