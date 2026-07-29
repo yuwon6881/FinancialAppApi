@@ -70,8 +70,7 @@ public static class ServiceCollectionExtensions
                 }
             });
 
-        services.AddHealthChecks()
-            .AddNpgSql(configuration.GetConnectionString("DefaultConnection") ?? "", tags: ["ready"]);
+        services.AddHealthChecks();
 
         services.AddResponseCompression(options =>
         {
@@ -131,7 +130,7 @@ public static class ServiceCollectionExtensions
         IConfiguration configuration)
     {
         var requestsPerMinute = configuration.GetValue("Ai:RequestsPerMinute", 20);
-        // OCR receipt scans each trigger a Gemini vision call (pricier than a chat turn) and write
+        // OCR receipt scans each trigger a vision call (pricier than a chat turn) and write
         // ~13 MB of base64 to Postgres, so cap them harder than chat by default.
         var ocrRequestsPerMinute = configuration.GetValue("Ocr:RequestsPerMinute", 10);
         var passwordVerificationRequestsPerMinute =
@@ -346,6 +345,9 @@ public static class ServiceCollectionExtensions
             CommandTimeout = 15,
             SslMode = SslMode.Require,
         }.ConnectionString;
+
+        services.AddHealthChecks()
+            .AddNpgSql(npgsqlConnectionString, tags: ["ready"]);
 
         services.AddDbContext<AppDbContext>(options =>
         {

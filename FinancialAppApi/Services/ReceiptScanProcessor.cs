@@ -327,9 +327,9 @@ Rules:
                     Temperature: 0,
                     MaxOutputTokens: 260,
                     SystemInstruction: ScanSystemInstruction,
-                    ResponseJsonSchema: AiResponseSchemas.Receipt(categories),
+                    OutputJsonSchema: AiResponseSchemas.Receipt(categories),
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "AiModels:ReceiptOcr"));
+                    ModelConfigurationKey: "OpenAiModels:ReceiptOcr"));
         }
         catch (AiClientException ex)
         {
@@ -398,9 +398,9 @@ Rules:
                     Temperature: 0,
                     MaxOutputTokens: 2500,
                     SystemInstruction: ReceiptSplitScanSystemInstruction,
-                    ResponseJsonSchema: AiResponseSchemas.ReceiptSplit(categories),
+                    OutputJsonSchema: AiResponseSchemas.ReceiptSplit(categories),
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "AiModels:ReceiptOcr"));
+                    ModelConfigurationKey: "OpenAiModels:ReceiptOcr"));
         }
         catch (AiClientException ex)
         {
@@ -540,9 +540,9 @@ Rules:
                     Temperature: 0,
                     MaxOutputTokens: 280,
                     SystemInstruction: InvestmentScanSystemInstruction,
-                    ResponseJsonSchema: AiResponseSchemas.InvestmentActivityScan,
+                    OutputJsonSchema: AiResponseSchemas.InvestmentActivityScan,
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "AiModels:ReceiptOcr"));
+                    ModelConfigurationKey: "OpenAiModels:ReceiptOcr"));
         }
         catch (AiClientException ex)
         {

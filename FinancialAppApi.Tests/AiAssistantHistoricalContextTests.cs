@@ -32,7 +32,7 @@ public class AiAssistantHistoricalContextTests
         using var cache = new MemoryCache(new MemoryCacheOptions());
         var aiClient = new AiClient(
             new HttpClient(handler),
-            TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+            TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
             NullLogger<AiClient>.Instance);
         var service = new AiAssistantService(aiClient, context, new TransactionCategoryService(context, cache));
 
@@ -71,7 +71,7 @@ public class AiAssistantHistoricalContextTests
         using var cache = new MemoryCache(new MemoryCacheOptions());
         var aiClient = new AiClient(
             new HttpClient(handler),
-            TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+            TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
             NullLogger<AiClient>.Instance);
         var service = new AiAssistantService(aiClient, context, new TransactionCategoryService(context, cache));
 
@@ -107,7 +107,7 @@ public class AiAssistantHistoricalContextTests
         var service = new AiAssistantService(
             new AiClient(
                 new HttpClient(handler),
-                TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
                 NullLogger<AiClient>.Instance),
             context,
             new TransactionCategoryService(context, cache));
@@ -143,7 +143,7 @@ public class AiAssistantHistoricalContextTests
         var service = new AiAssistantService(
             new AiClient(
                 new HttpClient(handler),
-                TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
                 NullLogger<AiClient>.Instance),
             context,
             new TransactionCategoryService(context, cache));
@@ -179,7 +179,7 @@ public class AiAssistantHistoricalContextTests
         var service = new AiAssistantService(
             new AiClient(
                 new HttpClient(handler),
-                TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
                 NullLogger<AiClient>.Instance),
             context,
             new TransactionCategoryService(context, cache));
@@ -214,7 +214,7 @@ public class AiAssistantHistoricalContextTests
         var service = new AiAssistantService(
             new AiClient(
                 new HttpClient(handler),
-                TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
                 NullLogger<AiClient>.Instance),
             context,
             new TransactionCategoryService(context, cache));
@@ -251,7 +251,7 @@ public class AiAssistantHistoricalContextTests
         var service = new AiAssistantService(
             new AiClient(
                 new HttpClient(handler),
-                TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
                 NullLogger<AiClient>.Instance),
             context,
             new TransactionCategoryService(context, cache));
@@ -284,7 +284,7 @@ public class AiAssistantHistoricalContextTests
         var service = new AiAssistantService(
             new AiClient(
                 new HttpClient(handler),
-                TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
                 NullLogger<AiClient>.Instance),
             context,
             new TransactionCategoryService(context, cache));
@@ -322,7 +322,7 @@ public class AiAssistantHistoricalContextTests
         var service = new AiAssistantService(
             new AiClient(
                 new HttpClient(handler),
-                TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
                 NullLogger<AiClient>.Instance),
             context,
             new TransactionCategoryService(context, cache));
@@ -361,7 +361,7 @@ public class AiAssistantHistoricalContextTests
         var service = new AiAssistantService(
             new AiClient(
                 new HttpClient(handler),
-                TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
                 NullLogger<AiClient>.Instance),
             context,
             new TransactionCategoryService(context, cache));
@@ -388,7 +388,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("How many badminton I played last cycle?", []));
 
@@ -416,7 +416,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("How long can I hit my wishlist target?", []));
 
@@ -435,7 +435,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         var outcome = await service.ChatAsync(new AiChatRequest("How long until I hit my wishlist target?", []));
 
@@ -453,7 +453,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         // Two real turns: the follow-up now carries context through the structured frame
         // (outcome.Response.State), not through resent prior-message prose.
@@ -476,7 +476,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("Show Starbucks spending", []));
 
@@ -497,7 +497,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("Where did my money go this month?", []));
 
@@ -519,7 +519,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("show badminton transactions for all cycles", []));
 
@@ -545,7 +545,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("any badminton transactions in last 3 cycles?", []));
 
@@ -572,7 +572,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("deeply analyse this cycle", []));
 
@@ -614,7 +614,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("which subscription was discarded this cycle?", []));
 
@@ -636,7 +636,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         // "goal" + "achieve" now routes to the forecast intent (previously matched neither signal).
         await service.ChatAsync(new AiChatRequest("is my active goal hard to achieve?", []));
@@ -658,7 +658,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         var outcome = await service.ChatAsync(new AiChatRequest("edit badminton in the previous cycle", []));
 
@@ -683,7 +683,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("when is my next bill due?", []));
 
@@ -712,7 +712,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("how close am I to my stability fund goal?", []));
 
@@ -736,7 +736,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("how many wishlist items can I afford right now?", []));
 
@@ -753,7 +753,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("when did I buy the headphones from my wishlist?", []));
 
@@ -794,7 +794,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("Any TNG transactions in last 3 cycles?", []));
 
@@ -815,7 +815,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("How much I spend on badminton last cycle", []));
 
@@ -836,7 +836,7 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
 
         await service.ChatAsync(new AiChatRequest("Which day I received the most vs spent the most this cycle?", []));
 
@@ -945,7 +945,7 @@ public class AiAssistantHistoricalContextTests
 
     private static AiClient NewClient(HttpMessageHandler handler) => new(
         new HttpClient(handler),
-        TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+        TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
         NullLogger<AiClient>.Instance);
 
     private static FinancialClock TestClock(DateTimeOffset now) => new(
@@ -968,20 +968,21 @@ public class AiAssistantHistoricalContextTests
             var requestBody = await request.Content!.ReadAsStringAsync(cancellationToken);
             using var document = JsonDocument.Parse(requestBody);
             UserContent = document.RootElement
-                .GetProperty("contents")[0]
-                .GetProperty("parts")[0]
+                .GetProperty("input")[0]
+                .GetProperty("content")[0]
                 .GetProperty("text")
                 .GetString() ?? string.Empty;
 
             var modelText = "{\"reply\":\"Historical analysis ready.\",\"closeChat\":false,\"actions\":[]}";
             var providerBody = JsonSerializer.Serialize(new
             {
-                candidates = new[]
+                status = "completed",
+                output = new[]
                 {
                     new
                     {
-                        content = new { parts = new[] { new { text = modelText } } },
-                        finishReason = "STOP"
+                        type = "message",
+                        content = new[] { new { type = "output_text", text = modelText } }
                     }
                 }
             });

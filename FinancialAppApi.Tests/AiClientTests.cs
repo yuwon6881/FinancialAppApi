@@ -25,12 +25,12 @@ public class AiClientTests
     }
 
     [Fact]
-    public async Task GenerateTextAsync_SendsStructuredSchemaThinkingAndHeaderKey()
+    public async Task GenerateTextAsync_SendsOpenAiStructuredSchemaReasoningAndBearerToken()
     {
         var handler = new RecordingHandler(_ => SuccessResponse("{\"ok\":true}"));
         var client = new AiClient(
             new HttpClient(handler),
-            TestHelpers.NewConfiguration(("AiApiKey", "secret-key"), ("AiModel", "test-model")),
+            TestHelpers.NewConfiguration(("OpenAiApiKey", "secret-key"), ("OpenAiModel", "test-model")),
             NullLogger<AiClient>.Instance);
 
         var result = await client.GenerateTextAsync(
@@ -49,12 +49,15 @@ public class AiClientTests
         Assert.Equal("secret-key", handler.ApiKey);
 
         using var body = JsonDocument.Parse(handler.Body!);
-        var config = body.RootElement.GetProperty("generationConfig");
-        Assert.Equal("application/json", config.GetProperty("responseMimeType").GetString());
-        Assert.Equal("object", config.GetProperty("responseJsonSchema").GetProperty("type").GetString());
-        Assert.Equal("low", config.GetProperty("thinkingConfig").GetProperty("thinkingLevel").GetString());
-        Assert.Equal(123, config.GetProperty("maxOutputTokens").GetInt32());
-        Assert.Equal("system rules", body.RootElement.GetProperty("systemInstruction").GetProperty("parts")[0].GetProperty("text").GetString());
+        var format = body.RootElement.GetProperty("text").GetProperty("format");
+        Assert.Equal("json_schema", format.GetProperty("type").GetString());
+        Assert.Equal("object", format.GetProperty("schema").GetProperty("type").GetString());
+        Assert.Equal("low", body.RootElement.GetProperty("reasoning").GetProperty("effort").GetString());
+        Assert.Equal(123, body.RootElement.GetProperty("max_output_tokens").GetInt32());
+        Assert.Equal("system rules", body.RootElement.GetProperty("instructions").GetString());
+        Assert.Equal("test-model", body.RootElement.GetProperty("model").GetString());
+        Assert.False(body.RootElement.GetProperty("store").GetBoolean());
+        Assert.Equal("input_text", body.RootElement.GetProperty("input")[0].GetProperty("content")[0].GetProperty("type").GetString());
     }
 
     [Fact]
@@ -104,7 +107,7 @@ public class AiClientTests
         });
         var client = new AiClient(
             new HttpClient(handler),
-            TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "same-model")),
+            TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "same-model")),
             NullLogger<AiClient>.Instance);
 
         var result = await client.GenerateTextAsync(
@@ -115,13 +118,34 @@ public class AiClientTests
         Assert.Equal(2, attempt);
     }
 
+    [Fact]
+    public async Task GenerateTextAsync_SendsInlineImageAsOpenAiDataUrl()
+    {
+        var handler = new RecordingHandler(_ => SuccessResponse("{\"ok\":true}"));
+        var client = new AiClient(
+            new HttpClient(handler),
+            TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "vision-model")),
+            NullLogger<AiClient>.Instance);
+
+        await client.GenerateTextAsync(
+            [AiPart.FromText("Read this receipt."), AiPart.FromImage("image/jpeg", "AQID")],
+            new AiGenerationOptions("receipt-ocr", 0, 100));
+
+        using var body = JsonDocument.Parse(handler.Body!);
+        var image = body.RootElement.GetProperty("input")[0].GetProperty("content")[1];
+        Assert.Equal("input_image", image.GetProperty("type").GetString());
+        Assert.Equal("data:image/jpeg;base64,AQID", image.GetProperty("image_url").GetString());
+        Assert.Equal("auto", image.GetProperty("detail").GetString());
+    }
+
     private static HttpResponseMessage SuccessResponse(string text) => new(HttpStatusCode.OK)
     {
         Content = new StringContent(
             $$"""
             {
-              "candidates": [{ "content": { "parts": [{ "text": {{JsonSerializer.Serialize(text)}} }] }, "finishReason": "STOP" }],
-              "usageMetadata": { "promptTokenCount": 4, "candidatesTokenCount": 2 }
+              "status": "completed",
+              "output": [{ "type": "message", "content": [{ "type": "output_text", "text": {{JsonSerializer.Serialize(text)}} }] }],
+              "usage": { "input_tokens": 4, "output_tokens": 2 }
             }
             """,
             Encoding.UTF8,
@@ -137,7 +161,9 @@ public class AiClientTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             LastRequestUri = request.RequestUri;
-            ApiKey = request.Headers.TryGetValues("x-goog-api-key", out var values) ? values.Single() : null;
+            ApiKey = request.Headers.Authorization?.Scheme == "Bearer"
+                ? request.Headers.Authorization.Parameter
+                : null;
             Body = request.Content == null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
             return responder(request);
         }

@@ -72,7 +72,7 @@ gcloud run deploy financialapp-api \
   --max-instances 2 \
   --memory 512Mi \
   --set-env-vars "SupabaseStorage__ProjectUrl=https://YOUR_PROJECT_REF.supabase.co" \
-  --set-secrets "ConnectionStrings__DefaultConnection=financialapp-db:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest,MarketData__TwelveDataApiKey=financialapp-twelvedata-api-key:latest"
+  --set-secrets "ConnectionStrings__DefaultConnection=financialapp-db:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest,MarketData__TwelveDataApiKey=financialapp-twelvedata-api-key:latest,OpenAiApiKey=financialapp-openai-api-key:latest"
 ```
 
 - `--source .` builds the image from the `Dockerfile` via Cloud Build and deploys it.
@@ -88,6 +88,27 @@ gcloud builds submit .. \
   --config cloudbuild.yaml \
   --substitutions "_SUPABASE_PROJECT_URL=https://YOUR_PROJECT_REF.supabase.co"
 ```
+
+## Configure OpenAI
+
+The AI assistant, category/note suggestions, vault cleanup suggestions and receipt
+OCR all use the OpenAI Responses API. The default model is `gpt-5.4-mini`; override
+`OpenAiModel` or a feature-specific `OpenAiModels__*` environment variable only
+after validating that workload. Store the API key only in Secret Manager:
+
+```bash
+printf '%s' 'sk-REPLACE_ME' \
+  | gcloud secrets create financialapp-openai-api-key --data-file=-
+
+gcloud secrets add-iam-policy-binding financialapp-openai-api-key \
+  --member="serviceAccount:YOUR_CLOUD_RUN_RUNTIME_SA@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+```
+
+The checked-in deployment maps this secret to
+`OpenAiApiKey=financialapp-openai-api-key:latest`. After deploying and verifying an
+AI request, remove the obsolete `AiApiKey` Cloud Run mapping before deleting its
+old Secret Manager secret.
 
 ## Configure Growth Investments market data
 

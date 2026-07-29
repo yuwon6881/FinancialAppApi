@@ -5,30 +5,17 @@ internal static class AiResponseSchemas
     // Max number of actions the chat model may return in one turn -- also the effective ceiling
     // on a batched ledger-add (one flat openAddLedgerDraft action per record).
     //
-    // WHY 4 (and not 50): gemini-3.5-flash-lite has a small structured-output (responseJsonSchema)
-    // complexity budget. Because the actions array items are the full ActionPayload union, Gemini
-    // rejects the whole request with 400 INVALID_ARGUMENT once maxItems exceeds ~4. This was
-    // measured directly against the live API: full payload passes at maxItems=4 and fails at 5+,
-    // and even stripping the payload down does not get a large array under the limit -- the model's
-    // budget is the wall. See AiChatSchemaLiveProbe (removed) / commit history for the measurements.
-    //
-    // TO RAISE THIS: only safe on a model with a larger structured-output budget (a non-lite
-    // Gemini tier, or a future model). If AiModels:Chat is pointed at such a model, re-run a schema
-    // probe to find the true ceiling, then bump this constant. Do NOT raise it blindly on a lite
-    // model -- it silently breaks every chat turn with a 400. When you change it, also update the
-    // matching "no more than N ledger draft actions" number in AiAssistantService.BuildSystemInstruction
-    // (that prompt is a fixed non-interpolated string, so it can't reference this constant directly).
+    // Four actions keeps multi-record drafts reviewable and bounds the amount of UI state staged
+    // by one chat turn. When changing it, also update the matching "no more than N ledger draft
+    // actions" instruction in AiAssistantService.BuildSystemInstruction.
     internal const int MaxChatActions = 4;
 
     // Category is enum-constrained to the user's actual categories (like Receipt / CategorySuggestions)
     // so the model is forced to emit a real category name for add/edit drafts and ledger filters --
     // otherwise a free-string guess that doesn't match gets the whole action dropped in
     // AiAssistantService.IsActionSafe. Falls back to a plain string when the caller has no categories.
-    // The payload union is right at gemini-3.5-flash-lite's structured-output complexity ceiling
-    // (see MaxChatActions), so field groups that only matter to one kind of request are opted into
-    // per turn rather than carried on every call. Adding the ledger-filter and reminder groups
-    // unconditionally pushed a plain ledger-add turn over the wall and the API answered 400
-    // INVALID_ARGUMENT. With both flags false this is byte-for-byte the long-standing schema.
+    // Field groups that only matter to one kind of request are opted into per turn rather than
+    // carried on every call. This keeps schemas and model output focused on the current intent.
     public static object Chat(
         IReadOnlyList<string> categories,
         bool includeLedgerFilters = false,
@@ -58,7 +45,7 @@ internal static class AiResponseSchemas
         ["reply", "closeChat", "actions"]);
 
     // Ledger creation uses a dedicated schema instead of the large generic ActionPayload union.
-    // This keeps Gemini's structured-output grammar small while making every field needed to
+    // This keeps the structured-output contract focused while making every field needed to
     // stage a local draft mandatory. For an unambiguous line-based list, expectedActionCount pins
     // the response to exactly one action per input line (up to the model-supported ceiling).
     public static object LedgerDraftChat(IReadOnlyList<string> categories, int expectedActionCount = 0)

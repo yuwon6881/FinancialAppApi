@@ -49,23 +49,23 @@ public sealed class VaultDocumentTypeService
 
     public async Task<IReadOnlyList<VaultDocumentTypeDto>> ListAsync(CancellationToken ct = default)
     {
-        var counts = _context.VaultDocuments
+        var counts = await _context.VaultDocuments
             .AsNoTracking()
             .GroupBy(document => document.DocumentType)
-            .Select(group => new { Name = group.Key, Count = group.Count() });
+            .Select(group => new { Name = group.Key, Count = group.Count() })
+            .ToDictionaryAsync(item => item.Name, item => item.Count, ct);
 
-        return await _context.VaultDocumentTypes
+        var types = await _context.VaultDocumentTypes
             .AsNoTracking()
-            .GroupJoin(
-                counts,
-                type => type.Name,
-                count => count.Name,
-                (type, matches) => new VaultDocumentTypeDto(
-                    type.Id,
-                    type.Name,
-                    matches.Select(match => match.Count).FirstOrDefault()))
             .OrderBy(type => type.Name)
             .ToListAsync(ct);
+
+        return types
+            .Select(type => new VaultDocumentTypeDto(
+                type.Id,
+                type.Name,
+                counts.GetValueOrDefault(type.Name)))
+            .ToList();
     }
 
     public async Task<(VaultDocumentTypeDto? Type, string? Error)> CreateAsync(
@@ -185,9 +185,9 @@ public sealed class VaultDocumentTypeService
                     Temperature: 0.1,
                     MaxOutputTokens: 600,
                     SystemInstruction: ReviewInstruction,
-                    ResponseJsonSchema: AiResponseSchemas.CategoryCleanup,
+                    OutputJsonSchema: AiResponseSchemas.CategoryCleanup,
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "AiModels:CategoryCleanup"),
+                    ModelConfigurationKey: "OpenAiModels:CategoryCleanup"),
                 ct);
         }
         catch (AiClientException)

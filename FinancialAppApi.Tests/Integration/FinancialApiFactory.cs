@@ -17,7 +17,7 @@ namespace FinancialAppApi.Tests.Integration;
 /// <summary>
 /// Boots the real API (Program.cs, full middleware pipeline, routing, JSON serialization,
 /// custom bearer-token auth) but swaps PostgreSQL for an isolated EF Core InMemory store and
-/// removes the OCR background worker so no test ever reaches Google Gemini.
+/// removes the OCR background worker so no test ever reaches OpenAI.
 ///
 /// Each factory instance gets its own InMemory database name, and each xUnit test gets its own
 /// factory (see <see cref="IntegrationTestBase"/>), so tests are fully isolated from one another.
@@ -42,7 +42,7 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
         // ConfigureTestServices override, so supply a dummy one to get past the guard.
         builder.UseSetting("ConnectionStrings:DefaultConnection",
             "Host=localhost;Database=unused;Username=unused;Password=unused");
-        builder.UseSetting("AiApiKey", "test-key");
+        builder.UseSetting("OpenAiApiKey", "test-key");
 
         // Pin the registration cap so HTTP registration-gating tests stay deterministic
         // regardless of the shipped appsettings default (which product config may change).
@@ -92,7 +92,7 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
             }
             services.AddSingleton<IDocumentVaultStore, FakeDocumentVaultStore>();
 
-            // The receipt-scan background worker would drain the queue and call Gemini for real.
+            // The receipt-scan background worker would drain the queue and call OpenAI for real.
             // Remove it so OCR tests stay hermetic; jobs simply remain "queued".
             var hostedService = services.FirstOrDefault(d =>
                 d.ServiceType == typeof(IHostedService) &&
@@ -126,7 +126,7 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
             var requestBody = await request.Content!.ReadAsStringAsync(cancellationToken);
             Volatile.Write(ref factory._lastAiRequestBody, requestBody);
 
-            const string responseBody = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"{\\\"reply\\\":\\\"Context received.\\\",\\\"closeChat\\\":false,\\\"actions\\\":[]}\"}]},\"finishReason\":\"STOP\"}]}";
+            const string responseBody = "{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"reply\\\":\\\"Context received.\\\",\\\"closeChat\\\":false,\\\"actions\\\":[]}\"}]}]}";
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(responseBody, Encoding.UTF8, "application/json")

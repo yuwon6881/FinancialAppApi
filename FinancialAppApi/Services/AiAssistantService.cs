@@ -229,22 +229,20 @@ public partial class AiAssistantService
                 new AiGenerationOptions(
                     Feature: "chat",
                     Temperature: 0.15,
-                    // Gemini 3 thinking tokens are drawn from this same budget, so a low ceiling
-                    // let a normal analytic reply plus its thinking overflow into MAX_TOKENS (a 503
-                    // "response too long and got cut off"). Give the visible JSON reply real
-                    // headroom above the thinking it competes with.
+                    // Reasoning tokens are drawn from this same budget, so leave enough headroom
+                    // for the visible structured reply.
                     MaxOutputTokens: intentPlan.Intents.Contains(AiIntent.LedgerAdd)
                         ? 3200
                         : intentPlan.QueryPlan.NeedsCycleComparison ? 1600 : 1200,
                     SystemInstruction: systemInstruction,
-                    ResponseJsonSchema: isLedgerAdd
+                    OutputJsonSchema: isLedgerAdd
                         ? AiResponseSchemas.LedgerDraftChat(context.Categories, structuredLedgerDraftCount)
                         : AiResponseSchemas.Chat(
                             context.Categories,
                             includeLedgerFilters: WantsLedgerFilterControls(intentPlan),
                             includeReminderControls: WantsReminderControls(intentPlan)),
                     ThinkingLevel: intentPlan.QueryPlan.NeedsCycleComparison ? "medium" : "low",
-                    ModelConfigurationKey: "AiModels:Chat"),
+                    ModelConfigurationKey: "OpenAiModels:Chat"),
                 cancellationToken);
         }
         catch (AiClientException ex)
@@ -277,10 +275,8 @@ public partial class AiAssistantService
 
     private static AiChatOutcome Ok(AiChatResponse response) => new(response, IsProviderError: false);
 
-    // Which optional payload groups this turn is allowed to spend schema budget on. Keep these
-    // narrow: every group added to a turn's payload union costs structured-output complexity, and
-    // the lite chat model answers 400 INVALID_ARGUMENT rather than degrading when the total is
-    // too high. See AiResponseSchemas.Chat.
+    // Keep optional payload groups intent-specific so unrelated controls do not distract the model
+    // or inflate the structured output contract.
     private static readonly HashSet<AiIntent> LedgerFilterIntents =
     [
         AiIntent.Navigation, AiIntent.LedgerTransactionList, AiIntent.LedgerMerchantSearch,
@@ -292,7 +288,6 @@ public partial class AiAssistantService
 
     private static bool WantsReminderControls(AiIntentPlan plan) =>
         // Read-only recurring questions (cost, list, upcoming bills) do not need reminder-edit
-        // fields. Adding that optional group pushes gemini-3.5-flash-lite's chat schema over its
-        // structured-output complexity ceiling and makes the whole request fail with HTTP 400.
+        // fields, so do not carry that optional group on read-only requests.
         plan.Intents.Contains(AiIntent.RecurringEdit);
 }

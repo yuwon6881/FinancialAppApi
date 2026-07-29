@@ -154,12 +154,12 @@ public class AiAssistantServiceTests
     public async Task ChatAsync_NotConfigured_ReportsUnconfiguredWithoutCallingModel()
     {
         await using var context = NewContextWithSettings();
-        // No AiApiKey -> IsConfigured is false.
+        // No OpenAiApiKey -> IsConfigured is false.
         var handler = new ScriptedAiHandler();
         var cache = new MemoryCache(new MemoryCacheOptions());
         var client = new AiClient(
             new HttpClient(handler),
-            TestHelpers.NewConfiguration(("AiModel", "test-model")),
+            TestHelpers.NewConfiguration(("OpenAiModel", "test-model")),
             NullLogger<AiClient>.Instance);
         var service = new AiAssistantService(client, context, new TransactionCategoryService(context, cache));
 
@@ -440,8 +440,9 @@ public class AiAssistantServiceTests
         Assert.Equal("Car Fuel", outcome.Response.Actions[1].Payload["description"]?.ToString());
         Assert.Contains("ledger.add", handler.LastUserContent);
         using var request = JsonDocument.Parse(handler.RequestBodies[^1]);
-        var actionsSchema = request.RootElement.GetProperty("generationConfig")
-            .GetProperty("responseJsonSchema")
+        var actionsSchema = request.RootElement.GetProperty("text")
+            .GetProperty("format")
+            .GetProperty("schema")
             .GetProperty("properties")
             .GetProperty("actions");
         Assert.Equal(2, actionsSchema.GetProperty("minItems").GetInt32());
@@ -472,8 +473,9 @@ public class AiAssistantServiceTests
         await service.ChatAsync(new AiChatRequest("How much do my subscriptions cost me a month?", []));
 
         using var request = JsonDocument.Parse(handler.RequestBodies[^1]);
-        var payloadProperties = request.RootElement.GetProperty("generationConfig")
-            .GetProperty("responseJsonSchema")
+        var payloadProperties = request.RootElement.GetProperty("text")
+            .GetProperty("format")
+            .GetProperty("schema")
             .GetProperty("properties")
             .GetProperty("actions")
             .GetProperty("items")
@@ -1216,7 +1218,7 @@ public class AiAssistantServiceTests
         var cache = new MemoryCache(new MemoryCacheOptions());
         var client = new AiClient(
             new HttpClient(handler),
-            TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+            TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
             NullLogger<AiClient>.Instance);
         var categoryService = new TransactionCategoryService(context, cache);
         var suggestions = withCategorySuggestions
@@ -1265,8 +1267,8 @@ public class AiAssistantServiceTests
             RequestBodies.Add(body);
             using var document = JsonDocument.Parse(body);
             UserContents.Add(document.RootElement
-                .GetProperty("contents")[0]
-                .GetProperty("parts")[0]
+                .GetProperty("input")[0]
+                .GetProperty("content")[0]
                 .GetProperty("text")
                 .GetString() ?? string.Empty);
 
@@ -1278,12 +1280,13 @@ public class AiAssistantServiceTests
             var reply = _replies.Count > 1 ? _replies.Dequeue() : _replies.Peek();
             var providerBody = JsonSerializer.Serialize(new
             {
-                candidates = new[]
+                status = "completed",
+                output = new[]
                 {
                     new
                     {
-                        content = new { parts = new[] { new { text = reply } } },
-                        finishReason = "STOP"
+                        type = "message",
+                        content = new[] { new { type = "output_text", text = reply } }
                     }
                 }
             });

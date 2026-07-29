@@ -43,7 +43,7 @@ gaps, not a rewrite.
 
 ### Where I'd push back / cautions
 - **Gate the second *model* call hard; keep the second *fetch* cheap.** Most sufficiency
-  failures are fixable by re-querying Postgres, not by re-prompting Gemini. Your
+  failures are fixable by re-querying Postgres, not by re-prompting OpenAI. Your
   `TryResolveLedgerEditAsync` already demonstrates "resolve server-side, return with zero
   model calls." Follow that pattern: a re-fetch should almost never trigger a second LLM
   round-trip.
@@ -151,15 +151,16 @@ internal sealed class ScriptedAiHandler : HttpMessageHandler
         RequestBodies.Add(body);
         using var doc = JsonDocument.Parse(body);
         UserContents.Add(doc.RootElement
-            .GetProperty("contents")[0].GetProperty("parts")[0]
+            .GetProperty("input")[0].GetProperty("content")[0]
             .GetProperty("text").GetString() ?? "");
 
         var reply = _replies.Count > 1 ? _replies.Dequeue() : _replies.Peek();
         var providerBody = JsonSerializer.Serialize(new
         {
-            candidates = new[] { new {
-                content = new { parts = new[] { new { text = reply } } },
-                finishReason = "STOP" } }
+            status = "completed",
+            output = new[] { new {
+                type = "message",
+                content = new[] { new { type = "output_text", text = reply } } }
         });
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -189,7 +190,7 @@ public static AiAssistantService NewAiService(
 {
     var cache = new MemoryCache(new MemoryCacheOptions());
     var client = new AiClient(new HttpClient(handler),
-        NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")),
+        NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
         NullLogger<AiClient>.Instance);
     return new AiAssistantService(client, context, new TransactionCategoryService(context, cache));
 }

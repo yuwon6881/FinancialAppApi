@@ -30,9 +30,9 @@ public partial class AiAssistantService
                     Feature: "chat-intent-classification",
                     Temperature: 0,
                     MaxOutputTokens: 220,
-                    ResponseJsonSchema: AiResponseSchemas.IntentClassification,
+                    OutputJsonSchema: AiResponseSchemas.IntentClassification,
                     ThinkingLevel: "none",
-                    ModelConfigurationKey: "AiModels:IntentClassifier"),
+                    ModelConfigurationKey: "OpenAiModels:IntentClassifier"),
                 cancellationToken);
             using var document = JsonDocument.Parse(text);
             var root = document.RootElement;

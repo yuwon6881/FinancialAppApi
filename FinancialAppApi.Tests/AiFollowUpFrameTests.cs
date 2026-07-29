@@ -749,7 +749,7 @@ public class AiFollowUpFrameTests
         var handler = new CapturingHandler();
         var cache = new MemoryCache(new MemoryCacheOptions());
         var service = new AiAssistantService(
-            new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("AiApiKey", "key"), ("AiModel", "test-model")), NullLogger<AiClient>.Instance),
+            new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance),
             context,
             new TransactionCategoryService(context, cache));
         return (service, handler);
@@ -775,12 +775,13 @@ public class AiFollowUpFrameTests
             CallCount++;
             var requestBody = await request.Content!.ReadAsStringAsync(cancellationToken);
             using var document = JsonDocument.Parse(requestBody);
-            UserContent = document.RootElement.GetProperty("contents")[0].GetProperty("parts")[0].GetProperty("text").GetString() ?? string.Empty;
+            UserContent = document.RootElement.GetProperty("input")[0].GetProperty("content")[0].GetProperty("text").GetString() ?? string.Empty;
 
             var modelText = "{\"reply\":\"ok\",\"closeChat\":false,\"actions\":[]}";
             var providerBody = JsonSerializer.Serialize(new
             {
-                candidates = new[] { new { content = new { parts = new[] { new { text = modelText } } }, finishReason = "STOP" } }
+                status = "completed",
+                output = new[] { new { type = "message", content = new[] { new { type = "output_text", text = modelText } } } }
             });
             return new HttpResponseMessage(HttpStatusCode.OK)
             {

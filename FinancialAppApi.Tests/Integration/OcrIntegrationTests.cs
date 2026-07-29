@@ -9,7 +9,7 @@ namespace FinancialAppApi.Tests.Integration;
 
 /// <summary>
 /// Receipt-scan (OCR) job workflow through the full HTTP stack. The background worker that would
-/// call Gemini is removed by the test factory, so these tests drive validation, the queued-job
+/// call OpenAI is removed by the test factory, so these tests drive validation, the queued-job
 /// contract, idempotent terminal-state reads, explicit deletion, and worker-key gating without any AI dependency.
 /// </summary>
 public class OcrIntegrationTests : IntegrationTestBase

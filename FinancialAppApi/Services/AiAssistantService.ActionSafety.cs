@@ -152,7 +152,7 @@ public partial class AiAssistantService
     {
         // Ledger adds only create local drafts. Validate and normalize their dedicated payload
         // before the broad union checks below, which include fields belonging to unrelated action
-        // types and can reject an otherwise valid draft when Gemini emits optional placeholders.
+        // types and can reject an otherwise valid draft when the model emits optional placeholders.
         if (type.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase))
         {
             return HasValidLedgerDraftPayload(payload, context);
@@ -298,7 +298,7 @@ public partial class AiAssistantService
                 _ => false
             };
 
-        // ledgerCategorySpecified is an internal safety signal rather than user data. Gemini may
+        // ledgerCategorySpecified is an internal safety signal rather than user data. The model may
         // omit optional payload fields even when its reply says the draft was staged, so normalize
         // omission to the safe default instead of silently dropping the entire UI action.
         var isInflow = txType.Equals("inflow", StringComparison.OrdinalIgnoreCase);

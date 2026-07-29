@@ -164,17 +164,17 @@ Available categories JSON array: {categoriesJson}";
                 new AiGenerationOptions(
                     Feature: "category-suggestion",
                     Temperature: 0,
-                    // Thinking tokens count against MaxOutputTokens on Gemini 3, so a tight budget
+                    // Reasoning tokens count against MaxOutputTokens, so a tight budget
                     // lets the thinking pass starve the JSON output and trip MAX_TOKENS -- which the
                     // client treats as a hard failure, silently yielding zero suggestions. Keep
                     // thinking at its minimum ("low") and leave ample room for both it and the
-                    // small JSON payload. (Omitting thinkingConfig entirely is worse: the model
+                    // small JSON payload. (Omitting explicit reasoning effort is worse: the model
                     // then defaults to a larger, dynamic thinking budget.)
                     MaxOutputTokens: 512,
                     SystemInstruction: SuggestSystemInstruction,
-                    ResponseJsonSchema: AiResponseSchemas.CategorySuggestions(categoryNames),
+                    OutputJsonSchema: AiResponseSchemas.CategorySuggestions(categoryNames),
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "AiModels:CategorySuggestion"),
+                    ModelConfigurationKey: "OpenAiModels:CategorySuggestion"),
                 cancellationToken);
         }
         catch (AiClientException ex)
@@ -233,9 +233,9 @@ Recent description examples JSON array: {JsonSerializer.Serialize(history)}";
                     // text (3 notes + reasons), so give even more headroom on top of "low" thinking.
                     MaxOutputTokens: 640,
                     SystemInstruction: SuggestNotesSystemInstruction,
-                    ResponseJsonSchema: AiResponseSchemas.NoteSuggestions,
+                    OutputJsonSchema: AiResponseSchemas.NoteSuggestions,
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "AiModels:NoteSuggestion"),
+                    ModelConfigurationKey: "OpenAiModels:NoteSuggestion"),
                 cancellationToken);
         }
         catch (AiClientException ex)
@@ -359,9 +359,9 @@ Recent usage JSON array: {JsonSerializer.Serialize(usage)}";
                     Temperature: 0.1,
                     MaxOutputTokens: 700,
                     SystemInstruction: ReviewCleanupSystemInstruction,
-                    ResponseJsonSchema: AiResponseSchemas.CategoryCleanup,
+                    OutputJsonSchema: AiResponseSchemas.CategoryCleanup,
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "AiModels:CategoryCleanup"),
+                    ModelConfigurationKey: "OpenAiModels:CategoryCleanup"),
                 cancellationToken);
         }
         catch (AiClientException ex)

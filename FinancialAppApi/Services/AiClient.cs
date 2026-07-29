@@ -22,15 +22,16 @@ public sealed record AiGenerationOptions(
     double Temperature,
     int MaxOutputTokens,
     string? SystemInstruction = null,
-    object? ResponseJsonSchema = null,
+    object? OutputJsonSchema = null,
     string? ThinkingLevel = "low",
-    string ModelConfigurationKey = "AiModel");
+    string ModelConfigurationKey = "OpenAiModel");
 
 // Single point of contact with the AI provider. Feature services supply a schema and a small,
 // explicit compute budget; transport, retries, usage telemetry and provider parsing stay here.
 public class AiClient
 {
-    private const string DefaultPrimaryModel = "gemini-3.5-flash-lite";
+    private const string DefaultPrimaryModel = "gpt-5.4-mini";
+    private const string ResponsesEndpoint = "https://api.openai.com/v1/responses";
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(250);
 
     private readonly HttpClient _httpClient;
@@ -44,7 +45,7 @@ public class AiClient
         _logger = logger;
     }
 
-    public bool IsConfigured => !string.IsNullOrWhiteSpace(_configuration["AiApiKey"]);
+    public bool IsConfigured => !string.IsNullOrWhiteSpace(_configuration["OpenAiApiKey"]);
 
     public async Task<string> GenerateTextAsync(
         IReadOnlyList<AiPart> parts,
@@ -57,16 +58,16 @@ public class AiClient
 
         Telemetry.AiActionsCounter.Add(1, new KeyValuePair<string, object?>("feature", options.Feature));
 
-        var apiKey = _configuration["AiApiKey"];
+        var apiKey = _configuration["OpenAiApiKey"]?.Trim();
         if (string.IsNullOrWhiteSpace(apiKey))
         {
             throw new AiClientException("AI service is not configured on the server.");
         }
 
-        var requestBody = BuildRequestBody(parts, options);
         var primaryModel = _configuration[options.ModelConfigurationKey];
-        if (string.IsNullOrWhiteSpace(primaryModel)) primaryModel = _configuration["AiModel"];
+        if (string.IsNullOrWhiteSpace(primaryModel)) primaryModel = _configuration["OpenAiModel"];
         if (string.IsNullOrWhiteSpace(primaryModel)) primaryModel = DefaultPrimaryModel;
+        var requestBody = BuildRequestBody(parts, options, primaryModel);
 
         try
         {
@@ -74,37 +75,50 @@ public class AiClient
         }
         catch (AiProviderUnavailableException) when (!cancellationToken.IsCancellationRequested)
         {
-            // No fallback model: gemini-3.5-flash-lite is the only model. A transient provider
-            // failure (already retried once by CallWithRetryAsync) surfaces as a clean error.
             throw new AiClientException("AI service is temporarily unavailable. Please try again.");
         }
     }
 
-    internal static object BuildRequestBody(IReadOnlyList<AiPart> parts, AiGenerationOptions options)
+    internal static object BuildRequestBody(
+        IReadOnlyList<AiPart> parts,
+        AiGenerationOptions options,
+        string model)
     {
-        var generationConfig = new Dictionary<string, object?>
-        {
-            ["temperature"] = options.Temperature,
-            ["maxOutputTokens"] = options.MaxOutputTokens
-        };
-        if (!string.IsNullOrWhiteSpace(options.ThinkingLevel))
-        {
-            generationConfig["thinkingConfig"] = new { thinkingLevel = options.ThinkingLevel };
-        }
-        if (options.ResponseJsonSchema != null)
-        {
-            generationConfig["responseMimeType"] = "application/json";
-            generationConfig["responseJsonSchema"] = options.ResponseJsonSchema;
-        }
-
         var body = new Dictionary<string, object?>
         {
-            ["contents"] = new[] { new { parts = parts.Select(ToWirePart).ToArray() } },
-            ["generationConfig"] = generationConfig
+            ["model"] = model,
+            ["store"] = false,
+            ["input"] = new[]
+            {
+                new
+                {
+                    role = "user",
+                    content = parts.Select(ToWirePart).ToArray()
+                }
+            },
+            ["max_output_tokens"] = options.MaxOutputTokens
         };
+
+        if (!string.IsNullOrWhiteSpace(options.ThinkingLevel))
+        {
+            body["reasoning"] = new { effort = options.ThinkingLevel };
+        }
+        if (options.OutputJsonSchema != null)
+        {
+            body["text"] = new
+            {
+                format = new
+                {
+                    type = "json_schema",
+                    name = SchemaNameFor(options.Feature),
+                    strict = false,
+                    schema = options.OutputJsonSchema
+                }
+            };
+        }
         if (!string.IsNullOrWhiteSpace(options.SystemInstruction))
         {
-            body["systemInstruction"] = new { parts = new[] { new { text = options.SystemInstruction } } };
+            body["instructions"] = options.SystemInstruction;
         }
         return body;
     }
@@ -113,9 +127,22 @@ public class AiClient
     {
         if (part.InlineData != null)
         {
-            return new { inline_data = new { mime_type = part.InlineData.MimeType, data = part.InlineData.Base64Data } };
+            return new
+            {
+                type = "input_image",
+                image_url = $"data:{part.InlineData.MimeType};base64,{part.InlineData.Base64Data}",
+                detail = "auto"
+            };
         }
-        return new { text = part.Text ?? "" };
+        return new { type = "input_text", text = part.Text ?? "" };
+    }
+
+    private static string SchemaNameFor(string feature)
+    {
+        var name = new string(feature
+            .Select(character => char.IsLetterOrDigit(character) || character == '_' ? character : '_')
+            .ToArray());
+        return string.IsNullOrWhiteSpace(name) ? "financial_app_output" : name[..Math.Min(name.Length, 64)];
     }
 
     private async Task<string> CallWithRetryAsync(
@@ -144,9 +171,8 @@ public class AiClient
         CancellationToken cancellationToken)
     {
         var startedAt = Stopwatch.GetTimestamp();
-        var requestUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(model)}:generateContent";
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, requestUrl);
-        httpRequest.Headers.Add("x-goog-api-key", apiKey);
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, ResponsesEndpoint);
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         httpRequest.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(requestBody));
         httpRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
@@ -216,51 +242,56 @@ public class AiClient
     {
         LogUsage(root, model, feature);
 
-        if (!root.TryGetProperty("candidates", out var candidates) ||
-            candidates.ValueKind != JsonValueKind.Array ||
-            candidates.GetArrayLength() == 0)
-        {
-            var blockReason = root.TryGetProperty("promptFeedback", out var feedback) &&
-                feedback.TryGetProperty("blockReason", out var blockReasonProperty)
-                    ? blockReasonProperty.GetString()
-                    : null;
-            _logger.LogWarning(
-                "AI provider returned no candidates for {Feature} using {Model}. Block reason: {BlockReason}.",
-                feature,
-                model,
-                blockReason);
-            throw new AiClientException("AI could not process this request. Please rephrase and try again.");
-        }
-
-        var candidate = candidates[0];
-        var finishReason = candidate.TryGetProperty("finishReason", out var finishReasonProperty)
-            ? finishReasonProperty.GetString()
+        var status = root.TryGetProperty("status", out var statusProperty)
+            ? statusProperty.GetString()
             : null;
-        if (!candidate.TryGetProperty("content", out var content) ||
-            !content.TryGetProperty("parts", out var candidateParts) ||
-            candidateParts.ValueKind != JsonValueKind.Array ||
-            candidateParts.GetArrayLength() == 0)
-        {
-            _logger.LogWarning(
-                "AI provider returned empty content for {Feature} using {Model}. Finish reason: {FinishReason}.",
-                feature,
-                model,
-                finishReason);
-            throw new AiClientException(finishReason is "SAFETY" or "PROHIBITED_CONTENT"
-                ? "AI declined to respond to this request. Please rephrase and try again."
-                : "AI could not process this request. Please try again.");
-        }
-
-        var text = string.Concat(candidateParts.EnumerateArray()
-            .Where(part => part.TryGetProperty("text", out _))
-            .Select(part => part.GetProperty("text").GetString()));
-        if (finishReason == "MAX_TOKENS")
+        var incompleteReason = root.TryGetProperty("incomplete_details", out var incompleteDetails) &&
+            incompleteDetails.ValueKind == JsonValueKind.Object &&
+            incompleteDetails.TryGetProperty("reason", out var reasonProperty)
+                ? reasonProperty.GetString()
+                : null;
+        if (status == "incomplete" && incompleteReason == "max_output_tokens")
         {
             _logger.LogWarning("AI response reached its output limit for {Feature} using {Model}.", feature, model);
             throw new AiClientException("AI response was too long and got cut off. Please try again.");
         }
+
+        if (!root.TryGetProperty("output", out var output) || output.ValueKind != JsonValueKind.Array)
+        {
+            _logger.LogWarning(
+                "AI provider returned no output for {Feature} using {Model}. Status: {Status}; reason: {Reason}.",
+                feature,
+                model,
+                status,
+                incompleteReason);
+            throw new AiClientException("AI could not process this request. Please try again.");
+        }
+
+        string? refusal = null;
+        var textParts = new List<string>();
+        foreach (var item in output.EnumerateArray())
+        {
+            if (!item.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+                continue;
+
+            foreach (var part in content.EnumerateArray())
+            {
+                var type = part.TryGetProperty("type", out var typeProperty) ? typeProperty.GetString() : null;
+                if (type == "output_text" && part.TryGetProperty("text", out var textProperty))
+                    textParts.Add(textProperty.GetString() ?? "");
+                else if (type == "refusal" && part.TryGetProperty("refusal", out var refusalProperty))
+                    refusal = refusalProperty.GetString();
+            }
+        }
+
+        var text = string.Concat(textParts);
         if (string.IsNullOrWhiteSpace(text))
         {
+            if (!string.IsNullOrWhiteSpace(refusal))
+            {
+                _logger.LogWarning("AI declined {Feature} using {Model}.", feature, model);
+                throw new AiClientException("AI declined to respond to this request. Please rephrase and try again.");
+            }
             throw new AiClientException("AI returned an empty response. Please try again.");
         }
 
@@ -269,15 +300,21 @@ public class AiClient
 
     private void LogUsage(JsonElement root, string model, string feature)
     {
-        if (!root.TryGetProperty("usageMetadata", out var usage)) return;
+        if (!root.TryGetProperty("usage", out var usage)) return;
+        var reasoningTokens = usage.TryGetProperty("output_tokens_details", out var outputDetails)
+            ? ReadTokenCount(outputDetails, "reasoning_tokens")
+            : 0;
+        var cachedTokens = usage.TryGetProperty("input_tokens_details", out var inputDetails)
+            ? ReadTokenCount(inputDetails, "cached_tokens")
+            : 0;
         _logger.LogInformation(
-            "AI usage {Feature}/{Model}: prompt={PromptTokens}, output={OutputTokens}, thoughts={ThoughtTokens}, cached={CachedTokens}.",
+            "AI usage {Feature}/{Model}: input={InputTokens}, output={OutputTokens}, reasoning={ReasoningTokens}, cached={CachedTokens}.",
             feature,
             model,
-            ReadTokenCount(usage, "promptTokenCount"),
-            ReadTokenCount(usage, "candidatesTokenCount"),
-            ReadTokenCount(usage, "thoughtsTokenCount"),
-            ReadTokenCount(usage, "cachedContentTokenCount"));
+            ReadTokenCount(usage, "input_tokens"),
+            ReadTokenCount(usage, "output_tokens"),
+            reasoningTokens,
+            cachedTokens);
     }
 
     private static int ReadTokenCount(JsonElement usage, string propertyName) =>
