@@ -8,6 +8,21 @@ namespace FinancialAppApi.Tests;
 public class CategorySuggestionServiceTests
 {
     [Fact]
+    public async Task ReviewCleanupAsync_ReturnsEmptyReviewWhenThereAreNoCategories()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var categoryService = new TransactionCategoryService(context, cache);
+        var aiClient = new AiClient(new HttpClient(), TestHelpers.NewConfiguration(), NullLogger<AiClient>.Instance);
+        var service = new CategorySuggestionService(aiClient, context, categoryService, cache, new CategoryCleanupApplier(context));
+
+        var result = await service.ReviewCategoryCleanupAsync();
+
+        Assert.Equal(AiOperationStatus.Ok, result.Status);
+        Assert.Empty(result.Data!.Suggestions);
+    }
+
+    [Fact]
     public async Task SuggestAsync_UsesPriorExactDescriptionWithoutAiConfiguration()
     {
         await using var context = TestHelpers.NewInMemoryContext();

@@ -113,10 +113,11 @@ public sealed class VaultDocumentTypeService
         var type = await _context.VaultDocumentTypes.FirstOrDefaultAsync(item => item.Id == id, ct);
         if (type == null) return (false, "Document type was not found.");
 
-        var usageCount = await _context.VaultDocuments.CountAsync(
-            document => document.DocumentType == type.Name, ct);
+        var matchingDocuments = await _context.VaultDocuments
+            .Where(document => document.DocumentType == type.Name)
+            .ToListAsync(ct);
         VaultDocumentTypeDefinition? replacement = null;
-        if (usageCount > 0)
+        if (matchingDocuments.Count > 0)
         {
             if (string.IsNullOrWhiteSpace(replacementId))
                 return (false, "Document type is in use. Choose a replacement before deleting it.");
@@ -128,18 +129,15 @@ public sealed class VaultDocumentTypeService
 
         }
 
-        await using var transaction = await _context.Database.BeginTransactionAsync(ct);
         if (replacement != null)
         {
-            await _context.VaultDocuments
-                .Where(document => document.DocumentType == type.Name)
-                .ExecuteUpdateAsync(
-                    setters => setters.SetProperty(document => document.DocumentType, replacement.Name),
-                    ct);
+            foreach (var document in matchingDocuments)
+            {
+                document.DocumentType = replacement.Name;
+            }
         }
         _context.VaultDocumentTypes.Remove(type);
         await _context.SaveChangesAsync(ct);
-        await transaction.CommitAsync(ct);
         return (true, null);
     }
 

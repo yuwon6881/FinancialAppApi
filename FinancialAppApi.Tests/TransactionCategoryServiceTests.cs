@@ -8,6 +8,17 @@ namespace FinancialAppApi.Tests;
 public class TransactionCategoryServiceTests
 {
     [Fact]
+    public async Task GetCategoriesAsync_ReturnsEmptyCollectionWhenThereAreNoCategories()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = NewService(context);
+
+        var categories = await service.GetCategoriesAsync();
+
+        Assert.Empty(categories);
+    }
+
+    [Fact]
     public async Task GetCategoriesAsync_ReturnsCategoriesOrderedByName()
     {
         await using var context = TestHelpers.NewInMemoryContext();
