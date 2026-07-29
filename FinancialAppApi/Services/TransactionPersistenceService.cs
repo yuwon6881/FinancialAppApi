@@ -177,6 +177,14 @@ public class TransactionPersistenceService
 
         await ClearWishlistPurchaseLinkAsync(transaction);
 
+        var attachedDocuments = await _context.VaultDocuments
+            .Where(document => document.TransactionId == id)
+            .ToListAsync();
+        foreach (var document in attachedDocuments)
+        {
+            document.TransactionId = null;
+        }
+
         var splits = await _context.Transactions
             .Where(t => t.Id.StartsWith(id + "-split-"))
             .ToListAsync();

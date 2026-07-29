@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Services;
+using FinancialAppApi.Services.Documents;
 
 namespace FinancialAppApi.Tests;
 
@@ -9,6 +10,7 @@ public class DiLifetimeTests
     [InlineData(typeof(TotpService))]
     [InlineData(typeof(SecretProtector))]
     [InlineData(typeof(ReceiptScanQueue))]
+    [InlineData(typeof(GcsDocumentVaultStore))]
     public void SingletonServices_DoNotInjectAppDbContextDirectly(Type serviceType)
     {
         var constructors = serviceType.GetConstructors();

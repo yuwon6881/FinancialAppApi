@@ -41,6 +41,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<MarketDataRefreshJob> MarketDataRefreshJobs => Set<MarketDataRefreshJob>();
     public DbSet<MarketDataQuotaWindow> MarketDataQuotaWindows => Set<MarketDataQuotaWindow>();
     public DbSet<InstrumentSearchCache> InstrumentSearchCaches => Set<InstrumentSearchCache>();
+    public DbSet<VaultDocument> VaultDocuments => Set<VaultDocument>();
     public DbSet<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey> DataProtectionKeys => Set<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey>();
 
     public void SetCurrentUser(string userId)
@@ -332,6 +333,15 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(e => e.ExpiresAt);
         });
 
+        modelBuilder.Entity<VaultDocument>(entity =>
+        {
+            entity.HasIndex(e => new { e.UserId, e.TaxYear });
+            entity.HasIndex(e => new { e.UserId, e.TransactionId });
+            entity.HasIndex(e => new { e.UserId, e.ClientKey })
+                .IsUnique()
+                .HasFilter("\"ClientKey\" IS NOT NULL");
+        });
+
         ConfigureUserOwnership(modelBuilder.Entity<Transaction>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<RecurringPayment>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<FinancialSetting>(), applyQueryFilter: true);
@@ -355,6 +365,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentPlan>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<ManualPriceOverride>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<MarketDataRefreshJob>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<VaultDocument>(), applyQueryFilter: true);
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

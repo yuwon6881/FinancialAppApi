@@ -29,6 +29,9 @@ public class MultiUserIsolationTests
         context.WishlistItems.AddRange(
             new WishlistItem { Id = 1, UserId = "alice-user", Name = "Alice wish", Price = 10 },
             new WishlistItem { Id = 2, UserId = "bob-user", Name = "Bob wish", Price = 20 });
+        context.VaultDocuments.AddRange(
+            new VaultDocument { Id = 1, UserId = "alice-user", StorageObjectPath = "alice/2026/doc1.pdf", OriginalFileName = "alice.pdf", ContentType = "application/pdf", SizeBytes = 100, Sha256 = "a".PadRight(64, '0'), TaxYear = 2026, DocumentType = "Receipt", UploadedAt = DateTime.UtcNow, RetentionUntil = new DateOnly(2033, 12, 31) },
+            new VaultDocument { Id = 2, UserId = "bob-user", StorageObjectPath = "bob/2026/doc2.pdf", OriginalFileName = "bob.pdf", ContentType = "application/pdf", SizeBytes = 200, Sha256 = "b".PadRight(64, '0'), TaxYear = 2026, DocumentType = "Receipt", UploadedAt = DateTime.UtcNow, RetentionUntil = new DateOnly(2033, 12, 31) });
         context.CycleBalances.AddRange(
             new CycleBalance { UserId = "alice-user", Year = 2026, MonthIndex = 7, EssentialsBalance = 10 },
             new CycleBalance { UserId = "bob-user", Year = 2026, MonthIndex = 7, EssentialsBalance = 20 });
@@ -45,6 +48,7 @@ public class MultiUserIsolationTests
         Assert.Equal("Alice wish", (await context.WishlistItems.SingleAsync()).Name);
         Assert.Equal(10, (await context.CycleBalances.SingleAsync()).EssentialsBalance);
         Assert.Equal("Alice Food", Assert.Single(await categories.GetCategoriesAsync()).Name);
+        Assert.Equal("alice.pdf", (await context.VaultDocuments.SingleAsync()).OriginalFileName);
         Assert.Null(await context.Transactions.FindAsync("bob-tx"));
 
         context.ChangeTracker.Clear();
@@ -55,6 +59,7 @@ public class MultiUserIsolationTests
         Assert.Equal("Bob wish", (await context.WishlistItems.SingleAsync()).Name);
         Assert.Equal(20, (await context.CycleBalances.SingleAsync()).EssentialsBalance);
         Assert.Equal("Bob Food", Assert.Single(await categories.GetCategoriesAsync()).Name);
+        Assert.Equal("bob.pdf", (await context.VaultDocuments.SingleAsync()).OriginalFileName);
         Assert.Null(await context.Transactions.FindAsync("alice-tx"));
     }
 

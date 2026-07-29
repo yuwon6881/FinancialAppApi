@@ -202,6 +202,19 @@ public class TransactionPersistenceServiceTests
         context.Transactions.AddRange(
             NewTransaction("tx-1", wishlistItemId: 1),
             NewTransaction("tx-1-split-Rewards", ledgerCategory: "Transfer:Income->Rewards", amount: 10m));
+        context.VaultDocuments.Add(new VaultDocument
+        {
+            StorageObjectPath = "test-user/2026/document.pdf",
+            OriginalFileName = "document.pdf",
+            ContentType = "application/pdf",
+            SizeBytes = 10,
+            Sha256 = new string('a', 64),
+            TaxYear = 2026,
+            DocumentType = "Receipt",
+            TransactionId = "tx-1",
+            UploadedAt = DateTime.UtcNow,
+            RetentionUntil = new DateOnly(2033, 12, 31),
+        });
         await context.SaveChangesAsync();
         var service = NewService(context);
 
@@ -213,6 +226,7 @@ public class TransactionPersistenceServiceTests
         Assert.False(item.IsPurchased);
         Assert.True(item.IsActive);
         Assert.Null(item.PurchaseTransactionId);
+        Assert.Null((await context.VaultDocuments.SingleAsync()).TransactionId);
     }
 
     private static TransactionPersistenceService NewService(AppDbContext context)

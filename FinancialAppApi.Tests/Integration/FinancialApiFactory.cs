@@ -10,6 +10,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Text;
+using FinancialAppApi.Services.Documents;
 
 namespace FinancialAppApi.Tests.Integration;
 
@@ -81,6 +82,15 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
                 services.Remove(descriptor);
             }
             services.AddSingleton<IReceiptImageStore, FakeReceiptImageStore>();
+
+            var vaultStoreRegistrations = services
+                .Where(descriptor => descriptor.ServiceType == typeof(IDocumentVaultStore))
+                .ToList();
+            foreach (var descriptor in vaultStoreRegistrations)
+            {
+                services.Remove(descriptor);
+            }
+            services.AddSingleton<IDocumentVaultStore, FakeDocumentVaultStore>();
 
             // The receipt-scan background worker would drain the queue and call Gemini for real.
             // Remove it so OCR tests stay hermetic; jobs simply remain "queued".

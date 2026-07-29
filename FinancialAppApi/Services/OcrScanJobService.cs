@@ -85,8 +85,8 @@ public class OcrScanJobService
             imageData = ms.ToArray();
         }
 
-        var mimeType = DetectSupportedMimeType(imageData);
-        if (mimeType == null)
+        var mimeType = FileSignatureInspector.DetectMimeType(imageData);
+        if (mimeType == null || !FileSignatureInspector.IsImage(mimeType))
         {
             return new CreateScanJobResult(
                 CreateScanJobStatus.UnsupportedImageType,
@@ -95,7 +95,7 @@ public class OcrScanJobService
 
         var now = DateTime.UtcNow;
         var jobId = $"ocr-{Guid.NewGuid():N}";
-        var storageObjectPath = $"{userId}/{jobId}{ExtensionForMimeType(mimeType)}";
+        var storageObjectPath = $"{userId}/{jobId}{FileSignatureInspector.ExtensionForMimeType(mimeType)}";
         try
         {
             await _imageStore.UploadAsync(storageObjectPath, imageData, mimeType, cancellationToken);
@@ -223,44 +223,7 @@ public class OcrScanJobService
         await TryDeleteTerminalImageAsync(job);
     }
 
-    private static string? DetectSupportedMimeType(ReadOnlySpan<byte> data)
-    {
-        if (data.Length >= 3 &&
-            data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF)
-        {
-            return "image/jpeg";
-        }
 
-        ReadOnlySpan<byte> pngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        if (data.StartsWith(pngSignature))
-        {
-            return "image/png";
-        }
-
-        if (data.Length >= 12 &&
-            data[..4].SequenceEqual("RIFF"u8) &&
-            data.Slice(8, 4).SequenceEqual("WEBP"u8))
-        {
-            return "image/webp";
-        }
-
-        if (data.Length >= 12 && data.Slice(4, 4).SequenceEqual("ftyp"u8))
-        {
-            var brand = data.Slice(8, 4);
-            if (brand.SequenceEqual("heic"u8) || brand.SequenceEqual("heix"u8) ||
-                brand.SequenceEqual("hevc"u8) || brand.SequenceEqual("hevx"u8))
-            {
-                return "image/heic";
-            }
-            if (brand.SequenceEqual("heif"u8) || brand.SequenceEqual("mif1"u8) ||
-                brand.SequenceEqual("msf1"u8))
-            {
-                return "image/heif";
-            }
-        }
-
-        return null;
-    }
 
     private async Task TryDeleteTerminalImageAsync(ReceiptScanJob job)
     {
@@ -291,15 +254,7 @@ public class OcrScanJobService
         }
     }
 
-    private static string ExtensionForMimeType(string mimeType) => mimeType switch
-    {
-        "image/jpeg" => ".jpg",
-        "image/png" => ".png",
-        "image/webp" => ".webp",
-        "image/heic" => ".heic",
-        "image/heif" => ".heif",
-        _ => ".img"
-    };
+
 
     private static object? ObfuscateScanNumbers(string resultJson, string scanType)
     {

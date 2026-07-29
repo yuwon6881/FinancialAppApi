@@ -13,6 +13,7 @@ using OpenTelemetry.Trace;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using FinancialAppApi.Diagnostics;
+using FinancialAppApi.Services.Documents;
 using FinancialAppApi.Services.Investments;
 
 namespace FinancialAppApi.Extensions;
@@ -169,6 +170,15 @@ public static class ServiceCollectionExtensions
                     AutoReplenishment = true
                 }));
 
+            options.AddPolicy("documents", httpContext =>
+                RateLimitPartition.GetFixedWindowLimiter("documents:" + PartitionKeyFor(httpContext), _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 30,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                    AutoReplenishment = true
+                }));
+
             options.AddPolicy("password-verification", httpContext =>
             {
                 var partitionKey = httpContext.Request.TryGetBearerToken(out var token) == BearerTokenResult.Ok
@@ -226,6 +236,16 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<ReceiptScanBackgroundService>();
         services.AddHostedService<ReceiptScanCleanupBackgroundService>();
         services.AddScoped<OcrScanJobService>();
+        
+        services.AddHttpClient(GcsDocumentVaultStore.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("FinancialAppApi/1.0");
+        });
+        services.AddSingleton<IDocumentVaultStore, GcsDocumentVaultStore>();
+        services.AddScoped<DocumentVaultService>();
+        services.Configure<DocumentVaultOptions>(configuration.GetSection("DocumentVault"));
+
         return services;
     }
 
