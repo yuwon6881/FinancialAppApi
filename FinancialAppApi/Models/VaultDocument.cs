@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Models;
 
@@ -41,6 +42,24 @@ public class VaultDocument : IUserOwnedEntity
 
     [StringLength(500)]
     public string? Notes { get; set; }
+
+    [StringLength(80)]
+    public string? ReliefCategory { get; set; }
+
+    [Precision(18, 2)]
+    public decimal? Amount { get; set; }
+
+    [StringLength(3)]
+    public string AmountCurrency { get; set; } = "MYR";
+
+    [StringLength(20)]
+    public string AmountStatus { get; set; } = "Pending";
+
+    [Precision(5, 4)]
+    public decimal? AmountConfidence { get; set; }
+
+    [StringLength(300)]
+    public string? AmountExtractionMessage { get; set; }
 
     // Not a foreign key. Deleting a transaction should leave its documents intact.
     public string? TransactionId { get; set; }

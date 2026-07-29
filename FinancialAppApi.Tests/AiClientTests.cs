@@ -138,6 +138,27 @@ public class AiClientTests
         Assert.Equal("auto", image.GetProperty("detail").GetString());
     }
 
+    [Fact]
+    public async Task GenerateTextAsync_SendsPdfAsBase64InputFile()
+    {
+        var handler = new RecordingHandler(_ => SuccessResponse("{\"amount\":12.5}"));
+        var client = new AiClient(
+            new HttpClient(handler),
+            TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "vision-model")),
+            NullLogger<AiClient>.Instance);
+
+        await client.GenerateTextAsync(
+            [AiPart.FromFile("receipt.pdf", "application/pdf", "JVBERg=="), AiPart.FromText("Read total.")],
+            new AiGenerationOptions("vault-amount-extraction", 0, 100));
+
+        using var body = JsonDocument.Parse(handler.Body!);
+        var file = body.RootElement.GetProperty("input")[0].GetProperty("content")[0];
+        Assert.Equal("input_file", file.GetProperty("type").GetString());
+        Assert.Equal("receipt.pdf", file.GetProperty("filename").GetString());
+        Assert.Equal("data:application/pdf;base64,JVBERg==", file.GetProperty("file_data").GetString());
+        Assert.Equal("low", file.GetProperty("detail").GetString());
+    }
+
     private static HttpResponseMessage SuccessResponse(string text) => new(HttpStatusCode.OK)
     {
         Content = new StringContent(

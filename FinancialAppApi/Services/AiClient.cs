@@ -7,14 +7,18 @@ using FinancialAppApi.Diagnostics;
 namespace FinancialAppApi.Services;
 
 public sealed record AiInlineData(string MimeType, string Base64Data);
+public sealed record AiFileData(string FileName, string MimeType, string Base64Data);
 
 public sealed record AiPart
 {
     public string? Text { get; init; }
     public AiInlineData? InlineData { get; init; }
+    public AiFileData? FileData { get; init; }
 
     public static AiPart FromText(string text) => new() { Text = text };
     public static AiPart FromImage(string mimeType, string base64Data) => new() { InlineData = new AiInlineData(mimeType, base64Data) };
+    public static AiPart FromFile(string fileName, string mimeType, string base64Data) =>
+        new() { FileData = new AiFileData(fileName, mimeType, base64Data) };
 }
 
 public sealed record AiGenerationOptions(
@@ -125,6 +129,16 @@ public class AiClient
 
     private static object ToWirePart(AiPart part)
     {
+        if (part.FileData != null)
+        {
+            return new
+            {
+                type = "input_file",
+                filename = part.FileData.FileName,
+                file_data = $"data:{part.FileData.MimeType};base64,{part.FileData.Base64Data}",
+                detail = "low"
+            };
+        }
         if (part.InlineData != null)
         {
             return new

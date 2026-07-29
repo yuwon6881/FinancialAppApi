@@ -3,6 +3,7 @@ using System;
 using FinancialAppApi.Database;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace FinancialAppApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260729185351_AddVaultTaxReliefTracking")]
+    partial class AddVaultTaxReliefTracking
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -998,90 +1001,6 @@ namespace FinancialAppApi.Migrations
                         });
                 });
 
-            modelBuilder.Entity("FinancialAppApi.Models.SavingsGoal", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("ClientKey")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<DateTime?>("CompletedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("NOW()");
-
-                    b.Property<decimal>("EarmarkedAmount")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("numeric(12,2)")
-                        .HasDefaultValue(0m);
-
-                    b.Property<bool>("IsRecurring")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false);
-
-                    b.Property<string>("LastFundedCycleKey")
-                        .HasMaxLength(7)
-                        .HasColumnType("character varying(7)");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<string>("Priority")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(10)
-                        .HasColumnType("character varying(10)")
-                        .HasDefaultValue("Medium");
-
-                    b.Property<int>("RecurrenceMonths")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(12);
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
-                        .HasDefaultValue("active");
-
-                    b.Property<decimal>("TargetAmount")
-                        .HasColumnType("numeric(12,2)");
-
-                    b.Property<DateTime>("TargetDate")
-                        .HasColumnType("date");
-
-                    b.Property<string>("UserId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("UserId", "ClientKey")
-                        .IsUnique()
-                        .HasFilter("\"ClientKey\" IS NOT NULL");
-
-                    b.HasIndex("UserId", "Status", "TargetDate");
-
-                    b.ToTable("SavingsGoals", t =>
-                        {
-                            t.HasCheckConstraint("ck_savingsgoals_earmark_within_target", "\"EarmarkedAmount\" >= 0 AND \"EarmarkedAmount\" <= \"TargetAmount\"");
-
-                            t.HasCheckConstraint("ck_savingsgoals_target_positive", "\"TargetAmount\" > 0");
-                        });
-                });
-
             modelBuilder.Entity("FinancialAppApi.Models.SecurityQuestionAnswer", b =>
                 {
                     b.Property<int>("Id")
@@ -1691,15 +1610,6 @@ namespace FinancialAppApi.Migrations
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.RecurringPayment", b =>
-                {
-                    b.HasOne("FinancialAppApi.Models.AppUser", null)
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("FinancialAppApi.Models.SavingsGoal", b =>
                 {
                     b.HasOne("FinancialAppApi.Models.AppUser", null)
                         .WithMany()

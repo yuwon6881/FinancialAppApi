@@ -35,6 +35,7 @@ public class BootstrapController : ControllerBase
     private readonly RecurringPaymentPayEarlyService _payEarlyService;
     private readonly TransactionCategoryService _categoryService;
     private readonly WishlistService _wishlistService;
+    private readonly Services.SavingsGoals.SavingsGoalService _savingsGoalService;
 
     public BootstrapController(
         FinancialService financialService,
@@ -42,8 +43,10 @@ public class BootstrapController : ControllerBase
         RecurringPaymentService recurringPaymentService,
         RecurringPaymentPayEarlyService payEarlyService,
         TransactionCategoryService categoryService,
-        WishlistService wishlistService)
+        WishlistService wishlistService,
+        Services.SavingsGoals.SavingsGoalService savingsGoalService)
     {
+        _savingsGoalService = savingsGoalService;
         _financialService = financialService;
         _transactionQueryService = transactionQueryService;
         _recurringPaymentService = recurringPaymentService;
@@ -83,6 +86,7 @@ public class BootstrapController : ControllerBase
 
         var categories = await _categoryService.GetCategoriesAsync();
         var wishlist = await _wishlistService.GetWishlistAsync(cancellationToken);
+        var savingsGoals = await _savingsGoalService.GetGoalsAsync(cancellationToken);
         var autocomplete = await _transactionQueryService.GetAutocompleteSuggestionsAsync(cancellationToken);
         var walletBalance = await _financialService.GetWalletBalanceAsync();
 
@@ -96,6 +100,7 @@ public class BootstrapController : ControllerBase
             recurringPayments,
             categories = categories.Select(TransactionCategoriesController.ToResponse).ToList(),
             wishlist = wishlist.Select(WishlistController.MapToDto).ToList(),
+            savingsGoals = savingsGoals.Select(SavingsGoalsController.MapToDto).ToList(),
             autocomplete,
             walletBalance,
         });

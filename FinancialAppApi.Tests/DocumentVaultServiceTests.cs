@@ -45,7 +45,7 @@ public class DocumentVaultServiceTests
     }
 
     [Fact]
-    public async Task CreateAsync_RejectsTaxYearOlderThanSevenPriorYears()
+    public async Task CreateAsync_AcceptsExpiredTaxYearForManualRetentionManagement()
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");
         context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
@@ -56,7 +56,10 @@ public class DocumentVaultServiceTests
 
         var result = await service.CreateAsync("file.pdf", data, 2018, "Receipt", null, null, null);
 
-        Assert.Equal(DocumentVaultCreateStatus.InvalidMetadata, result.Status);
+        Assert.Equal(DocumentVaultCreateStatus.Created, result.Status);
+        var expired = await service.GetExpiredTaxYearsAsync();
+        Assert.Single(expired);
+        Assert.Equal(2018, expired[0].TaxYear);
     }
 
     [Fact]
@@ -73,6 +76,33 @@ public class DocumentVaultServiceTests
         var service = NewService(context, new FakeDocumentVaultStore());
 
         Assert.Equal([2026, 2025], await service.GetAvailableTaxYearsAsync());
+    }
+
+    [Fact]
+    public async Task GetTaxYearSummaryAsync_CountsOnlyConfirmedMyrTowardLimit()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        var confirmed = VaultDocumentForYear(2025, 1);
+        confirmed.ReliefCategory = "lifestyle";
+        confirmed.Amount = 2000;
+        confirmed.AmountCurrency = "MYR";
+        confirmed.AmountStatus = "Confirmed";
+        var pending = VaultDocumentForYear(2025, 2);
+        pending.ReliefCategory = "lifestyle";
+        pending.Amount = 800;
+        pending.AmountCurrency = "MYR";
+        pending.AmountStatus = "NeedsReview";
+        context.VaultDocuments.AddRange(confirmed, pending);
+        await context.SaveChangesAsync();
+
+        var summary = await NewService(context, new FakeDocumentVaultStore()).GetTaxYearSummaryAsync(2025);
+
+        Assert.NotNull(summary);
+        var lifestyle = Assert.Single(summary.Categories);
+        Assert.Equal(2000, lifestyle.ConfirmedAmount);
+        Assert.Equal(800, lifestyle.PendingReviewAmount);
+        Assert.Equal(2500, lifestyle.Limit);
     }
 
     [Fact]

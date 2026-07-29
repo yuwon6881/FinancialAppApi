@@ -21,6 +21,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<UserSession> UserSessions => Set<UserSession>();
 
     public DbSet<WishlistItem> WishlistItems => Set<WishlistItem>();
+    public DbSet<SavingsGoal> SavingsGoals => Set<SavingsGoal>();
     public DbSet<WebAuthnCredential> WebAuthnCredentials => Set<WebAuthnCredential>();
     public DbSet<WebAuthnChallenge> WebAuthnChallenges => Set<WebAuthnChallenge>();
     public DbSet<ReceiptScanJob> ReceiptScanJobs => Set<ReceiptScanJob>();
@@ -188,6 +189,35 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 .HasFilter("\"ClientKey\" IS NOT NULL");
         });
 
+        modelBuilder.Entity<SavingsGoal>(entity =>
+        {
+            entity.Property(e => e.TargetAmount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.EarmarkedAmount).HasColumnType("numeric(12,2)").HasDefaultValue(0m);
+            entity.Property(e => e.TargetDate).HasColumnType("date");
+            entity.Property(e => e.Priority).HasDefaultValue("Medium");
+            entity.Property(e => e.Status).HasDefaultValue(SavingsGoalStatus.Active);
+            entity.Property(e => e.IsRecurring).HasDefaultValue(false);
+            entity.Property(e => e.RecurrenceMonths).HasDefaultValue(12);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
+            // The list is always read as "active goals in funding order", so index the status and
+            // deadline together rather than making every page load sort the whole table.
+            entity.HasIndex(e => new { e.UserId, e.Status, e.TargetDate });
+            // Unique when present so a replayed offline create dedupes to the same row; the filter
+            // keeps pre-existing rows (null ClientKey) exempt from the uniqueness constraint.
+            entity.HasIndex(e => new { e.UserId, e.ClientKey })
+                .IsUnique()
+                .HasFilter("\"ClientKey\" IS NOT NULL");
+            entity.ToTable(t =>
+            {
+                // Defence in depth for the earmark invariant. SavingsGoalService checks the pool-wide
+                // rule (SUM(earmarked) <= rewards balance), which the database cannot see; these two
+                // hold the per-row half of it so no code path can persist a nonsensical earmark.
+                t.HasCheckConstraint("ck_savingsgoals_target_positive", "\"TargetAmount\" > 0");
+                t.HasCheckConstraint("ck_savingsgoals_earmark_within_target",
+                    "\"EarmarkedAmount\" >= 0 AND \"EarmarkedAmount\" <= \"TargetAmount\"");
+            });
+        });
+
         modelBuilder.Entity<ReceiptScanJob>(entity =>
         {
             entity.Property(e => e.Status).HasDefaultValue("queued");
@@ -336,6 +366,8 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<VaultDocument>(entity =>
         {
+            entity.Property(e => e.Amount).HasPrecision(18, 2);
+            entity.Property(e => e.AmountConfidence).HasPrecision(5, 4);
             entity.HasIndex(e => new { e.UserId, e.UploadedAt, e.Id })
                 .IsDescending(false, true, true);
             entity.HasIndex(e => new { e.UserId, e.TaxYear, e.UploadedAt, e.Id })
@@ -357,6 +389,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<TransactionCategory>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<CategorySpendingGuide>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<WishlistItem>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<SavingsGoal>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<CycleBalance>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<UserSession>(), applyQueryFilter: false);
         ConfigureUserOwnership(modelBuilder.Entity<WebAuthnCredential>(), applyQueryFilter: false);

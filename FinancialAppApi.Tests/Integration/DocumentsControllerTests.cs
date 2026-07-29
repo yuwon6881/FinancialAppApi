@@ -102,6 +102,52 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task BulkWorkflow_KeepsValidUploadReportsFailureSummarizesExportsAndDeletes()
+    {
+        var client = await CreateSignedInClientAsync();
+        using var form = new MultipartFormDataContent();
+        var valid = new ByteArrayContent(Encoding.UTF8.GetBytes("%PDF-1.7 valid"));
+        valid.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        form.Add(valid, "files", "valid.pdf");
+        var invalid = new ByteArrayContent([0x4D, 0x5A, 0x00]);
+        invalid.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        form.Add(invalid, "files", "invalid.pdf");
+        form.Add(new StringContent("2025"), "taxYear");
+        form.Add(new StringContent("Receipt"), "documentType");
+        form.Add(new StringContent("lifestyle"), "reliefCategory");
+
+        var response = await client.PostAsync("/api/documents/bulk", form);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var results = payload.GetProperty("results").EnumerateArray().ToList();
+        Assert.True(results[0].GetProperty("uploaded").GetBoolean());
+        Assert.False(results[1].GetProperty("uploaded").GetBoolean());
+        var id = results[0].GetProperty("id").GetInt32();
+
+        var confirm = await client.PatchAsJsonAsync($"/api/documents/{id}", new
+        {
+            amount = 2500m,
+            amountSpecified = true,
+            amountCurrency = "MYR",
+            amountStatus = "Confirmed"
+        });
+        Assert.Equal(HttpStatusCode.OK, confirm.StatusCode);
+
+        var summary = await client.GetFromJsonAsync<JsonElement>("/api/documents/summary/2025");
+        var lifestyle = Assert.Single(summary.GetProperty("categories").EnumerateArray());
+        Assert.Equal(2500m, lifestyle.GetProperty("confirmedAmount").GetDecimal());
+
+        var export = await client.GetAsync("/api/documents/export?taxYear=2025");
+        Assert.Equal("application/zip", export.Content.Headers.ContentType?.MediaType);
+        Assert.NotEmpty(await export.Content.ReadAsByteArrayAsync());
+
+        var delete = await client.PostAsJsonAsync("/api/documents/bulk-delete", new { ids = new[] { id } });
+        Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
+        var deletePayload = await delete.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(deletePayload.GetProperty("results")[0].GetProperty("deleted").GetBoolean());
+    }
+
+    [Fact]
     public async Task Endpoints_RequireAuthentication()
     {
         var client = CreateClient();

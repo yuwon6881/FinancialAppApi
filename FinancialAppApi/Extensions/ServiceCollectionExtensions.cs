@@ -244,6 +244,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDocumentVaultStore, GcsDocumentVaultStore>();
         services.AddScoped<DocumentVaultService>();
         services.AddScoped<VaultDocumentTypeService>();
+        services.AddScoped<VaultAmountExtractor>();
         services.Configure<DocumentVaultOptions>(configuration.GetSection("DocumentVault"));
 
         return services;
@@ -389,6 +390,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<RecurringPaymentPayEarlyService>();
         services.AddScoped<TransactionCategoryService>();
         services.AddScoped<WishlistService>();
+        services.AddScoped<Services.SavingsGoals.SavingsGoalService>();
         services.AddScoped<TransactionPersistenceService>();
         services.AddScoped<TransactionQueryService>();
         services.AddScoped<FinancialService>();
