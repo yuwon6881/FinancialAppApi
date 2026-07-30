@@ -424,6 +424,34 @@ public class AiAssistantServiceTests
     }
 
     [Fact]
+    public async Task ChatAsync_SingleLineLedgerShorthand_UsesDraftSchemaAndReturnsAutomaticDraftAction()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Staging Badminton for review.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Badminton\",\"amount\":10,\"txType\":\"outflow\",\"category\":\"Hobbies\",\"ledgerCategory\":\"Essentials\",\"ledgerCategorySpecified\":false}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("Badminton 10", []));
+
+        var action = Assert.Single(outcome.Response.Actions);
+        Assert.Equal("openAddLedgerDraft", action.Type);
+        Assert.Equal("Badminton", action.Payload["description"]?.ToString());
+        Assert.Equal("10", action.Payload["amount"]?.ToString());
+        Assert.Equal("outflow", action.Payload["txType"]?.ToString());
+        Assert.Equal("Essentials", action.Payload["ledgerCategory"]?.ToString());
+        Assert.Contains("ledger.add", handler.LastUserContent);
+        using var request = JsonDocument.Parse(handler.RequestBodies[^1]);
+        var actionsSchema = request.RootElement.GetProperty("text")
+            .GetProperty("format")
+            .GetProperty("schema")
+            .GetProperty("properties")
+            .GetProperty("actions");
+        Assert.Equal(1, actionsSchema.GetProperty("minItems").GetInt32());
+        Assert.Equal(1, actionsSchema.GetProperty("maxItems").GetInt32());
+    }
+
+    [Fact]
     public async Task ChatAsync_MultiRecordLedgerAdd_KeepsEveryFlatDraftAction()
     {
         await using var context = NewContextWithSettings(hideSensitive: false);
@@ -633,6 +661,23 @@ public class AiAssistantServiceTests
         var outcome = await service.ChatAsync(new AiChatRequest("add a food transaction for lunch", []));
 
         Assert.Empty(outcome.Response.Actions);
+    }
+
+    [Fact]
+    public async Task ChatAsync_SensitiveMode_BlocksSingleLineLedgerShorthand()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: true);
+        var handler = new ScriptedAiHandler(
+            ScriptedAiHandler.Chat(
+                "Opening a draft.",
+                actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Badminton\",\"amount\":10,\"category\":\"Hobbies\",\"txType\":\"outflow\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("Badminton 10", []));
+
+        Assert.Empty(outcome.Response.Actions);
+        Assert.Contains("Sensitive mode", outcome.Response.Reply);
+        Assert.Empty(handler.RequestBodies);
     }
 
     [Fact]

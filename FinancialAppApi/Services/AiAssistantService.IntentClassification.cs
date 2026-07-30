@@ -257,7 +257,7 @@ public partial class AiAssistantService
         }
 
         return history
-            .TakeLast(6)
+            .TakeLast(12)
             .Where(m => m.Role is "user" or "assistant" && !string.IsNullOrWhiteSpace(m.Content))
             .Select(m => m with { Content = m.Content.Length > MaxHistoryMessageLength ? m.Content[..MaxHistoryMessageLength] : m.Content })
             .ToList();
@@ -468,13 +468,25 @@ public partial class AiAssistantService
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(line => !string.IsNullOrWhiteSpace(line))
             .ToList();
-        if (lines.Count < 2 || lines.Count > 50) return 0;
+        if (lines.Count is < 1 or > AiResponseSchemas.MaxChatActions) return 0;
+        if (lines.Any(line =>
+                line.Contains('?') ||
+                Regex.IsMatch(line, @"^(?:how|what|which|when|where|why|who|can|could|would|should|did|do|does|is|are|show|find|list)\b",
+                    RegexOptions.IgnoreCase)))
+        {
+            return 0;
+        }
 
         var everyLineIsADraft = lines.All(line => Regex.IsMatch(
             line,
-            @"^.{1,160}?\s+(?:(?:rm|myr|usd|\$)\s*)?\d{1,9}(?:[.,]\d{1,2})?(?:\s+[\p{L}][\p{L}\p{N}&' -]{0,60})?$",
+            @"^[\p{L}\p{N}][\p{L}\p{N}&'().,+/ -]{0,159}?\s+" +
+            @"(?:(?:rm|myr|usd|sgd|eur|gbp|aud|cad|jpy|cny|rmb|\$|€|£)\s*)?" +
+            @"\d{1,9}(?:[.,]\d{1,2})?" +
+            @"(?:\s+(?:income|inflow|outflow|expense|refund|deposit|withdrawal|" +
+            @"transfer(?:\s+from\s+[\p{L}]+\s+to\s+[\p{L}]+)?|" +
+            @"essentials?|growth|stability|rewards?))*\s*$",
             RegexOptions.IgnoreCase));
-        return everyLineIsADraft ? Math.Min(lines.Count, AiResponseSchemas.MaxChatActions) : 0;
+        return everyLineIsADraft ? lines.Count : 0;
     }
 
     // "how much / how many / total / average" questions are answered from the cycle summary

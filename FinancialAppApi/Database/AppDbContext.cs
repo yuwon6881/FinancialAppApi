@@ -44,6 +44,8 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<InstrumentSearchCache> InstrumentSearchCaches => Set<InstrumentSearchCache>();
     public DbSet<VaultDocument> VaultDocuments => Set<VaultDocument>();
     public DbSet<VaultDocumentTypeDefinition> VaultDocumentTypes => Set<VaultDocumentTypeDefinition>();
+    public DbSet<AiConversation> AiConversations => Set<AiConversation>();
+    public DbSet<AiConversationTurn> AiConversationTurns => Set<AiConversationTurn>();
     public DbSet<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey> DataProtectionKeys => Set<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey>();
 
     public void SetCurrentUser(string userId)
@@ -383,6 +385,25 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
         });
 
+        modelBuilder.Entity<AiConversation>(entity =>
+        {
+            entity.Property(e => e.Version).IsConcurrencyToken();
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => e.UserId).IsUnique();
+        });
+
+        modelBuilder.Entity<AiConversationTurn>(entity =>
+        {
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.ConversationId, e.ClientTurnId }).IsUnique();
+            entity.HasIndex(e => new { e.UserId, e.ConversationId, e.CreatedAt });
+            entity.HasOne(e => e.Conversation)
+                .WithMany(e => e.Turns)
+                .HasForeignKey(e => e.ConversationId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         ConfigureUserOwnership(modelBuilder.Entity<Transaction>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<RecurringPayment>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<FinancialSetting>(), applyQueryFilter: true);
@@ -409,6 +430,8 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<MarketDataRefreshJob>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<VaultDocument>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<VaultDocumentTypeDefinition>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<AiConversation>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<AiConversationTurn>(), applyQueryFilter: true);
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

@@ -13,11 +13,16 @@ namespace FinancialAppApi.Controllers;
 public class AiController : ControllerBase
 {
     private readonly AiAssistantService _aiAssistantService;
+    private readonly AiConversationMemoryService _conversationMemory;
     private readonly ILogger<AiController> _logger;
 
-    public AiController(AiAssistantService aiAssistantService, ILogger<AiController> logger)
+    public AiController(
+        AiAssistantService aiAssistantService,
+        AiConversationMemoryService conversationMemory,
+        ILogger<AiController> logger)
     {
         _aiAssistantService = aiAssistantService;
+        _conversationMemory = conversationMemory;
         _logger = logger;
     }
 
@@ -27,6 +32,7 @@ public class AiController : ControllerBase
         try
         {
             var outcome = await _aiAssistantService.ChatAsync(request, cancellationToken);
+            if (outcome.IsConflict) return Conflict(outcome.Response);
             return outcome.IsProviderError ? StatusCode(503, outcome.Response) : Ok(outcome.Response);
         }
         // A browser disconnect surfaces as a plain OperationCanceledException from the
@@ -50,5 +56,18 @@ public class AiController : ControllerBase
             _logger.LogError(ex, "Unexpected error while handling AI chat request.");
             return StatusCode(503, new { reply = "AI is unavailable. Please try again.", actions = Array.Empty<object>() });
         }
+    }
+
+    [HttpGet("conversation")]
+    public async Task<ActionResult<AiConversationResponse>> GetConversation(CancellationToken cancellationToken)
+    {
+        return Ok(await _conversationMemory.GetActiveAsync(cancellationToken));
+    }
+
+    [HttpDelete("conversation")]
+    public async Task<IActionResult> DeleteConversation(CancellationToken cancellationToken)
+    {
+        await _conversationMemory.DeleteActiveAsync(cancellationToken);
+        return NoContent();
     }
 }

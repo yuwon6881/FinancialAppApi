@@ -4,12 +4,10 @@ using System.Text.Json;
 
 namespace FinancialAppApi.Services;
 
-// Wire contract carried back to the client on AiChatResponse and echoed on the next
-// AiChatRequest. Holds only structured references and validated user-supplied query parameters
-// (never observed balances or full records) so short
-// follow-ups ("those", "the previous cycle", "it") can be resolved. Treated as untrusted on
-// the way back in (see AiAssistantService.SanitizeConversationState) -- IDs are re-derived
-// against the DB, never trusted verbatim.
+// Structured conversation frame persisted by the server-owned active conversation. Legacy
+// clients may still echo it on AiChatRequest, so it remains untrusted at the boundary. It holds
+// only references and validated user-supplied query parameters (never observed balances or full
+// records); IDs are always re-derived against the database.
 // Typed amount comparison carried on the conversation frame (comparator + low + optional high),
 // stored typed rather than as text so no information is lost across turns; canonical display text
 // is generated only when a follow-up is expanded (AiAssistantService.FormatAmountThreshold).
@@ -60,15 +58,32 @@ public sealed record AiConversationState(
     decimal? LastTargetAmount = null);
 
 public sealed record AiChatMessage(string Role, string Content);
-public sealed record AiChatRequest(string Message, IReadOnlyList<AiChatMessage>? History, AiConversationState? State = null);
-public sealed record AiChatResponse(string Reply, IReadOnlyList<AiUiAction> Actions, bool CloseChat = false, AiConversationState? State = null);
+public sealed record AiChatRequest(
+    string Message,
+    IReadOnlyList<AiChatMessage>? History,
+    AiConversationState? State = null,
+    Guid? ConversationId = null,
+    int? ConversationVersion = null,
+    string? ClientTurnId = null);
+public sealed record AiChatResponse(
+    string Reply,
+    IReadOnlyList<AiUiAction> Actions,
+    bool CloseChat = false,
+    AiConversationState? State = null,
+    Guid? ConversationId = null,
+    int? ConversationVersion = null);
 public sealed record AiUiAction(string Type, Dictionary<string, object?> Payload);
+public sealed record AiConversationResponse(
+    Guid? ConversationId,
+    int ConversationVersion,
+    IReadOnlyList<AiChatMessage> Messages,
+    AiConversationState? State);
 
 // AiChatResponse alone is the wire shape returned to the client either way (a friendly
 // message is a valid chat reply whether or not the AI provider itself succeeded) -- but the
 // controller still needs to know whether to report 200 or 503, the same way every other AI
 // endpoint's controller switches on a Status field instead of guessing from the payload.
-public sealed record AiChatOutcome(AiChatResponse Response, bool IsProviderError);
+public sealed record AiChatOutcome(AiChatResponse Response, bool IsProviderError, bool IsConflict = false);
 
 public partial class AiAssistantService
 {
@@ -113,6 +128,7 @@ public partial class AiAssistantService
     private readonly RecurringOccurrenceService _recurringOccurrenceService;
     private readonly FinancialClock _financialClock;
     private readonly ILogger<AiAssistantService> _logger;
+    private readonly AiConversationMemoryService _conversationMemory;
 
     public AiAssistantService(
         AiClient aiClient,
@@ -121,7 +137,8 @@ public partial class AiAssistantService
         CategorySuggestionService? categorySuggestionService = null,
         RecurringOccurrenceService? recurringOccurrenceService = null,
         FinancialClock? financialClock = null,
-        ILogger<AiAssistantService>? logger = null)
+        ILogger<AiAssistantService>? logger = null,
+        AiConversationMemoryService? conversationMemory = null)
     {
         _logger = logger ?? NullLogger<AiAssistantService>.Instance;
         _aiClient = aiClient;
@@ -131,9 +148,76 @@ public partial class AiAssistantService
         _recurringOccurrenceService = recurringOccurrenceService ??
             new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
         _financialClock = financialClock ?? FinancialClock.Utc;
+        _conversationMemory = conversationMemory ?? new AiConversationMemoryService(context);
     }
 
     public async Task<AiChatOutcome> ChatAsync(AiChatRequest request, CancellationToken cancellationToken = default)
+    {
+        // A clientTurnId opts the request into server-owned conversation state. Existing clients
+        // that do not send one retain the legacy history/state behavior until they are upgraded.
+        if (string.IsNullOrWhiteSpace(request.ClientTurnId) && request.ConversationId == null)
+        {
+            return await ChatCoreAsync(request, cancellationToken);
+        }
+
+        var prepared = await _conversationMemory.PrepareAsync(request, cancellationToken);
+        if (prepared.Replay != null)
+        {
+            return Ok(prepared.Replay);
+        }
+        if (prepared.Conflict || prepared.Conversation == null)
+        {
+            return new AiChatOutcome(
+                new AiChatResponse(
+                    "This conversation changed on another device. Reload it and retry your message.",
+                    [],
+                    State: prepared.State,
+                    ConversationId: prepared.Conversation?.Id,
+                    ConversationVersion: prepared.Conversation?.Version),
+                IsProviderError: false,
+                IsConflict: true);
+        }
+
+        var serverRequest = request with
+        {
+            History = prepared.History,
+            State = prepared.State
+        };
+        var outcome = await ChatCoreAsync(serverRequest, cancellationToken);
+        if (outcome.IsProviderError)
+        {
+            return outcome with
+            {
+                Response = outcome.Response with
+                {
+                    ConversationId = prepared.Conversation.Id,
+                    ConversationVersion = prepared.Conversation.Version
+                }
+            };
+        }
+
+        var completed = await _conversationMemory.CompleteAsync(
+            prepared,
+            request.Message,
+            outcome.Response,
+            cancellationToken);
+        if (completed == null)
+        {
+            return new AiChatOutcome(
+                new AiChatResponse(
+                    "This conversation changed on another device. Reload it and retry your message.",
+                    [],
+                    State: prepared.State,
+                    ConversationId: prepared.Conversation.Id,
+                    ConversationVersion: prepared.Conversation.Version),
+                IsProviderError: false,
+                IsConflict: true);
+        }
+
+        return outcome with { Response = completed };
+    }
+
+    private async Task<AiChatOutcome> ChatCoreAsync(AiChatRequest request, CancellationToken cancellationToken)
     {
         var message = (request.Message ?? string.Empty).Trim();
         var priorState = SanitizeConversationState(request.State);
@@ -171,7 +255,9 @@ public partial class AiAssistantService
 
         var contextResult = await BuildContextAsync(intentPlan, cancellationToken);
         var context = contextResult.Context;
-        if (context.SensitiveMode && LooksLikeProtectedMutationCommand(message))
+        if (context.SensitiveMode &&
+            (LooksLikeProtectedMutationCommand(message) ||
+             intentPlan.Intents.Contains(AiIntent.LedgerAdd)))
         {
             return Ok(new AiChatResponse(
                 "Sensitive mode prevents record changes. Unhide balances before editing, deleting, purchasing, confirming, discarding, or toggling a record.",
@@ -210,12 +296,10 @@ public partial class AiAssistantService
             }
         }
 
-        // Data-query follow-ups are fully reconstructed server-side (BuildQueryText folds the
-        // resolved frame into the request), so the model needs NO prior dialogue for them -- that
-        // prose is never sent, saving tokens. The exception is a *semantic* follow-up ("why?", "is
-        // that good?", "explain that") that refers to the assistant's own previous conclusion
-        // rather than to data: for those we send a bounded last exchange so "that"/"it" resolves.
-        var promptHistory = IsSemanticFollowUp(message) ? BoundedSemanticHistory(history) : [];
+        // Server-owned memory supplies a bounded mix of the latest dialogue and relevant older
+        // turns. Structured state still reconstructs exact scopes and IDs; live app context below
+        // remains authoritative for every financial value.
+        var promptHistory = history;
         var systemInstruction = SystemInstruction;
         var userContent = BuildUserContent(message, promptHistory, context);
         var isLedgerAdd = intentPlan.Intents.Contains(AiIntent.LedgerAdd);

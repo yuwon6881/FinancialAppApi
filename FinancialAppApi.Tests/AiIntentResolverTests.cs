@@ -4,6 +4,36 @@ namespace FinancialAppApi.Tests;
 
 public class AiIntentResolverTests
 {
+    [Theory]
+    [InlineData("Badminton 10")]
+    [InlineData("Coffee RM 12.50")]
+    [InlineData("Salary USD 1000 income")]
+    [InlineData("Move money 50 transfer from Growth to Stability")]
+    public void ResolveDeterministically_ClearSingleLineShorthand_IsLedgerAdd(string message)
+    {
+        var plan = AiAssistantService.ResolveDeterministically(message);
+
+        Assert.Contains(AiAssistantService.AiIntent.LedgerAdd, plan.Intents);
+    }
+
+    [Fact]
+    public void ResolveDeterministically_MultiLineShorthand_IsLedgerAdd()
+    {
+        var plan = AiAssistantService.ResolveDeterministically("Badminton 10\nCoffee RM 12.50\nSalary 1000 income");
+
+        Assert.Contains(AiAssistantService.AiIntent.LedgerAdd, plan.Intents);
+    }
+
+    [Theory]
+    [InlineData("How much did I spend 10?")]
+    [InlineData("Which transaction was 10?")]
+    public void ResolveDeterministically_AmountQuestion_IsNotLedgerAdd(string message)
+    {
+        var plan = AiAssistantService.ResolveDeterministically(message);
+
+        Assert.DoesNotContain(AiAssistantService.AiIntent.LedgerAdd, plan.Intents);
+    }
+
     [Fact]
     public void ResolveDeterministically_DeleteCommand_SetsLedgerEditIntent()
     {

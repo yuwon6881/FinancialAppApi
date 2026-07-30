@@ -230,6 +230,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ReceiptScanJobCleanupService>();
         services.AddScoped<CategoryCleanupApplier>();
         services.AddScoped<CategorySuggestionService>();
+        services.AddScoped<AiConversationMemoryService>();
         services.AddScoped<AiAssistantService>();
         services.AddSingleton<ReceiptScanQueue>();
         services.AddHostedService<ReceiptScanBackgroundService>();

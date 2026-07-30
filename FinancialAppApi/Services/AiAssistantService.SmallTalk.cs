@@ -68,23 +68,6 @@ public partial class AiAssistantService
             || (wordCount <= 5 && !IsSelfContainedFinancialRequest(trimmed));
     }
 
-    // A *semantic* follow-up asks about the assistant's own previous answer/conclusion ("why?", "is
-    // that good?", "explain that", "should I be worried?") rather than requesting data that can be
-    // reconstructed from the frame. These need the model to see the prior exchange, so a bounded
-    // last user+assistant pair is sent for them (and only them).
-    private static readonly Regex SemanticFollowUpSignal = new(
-        @"^(?:why\b|why\?|how come\b|how so\b|really\??$|and\?$|so\?$|meaning\??$|compared to what\b|based on what\b)" +
-        @"|\bis that (?:good|bad|normal|a lot|too (?:much|high|low)|ok|okay|fine|healthy|concerning|worrying|expensive|cheap)\b" +
-        @"|\b(?:is|was|does|did|can|could|would) (?:that|this|it)\b.{0,45}\b(?:mean|include|exclude|matter|count|seem|make sense|affect|change|good|bad|normal|right|correct)\b" +
-        @"|\bgood or bad\b|\bshould i (?:be )?(?:worry|worried|concerned)\b" +
-        @"|\b(?:explain|elaborate|clarify)(?: that| this| it)?\b|\bwhat (?:do|does) (?:you|that|this|it) mean\b" +
-        @"|\btell me more\b|\bexpand on (?:that|this|it)\b|\bbreak (?:that|this|it) down\b" +
-        @"|\bwhat (?:caused|drove|contributed to|explains) (?:that|this|it)\b|\bwhy (?:is|was|did|does) (?:that|this|it)\b" +
-        @"|\bhow did you (?:calculate|work out|derive|get) (?:that|this|it)\b|\bare you sure\b|\bwhat (?:should|can|could) i do about (?:that|this|it)\b",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static bool IsSemanticFollowUp(string message) => SemanticFollowUpSignal.IsMatch(message.Trim());
-
     // Explicit "drop the context" phrasing. Kept tight (leading phrase or standalone) so it never
     // fires on an ordinary question that merely contains one of these words.
     private static readonly Regex ContextResetSignal = new(
@@ -92,11 +75,6 @@ public partial class AiAssistantService
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     internal static bool IsContextResetRequest(string message) => ContextResetSignal.IsMatch(message.Trim());
-
-    // The minimal prior context a semantic follow-up needs: the last assistant turn (its
-    // conclusion) plus the user turn that prompted it. Already sanitized/length-capped upstream.
-    private static IReadOnlyList<AiChatMessage> BoundedSemanticHistory(IReadOnlyList<AiChatMessage> history) =>
-        history.Count <= 2 ? history : history.TakeLast(2).ToList();
 
     // Compact canonical one-liner of the prior resolved frame for the intent classifier -- carries
     // enough to disambiguate a short follow-up without sending any prior message prose.

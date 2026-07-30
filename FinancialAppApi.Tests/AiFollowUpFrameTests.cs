@@ -129,7 +129,7 @@ public class AiFollowUpFrameTests
     }
 
     [Fact]
-    public async Task DataFollowUpNeverResendsPriorProseEvenIfClientSuppliesHistory()
+    public async Task DataFollowUpReceivesBoundedDialogueWhileStructuredStateKeepsScopeExact()
     {
         await using var context = SeededContext();
         var (service, handler) = NewService(context);
@@ -143,9 +143,8 @@ public class AiFollowUpFrameTests
         };
         await service.ChatAsync(new AiChatRequest("how about last cycle", history, t1.Response.State));
 
-        // History is a reconstructed data query -> the prior exchange is stripped from the prompt.
-        Assert.Contains("Recent chat JSON: []", handler.UserContent);
-        Assert.DoesNotContain("There were 2 transactions", handler.UserContent);
+        Assert.Contains("Conversation dialogue JSON", handler.UserContent);
+        Assert.Contains("There were 2 transactions", handler.UserContent);
     }
 
     [Fact]
@@ -163,7 +162,7 @@ public class AiFollowUpFrameTests
         await service.ChatAsync(new AiChatRequest("is that good?", history, t1.Response.State));
 
         // A semantic follow-up about the assistant's own conclusion DOES get the prior exchange.
-        Assert.DoesNotContain("Recent chat JSON: []", handler.UserContent);
+        Assert.Contains("Conversation dialogue JSON", handler.UserContent);
         Assert.Contains("You spent 570 this cycle.", handler.UserContent);
     }
 
