@@ -401,6 +401,52 @@ public class AiAssistantHistoricalContextTests
     }
 
     [Fact]
+    public async Task ChatAsync_CountRelatedTransactions_StripsRequestScaffoldingFromSearch()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 28, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.Transactions.AddRange(
+            // Cycle day 28 puts the previous cycle at Jun 28 ~ Jul 27, so "last cycle" dates sit in
+            // July here -- a June date would fall in the cycle before it and match nothing.
+            Transaction("badminton-one", new DateTime(2026, 7, 20, 12, 0, 0, DateTimeKind.Utc), "Badminton", -10),
+            Transaction("badminton-two", new DateTime(2026, 7, 2, 12, 0, 0, DateTimeKind.Utc), "Badminton Shuttlecock", -113));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("how many badminton related transaction i spent last cycle?", []));
+
+        Assert.Contains("\"searchText\":\"badminton\"", handler.UserContent);
+        Assert.Contains("\"count\":2", handler.UserContent);
+        Assert.DoesNotContain("\"searchText\":\"badminton related transaction\"", handler.UserContent);
+    }
+
+    [Theory]
+    [InlineData("last cycle has how many badminton records")]
+    [InlineData("how many badminton-related transactions were there last cycle?")]
+    [InlineData("number of badminton payments last cycle")]
+    [InlineData("how many records for badminton in the last cycle?")]
+    public async Task ChatAsync_CountTransactionWordingVariants_ResolveTheSameSubject(string message)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 28, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        // Cycle day 28 puts the previous cycle at Jun 28 ~ Jul 27, so this sits inside "last cycle".
+        context.Transactions.Add(Transaction("badminton", new DateTime(2026, 7, 2, 12, 0, 0, DateTimeKind.Utc), "Badminton Shuttlecock", -113));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest(message, []));
+
+        Assert.Contains("\"searchText\":\"badminton\"", handler.UserContent);
+        Assert.Contains("\"count\":1", handler.UserContent);
+    }
+
+    [Fact]
     public async Task ChatAsync_WishlistForecastLoadsServerEstimate()
     {
         await using var context = TestHelpers.NewInMemoryContext();

@@ -138,6 +138,7 @@ public class WishlistServiceTests
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.WishlistItems.Add(NewItem(1, "Headphones", active: true, price: 80m));
+        context.Transactions.Add(new Transaction { Id = "reward", Date = DateTime.UtcNow, Amount = 1000m, LedgerCategory = "Rewards" });
         await context.SaveChangesAsync();
         var service = NewService(context);
 
@@ -155,6 +156,7 @@ public class WishlistServiceTests
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.WishlistItems.Add(NewItem(1, "Headphones", active: true, price: 80m));
+        context.Transactions.Add(new Transaction { Id = "reward", Date = DateTime.UtcNow, Amount = 1000m, LedgerCategory = "Rewards" });
         await context.SaveChangesAsync();
         var service = NewService(context);
 
@@ -176,6 +178,7 @@ public class WishlistServiceTests
             NewItem(1, "Current", active: true),
             NewItem(2, "Next", active: false, createdAt: DateTime.UtcNow.AddMinutes(1)),
             purchased);
+        context.Transactions.Add(new Transaction { Id = "reward", Date = DateTime.UtcNow, Amount = 1000m, LedgerCategory = "Rewards" });
         await context.SaveChangesAsync();
 
         await NewService(context).PurchaseWishlistItemAsync(1);
@@ -306,7 +309,9 @@ public class WishlistServiceTests
 
     private static WishlistService NewService(Database.AppDbContext context)
     {
-        return new WishlistService(context, new CycleBalanceService(context));
+        var cycleBalanceService = new CycleBalanceService(context);
+        var savingsGoalService = new FinancialAppApi.Services.SavingsGoals.SavingsGoalService(context, cycleBalanceService);
+        return new WishlistService(context, cycleBalanceService, savingsGoalService);
     }
 
     private static WishlistItem NewItem(

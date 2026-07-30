@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FinancialAppApi.Database;
+using FinancialAppApi.Models;
 
 namespace FinancialAppApi.Tests.Integration;
 
@@ -55,6 +56,19 @@ public class WishlistIntegrationTests : IntegrationTestBase
         var client = await CreateSignedInClientAsync();
         var id = await CreateItemAsync(client, "Headphones", 200m);
 
+        await Factory.WithDbContextAsync(async db =>
+        {
+            db.Transactions.Add(new Transaction
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                Date = DateTime.UtcNow,
+                Amount = 1000m,
+                Category = "Other",
+                LedgerCategory = "Rewards"
+            });
+            await db.SaveChangesAsync();
+        });
+
         var purchase = await client.PostAsync($"/api/wishlist/{id}/purchase", null);
         Assert.Equal(HttpStatusCode.OK, purchase.StatusCode);
 
@@ -85,6 +99,18 @@ public class WishlistIntegrationTests : IntegrationTestBase
     {
         var client = await CreateSignedInClientAsync();
         var id = await CreateItemAsync(client, "Monitor", 300m);
+        await Factory.WithDbContextAsync(async db =>
+        {
+            db.Transactions.Add(new Transaction
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                Date = DateTime.UtcNow,
+                Amount = 1000m,
+                Category = "Other",
+                LedgerCategory = "Rewards"
+            });
+            await db.SaveChangesAsync();
+        });
         await client.PostAsync($"/api/wishlist/{id}/purchase", null);
 
         var second = await client.PostAsync($"/api/wishlist/{id}/purchase", null);
@@ -102,6 +128,18 @@ public class WishlistIntegrationTests : IntegrationTestBase
     {
         var client = await CreateSignedInClientAsync();
         var id = await CreateItemAsync(client, "Keyboard", 120m);
+        await Factory.WithDbContextAsync(async db =>
+        {
+            db.Transactions.Add(new Transaction
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                Date = DateTime.UtcNow,
+                Amount = 1000m,
+                Category = "Other",
+                LedgerCategory = "Rewards"
+            });
+            await db.SaveChangesAsync();
+        });
         await client.PostAsync($"/api/wishlist/{id}/purchase", null);
 
         var unpurchase = await client.DeleteAsync($"/api/wishlist/{id}/purchase");

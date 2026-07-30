@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.SavingsGoals;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
@@ -46,15 +47,18 @@ public class WishlistService
 {
     private readonly AppDbContext _context;
     private readonly CycleBalanceService _cycleBalanceService;
+    private readonly SavingsGoalService _savingsGoalService;
     private readonly FinancialClock _financialClock;
 
     public WishlistService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
+        SavingsGoalService savingsGoalService,
         FinancialClock? financialClock = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
+        _savingsGoalService = savingsGoalService;
         _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
@@ -297,6 +301,14 @@ public class WishlistService
             return existingTransaction != null
                 ? new WishlistPurchaseResult(WishlistMutationStatus.Success, item, existingTransaction)
                 : new WishlistPurchaseResult(WishlistMutationStatus.AlreadyPurchased, Message: "Item is already purchased.");
+        }
+
+        var poolSummary = await _savingsGoalService.GetPoolSummaryAsync(cancellationToken);
+        if (poolSummary.Unassigned < item.Price)
+        {
+            return new WishlistPurchaseResult(
+                WishlistMutationStatus.PriceInvalid,
+                Message: $"Insufficient free rewards to claim this item. Only {poolSummary.Unassigned:0.00} is unassigned.");
         }
 
         item.IsPurchased = true;

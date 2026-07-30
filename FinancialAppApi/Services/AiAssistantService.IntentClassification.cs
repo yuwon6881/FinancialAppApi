@@ -106,6 +106,19 @@ public partial class AiAssistantService
             RegexOptions.IgnoreCase);
         if (spendOn.Success) return NormalizeSearchText(spendOn.Groups["value"].Value);
 
+        // Count questions commonly put a user-supplied subject directly before the record
+        // noun. Capture that subject independently of the surrounding sentence structure.
+        var countRecords = Regex.Match(message,
+            @"\b(?:how many|number of)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{0,60}?)(?:[-\s]+related)?\s+(?:transactions?|payments?|purchases?|charges?|records?|entries)\b",
+            RegexOptions.IgnoreCase);
+        if (countRecords.Success) return NormalizeSearchText(countRecords.Groups["value"].Value);
+
+        // Also support inverted forms where the record noun precedes the dynamic subject.
+        var recordsForSubject = Regex.Match(message,
+            @"\b(?:how many|number of)\s+(?:transactions?|payments?|purchases?|charges?|records?|entries)\s+(?:for|about|related\s+to|matching)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{0,60}?)(?=\s+\b(?:last|this|previous|current|past|in|during|across)\b|[?.!,]|$)",
+            RegexOptions.IgnoreCase);
+        if (recordsForSubject.Success) return NormalizeSearchText(recordsForSubject.Groups["value"].Value);
+
         var countMatch = Regex.Match(message,
             @"\b(?:how many|how often|number of times)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{1,50}?)\s+(?:did|do|does|have|has|i|we)\b",
             RegexOptions.IgnoreCase);
@@ -174,8 +187,18 @@ public partial class AiAssistantService
         return kept.Length == 0 ? null : string.Join(' ', kept);
     }
 
-    private static string NormalizeSearchText(string value) =>
-        Regex.Replace(value.Trim(), @"^(?:my|the)\s+", string.Empty, RegexOptions.IgnoreCase);
+    private static string NormalizeSearchText(string value)
+    {
+        var normalized = Regex.Replace(value.Trim(), @"^(?:my|the)\s+", string.Empty, RegexOptions.IgnoreCase);
+        // The count extractor can capture the whole noun phrase before the user's pronoun,
+        // but a trailing record type is request scaffolding rather than part of the dynamic
+        // subject. Remove only that generic scaffolding before querying the ledger.
+        return Regex.Replace(
+            normalized,
+            @"(?:[-\s]+related)?\s+(?:(?:outflow|inflow|expense|spending)\s+)?(?:transactions?|payments?|purchases?|charges?|records?|entries)\s*$",
+            string.Empty,
+            RegexOptions.IgnoreCase).Trim();
+    }
 
     // Builds the base conversation frame for this turn: this turn's resolved intent/search/cycle,
     // with every other dimension carried forward from the prior frame (BuildContextAsync then
