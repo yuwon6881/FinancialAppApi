@@ -24,6 +24,31 @@ public class FinancialService
 {
     private static readonly string[] Months = FinancialConstants.MonthAbbreviations;
 
+    internal sealed record FinancialCycleContext(
+        FinancialSetting Setting,
+        int CycleDay,
+        string ActiveMonth,
+        int ActiveYear,
+        int ActiveMonthIndex);
+
+    internal sealed record FinancialBootstrapSnapshot(
+        FinancialCycleContext Cycle,
+        List<RecurringPayment> ActiveRecurringPayments,
+        List<Transaction> CycleRelevantTransactions);
+
+    private sealed record ActiveRecurringItem(
+        string id,
+        string? recurringPaymentId,
+        string name,
+        string amount,
+        string category,
+        string ledgerCategory,
+        string dueDate,
+        bool isPaid,
+        bool isDiscarded,
+        string status,
+        string? paidDate);
+
     private readonly AppDbContext _context;
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly RecurringPaymentAlertService _recurringPaymentAlertService;
@@ -44,16 +69,37 @@ public class FinancialService
         _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
-    public async Task<object> GetWalletBalanceAsync()
+    public async Task<object> GetWalletBalanceAsync(CancellationToken cancellationToken = default)
     {
-        var setting = await GetOrCreateSettingAsync();
+        var setting = await GetOrCreateSettingAsync(cancellationToken);
+        return await BuildWalletBalanceAsync(setting, null, cancellationToken);
+    }
+
+    internal Task<object> GetWalletBalanceAsync(
+        FinancialBootstrapSnapshot snapshot,
+        CancellationToken cancellationToken = default) =>
+        BuildWalletBalanceAsync(snapshot.Cycle.Setting, snapshot, cancellationToken);
+
+    private async Task<object> BuildWalletBalanceAsync(
+        FinancialSetting setting,
+        FinancialBootstrapSnapshot? snapshot,
+        CancellationToken cancellationToken)
+    {
         var cycleDay = setting.CycleDay;
 
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(_financialClock.Today, cycleDay);
-        var currentCycleTxs = await GetTransactionsForCycleAsync(year, monthIndex, cycleDay);
+        var currentCycleTxs = snapshot is not null &&
+            snapshot.Cycle.ActiveYear == year &&
+            snapshot.Cycle.ActiveMonthIndex == monthIndex
+                ? GetActiveCycleTransactions(snapshot)
+                : await GetTransactionsForCycleAsync(year, monthIndex, cycleDay, cancellationToken);
 
         var (budgetEssentials, _, budgetStability, budgetRewards) =
-            await _cycleBalanceService.GetOpeningBalanceAsync(year, monthIndex, cycleDay);
+            await _cycleBalanceService.GetOpeningBalanceAsync(
+                year,
+                monthIndex,
+                cycleDay,
+                cancellationToken);
 
         var netEssentials = currentCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Essentials"));
         var netStability = currentCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Stability"));
@@ -67,15 +113,68 @@ public class FinancialService
         string? queryMonth = null,
         int? queryYear = null,
         bool persistSelection = true,
-        bool summaryOnly = false)
+        bool summaryOnly = false,
+        CancellationToken cancellationToken = default)
+    {
+        var snapshot = await CreateBootstrapSnapshotAsync(
+            queryMonth,
+            queryYear,
+            persistSelection,
+            cancellationToken);
+        return await GetDashboardDataAsync(snapshot, summaryOnly, cancellationToken);
+    }
+
+    internal async Task<FinancialBootstrapSnapshot> CreateBootstrapSnapshotAsync(
+        string? queryMonth,
+        int? queryYear,
+        bool persistSelection,
+        CancellationToken cancellationToken)
+    {
+        var cycle = await ResolveCycleContextAsync(
+            queryMonth,
+            queryYear,
+            persistSelection,
+            cancellationToken);
+        var activeRecurringPayments = await _context.RecurringPayments
+            .AsNoTracking()
+            .Where(payment => payment.Active)
+            .ToListAsync(cancellationToken);
+        var activeRange = CategoryAttributionService.GetCycleRange(
+            cycle.ActiveYear,
+            cycle.ActiveMonthIndex,
+            cycle.CycleDay);
+        var activeRangeStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(activeRange.start));
+        var activeRangeEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(activeRange.end));
+        var activeRangeStartOnly = DateOnly.FromDateTime(activeRange.start);
+        var activeRangeEndOnly = DateOnly.FromDateTime(activeRange.end);
+        var cycleRelevantTransactions = await _context.Transactions
+            .AsNoTracking()
+            .Where(transaction =>
+                (transaction.Date >= activeRangeStartDate && transaction.Date < activeRangeEndExclusive)
+                || (transaction.RecurringOccurrenceDate != null
+                    && transaction.RecurringOccurrenceDate >= activeRangeStartOnly
+                    && transaction.RecurringOccurrenceDate <= activeRangeEndOnly))
+            .ToListAsync(cancellationToken);
+
+        return new FinancialBootstrapSnapshot(
+            cycle,
+            activeRecurringPayments,
+            cycleRelevantTransactions);
+    }
+
+    internal async Task<object> GetDashboardDataAsync(
+        FinancialBootstrapSnapshot snapshot,
+        bool summaryOnly,
+        CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
         using var activity = Telemetry.ActivitySource.StartActivity("FinancialService.GetDashboardData");
 
-        var (setting, cycleDay, _, activeYear, activeMonthIndex) =
-            await ResolveCycleContextAsync(queryMonth, queryYear, persist: persistSelection);
-
-        var allRecurring = await _context.RecurringPayments.AsNoTracking().Where(r => r.Active).ToListAsync();
+        var setting = snapshot.Cycle.Setting;
+        var cycleDay = snapshot.Cycle.CycleDay;
+        var activeYear = snapshot.Cycle.ActiveYear;
+        var activeMonthIndex = snapshot.Cycle.ActiveMonthIndex;
+        var allRecurring = snapshot.ActiveRecurringPayments;
 
         var year = activeYear;
 
@@ -96,13 +195,7 @@ public class FinancialService
         // the two halves of the OR.
         var activeRangeStartOnly = DateOnly.FromDateTime(activeRange.start);
         var activeRangeEndOnly = DateOnly.FromDateTime(activeRange.end);
-        var cycleRelevantTxs = await _context.Transactions
-            .AsNoTracking()
-            .Where(t => (t.Date >= activeRangeStartDate && t.Date < activeRangeEndExclusive)
-                        || (t.RecurringOccurrenceDate != null
-                            && t.RecurringOccurrenceDate >= activeRangeStartOnly
-                            && t.RecurringOccurrenceDate <= activeRangeEndOnly))
-            .ToListAsync();
+        var cycleRelevantTxs = snapshot.CycleRelevantTransactions;
 
         var activeCycleTxs = cycleRelevantTxs
             .Where(t => t.Date >= activeRangeStartDate && t.Date < activeRangeEndExclusive)
@@ -119,7 +212,11 @@ public class FinancialService
         string selectedCycleLabel = activeRange.label;
 
         var (selectedBudgetEssentials, selectedBudgetGrowth, selectedBudgetStability, selectedBudgetRewards) =
-            await _cycleBalanceService.GetOpeningBalanceAsync(year, activeMonthIndex, cycleDay);
+            await _cycleBalanceService.GetOpeningBalanceAsync(
+                year,
+                activeMonthIndex,
+                cycleDay,
+                cancellationToken);
 
         var selectedNetEssentials = activeCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Essentials"));
         var selectedNetGrowth = activeCycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Growth"));
@@ -147,12 +244,16 @@ public class FinancialService
         var trendPoints = new List<(string month, decimal balance)>();
         if (!summaryOnly)
         {
-            await _cycleBalanceService.EnsureComputedThroughAsync(year, activeMonthIndex, cycleDay);
+            await _cycleBalanceService.EnsureComputedThroughAsync(
+                year,
+                activeMonthIndex,
+                cycleDay,
+                cancellationToken);
             var trendRows = await _context.CycleBalances
                 .AsNoTracking()
                 .Where(b => b.Year == activeYear && b.MonthIndex <= activeMonthIndex)
                 .OrderBy(b => b.MonthIndex)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
             trendPoints = trendRows.Select(r => (Months[r.MonthIndex - 1], r.GrowthBalance)).ToList();
         }
 
@@ -184,8 +285,8 @@ public class FinancialService
 
         var activeRecurringList = BuildActiveRecurringList(allRecurring, recurringMatchTxs, activeRange.start, activeRange.end, cycleDay, activeYear, activeMonthIndex);
         var selectedMonthRecurring = activeRecurringList
-            .OrderBy(r => ((dynamic)r).status == "Pending" ? 0 : ((dynamic)r).status == "Paid" ? 1 : 2)
-            .ThenBy(r => ((dynamic)r).dueDate)
+            .OrderBy(item => item.status == "Pending" ? 0 : item.status == "Paid" ? 1 : 2)
+            .ThenBy(item => item.dueDate)
             .ToList();
 
         var pendingRecurring = BuildPendingRecurringItems(
@@ -208,11 +309,12 @@ public class FinancialService
             activeYear,
             activeMonthIndex,
             activeRange.start,
-            activeRange.end);
+            activeRange.end,
+            cancellationToken);
 
         var pendingNotifications = summaryOnly
             ? new List<object>()
-            : await _recurringPaymentAlertService.GetSubscriptionAlertsAsync();
+            : await _recurringPaymentAlertService.GetSubscriptionAlertsAsync(cancellationToken);
 
         var monthlyCategoryBreakdown = BuildBreakdown(activeCycleTxs);
 
@@ -278,10 +380,26 @@ public class FinancialService
     // ran serialized behind the cheap current-cycle data on every dashboard load even though most
     // of the UI only needs them for the secondary trend/insights widgets. Fetched by the frontend
     // in parallel with the (now much cheaper) dashboard call instead.
-    public async Task<object> GetDashboardInsightsAsync(string? queryMonth = null, int? queryYear = null)
+    public async Task<object> GetDashboardInsightsAsync(
+        string? queryMonth = null,
+        int? queryYear = null,
+        CancellationToken cancellationToken = default)
     {
-        var (_, cycleDay, _, activeYear, activeMonthIndex) =
-            await ResolveCycleContextAsync(queryMonth, queryYear, persist: false);
+        var cycle = await ResolveCycleContextAsync(
+            queryMonth,
+            queryYear,
+            persist: false,
+            cancellationToken);
+        return await GetDashboardInsightsAsync(cycle, cancellationToken);
+    }
+
+    internal async Task<object> GetDashboardInsightsAsync(
+        FinancialCycleContext cycle,
+        CancellationToken cancellationToken)
+    {
+        var cycleDay = cycle.CycleDay;
+        var activeYear = cycle.ActiveYear;
+        var activeMonthIndex = cycle.ActiveMonthIndex;
 
         var activeRange = CategoryAttributionService.GetCycleRange(activeYear, activeMonthIndex, cycleDay);
         var activeCycleEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(activeRange.end));
@@ -301,7 +419,7 @@ public class FinancialService
             .Where(t => !t.LedgerCategory.ToLower().StartsWith("transfer:"))
             .GroupBy(t => t.Category)
             .Select(g => new { Category = g.Key, Total = g.Sum(t => t.Amount) })
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         var yearlyCategoryBreakdown = yearlyGroups
             .GroupBy(g => string.IsNullOrWhiteSpace(g.Category) ? "Other" : g.Category)
             .Select(g => (category: g.Key, amount: Math.Abs(g.Sum(x => x.Total))))
@@ -315,7 +433,7 @@ public class FinancialService
         var last6Txs = await _context.Transactions
             .AsNoTracking()
             .Where(t => t.Date >= last6StartDate && t.Date < activeCycleEndExclusive)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         var last6CategoryBreakdown = BuildBreakdown(last6Txs);
 
         var last3Txs = last6Txs.Where(t => t.Date >= last3StartDate).ToList();
@@ -325,7 +443,7 @@ public class FinancialService
         // otherwise depress the savings-rate average early in the month.
         var (pastThreeMonthsRewardsAverage, hasRewardsHistory) =
             CalculatePastRewardsAverageFromTxs(last6Txs, activeYear, activeMonthIndex, cycleDay);
-        var availableYears = await GetAvailableYearsAsync();
+        var availableYears = await GetAvailableYearsAsync(cancellationToken);
 
         return new
         {
@@ -338,7 +456,9 @@ public class FinancialService
         };
     }
 
-    public async Task<string?> UpdateSettingsAsync(FinancialSettingsUpdate update)
+    public async Task<string?> UpdateSettingsAsync(
+        FinancialSettingsUpdate update,
+        CancellationToken cancellationToken = default)
     {
         if (!ObfuscationHelper.TryDeobfuscate(update.TargetStabilityFund, out var targetStabilityFund) || targetStabilityFund < 0m)
         {
@@ -358,7 +478,7 @@ public class FinancialService
             return "Select a supported currency from the list.";
         }
 
-        var setting = await GetOrCreateSettingAsync();
+        var setting = await GetOrCreateSettingAsync(cancellationToken);
 
         setting.TargetStabilityFund = targetStabilityFund;
         setting.EssentialsAlloc = update.EssentialsAlloc;
@@ -389,59 +509,64 @@ public class FinancialService
         var strategy = _context.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
-            await using var dbTransaction = await _context.Database.BeginTransactionAsync();
+            await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
             if (cycleDayChanged)
             {
-                await _cycleBalanceService.InvalidateAllAsync();
+                await _cycleBalanceService.InvalidateAllAsync(cancellationToken);
             }
-            await _context.SaveChangesAsync();
-            await dbTransaction.CommitAsync();
+            await _context.SaveChangesAsync(cancellationToken);
+            await dbTransaction.CommitAsync(cancellationToken);
         });
         return null;
     }
 
-    public async Task UpdateDarkModeAsync(bool darkMode)
+    public async Task UpdateDarkModeAsync(bool darkMode, CancellationToken cancellationToken = default)
     {
-        var setting = await GetOrCreateSettingAsync();
+        var setting = await GetOrCreateSettingAsync(cancellationToken);
         setting.DarkMode = darkMode;
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task UpdateHideSensitiveAsync(bool hideSensitive)
+    public async Task UpdateHideSensitiveAsync(bool hideSensitive, CancellationToken cancellationToken = default)
     {
-        var setting = await GetOrCreateSettingAsync();
+        var setting = await GetOrCreateSettingAsync(cancellationToken);
         setting.HideSensitive = hideSensitive;
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task UpdateVibrationAsync(bool vibrationEnabled)
+    public async Task UpdateVibrationAsync(bool vibrationEnabled, CancellationToken cancellationToken = default)
     {
-        var setting = await GetOrCreateSettingAsync();
+        var setting = await GetOrCreateSettingAsync(cancellationToken);
         setting.VibrationEnabled = vibrationEnabled;
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
     }
 
     // Records which cycle the user has acknowledged an end-of-cycle summary for. Kept as a
     // tiny dedicated writer (like dark-mode/hide-sensitive) so acknowledging a summary never
     // races or overwrites a full settings edit. A null/blank key clears the marker.
-    public async Task UpdateSummarySeenAsync(string? cycleKey)
+    public async Task UpdateSummarySeenAsync(
+        string? cycleKey,
+        CancellationToken cancellationToken = default)
     {
-        var setting = await GetOrCreateSettingAsync();
+        var setting = await GetOrCreateSettingAsync(cancellationToken);
         setting.LastSummaryCycleSeen = string.IsNullOrWhiteSpace(cycleKey) ? null : cycleKey.Trim();
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task SelectPeriodAsync(string selectedMonth, int selectedYear)
+    public async Task SelectPeriodAsync(
+        string selectedMonth,
+        int selectedYear,
+        CancellationToken cancellationToken = default)
     {
-        var setting = await GetOrCreateSettingAsync();
+        var setting = await GetOrCreateSettingAsync(cancellationToken);
         setting.SelectedMonth = selectedMonth;
         setting.SelectedYear = selectedYear;
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
     }
 
-    private async Task<FinancialSetting> GetOrCreateSettingAsync()
+    private async Task<FinancialSetting> GetOrCreateSettingAsync(CancellationToken cancellationToken)
     {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
         if (setting == null)
         {
             setting = new FinancialSetting();
@@ -470,16 +595,26 @@ public class FinancialService
     /// period with no waterfall.
     /// </remarks>
     public async Task<(string month, int year)> ResolveActivePeriodAsync(
-        string? queryMonth, int? queryYear, bool persist)
+        string? queryMonth,
+        int? queryYear,
+        bool persist,
+        CancellationToken cancellationToken = default)
     {
-        var context = await ResolveCycleContextAsync(queryMonth, queryYear, persist);
-        return (context.activeMonth, context.activeYear);
+        var context = await ResolveCycleContextAsync(
+            queryMonth,
+            queryYear,
+            persist,
+            cancellationToken);
+        return (context.ActiveMonth, context.ActiveYear);
     }
 
-    private async Task<(FinancialSetting setting, int cycleDay, string activeMonth, int activeYear, int activeMonthIndex)>
-        ResolveCycleContextAsync(string? queryMonth, int? queryYear, bool persist)
+    private async Task<FinancialCycleContext> ResolveCycleContextAsync(
+        string? queryMonth,
+        int? queryYear,
+        bool persist,
+        CancellationToken cancellationToken)
     {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
         if (setting == null)
         {
             var now = _financialClock.LocalNow;
@@ -496,7 +631,7 @@ public class FinancialService
                 HideSensitive = false
             };
             _context.FinancialSettings.Add(setting);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
 
         var cycleDay = setting.CycleDay;
@@ -520,16 +655,25 @@ public class FinancialService
         {
             setting.SelectedMonth = activeMonth;
             setting.SelectedYear = activeYear;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
 
         var activeMonthIndex = Array.IndexOf(Months, activeMonth) + 1;
         if (activeMonthIndex == 0) throw new ArgumentException("Invalid month.", nameof(queryMonth));
 
-        return (setting, cycleDay, activeMonth, activeYear, activeMonthIndex);
+        return new FinancialCycleContext(
+            setting,
+            cycleDay,
+            activeMonth,
+            activeYear,
+            activeMonthIndex);
     }
 
-    private async Task<List<Transaction>> GetTransactionsForCycleAsync(int year, int monthIndex, int cycleDay)
+    private async Task<List<Transaction>> GetTransactionsForCycleAsync(
+        int year,
+        int monthIndex,
+        int cycleDay,
+        CancellationToken cancellationToken)
     {
         var (start, end, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
         var startDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(start));
@@ -537,10 +681,24 @@ public class FinancialService
         return await _context.Transactions
             .AsNoTracking()
             .Where(t => t.Date >= startDate && t.Date < endExclusive)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
     }
 
-    private List<object> BuildActiveRecurringList(
+    private static List<Transaction> GetActiveCycleTransactions(
+        FinancialBootstrapSnapshot snapshot)
+    {
+        var activeRange = CategoryAttributionService.GetCycleRange(
+            snapshot.Cycle.ActiveYear,
+            snapshot.Cycle.ActiveMonthIndex,
+            snapshot.Cycle.CycleDay);
+        var start = TransactionDate.StartOfDate(DateOnly.FromDateTime(activeRange.start));
+        var endExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(activeRange.end));
+        return snapshot.CycleRelevantTransactions
+            .Where(transaction => transaction.Date >= start && transaction.Date < endExclusive)
+            .ToList();
+    }
+
+    private List<ActiveRecurringItem> BuildActiveRecurringList(
         List<RecurringPayment> allRecurring,
         List<Transaction> recurringMatchTxs,
         DateTime activeRangeStart,
@@ -554,7 +712,7 @@ public class FinancialService
             .GroupBy(t => t.RecurringPaymentId!)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        var activeRecurringList = new List<object>();
+        var activeRecurringList = new List<ActiveRecurringItem>();
         foreach (var rp in allRecurring)
         {
             foreach (var billingDate in _recurringOccurrenceService.GetOccurrencesInRange(
@@ -585,20 +743,20 @@ public class FinancialService
                 // later subscription edits must not rewrite what the user actually recorded for
                 // this cycle. Discard markers carry no payment details, so they retain the template
                 // fields while reporting their discarded status.
-                activeRecurringList.Add(new
-                {
-                    id = instanceId,
-                    recurringPaymentId = rp.Id,
-                    name = isPaid ? paidTx!.Description : rp.Name,
-                    amount = ObfuscationHelper.Obfuscate(isPaid ? Math.Abs(paidTx!.Amount) : Math.Abs(rp.Amount)),
-                    category = isPaid ? paidTx!.Category : rp.Category,
-                    ledgerCategory = isPaid ? paidTx!.LedgerCategory : rp.LedgerCategory,
-                    dueDate = billingDate.ToString("yyyy-MM-dd"),
-                    isPaid = isPaid,
-                    isDiscarded = isDiscarded,
-                    status = isDiscarded ? "Discarded" : (isPaid ? "Paid" : "Pending"),
-                    paidDate = isPaid && !isDiscarded ? TransactionDate.ToDateOnly(paidTx!.Date).ToString("yyyy-MM-dd") : null
-                });
+                activeRecurringList.Add(new ActiveRecurringItem(
+                    instanceId,
+                    rp.Id,
+                    isPaid ? paidTx!.Description : rp.Name,
+                    ObfuscationHelper.Obfuscate(isPaid ? Math.Abs(paidTx!.Amount) : Math.Abs(rp.Amount)),
+                    isPaid ? paidTx!.Category : rp.Category,
+                    isPaid ? paidTx!.LedgerCategory : rp.LedgerCategory,
+                    billingDate.ToString("yyyy-MM-dd"),
+                    isPaid,
+                    isDiscarded,
+                    isDiscarded ? "Discarded" : (isPaid ? "Paid" : "Pending"),
+                    isPaid && !isDiscarded
+                        ? TransactionDate.ToDateOnly(paidTx!.Date).ToString("yyyy-MM-dd")
+                        : null));
             }
         }
 
@@ -615,20 +773,18 @@ public class FinancialService
                      .ThenBy(transaction => transaction.Id, StringComparer.Ordinal))
         {
             var occurrenceDate = paidTx.RecurringOccurrenceDate ?? TransactionDate.ToDateOnly(paidTx.Date);
-            activeRecurringList.Add(new
-            {
-                id = $"{paidTx.RecurringPaymentId}-{occurrenceDate:yyyy-MM-dd}-{paidTx.Id}",
-                recurringPaymentId = paidTx.RecurringPaymentId,
-                name = paidTx.Description,
-                amount = ObfuscationHelper.Obfuscate(Math.Abs(paidTx.Amount)),
-                category = paidTx.Category,
-                ledgerCategory = paidTx.LedgerCategory,
-                dueDate = occurrenceDate.ToString("yyyy-MM-dd"),
-                isPaid = true,
-                isDiscarded = false,
-                status = "Paid",
-                paidDate = TransactionDate.ToDateOnly(paidTx.Date).ToString("yyyy-MM-dd")
-            });
+            activeRecurringList.Add(new ActiveRecurringItem(
+                $"{paidTx.RecurringPaymentId}-{occurrenceDate:yyyy-MM-dd}-{paidTx.Id}",
+                paidTx.RecurringPaymentId,
+                paidTx.Description,
+                ObfuscationHelper.Obfuscate(Math.Abs(paidTx.Amount)),
+                paidTx.Category,
+                paidTx.LedgerCategory,
+                occurrenceDate.ToString("yyyy-MM-dd"),
+                true,
+                false,
+                "Paid",
+                TransactionDate.ToDateOnly(paidTx.Date).ToString("yyyy-MM-dd")));
         }
 
         return activeRecurringList;
@@ -700,12 +856,12 @@ public class FinancialService
         return (average, average > 0);
     }
 
-    private async Task<List<int>> GetAvailableYearsAsync()
+    private async Task<List<int>> GetAvailableYearsAsync(CancellationToken cancellationToken)
     {
         var yearRange = await _context.Transactions
             .GroupBy(_ => 1)
             .Select(g => new { Min = g.Min(t => t.Date.Year), Max = g.Max(t => t.Date.Year) })
-            .FirstOrDefaultAsync();
+            .FirstOrDefaultAsync(cancellationToken);
 
         var currentYear = _financialClock.LocalNow.Year;
         var minYear = yearRange?.Min ?? 0;
@@ -843,14 +999,15 @@ public class FinancialService
         int activeYear,
         int activeMonthIndex,
         DateTime rangeStart,
-        DateTime rangeEnd)
+        DateTime rangeEnd,
+        CancellationToken cancellationToken)
     {
         var cycleKey = $"{activeYear:D4}-{activeMonthIndex:D2}";
         var allGuideVersions = await _context.CategorySpendingGuides
             .AsNoTracking()
-            .ToListAsync();
+            .Where(guide => string.Compare(guide.EffectiveFromCycleKey, cycleKey) <= 0)
+            .ToListAsync(cancellationToken);
         var effectiveGuides = allGuideVersions
-            .Where(guide => string.CompareOrdinal(guide.EffectiveFromCycleKey, cycleKey) <= 0)
             .GroupBy(guide => guide.CategoryName, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.OrderByDescending(guide => guide.EffectiveFromCycleKey).First())
             .Where(guide => guide.LimitAmount.HasValue)

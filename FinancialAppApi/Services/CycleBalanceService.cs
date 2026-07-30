@@ -34,7 +34,11 @@ public class CycleBalanceService
     // (year, monthIndex) inclusive, computing any missing ones by walking forward from the
     // latest cached snapshot and persisting each new row as it goes. Returns the row for the
     // requested cycle.
-    public async Task<CycleBalance> EnsureComputedThroughAsync(int year, int monthIndex, int cycleDay)
+    public async Task<CycleBalance> EnsureComputedThroughAsync(
+        int year,
+        int monthIndex,
+        int cycleDay,
+        CancellationToken cancellationToken = default)
     {
         var startYear = Math.Min(BaselineYear, year);
 
@@ -42,7 +46,7 @@ public class CycleBalanceService
             .Where(b => b.Year >= startYear && (b.Year < year || (b.Year == year && b.MonthIndex <= monthIndex)))
             .OrderByDescending(b => b.Year)
             .ThenByDescending(b => b.MonthIndex)
-            .FirstOrDefaultAsync();
+            .FirstOrDefaultAsync(cancellationToken);
 
         if (last != null && last.Year == year && last.MonthIndex == monthIndex)
         {
@@ -64,6 +68,15 @@ public class CycleBalanceService
 
         CycleBalance current = last!;
 
+        var firstRange = CategoryAttributionService.GetCycleRange(fromYear, fromMonth, cycleDay);
+        var finalRange = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
+        var firstDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(firstRange.start));
+        var finalEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(finalRange.end));
+        var timelineTransactions = await _context.Transactions
+            .AsNoTracking()
+            .Where(transaction => transaction.Date >= firstDate && transaction.Date < finalEndExclusive)
+            .ToListAsync(cancellationToken);
+
         for (int y = fromYear; y <= year; y++)
         {
             int monthFrom = y == fromYear ? fromMonth : 1;
@@ -75,10 +88,11 @@ public class CycleBalanceService
                 var cycleStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart));
                 var cycleEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleEnd));
 
-                var cycleTxs = await _context.Transactions
-                    .AsNoTracking()
-                    .Where(t => t.Date >= cycleStartDate && t.Date < cycleEndExclusive)
-                    .ToListAsync();
+                var cycleTxs = timelineTransactions
+                    .Where(transaction =>
+                        transaction.Date >= cycleStartDate &&
+                        transaction.Date < cycleEndExclusive)
+                    .ToList();
 
                 essentials += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Essentials"));
                 growth += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Growth"));
@@ -100,7 +114,7 @@ public class CycleBalanceService
 
         try
         {
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
         catch (DbUpdateException)
         {
@@ -114,7 +128,9 @@ public class CycleBalanceService
             }
 
             var existing = await _context.CycleBalances
-                .FirstOrDefaultAsync(b => b.Year == year && b.MonthIndex == monthIndex);
+                .FirstOrDefaultAsync(
+                    b => b.Year == year && b.MonthIndex == monthIndex,
+                    cancellationToken);
             if (existing != null)
             {
                 return existing;
@@ -130,7 +146,10 @@ public class CycleBalanceService
     // balance of the cycle immediately before it -- computing/caching everything up to that
     // prior cycle if needed. Zero if (year, monthIndex) is the very first cycle of its timeline.
     public async Task<(decimal essentials, decimal growth, decimal stability, decimal rewards)> GetOpeningBalanceAsync(
-        int year, int monthIndex, int cycleDay)
+        int year,
+        int monthIndex,
+        int cycleDay,
+        CancellationToken cancellationToken = default)
     {
         var startYear = Math.Min(BaselineYear, year);
         if (year == startYear && monthIndex == 1)
@@ -141,39 +160,47 @@ public class CycleBalanceService
         var prevYear = monthIndex == 1 ? year - 1 : year;
         var prevMonth = monthIndex == 1 ? 12 : monthIndex - 1;
 
-        var row = await EnsureComputedThroughAsync(prevYear, prevMonth, cycleDay);
+        var row = await EnsureComputedThroughAsync(
+            prevYear,
+            prevMonth,
+            cycleDay,
+            cancellationToken);
         return (row.EssentialsBalance, row.GrowthBalance, row.StabilityBalance, row.RewardsBalance);
     }
 
     // Deletes every cached snapshot for cycles at or after (year, monthIndex) -- call whenever a
     // transaction dated in or before that cycle is created/edited/deleted, since the running
     // balance for every cycle downstream of it is now stale.
-    public async Task InvalidateFromAsync(int year, int monthIndex)
+    public async Task InvalidateFromAsync(
+        int year,
+        int monthIndex,
+        CancellationToken cancellationToken = default)
     {
         var query = _context.CycleBalances
             .Where(b => b.Year > year || (b.Year == year && b.MonthIndex >= monthIndex));
 
         if (_context.Database.IsRelational())
         {
-            await query.ExecuteDeleteAsync();
+            await query.ExecuteDeleteAsync(cancellationToken);
             return;
         }
 
-        _context.CycleBalances.RemoveRange(await query.ToListAsync());
-        await _context.SaveChangesAsync();
+        _context.CycleBalances.RemoveRange(await query.ToListAsync(cancellationToken));
+        await _context.SaveChangesAsync(cancellationToken);
     }
 
     // Deletes every cached snapshot outright -- call when the CycleDay setting changes, since
     // that shifts every cycle's date boundaries retroactively and invalidates the whole history.
-    public async Task InvalidateAllAsync()
+    public async Task InvalidateAllAsync(CancellationToken cancellationToken = default)
     {
         if (_context.Database.IsRelational())
         {
-            await _context.CycleBalances.ExecuteDeleteAsync();
+            await _context.CycleBalances.ExecuteDeleteAsync(cancellationToken);
             return;
         }
 
-        _context.CycleBalances.RemoveRange(await _context.CycleBalances.ToListAsync());
-        await _context.SaveChangesAsync();
+        _context.CycleBalances.RemoveRange(
+            await _context.CycleBalances.ToListAsync(cancellationToken));
+        await _context.SaveChangesAsync(cancellationToken);
     }
 }

@@ -14,15 +14,27 @@ namespace FinancialAppApi.Services.SavingsGoals;
 /// deadline has already passed.
 /// </param>
 /// <param name="RequiredPerCycle">
-/// What this goal needs each cycle from here to land on its target date. Collapses to the whole
-/// remaining amount once the deadline is here or past -- there is no longer anything to spread it
-/// over.
+/// What this goal needs each cycle from here to land on its target date, measured from where it
+/// stood at the START of the current cycle so it holds still as money goes in. Collapses to the
+/// whole remaining amount once the deadline is here or past -- there is no longer anything to
+/// spread it over.
+/// </param>
+/// <param name="FundedThisCycle">
+/// Net amount credited to this goal during the current cycle, from automatic funding and manual
+/// top-ups alike, less releases.
+/// </param>
+/// <param name="OutstandingThisCycle">
+/// What is still owed this cycle after <paramref name="FundedThisCycle"/>. This is what "Fund this
+/// cycle" acts on, so a hand-topped-up goal reports zero and releasing money reopens exactly the
+/// released amount.
 /// </param>
 public sealed record GoalPace(
     int GoalId,
     decimal Remaining,
     int CyclesRemaining,
-    decimal RequiredPerCycle)
+    decimal RequiredPerCycle,
+    decimal FundedThisCycle,
+    decimal OutstandingThisCycle)
 {
     public bool IsOverdue => CyclesRemaining <= 0 && Remaining > 0m;
     public bool IsFunded => Remaining <= 0m;
@@ -94,30 +106,45 @@ public static class SavingsGoalPacing
         return (targetYear - currentYear) * 12 + (targetMonth - currentMonth) + 1;
     }
 
-    public static GoalPace ComputePace(SavingsGoal goal, DateOnly today, int cycleDay)
+    public static GoalPace ComputePace(SavingsGoal goal, DateOnly today, int cycleDay, string currentCycleKey)
     {
+        var fundedThisCycle = goal.CycleFundedKey == currentCycleKey
+            ? Math.Max(0m, goal.CycleFundedAmount)
+            : 0m;
+
         var remaining = Math.Max(0m, goal.TargetAmount - goal.EarmarkedAmount);
         var cyclesRemaining = CyclesRemaining(today, DateOnly.FromDateTime(goal.TargetDate), cycleDay);
+
+        // The pace is measured from where the goal stood at the START of this cycle, i.e. excluding
+        // whatever has already been contributed during it. Using the live remainder instead would
+        // make the requirement shrink the moment you funded it, so a goal could never be "done for
+        // this cycle" and the figure on screen would move every time money went in.
+        var remainingAtCycleStart = Math.Max(0m, goal.TargetAmount - Math.Max(0m, goal.EarmarkedAmount - fundedThisCycle));
 
         // Deadline reached or passed: there are no future cycles to spread the balance over, so the
         // whole remainder is due now. Spreading it anyway would under-report the urgency.
         var requiredPerCycle = cyclesRemaining <= 1
-            ? remaining
-            : RoundUpToCent(remaining / cyclesRemaining);
+            ? remainingAtCycleStart
+            : RoundUpToCent(remainingAtCycleStart / cyclesRemaining);
 
-        return new GoalPace(goal.Id, remaining, cyclesRemaining, requiredPerCycle);
+        // Capped by Remaining as well: the final cycle of a goal only needs the remainder, however
+        // much its nominal per-cycle pace says.
+        var outstanding = Math.Clamp(requiredPerCycle - fundedThisCycle, 0m, remaining);
+
+        return new GoalPace(goal.Id, remaining, cyclesRemaining, requiredPerCycle, fundedThisCycle, outstanding);
     }
 
     /// <summary>
     /// Distributes <paramref name="available"/> across the goals in funding order, capping each at
-    /// its required pace. Commitments fill before fun: whatever is left over is the free-to-spend
-    /// remainder, never an implicit extra contribution to the first goal in the list.
+    /// what it still needs this cycle. Commitments fill before fun: whatever is left over is the
+    /// free-to-spend remainder, never an implicit extra contribution to the first goal in the list.
     /// </summary>
     public static GoalWaterfall Distribute(
         IEnumerable<SavingsGoal> goals,
         decimal available,
         DateOnly today,
-        int cycleDay)
+        int cycleDay,
+        string currentCycleKey)
     {
         var ordered = OrderForFunding(goals);
         var remainingPool = Math.Max(0m, available);
@@ -127,11 +154,9 @@ public static class SavingsGoalPacing
 
         foreach (var goal in ordered)
         {
-            var pace = ComputePace(goal, today, cycleDay);
-            totalRequired += pace.RequiredPerCycle;
+            var wanted = ComputePace(goal, today, cycleDay, currentCycleKey).OutstandingThisCycle;
+            totalRequired += wanted;
 
-            // Never earmark past the target: the final cycle of a goal only needs the remainder.
-            var wanted = Math.Min(pace.RequiredPerCycle, pace.Remaining);
             var granted = Math.Min(wanted, remainingPool);
             remainingPool -= granted;
             totalGranted += granted;

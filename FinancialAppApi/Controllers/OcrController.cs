@@ -219,7 +219,7 @@ public class OcrController : ControllerBase
             return Unauthorized(new { message = "Invalid worker key." });
         }
 
-        var status = await _processor.ProcessAsync(jobId);
+        var status = await _processor.ProcessAsync(jobId, HttpContext.RequestAborted);
         return status switch
         {
             // A missing job is permanent (explicitly deleted or expired by retention).

@@ -35,6 +35,7 @@ app.Use(async (context, next) =>
     await next();
 });
 
+app.UseMiddleware<RequestPerformanceMiddleware>();
 app.UseResponseCompression();
 
 // Inside compression on purpose: the ETag is computed over the uncompressed body, so the same

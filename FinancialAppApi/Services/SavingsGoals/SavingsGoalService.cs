@@ -31,6 +31,8 @@ public sealed record SavingsGoalFundingResult(
     decimal FreeToSpend,
     string? Message = null);
 
+// OutstandingThisCycleTotal is what every active goal still needs this cycle.
+// Zero means there is nothing left to fund.
 /// <summary>
 /// The whole-pool picture the Rewards page renders: one balance, split into what goals have
 /// claimed and what is genuinely free.
@@ -40,6 +42,7 @@ public sealed record SavingsGoalPoolSummary(
     decimal TotalEarmarked,
     decimal Unassigned,
     decimal RequiredPerCycleTotal,
+    decimal OutstandingThisCycleTotal,
     string CurrentCycleKey);
 
 /// <summary>
@@ -95,16 +98,24 @@ public class SavingsGoalService
             .ToListAsync(cancellationToken);
 
         var today = _financialClock.Today;
+        var cycleKey = CurrentCycleKey(today, cycleDay);
         var totalEarmarked = active.Sum(goal => goal.EarmarkedAmount);
-        var requiredPerCycleTotal = active
-            .Sum(goal => SavingsGoalPacing.ComputePace(goal, today, cycleDay).RequiredPerCycle);
+        var requiredPerCycleTotal = 0m;
+        var outstandingThisCycleTotal = 0m;
+        foreach (var goal in active)
+        {
+            var pace = SavingsGoalPacing.ComputePace(goal, today, cycleDay, cycleKey);
+            requiredPerCycleTotal += pace.RequiredPerCycle;
+            outstandingThisCycleTotal += pace.OutstandingThisCycle;
+        }
 
         return new SavingsGoalPoolSummary(
             rewardsBalance,
             totalEarmarked,
             SavingsGoalPacing.Unassigned(rewardsBalance, totalEarmarked),
             requiredPerCycleTotal,
-            CurrentCycleKey(today, cycleDay));
+            outstandingThisCycleTotal,
+            cycleKey);
     }
 
     public async Task<SavingsGoalResult> CreateGoalAsync(SavingsGoal goal, CancellationToken cancellationToken = default)
@@ -127,7 +138,8 @@ public class SavingsGoalService
         goal.CreatedAt = DateTime.UtcNow;
         goal.Status = SavingsGoalStatus.Active;
         goal.CompletedAt = null;
-        goal.LastFundedCycleKey = null;
+        goal.CycleFundedKey = null;
+        goal.CycleFundedAmount = 0m;
         goal.EarmarkedAmount = Math.Max(0m, goal.EarmarkedAmount);
 
         // A goal may be seeded with money already set aside. That still has to fit in the pool.
@@ -225,6 +237,9 @@ public class SavingsGoalService
         // A release cannot take out more than this goal holds, and a top-up cannot push it past its
         // own target -- overshooting would quietly hold money the goal does not need.
         var next = Math.Clamp(goal.EarmarkedAmount + amount, 0m, goal.TargetAmount);
+        // Credit the *applied* delta, not the requested one, so a clamped top-up does not claim more
+        // of this cycle's entitlement than it actually consumed.
+        ApplyCycleFunding(goal, next - goal.EarmarkedAmount, await GetCurrentCycleKeyAsync(cancellationToken));
         goal.EarmarkedAmount = next;
 
         await _context.SaveChangesAsync(cancellationToken);
@@ -232,9 +247,26 @@ public class SavingsGoalService
     }
 
     /// <summary>
-    /// Pours the currently-unassigned Rewards money through the goal waterfall, capping each goal at
-    /// its deadline-derived pace. Idempotent per cycle: goals already stamped with the current cycle
-    /// key are skipped, so a second tap in the same cycle contributes nothing.
+    /// Folds a change to a goal's earmark into its per-cycle tally, resetting the tally first when it
+    /// belongs to an older cycle. Manual top-ups and automatic funding both land here, which is what
+    /// lets "Fund this cycle" skip a goal the user already topped up by hand.
+    /// </summary>
+    private static void ApplyCycleFunding(SavingsGoal goal, decimal delta, string cycleKey)
+    {
+        var current = goal.CycleFundedKey == cycleKey ? goal.CycleFundedAmount : 0m;
+        // Floored at zero: releasing money that was set aside in an earlier cycle must not inflate
+        // this cycle's entitlement into a negative tally.
+        goal.CycleFundedAmount = Math.Max(0m, current + delta);
+        goal.CycleFundedKey = cycleKey;
+    }
+
+    /// <summary>
+    /// Pours the currently-unassigned Rewards money through the goal waterfall, giving each goal only
+    /// what it still needs this cycle.
+    ///
+    /// Precise rather than once-per-cycle: a goal the user already topped up by hand is outstanding
+    /// zero and receives nothing, releasing money from a goal makes exactly that goal fundable again,
+    /// and tapping twice with nothing outstanding is a no-op.
     /// </summary>
     public async Task<SavingsGoalFundingResult> FundCurrentCycleAsync(CancellationToken cancellationToken = default)
     {
@@ -247,20 +279,17 @@ public class SavingsGoalService
             .Where(goal => goal.Status == SavingsGoalStatus.Active)
             .ToListAsync(cancellationToken);
 
-        // Headroom is computed against EVERY active goal's earmark, including the ones skipped
-        // below -- their claim on the pool stands whether or not they are funded again this cycle.
         var available = SavingsGoalPacing.Unassigned(rewardsBalance, active.Sum(goal => goal.EarmarkedAmount));
-        var fundable = active.Where(goal => goal.LastFundedCycleKey != cycleKey).ToList();
 
-        var waterfall = SavingsGoalPacing.Distribute(fundable, available, today, cycleDay);
-        var byId = fundable.ToDictionary(goal => goal.Id);
+        var waterfall = SavingsGoalPacing.Distribute(active, available, today, cycleDay, cycleKey);
+        var byId = active.ToDictionary(goal => goal.Id);
         foreach (var grant in waterfall.Grants)
         {
+            if (grant.Amount <= 0m) continue;
             var goal = byId[grant.GoalId];
-            goal.EarmarkedAmount = Math.Min(goal.TargetAmount, goal.EarmarkedAmount + grant.Amount);
-            // Stamp even a zero grant: the cycle *was* processed, and there was nothing to give.
-            // Leaving it unstamped would re-run the waterfall on every page load.
-            goal.LastFundedCycleKey = cycleKey;
+            var next = Math.Min(goal.TargetAmount, goal.EarmarkedAmount + grant.Amount);
+            ApplyCycleFunding(goal, next - goal.EarmarkedAmount, cycleKey);
+            goal.EarmarkedAmount = next;
         }
 
         await _context.SaveChangesAsync(cancellationToken);
@@ -295,13 +324,17 @@ public class SavingsGoalService
             // service stays on its quarter boundaries even when marked done a week late.
             goal.TargetDate = goal.TargetDate.AddMonths(Math.Max(1, goal.RecurrenceMonths));
             goal.EarmarkedAmount = 0m;
-            goal.LastFundedCycleKey = null;
+            // Cleared, not decremented: the new period starts fresh and should be fundable at once.
+            goal.CycleFundedKey = null;
+            goal.CycleFundedAmount = 0m;
         }
         else
         {
             goal.Status = SavingsGoalStatus.Completed;
             goal.CompletedAt = DateTime.UtcNow;
             goal.EarmarkedAmount = 0m;
+            goal.CycleFundedKey = null;
+            goal.CycleFundedAmount = 0m;
         }
 
         await _context.SaveChangesAsync(cancellationToken);
@@ -347,6 +380,11 @@ public class SavingsGoalService
             .AsNoTracking()
             .FirstOrDefaultAsync(cancellationToken);
         return setting?.CycleDay ?? 28;
+    }
+
+    private async Task<string> GetCurrentCycleKeyAsync(CancellationToken cancellationToken)
+    {
+        return CurrentCycleKey(_financialClock.Today, await GetCycleDayAsync(cancellationToken));
     }
 
     private static string CurrentCycleKey(DateOnly today, int cycleDay)

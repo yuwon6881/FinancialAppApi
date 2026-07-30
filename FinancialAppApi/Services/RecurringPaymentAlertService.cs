@@ -21,21 +21,25 @@ public class RecurringPaymentAlertService
         _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
-    public async Task<List<object>> GetSubscriptionAlertsAsync()
+    public async Task<List<object>> GetSubscriptionAlertsAsync(
+        CancellationToken cancellationToken = default)
     {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
         if (setting == null) return new List<object>();
         var cycleDay = setting.CycleDay;
 
         // AsNoTracking: this method only reads. It runs on the dashboard request, so the
         // change-tracker snapshot it used to take for every active payment was pure overhead.
-        var activeRecurring = await _context.RecurringPayments.AsNoTracking().Where(r => r.Active).ToListAsync();
+        var activeRecurring = await _context.RecurringPayments
+            .AsNoTracking()
+            .Where(r => r.Active)
+            .ToListAsync(cancellationToken);
         // Confirmed bills are persisted with a freshly generated transaction id, so paid-detection
         // has to go through the RecurringPaymentId link rather than an id match.
         var recurringTransactions = await _context.Transactions
             .Where(t => t.RecurringPaymentId != null)
             .Select(t => new { t.RecurringPaymentId, t.Date, t.RecurringOccurrenceDate })
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         var today = _financialClock.LocalNow.Date;
         var (todayMonth, todayYear) = CategoryAttributionService.GetCycleMonthAndYearForDate(today, cycleDay);
         var todayMonthIdx = Array.IndexOf(Months, todayMonth) + 1;

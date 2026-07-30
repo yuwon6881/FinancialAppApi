@@ -48,7 +48,9 @@ public static class ServiceCollectionExtensions
                     .AddAspNetCoreInstrumentation()
                     .AddEntityFrameworkCoreInstrumentation(options =>
                     {
-                        options.SetDbStatementForText = true;
+                        // SQL text can reveal schema and query intent. Aggregate durations and
+                        // counts are recorded by PerformanceDbCommandInterceptor instead.
+                        options.SetDbStatementForText = false;
                     });
 
                 // The console exporter dumps every span to stdout; it's a local-dev aid.
@@ -351,9 +353,12 @@ public static class ServiceCollectionExtensions
         services.AddHealthChecks()
             .AddNpgSql(npgsqlConnectionString, tags: ["ready"]);
 
-        services.AddDbContext<AppDbContext>(options =>
+        services.AddScoped<RequestPerformanceContext>();
+        services.AddScoped<PerformanceDbCommandInterceptor>();
+        services.AddDbContext<AppDbContext>((serviceProvider, options) =>
         {
             options.UseNpgsql(npgsqlConnectionString, npgsql => npgsql.EnableRetryOnFailure());
+            options.AddInterceptors(serviceProvider.GetRequiredService<PerformanceDbCommandInterceptor>());
         });
         var dataProtection = services.AddDataProtection()
             .SetApplicationName("FinancialAppApi")
@@ -406,6 +411,7 @@ public static class ServiceCollectionExtensions
             client.DefaultRequestHeaders.UserAgent.ParseAdd("FinancialAppApi/1.0");
         });
         services.AddScoped<InvestmentAccountingService>();
+        services.AddScoped<InvestmentHistoryValidationService>();
         services.AddScoped<InvestmentPortfolioService>();
         services.AddScoped<InvestmentMarketDataService>();
         services.AddScoped<InvestmentAllocationService>();

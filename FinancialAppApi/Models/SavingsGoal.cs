@@ -63,12 +63,25 @@ namespace FinancialAppApi.Models
         public int RecurrenceMonths { get; set; } = 12;
 
         /// <summary>
-        /// Cycle key ("yyyy-MM") this goal last received automatic per-cycle funding for. Makes
-        /// "Fund this cycle" idempotent: a second tap in the same cycle is a no-op rather than a
-        /// double contribution.
+        /// Cycle key ("yyyy-MM") that <see cref="CycleFundedAmount"/> is measured against. A key
+        /// that is not the current cycle means the tally has rolled over and counts as zero.
         /// </summary>
         [StringLength(7)]
-        public string? LastFundedCycleKey { get; set; }
+        public string? CycleFundedKey { get; set; }
+
+        /// <summary>
+        /// Net amount added to this goal's earmark during <see cref="CycleFundedKey"/>, from every
+        /// source: automatic per-cycle funding *and* manual top-ups, less any releases.
+        ///
+        /// This is what makes "Fund this cycle" precise rather than a once-per-cycle latch. The
+        /// outstanding amount for a goal is `requiredPerCycle - CycleFundedAmount`, so:
+        /// a goal already topped up by hand is skipped, releasing money makes it fundable again,
+        /// and a second tap after a full funding round contributes nothing. Floored at zero so
+        /// releasing money that was set aside in an *earlier* cycle cannot inflate this cycle's
+        /// entitlement.
+        /// </summary>
+        [Required]
+        public decimal CycleFundedAmount { get; set; }
 
         [Required]
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

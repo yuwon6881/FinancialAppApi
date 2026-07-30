@@ -101,6 +101,14 @@ public sealed class ConditionalGetMiddleware
     private static bool IsCandidate(HttpContext context)
     {
         if (!HttpMethods.IsGet(context.Request.Method)) return false;
+        // This endpoint streams the ledger row-by-row. Buffering it here would recreate the
+        // full-history memory spike the streaming implementation is intended to avoid.
+        if (context.Request.Path.Equals(
+                "/api/transactions/export",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
         return context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase);
     }
 

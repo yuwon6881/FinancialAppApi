@@ -14,6 +14,7 @@ public sealed class InvestmentsController(
     AppDbContext context,
     InvestmentPortfolioService portfolioService,
     InvestmentAccountingService accountingService,
+    InvestmentHistoryValidationService historyValidationService,
     InvestmentMarketDataService marketDataService) : ControllerBase
 {
     [HttpGet("portfolio")]
@@ -267,10 +268,12 @@ public sealed class InvestmentsController(
         var transaction = result.Transaction!;
         transaction.Id = dto.Id ?? Guid.NewGuid();
         context.InvestmentTransactions.Add(transaction);
-        var validation = await ValidateHistoryAsync(null);
-        if (validation is not null) return BadRequest(new { message = validation });
-        var cashValidation = await ValidateCashHistoryAsync();
-        if (cashValidation is not null) return BadRequest(new { message = cashValidation });
+        var validation = await historyValidationService.ValidateTransactionMutationAsync(
+            HttpContext.RequestAborted);
+        if (validation.PositionError is not null)
+            return BadRequest(new { message = validation.PositionError });
+        if (validation.CashError is not null)
+            return BadRequest(new { message = validation.CashError });
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return Created(
             $"/api/investments/transactions/{transaction.Id}",
@@ -286,10 +289,12 @@ public sealed class InvestmentsController(
         if (existing is null) return NotFound();
         var result = await BuildTransactionAsync(dto, existing);
         if (result.Error is not null) return BadRequest(new { message = result.Error });
-        var validation = await ValidateHistoryAsync(null);
-        if (validation is not null) return BadRequest(new { message = validation });
-        var cashValidation = await ValidateCashHistoryAsync();
-        if (cashValidation is not null) return BadRequest(new { message = cashValidation });
+        var validation = await historyValidationService.ValidateTransactionMutationAsync(
+            HttpContext.RequestAborted);
+        if (validation.PositionError is not null)
+            return BadRequest(new { message = validation.PositionError });
+        if (validation.CashError is not null)
+            return BadRequest(new { message = validation.CashError });
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return NoContent();
     }
@@ -301,7 +306,7 @@ public sealed class InvestmentsController(
             .FirstOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
         if (transaction is null) return NotFound();
         context.InvestmentTransactions.Remove(transaction);
-        var validation = await ValidateHistoryAsync(id);
+        var validation = await historyValidationService.ValidatePositionHistoryAsync(HttpContext.RequestAborted);
         if (validation is not null)
         {
             context.ChangeTracker.Clear();
@@ -358,7 +363,7 @@ public sealed class InvestmentsController(
             restored.Add(transaction);
             context.InvestmentTransactions.Add(transaction);
         }
-        var historyError = await ValidateHistoryAsync(null);
+        var historyError = await historyValidationService.ValidatePositionHistoryAsync(HttpContext.RequestAborted);
         if (historyError is not null)
         {
             foreach (var transaction in restored) context.Entry(transaction).State = EntityState.Detached;
@@ -444,7 +449,7 @@ public sealed class InvestmentsController(
         if (error is not null) return BadRequest(new { message = error });
         context.InvestmentCashFlows.Add(flow!);
         flow!.Id = dto.Id ?? Guid.NewGuid();
-        var validation = await ValidateCashHistoryAsync();
+        var validation = await historyValidationService.ValidateCashHistoryAsync(HttpContext.RequestAborted);
         if (validation is not null) return BadRequest(new { message = validation });
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return Created($"/api/investments/cash-flows/{flow!.Id}", InvestmentPortfolioService.ToDto(flow));
@@ -458,7 +463,7 @@ public sealed class InvestmentsController(
         if (existing is null) return NotFound();
         var (flow, error) = await BuildCashFlowAsync(dto, existing);
         if (error is not null) return BadRequest(new { message = error });
-        var validation = await ValidateCashHistoryAsync();
+        var validation = await historyValidationService.ValidateCashHistoryAsync(HttpContext.RequestAborted);
         if (validation is not null) return BadRequest(new { message = validation });
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return Ok(InvestmentPortfolioService.ToDto(flow!));
@@ -471,7 +476,7 @@ public sealed class InvestmentsController(
         if (flow is null) return NotFound();
         var snapshot = InvestmentPortfolioService.ToDto(flow);
         context.InvestmentCashFlows.Remove(flow);
-        var validation = await ValidateCashHistoryAsync();
+        var validation = await historyValidationService.ValidateCashHistoryAsync(HttpContext.RequestAborted);
         if (validation is not null)
         {
             context.ChangeTracker.Clear();
@@ -519,7 +524,7 @@ public sealed class InvestmentsController(
             ToAmount = snapshot.ToAmount,
             Date = snapshot.Date
         });
-        var validation = await ValidateCashHistoryAsync();
+        var validation = await historyValidationService.ValidateCashHistoryAsync(HttpContext.RequestAborted);
         if (validation is not null) return Conflict(new { message = validation });
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return NoContent();
@@ -642,83 +647,16 @@ public sealed class InvestmentsController(
         return null;
     }
 
-    private async Task<string?> ValidateHistoryAsync(Guid? excludedId)
-    {
-        var all = await context.InvestmentTransactions
-            .Include(value => value.Instrument)
-            .Where(value => excludedId == null || value.Id != excludedId)
-            .ToListAsync(HttpContext.RequestAborted);
-        all.AddRange(context.ChangeTracker.Entries<InvestmentTransaction>()
-            .Where(entry => entry.State == EntityState.Added)
-            .Select(entry => entry.Entity)
-            .Where(value => all.All(existing => existing.Id != value.Id)));
-        try
-        {
-            accountingService.Calculate(all, await GetAppCurrencyAsync());
-            return null;
-        }
-        catch (InvestmentValidationException exception)
-        {
-            return exception.Message;
-        }
-    }
-
-    private async Task<string?> ValidateCashHistoryAsync()
-    {
-        var transactions = await context.InvestmentTransactions
-            .Include(value => value.Instrument)
-            .ToListAsync(HttpContext.RequestAborted);
-        var flows = await context.InvestmentCashFlows.ToListAsync(HttpContext.RequestAborted);
-
-        foreach (var entry in context.ChangeTracker.Entries<InvestmentTransaction>()
-                     .Where(entry => entry.State == EntityState.Added)
-                     .Select(entry => entry.Entity)
-                     .Where(value => transactions.All(existing => existing.Id != value.Id)))
-            transactions.Add(entry);
-        foreach (var entry in context.ChangeTracker.Entries<InvestmentCashFlow>()
-                     .Where(entry => entry.State == EntityState.Added)
-                     .Select(entry => entry.Entity)
-                     .Where(value => flows.All(existing => existing.Id != value.Id)))
-            flows.Add(entry);
-
-        var events = new List<(DateOnly Date, DateTime CreatedAt, Guid Id, Guid AccountId, string Currency, decimal Amount)>();
-        foreach (var flow in flows)
-        {
-            events.Add((flow.Date, flow.CreatedAt, flow.Id, flow.AccountId, flow.Currency, flow.Amount));
-            if (InvestmentPortfolioService.IsConversion(flow) && flow.ToCurrency is not null && flow.ToAmount is not null)
-                events.Add((flow.Date, flow.CreatedAt, flow.Id, flow.AccountId, flow.ToCurrency, flow.ToAmount.Value));
-        }
-        foreach (var transaction in transactions)
-        {
-            var currency = transaction.Instrument.Currency;
-            var feesAndTaxes = transaction.Fees + transaction.Taxes;
-            var amount = transaction.Type switch
-            {
-                "Buy" => -((transaction.CashAmount ?? 0) + feesAndTaxes),
-                "Sell" or "Dividend" => (transaction.CashAmount ?? 0) - feesAndTaxes,
-                "FeeTax" => -((transaction.CashAmount ?? 0) + feesAndTaxes),
-                _ => 0
-            };
-            if (amount != 0) events.Add((transaction.TradeDate, transaction.CreatedAt, transaction.Id, transaction.AccountId, currency, amount));
-        }
-
-        return ValidateCashEvents(events);
-    }
-
     internal static string? ValidateCashEvents(
         IEnumerable<(DateOnly Date, DateTime CreatedAt, Guid Id, Guid AccountId, string Currency, decimal Amount)> events)
-    {
-        var balances = new Dictionary<(Guid AccountId, string Currency), decimal>();
-        foreach (var cashEvent in events.OrderBy(value => value.Date).ThenBy(value => value.CreatedAt).ThenBy(value => value.Id))
-        {
-            var key = (cashEvent.AccountId, cashEvent.Currency.ToUpperInvariant());
-            var balance = balances.GetValueOrDefault(key) + cashEvent.Amount;
-            if (balance < 0)
-                return $"Insufficient {key.Item2} cash in this account on {cashEvent.Date:yyyy-MM-dd}. Deposit or convert funds before recording this activity.";
-            balances[key] = balance;
-        }
-        return null;
-    }
+        => InvestmentHistoryValidationService.ValidateCashEvents(events.Select(value =>
+            new InvestmentCashEvent(
+                value.Date,
+                value.CreatedAt,
+                value.Id,
+                value.AccountId,
+                value.Currency,
+                value.Amount)));
 
     private async Task<string> GetAppCurrencyAsync()
         => (await context.FinancialSettings.AsNoTracking()

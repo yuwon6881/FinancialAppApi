@@ -19,10 +19,15 @@ public class RecoveryCodeService
 
     // Replaces any existing recovery codes for the user with a fresh set. The plaintext codes
     // are returned once for display -- only their hashes are persisted.
-    public async Task<List<string>> RegenerateAsync(string username, string? userId = null)
+    public async Task<List<string>> RegenerateAsync(
+        string username,
+        string? userId = null,
+        CancellationToken cancellationToken = default)
     {
         var ownerId = userId ?? _context.RequireCurrentUserId();
-        var existing = await _context.RecoveryCodes.Where(r => r.UserId == ownerId).ToListAsync();
+        var existing = await _context.RecoveryCodes
+            .Where(r => r.UserId == ownerId)
+            .ToListAsync(cancellationToken);
         _context.RecoveryCodes.RemoveRange(existing);
 
         var codes = new List<string>(CodeCount);
@@ -39,13 +44,17 @@ public class RecoveryCodeService
             });
         }
 
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
         return codes;
     }
 
     // Verifies and, on success, consumes (deletes) the matching unused code so it can't be
     // replayed. Returns true only on a genuine single-use match.
-    public async Task<bool> TryConsumeAsync(string username, string code, string? userId = null)
+    public async Task<bool> TryConsumeAsync(
+        string username,
+        string code,
+        string? userId = null,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(code))
         {
@@ -55,7 +64,7 @@ public class RecoveryCodeService
         var ownerId = userId ?? _context.RequireCurrentUserId();
         var candidates = await _context.RecoveryCodes
             .Where(r => r.UserId == ownerId && !r.Used)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         foreach (var candidate in candidates)
         {
@@ -66,13 +75,15 @@ public class RecoveryCodeService
                 {
                     var claimed = await _context.RecoveryCodes
                         .Where(item => item.Id == candidate.Id && item.UserId == ownerId && !item.Used)
-                        .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.Used, true));
+                        .ExecuteUpdateAsync(
+                            setters => setters.SetProperty(item => item.Used, true),
+                            cancellationToken);
                     if (claimed == 1) return true;
                     continue;
                 }
 
                 candidate.Used = true;
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(cancellationToken);
                 return true;
             }
         }
@@ -80,12 +91,17 @@ public class RecoveryCodeService
         return false;
     }
 
-    public async Task DeleteAllAsync(string username, string? userId = null)
+    public async Task DeleteAllAsync(
+        string username,
+        string? userId = null,
+        CancellationToken cancellationToken = default)
     {
         var ownerId = userId ?? _context.RequireCurrentUserId();
-        var existing = await _context.RecoveryCodes.Where(r => r.UserId == ownerId).ToListAsync();
+        var existing = await _context.RecoveryCodes
+            .Where(r => r.UserId == ownerId)
+            .ToListAsync(cancellationToken);
         _context.RecoveryCodes.RemoveRange(existing);
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
     }
 
     // Groups of 4 hex chars, e.g. "A1B2-C3D4-E5F6", so codes are easy to read and transcribe.

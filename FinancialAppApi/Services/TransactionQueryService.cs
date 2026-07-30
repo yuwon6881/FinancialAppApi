@@ -216,6 +216,37 @@ public class TransactionQueryService
         bool wishlistOnly = false,
         CancellationToken cancellationToken = default)
     {
+        await using var output = new MemoryStream();
+        await WriteTransactionsCsvAsync(
+            output,
+            search,
+            ledgerCategory,
+            category,
+            txType,
+            startDate,
+            endDate,
+            minAmount,
+            maxAmount,
+            recurringOnly,
+            wishlistOnly,
+            cancellationToken);
+        return new CsvExportResult(output.ToArray(), GetTransactionsExportFileName());
+    }
+
+    public async Task WriteTransactionsCsvAsync(
+        Stream destination,
+        string? search = null,
+        string? ledgerCategory = null,
+        string? category = null,
+        string? txType = null,
+        string? startDate = null,
+        string? endDate = null,
+        decimal? minAmount = null,
+        decimal? maxAmount = null,
+        bool recurringOnly = false,
+        bool wishlistOnly = false,
+        CancellationToken cancellationToken = default)
+    {
         var query = ApplyAllFilters(
             _context.Transactions.AsNoTracking(),
             _context.Database.IsNpgsql(),
@@ -229,17 +260,23 @@ public class TransactionQueryService
             maxAmount,
             recurringOnly,
             wishlistOnly);
-        var rows = await query
+        var rows = query
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
-            .Select(t => new { t.Date, t.Description, t.Category, t.LedgerCategory, t.Amount })
-            .ToListAsync(cancellationToken);
+            .Select(t => new { t.Date, t.Description, t.Category, t.LedgerCategory, t.Amount });
 
-        var sb = new StringBuilder();
-        sb.AppendLine("Date,Description,Category,Ledger Allocation,Debit (Outflow),Credit (Inflow),Internal Movement");
+        await using var writer = new StreamWriter(
+            destination,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: true),
+            bufferSize: 16 * 1024,
+            leaveOpen: true);
+        await writer.WriteLineAsync(
+            "Date,Description,Category,Ledger Allocation,Debit (Outflow),Credit (Inflow),Internal Movement");
 
-        foreach (var t in rows)
+        await foreach (var t in rows
+                           .AsAsyncEnumerable()
+                           .WithCancellation(cancellationToken))
         {
             var isTransfer = t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase);
             var isOutflow = t.Amount < 0;
@@ -247,7 +284,7 @@ public class TransactionQueryService
             var credit = !isTransfer && !isOutflow ? FormatAmount(t.Amount) : "";
             var movement = isTransfer ? FormatAmount(Math.Abs(t.Amount)) : "";
 
-            sb.AppendLine(string.Join(",", new[]
+            await writer.WriteLineAsync(string.Join(",", new[]
             {
                 EscapeCsvField(TransactionDate.ToDateOnly(t.Date).ToString("yyyy-MM-dd")),
                 EscapeCsvField(t.Description),
@@ -258,15 +295,11 @@ public class TransactionQueryService
                 EscapeCsvField(movement)
             }));
         }
-
-        var csvBytes = Encoding.UTF8.GetBytes(sb.ToString());
-        var preamble = Encoding.UTF8.GetPreamble();
-        var output = new byte[preamble.Length + csvBytes.Length];
-        Buffer.BlockCopy(preamble, 0, output, 0, preamble.Length);
-        Buffer.BlockCopy(csvBytes, 0, output, preamble.Length, csvBytes.Length);
-
-        return new CsvExportResult(output, $"financial_ledger_{_financialClock.Today:yyyy-MM-dd}.csv");
+        await writer.FlushAsync(cancellationToken);
     }
+
+    public string GetTransactionsExportFileName() =>
+        $"financial_ledger_{_financialClock.Today:yyyy-MM-dd}.csv";
 
     private static IQueryable<Transaction> ApplyAllFilters(
         IQueryable<Transaction> query,

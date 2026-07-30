@@ -30,12 +30,13 @@ public class AuthSessionService
         string? deviceName,
         string? ipAddress,
         string? userAgent,
-        byte[]? credentialId = null)
+        byte[]? credentialId = null,
+        CancellationToken cancellationToken = default)
     {
         _context.SetCurrentUser(user.Id);
         var expiredSessions = await _context.UserSessions
             .Where(s => s.UserId == user.Id && s.ExpiresAt < DateTime.UtcNow)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         if (expiredSessions.Count > 0)
         {
             _context.UserSessions.RemoveRange(expiredSessions);
@@ -45,7 +46,7 @@ public class AuthSessionService
         {
             var priorSessionsForCredential = await _context.UserSessions
                 .Where(s => s.UserId == user.Id && s.CredentialId != null && s.CredentialId == credentialId)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
             if (priorSessionsForCredential.Count > 0)
             {
                 _context.UserSessions.RemoveRange(priorSessionsForCredential);
@@ -56,7 +57,7 @@ public class AuthSessionService
         {
             var deviceSessions = await _context.UserSessions
                 .Where(s => s.UserId == user.Id && s.DeviceId == deviceId)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
             if (deviceSessions.Count > 0)
             {
                 _context.UserSessions.RemoveRange(deviceSessions);
@@ -66,7 +67,7 @@ public class AuthSessionService
         {
             var oldPasswordSessions = await _context.UserSessions
                 .Where(s => s.UserId == user.Id && s.CredentialId == null)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
             if (oldPasswordSessions.Count > 0)
             {
                 _context.UserSessions.RemoveRange(oldPasswordSessions);
@@ -75,7 +76,7 @@ public class AuthSessionService
 
         var activeSessions = await _context.UserSessions
             .Where(s => s.UserId == user.Id)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         var orderedByActivity = activeSessions
             .OrderByDescending(s => s.LastActiveAt ?? s.CreatedAt)
             .ToList();
@@ -103,62 +104,74 @@ public class AuthSessionService
         };
 
         _context.UserSessions.Add(session);
-        await SaveSessionWithConcurrentPruneToleranceAsync();
+        await SaveSessionWithConcurrentPruneToleranceAsync(cancellationToken);
 
         return session;
     }
 
-    public async Task LogoutAsync(string? token)
+    public async Task LogoutAsync(
+        string? token,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(token)) return;
 
-        var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
+        var session = await _context.UserSessions
+            .FirstOrDefaultAsync(s => s.Token == token, cancellationToken);
         if (session != null)
         {
             _context.UserSessions.Remove(session);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
     }
 
-    public async Task<bool> LockSessionAsync(string? token)
+    public async Task<bool> LockSessionAsync(
+        string? token,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(token)) return false;
 
-        var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
+        var session = await _context.UserSessions
+            .FirstOrDefaultAsync(s => s.Token == token, cancellationToken);
         if (session == null)
         {
             return false;
         }
 
         session.IsLocked = true;
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
         return true;
     }
 
-    public async Task UnlockSessionAsync(string? token)
+    public async Task UnlockSessionAsync(
+        string? token,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(token)) return;
 
-        var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
+        var session = await _context.UserSessions
+            .FirstOrDefaultAsync(s => s.Token == token, cancellationToken);
         if (session != null)
         {
             session.IsLocked = false;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
     }
 
-    public async Task<List<SessionSummary>> GetSessionsAsync(string username, string? currentToken)
+    public async Task<List<SessionSummary>> GetSessionsAsync(
+        string username,
+        string? currentToken,
+        CancellationToken cancellationToken = default)
     {
         var userId = _context.RequireCurrentUserId();
         var expired = await _context.UserSessions
             .Where(s => s.UserId == userId && s.ExpiresAt < DateTime.UtcNow)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         if (expired.Count > 0)
         {
             _context.UserSessions.RemoveRange(expired);
             try
             {
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(cancellationToken);
             }
             catch (DbUpdateConcurrencyException exception)
             {
@@ -180,47 +193,59 @@ public class AuthSessionService
                 s.IpAddress,
                 s.UserAgent,
                 s.Token == currentToken))
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
     }
 
-    public async Task HeartbeatAsync(string? token, string? ipAddress, string? userAgent)
+    public async Task HeartbeatAsync(
+        string? token,
+        string? ipAddress,
+        string? userAgent,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(token)) return;
 
-        var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Token == token);
+        var session = await _context.UserSessions
+            .FirstOrDefaultAsync(s => s.Token == token, cancellationToken);
         if (session != null)
         {
             session.LastActiveAt = DateTime.UtcNow;
             session.IpAddress = ipAddress;
             session.UserAgent = userAgent;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
     }
 
-    public async Task RevokeSessionAsync(string username, Guid id)
+    public async Task RevokeSessionAsync(
+        string username,
+        Guid id,
+        CancellationToken cancellationToken = default)
     {
         var userId = _context.RequireCurrentUserId();
         var session = await _context.UserSessions
-            .FirstOrDefaultAsync(s => s.Id == id && s.UserId == userId);
+            .FirstOrDefaultAsync(s => s.Id == id && s.UserId == userId, cancellationToken);
 
         if (session != null)
         {
             _context.UserSessions.Remove(session);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
     }
 
-    public async Task<int> RevokeAllSessionsAsync(string username, string? currentToken, bool keepCurrent)
+    public async Task<int> RevokeAllSessionsAsync(
+        string username,
+        string? currentToken,
+        bool keepCurrent,
+        CancellationToken cancellationToken = default)
     {
         if (keepCurrent && string.IsNullOrWhiteSpace(currentToken)) return 0;
 
         var userId = _context.RequireCurrentUserId();
         var sessions = await _context.UserSessions
             .Where(s => s.UserId == userId && (!keepCurrent || s.Token != currentToken))
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         _context.UserSessions.RemoveRange(sessions);
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
         return sessions.Count;
     }
@@ -229,36 +254,42 @@ public class AuthSessionService
     // database scope. Used by unauthenticated flows (e.g. password recovery) that have
     // already verified the account out-of-band. UserSession is not query-filtered, so this
     // is safe with a null CurrentUserId.
-    public async Task<int> RevokeAllSessionsForUserAsync(string userId)
+    public async Task<int> RevokeAllSessionsForUserAsync(
+        string userId,
+        CancellationToken cancellationToken = default)
     {
         var sessions = await _context.UserSessions
             .Where(s => s.UserId == userId)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         _context.UserSessions.RemoveRange(sessions);
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
         return sessions.Count;
     }
 
-    public async Task<int> RevokeOtherSessionsAsync(string username, string? currentToken)
+    public async Task<int> RevokeOtherSessionsAsync(
+        string username,
+        string? currentToken,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(currentToken)) return 0;
 
         var userId = _context.RequireCurrentUserId();
         var otherSessions = await _context.UserSessions
             .Where(s => s.UserId == userId && s.Token != currentToken)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         _context.UserSessions.RemoveRange(otherSessions);
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
         return otherSessions.Count;
     }
 
-    private async Task SaveSessionWithConcurrentPruneToleranceAsync()
+    private async Task SaveSessionWithConcurrentPruneToleranceAsync(
+        CancellationToken cancellationToken)
     {
         try
         {
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
         catch (DbUpdateConcurrencyException exception)
         {
@@ -267,7 +298,7 @@ public class AuthSessionService
                 .ToList();
             if (deletedEntries.Count == 0 || deletedEntries.Count != exception.Entries.Count) throw;
             foreach (var entry in deletedEntries) entry.State = EntityState.Detached;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
     }
 }

@@ -65,7 +65,8 @@ public class TransactionCategoryService
         _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
-    public async Task<IReadOnlyList<TransactionCategory>> GetCategoriesAsync()
+    public async Task<IReadOnlyList<TransactionCategory>> GetCategoriesAsync(
+        CancellationToken cancellationToken = default)
     {
         var categories = await _cache.GetOrCreateAsync(CacheKey, async entry =>
         {
@@ -73,7 +74,7 @@ public class TransactionCategoryService
             return await _context.TransactionCategories
                 .AsNoTracking()
                 .OrderBy(c => c.Name)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
         });
 
         return categories!;

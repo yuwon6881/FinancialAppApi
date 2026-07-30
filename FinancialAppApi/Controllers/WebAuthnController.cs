@@ -27,7 +27,11 @@ public class WebAuthnController : ControllerBase
     [AuthorizeToken]
     [HttpPost("register/options")]
     public async Task<IActionResult> RegisterOptions() =>
-        await _webAuthnService.RegisterOptionsAsync(Username, RequestOrigin, FallbackOrigin);
+        await _webAuthnService.RegisterOptionsAsync(
+            Username,
+            RequestOrigin,
+            FallbackOrigin,
+            HttpContext.RequestAborted);
 
     public class RegisterVerifyRequest
     {
@@ -46,12 +50,17 @@ public class WebAuthnController : ControllerBase
             request.Credential,
             request.DeviceLabel,
             RequestOrigin,
-            FallbackOrigin);
+            FallbackOrigin,
+            HttpContext.RequestAborted);
 
     // POST api/auth/webauthn/login/options
     [HttpPost("login/options")]
     public async Task<IActionResult> LoginOptions([FromQuery] string? username = null) =>
-        await _webAuthnService.LoginOptionsAsync(RequestOrigin, FallbackOrigin, username);
+        await _webAuthnService.LoginOptionsAsync(
+            RequestOrigin,
+            FallbackOrigin,
+            username,
+            HttpContext.RequestAborted);
 
     public class LoginVerifyRequest
     {
@@ -73,7 +82,8 @@ public class WebAuthnController : ControllerBase
             GetClientIp(),
             Request.Headers["User-Agent"].ToString(),
             RequestOrigin,
-            FallbackOrigin);
+            FallbackOrigin,
+            HttpContext.RequestAborted);
 
         if (result is OkObjectResult okResult && okResult.Value is not null)
         {
@@ -92,7 +102,11 @@ public class WebAuthnController : ControllerBase
     [AuthorizeToken]
     [HttpPost("assert/options")]
     public async Task<IActionResult> AssertOptions() =>
-        await _webAuthnService.AssertOptionsAsync(Username, RequestOrigin, FallbackOrigin);
+        await _webAuthnService.AssertOptionsAsync(
+            Username,
+            RequestOrigin,
+            FallbackOrigin,
+            HttpContext.RequestAborted);
 
     public class AssertVerifyRequest
     {
@@ -112,19 +126,26 @@ public class WebAuthnController : ControllerBase
             request.Credential,
             token,
             RequestOrigin,
-            FallbackOrigin);
+            FallbackOrigin,
+            HttpContext.RequestAborted);
     }
 
     // GET api/auth/webauthn/credentials
     [AuthorizeToken]
     [HttpGet("credentials")]
-    public async Task<IActionResult> ListCredentials() => await _webAuthnService.ListCredentialsAsync(Username);
+    public async Task<IActionResult> ListCredentials() =>
+        await _webAuthnService.ListCredentialsAsync(
+            Username,
+            HttpContext.RequestAborted);
 
     // DELETE api/auth/webauthn/credentials/{id}
     [AuthorizeToken]
     [HttpDelete("credentials/{id}")]
     public async Task<IActionResult> DeleteCredential(string id) =>
-        await _webAuthnService.DeleteCredentialAsync(Username, id);
+        await _webAuthnService.DeleteCredentialAsync(
+            Username,
+            id,
+            HttpContext.RequestAborted);
 
     private string? GetClientIp()
     {

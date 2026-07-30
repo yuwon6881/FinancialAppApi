@@ -10,6 +10,8 @@ namespace FinancialAppApi.Tests;
 public class SavingsGoalPacingTests
 {
     private const int CycleDay = 1;
+    // The cycle the 15 Jul 2026 reference date falls in, with CycleDay 1.
+    private const string CycleKey = "2026-07";
 
     [Fact]
     public void CyclesRemaining_CountsTheCurrentCycle()
@@ -37,7 +39,7 @@ public class SavingsGoalPacingTests
         // 1200 target, 400 already set aside, three cycles to go -> 800/3.
         var goal = NewGoal(target: 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
 
-        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay);
+        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
 
         Assert.Equal(800m, pace.Remaining);
         Assert.Equal(3, pace.CyclesRemaining);
@@ -54,7 +56,7 @@ public class SavingsGoalPacingTests
     {
         var goal = NewGoal(target: 1000m, earmarked: 250m, targetDate: new DateOnly(2026, 7, 30));
 
-        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay);
+        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
 
         Assert.Equal(1, pace.CyclesRemaining);
         Assert.Equal(750m, pace.RequiredPerCycle);
@@ -65,7 +67,7 @@ public class SavingsGoalPacingTests
     {
         var goal = NewGoal(target: 500m, earmarked: 100m, targetDate: new DateOnly(2026, 5, 10));
 
-        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay);
+        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
 
         Assert.True(pace.IsOverdue);
         // The whole shortfall is due now. Silently re-spreading it would hide the missed deadline,
@@ -78,7 +80,7 @@ public class SavingsGoalPacingTests
     {
         var goal = NewGoal(target: 500m, earmarked: 500m, targetDate: new DateOnly(2026, 12, 1));
 
-        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay);
+        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
 
         Assert.True(pace.IsFunded);
         Assert.Equal(0m, pace.Remaining);
@@ -91,7 +93,7 @@ public class SavingsGoalPacingTests
         // Can only arise from a lowered target racing a contribution; must not go negative.
         var goal = NewGoal(target: 300m, earmarked: 500m, targetDate: new DateOnly(2026, 12, 1));
 
-        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay);
+        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
 
         Assert.Equal(0m, pace.Remaining);
         Assert.Equal(0m, pace.RequiredPerCycle);
@@ -118,7 +120,7 @@ public class SavingsGoalPacingTests
         var carService = NewGoal(id: 1, target: 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
         var houseFund = NewGoal(id: 2, target: 60000m, earmarked: 2000m, targetDate: new DateOnly(2032, 7, 1));
 
-        var result = SavingsGoalPacing.Distribute([carService, houseFund], 1200m, new DateOnly(2026, 7, 15), CycleDay);
+        var result = SavingsGoalPacing.Distribute([carService, houseFund], 1200m, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
 
         var car = result.Grants.Single(grant => grant.GoalId == 1);
         var house = result.Grants.Single(grant => grant.GoalId == 2);
@@ -138,7 +140,7 @@ public class SavingsGoalPacingTests
     {
         var goal = NewGoal(id: 1, target: 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
 
-        var result = SavingsGoalPacing.Distribute([goal], 1000m, new DateOnly(2026, 7, 15), CycleDay);
+        var result = SavingsGoalPacing.Distribute([goal], 1000m, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
 
         Assert.Equal(266.67m, result.TotalGranted);
         // The surplus is spontaneous-reward money, not a silent extra contribution.
@@ -151,7 +153,7 @@ public class SavingsGoalPacingTests
         var carService = NewGoal(id: 1, target: 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
         var houseFund = NewGoal(id: 2, target: 60000m, earmarked: 2000m, targetDate: new DateOnly(2032, 7, 1));
 
-        var result = SavingsGoalPacing.Distribute([carService, houseFund], 800m, new DateOnly(2026, 7, 15), CycleDay);
+        var result = SavingsGoalPacing.Distribute([carService, houseFund], 800m, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
 
         Assert.Equal(800m, result.TotalGranted);
         Assert.Equal(0m, result.FreeToSpend);
@@ -167,7 +169,7 @@ public class SavingsGoalPacingTests
         // Due this cycle and 50 short, with far more money available than it needs.
         var goal = NewGoal(id: 1, target: 500m, earmarked: 450m, targetDate: new DateOnly(2026, 7, 30));
 
-        var result = SavingsGoalPacing.Distribute([goal], 5000m, new DateOnly(2026, 7, 15), CycleDay);
+        var result = SavingsGoalPacing.Distribute([goal], 5000m, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
 
         Assert.Equal(50m, result.TotalGranted);
         Assert.Equal(4950m, result.FreeToSpend);
@@ -178,12 +180,12 @@ public class SavingsGoalPacingTests
     {
         var goal = NewGoal(id: 1, target: 500m, targetDate: new DateOnly(2026, 12, 1));
 
-        var broke = SavingsGoalPacing.Distribute([goal], 0m, new DateOnly(2026, 7, 15), CycleDay);
+        var broke = SavingsGoalPacing.Distribute([goal], 0m, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
         Assert.Equal(0m, broke.TotalGranted);
         Assert.Equal(0m, broke.FreeToSpend);
         Assert.True(broke.Shortfall > 0m);
 
-        var noGoals = SavingsGoalPacing.Distribute([], 250m, new DateOnly(2026, 7, 15), CycleDay);
+        var noGoals = SavingsGoalPacing.Distribute([], 250m, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
         Assert.Empty(noGoals.Grants);
         Assert.Equal(250m, noGoals.FreeToSpend);
         Assert.Equal(0m, noGoals.Shortfall);
@@ -196,10 +198,75 @@ public class SavingsGoalPacingTests
         // negative pool that then reads as "money available".
         var goal = NewGoal(id: 1, target: 500m, targetDate: new DateOnly(2026, 12, 1));
 
-        var result = SavingsGoalPacing.Distribute([goal], -300m, new DateOnly(2026, 7, 15), CycleDay);
+        var result = SavingsGoalPacing.Distribute([goal], -300m, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
 
         Assert.Equal(0m, result.TotalGranted);
         Assert.Equal(0m, result.FreeToSpend);
+    }
+
+    [Fact]
+    public void OutstandingThisCycle_IgnoresATallyFromAnEarlierCycle()
+    {
+        var goal = NewGoal(target: 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
+        goal.CycleFundedKey = "2026-06";
+        goal.CycleFundedAmount = 266.67m;
+        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
+
+        // Last cycle's contribution buys nothing this cycle.
+        Assert.Equal(266.67m, pace.OutstandingThisCycle);
+    }
+
+    [Fact]
+    public void OutstandingThisCycle_IsZeroOnceThisCyclesPaceIsMet()
+    {
+        var goal = NewGoal(target: 1200m, earmarked: 666.67m, targetDate: new DateOnly(2026, 9, 20));
+        goal.CycleFundedKey = CycleKey;
+        goal.CycleFundedAmount = 266.67m;
+        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
+
+        // Already paced this cycle -- "Fund this cycle" must not contribute again.
+        Assert.Equal(0m, pace.OutstandingThisCycle);
+        // The pace is measured from the cycle's starting position, so it does not shrink as the goal
+        // fills: the figure on the card holds still while money goes in.
+        Assert.Equal(266.67m, pace.RequiredPerCycle);
+    }
+
+    [Fact]
+    public void OutstandingThisCycle_ReopensAfterAPartialRelease()
+    {
+        // Funded 266.67 then released 100, so the tally is the net 166.67.
+        var goal = NewGoal(target: 1200m, earmarked: 566.67m, targetDate: new DateOnly(2026, 9, 20));
+        goal.CycleFundedKey = CycleKey;
+        goal.CycleFundedAmount = 166.67m;
+        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
+
+        // Exactly the released amount becomes fundable again -- not the whole per-cycle pace.
+        Assert.Equal(100m, pace.OutstandingThisCycle);
+    }
+
+    [Fact]
+    public void OutstandingThisCycle_NeverExceedsWhatTheGoalStillNeeds()
+    {
+        // 50 short overall, but a nominal per-cycle pace far larger than that.
+        var goal = NewGoal(target: 500m, earmarked: 450m, targetDate: new DateOnly(2026, 7, 30));
+        var pace = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
+
+        Assert.Equal(50m, pace.OutstandingThisCycle);
+    }
+
+    [Fact]
+    public void Distribute_SkipsGoalsAlreadyFundedThisCycleAndFundsOnlyTheRest()
+    {
+        var alreadyFunded = NewGoal(id: 1, target: 1200m, earmarked: 666.67m, targetDate: new DateOnly(2026, 9, 20));
+        alreadyFunded.CycleFundedKey = CycleKey;
+        alreadyFunded.CycleFundedAmount = 266.67m;
+        var untouched = NewGoal(id: 2, target: 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
+
+        var result = SavingsGoalPacing.Distribute([alreadyFunded, untouched], 5000m, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
+
+        Assert.Equal(0m, result.Grants.Single(grant => grant.GoalId == 1).Amount);
+        Assert.Equal(266.67m, result.Grants.Single(grant => grant.GoalId == 2).Amount);
+        Assert.Equal(266.67m, result.TotalGranted);
     }
 
     [Fact]

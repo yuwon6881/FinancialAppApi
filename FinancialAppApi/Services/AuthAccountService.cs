@@ -56,18 +56,22 @@ public class AuthAccountService
             ? int.MaxValue
             : Math.Max(1, _configuration.GetValue("Auth:MaxUsers", 1));
 
-    private async Task<bool> IsRegistrationOpenAsync() =>
-        await _context.AppUsers.CountAsync() < MaxUsers;
+    private async Task<bool> IsRegistrationOpenAsync(CancellationToken cancellationToken) =>
+        await _context.AppUsers.CountAsync(cancellationToken) < MaxUsers;
 
-    public async Task<IActionResult> GetStatusAsync(string? username = null)
+    public async Task<IActionResult> GetStatusAsync(
+        string? username = null,
+        CancellationToken cancellationToken = default)
     {
-        var userCount = await _context.AppUsers.CountAsync();
+        var userCount = await _context.AppUsers.CountAsync(cancellationToken);
         var hasUser = userCount > 0;
         var hasFingerprint = string.IsNullOrWhiteSpace(username)
-            ? hasUser && await _context.WebAuthnCredentials.AnyAsync()
+            ? hasUser && await _context.WebAuthnCredentials.AnyAsync(cancellationToken)
             : await _context.AppUsers
                 .Where(user => user.NormalizedUsername == username.Trim().ToUpperInvariant())
-                .AnyAsync(user => _context.WebAuthnCredentials.Any(credential => credential.UserId == user.Id));
+                .AnyAsync(
+                    user => _context.WebAuthnCredentials.Any(credential => credential.UserId == user.Id),
+                    cancellationToken);
         // registrationOpen lets the login screen offer a signup form to additional invitees
         // (up to Auth:MaxUsers) even after the first account exists.
         return new OkObjectResult(new
@@ -78,14 +82,17 @@ public class AuthAccountService
         });
     }
 
-    public async Task<IActionResult> RegisterAsync(string username, string password)
+    public async Task<IActionResult> RegisterAsync(
+        string username,
+        string password,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
         {
             return new BadRequestObjectResult(new { message = "Username and password are required." });
         }
 
-        var slot = await AllocateRegistrationSlotAsync();
+        var slot = await AllocateRegistrationSlotAsync(cancellationToken);
         if (slot is null && MaxUsers != int.MaxValue)
         {
             return new BadRequestObjectResult(new { message = "Registration is closed. The user limit has been reached." });
@@ -107,20 +114,21 @@ public class AuthAccountService
         DbSeeder.EnsureUserDefaults(_context, user.Id, _financialClock);
         try
         {
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
         catch (DbUpdateException)
         {
             _context.ChangeTracker.Clear();
             if (await _context.AppUsers.AnyAsync(existing =>
-                    existing.NormalizedUsername == user.NormalizedUsername))
+                    existing.NormalizedUsername == user.NormalizedUsername,
+                    cancellationToken))
             {
                 return new BadRequestObjectResult(new { message = "That username is already registered." });
             }
 
             // A concurrent registration may have claimed the slot we picked; if the cap is now
             // full, report it as closed rather than surfacing a raw persistence error.
-            if (!await IsRegistrationOpenAsync())
+            if (!await IsRegistrationOpenAsync(cancellationToken))
             {
                 return new BadRequestObjectResult(new { message = "Registration is closed. The user limit has been reached." });
             }
@@ -136,7 +144,7 @@ public class AuthAccountService
     /// (or, in unlimited mode, always null — no slot is tracked). Reuses slots freed by deleted
     /// accounts so the limit reflects the live user count, not the high-water mark.
     /// </summary>
-    private async Task<int?> AllocateRegistrationSlotAsync()
+    private async Task<int?> AllocateRegistrationSlotAsync(CancellationToken cancellationToken)
     {
         var maxUsers = MaxUsers;
         if (maxUsers == int.MaxValue)
@@ -147,7 +155,7 @@ public class AuthAccountService
         var usedSlots = await _context.AppUsers
             .Where(u => u.RegistrationSlot != null)
             .Select(u => u.RegistrationSlot!.Value)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         var used = usedSlots.ToHashSet();
 
         for (var candidate = 1; candidate <= maxUsers; candidate++)
@@ -167,7 +175,8 @@ public class AuthAccountService
         string? deviceId,
         string? deviceName,
         string? ipAddress,
-        string? userAgent)
+        string? userAgent,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
         {
@@ -175,7 +184,8 @@ public class AuthAccountService
         }
 
         var normalizedUsername = username.Trim().ToUpperInvariant();
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.NormalizedUsername == normalizedUsername);
+        var user = await _context.AppUsers
+            .FirstOrDefaultAsync(u => u.NormalizedUsername == normalizedUsername, cancellationToken);
         if (user == null)
         {
             return new UnauthorizedObjectResult(new { message = "Invalid username or password" });
@@ -191,7 +201,7 @@ public class AuthAccountService
         var result = _passwordHasher.VerifyHashedPassword(user.Username, user.PasswordHash, password);
         if (result == PasswordVerificationResult.Failed)
         {
-            await RecordPasswordFailureAsync(user);
+            await RecordPasswordFailureAsync(user, cancellationToken);
             return new UnauthorizedObjectResult(new { message = "Invalid username or password" });
         }
 
@@ -200,17 +210,17 @@ public class AuthAccountService
 
         if (user.TotpEnabled)
         {
-            await SweepExpiredPendingTwoFactorsAsync(user.Id);
+            await SweepExpiredPendingTwoFactorsAsync(user.Id, cancellationToken);
             if (user.TwoFactorLockedUntil.HasValue && user.TwoFactorLockedUntil.Value > DateTime.UtcNow)
             {
                 var minutesLeft = Math.Ceiling((user.TwoFactorLockedUntil.Value - DateTime.UtcNow).TotalMinutes);
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(cancellationToken);
                 return new ObjectResult(new { message = $"Too many two-factor attempts. Try again in {minutesLeft} minute(s)." }) { StatusCode = 429 };
             }
 
             var existingPending = await _context.PendingTwoFactors
                 .Where(p => p.UserId == user.Id)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
             _context.PendingTwoFactors.RemoveRange(existingPending);
 
             var pending = new PendingTwoFactor
@@ -222,12 +232,18 @@ public class AuthAccountService
                 ExpiresAt = DateTime.UtcNow.AddMinutes(PendingTwoFactorTtlMinutes)
             };
             _context.PendingTwoFactors.Add(pending);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
             return new OkObjectResult(new { requiresTwoFactor = true, pendingToken = pending.Id.ToString() });
         }
 
-        await _context.SaveChangesAsync();
-        var session = await _authSessionService.CreateSessionAsync(user, deviceId, deviceName, ipAddress, userAgent);
+        await _context.SaveChangesAsync(cancellationToken);
+        var session = await _authSessionService.CreateSessionAsync(
+            user,
+            deviceId,
+            deviceName,
+            ipAddress,
+            userAgent,
+            cancellationToken: cancellationToken);
         return new OkObjectResult(new { token = session.Token, username = user.Username, hasSetupSecurityQuestions = user.HasSetupSecurityQuestions });
     }
 
@@ -235,20 +251,22 @@ public class AuthAccountService
         string pendingToken,
         string code,
         string? ipAddress,
-        string? userAgent)
+        string? userAgent,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(pendingToken) || !Guid.TryParse(pendingToken, out var pendingId))
         {
             return new UnauthorizedObjectResult(new { message = "Login session expired. Please log in again." });
         }
 
-        var pending = await _context.PendingTwoFactors.FirstOrDefaultAsync(p => p.Id == pendingId);
+        var pending = await _context.PendingTwoFactors
+            .FirstOrDefaultAsync(p => p.Id == pendingId, cancellationToken);
         if (pending == null || pending.ExpiresAt < DateTime.UtcNow)
         {
             if (pending != null)
             {
                 _context.PendingTwoFactors.Remove(pending);
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(cancellationToken);
             }
             return new UnauthorizedObjectResult(new { message = "Login session expired. Please log in again." });
         }
@@ -256,56 +274,75 @@ public class AuthAccountService
         if (pending.Attempts >= MaxCodeAttempts)
         {
             _context.PendingTwoFactors.Remove(pending);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
             return new UnauthorizedObjectResult(new { message = "Too many attempts. Please log in again." });
         }
 
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Id == pending.UserId);
+        var user = await _context.AppUsers
+            .FirstOrDefaultAsync(u => u.Id == pending.UserId, cancellationToken);
         if (user == null || !user.TotpEnabled || string.IsNullOrEmpty(user.TotpSecret))
         {
             _context.PendingTwoFactors.Remove(pending);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
             return new UnauthorizedObjectResult(new { message = "Login session expired. Please log in again." });
         }
         _context.SetCurrentUser(user.Id);
 
         if (user.TwoFactorLockedUntil.HasValue && user.TwoFactorLockedUntil.Value > DateTime.UtcNow)
         {
-            await RemovePendingTwoFactorsAsync(user.Id);
-            await _context.SaveChangesAsync();
+            await RemovePendingTwoFactorsAsync(user.Id, cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken);
             var minutesLeft = Math.Ceiling((user.TwoFactorLockedUntil.Value - DateTime.UtcNow).TotalMinutes);
             return new ObjectResult(new { message = $"Too many two-factor attempts. Try again in {minutesLeft} minute(s)." }) { StatusCode = 429 };
         }
 
         var secret = _secretProtector.Unprotect(user.TotpSecret);
         var validTotp = _totpService.ValidateCode(secret, code, out var timeStepMatched);
-        var validRecovery = !validTotp && await _recoveryCodeService.TryConsumeAsync(user.Username, code, user.Id);
+        var validRecovery = !validTotp && await _recoveryCodeService.TryConsumeAsync(
+            user.Username,
+            code,
+            user.Id,
+            cancellationToken);
 
         if (!validTotp && !validRecovery)
         {
-            return await RecordTwoFactorFailureAsync(user, pending);
+            return await RecordTwoFactorFailureAsync(user, pending, cancellationToken: cancellationToken);
         }
 
-        if (validTotp && !await TryClaimTotpTimeStepAsync(user, timeStepMatched))
+        if (validTotp && !await TryClaimTotpTimeStepAsync(user, timeStepMatched, cancellationToken))
         {
-            return await RecordTwoFactorFailureAsync(user, pending, "Code has already been used");
+            return await RecordTwoFactorFailureAsync(
+                user,
+                pending,
+                "Code has already been used",
+                cancellationToken);
         }
 
-        if (!await TryConsumePendingTwoFactorAsync(pending))
+        if (!await TryConsumePendingTwoFactorAsync(pending, cancellationToken))
         {
             return new UnauthorizedObjectResult(new { message = "Login session expired. Please log in again." });
         }
 
         user.TwoFactorFailedAttempts = 0;
         user.TwoFactorLockedUntil = null;
-        await RemovePendingTwoFactorsAsync(user.Id);
-        await _context.SaveChangesAsync();
+        await RemovePendingTwoFactorsAsync(user.Id, cancellationToken);
+        await _context.SaveChangesAsync(cancellationToken);
 
-        var session = await _authSessionService.CreateSessionAsync(user, pending.DeviceId, pending.DeviceName, ipAddress, userAgent);
+        var session = await _authSessionService.CreateSessionAsync(
+            user,
+            pending.DeviceId,
+            pending.DeviceName,
+            ipAddress,
+            userAgent,
+            cancellationToken: cancellationToken);
         return new OkObjectResult(new { token = session.Token, username = user.Username, hasSetupSecurityQuestions = user.HasSetupSecurityQuestions });
     }
 
-    public async Task<IActionResult> VerifyPasswordAsync(string? username, string password, string? currentToken)
+    public async Task<IActionResult> VerifyPasswordAsync(
+        string? username,
+        string password,
+        string? currentToken,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(password))
         {
@@ -318,7 +355,9 @@ public class AuthAccountService
 
         var user = await _context.AppUsers
             .AsNoTracking()
-            .FirstOrDefaultAsync(u => u.NormalizedUsername == username.Trim().ToUpperInvariant());
+            .FirstOrDefaultAsync(
+                u => u.NormalizedUsername == username.Trim().ToUpperInvariant(),
+                cancellationToken);
         if (user == null)
         {
             return new UnauthorizedObjectResult(new { message = "User not found" });
@@ -333,7 +372,9 @@ public class AuthAccountService
         var result = _passwordHasher.VerifyHashedPassword(user.Username, user.PasswordHash, password);
         if (result == PasswordVerificationResult.Failed)
         {
-            var lockedUntil = await RecordPasswordVerificationFailureAsync(user.Id);
+            var lockedUntil = await RecordPasswordVerificationFailureAsync(
+                user.Id,
+                cancellationToken);
             if (lockedUntil.HasValue && lockedUntil.Value > DateTime.UtcNow)
             {
                 return PasswordVerificationLockedResult(lockedUntil.Value);
@@ -342,12 +383,17 @@ public class AuthAccountService
             return new OkObjectResult(new { verified = false, message = "Incorrect password" });
         }
 
-        await ResetPasswordVerificationFailuresAsync(user.Id);
-        await _authSessionService.UnlockSessionAsync(currentToken);
+        await ResetPasswordVerificationFailuresAsync(user.Id, cancellationToken);
+        await _authSessionService.UnlockSessionAsync(currentToken, cancellationToken);
         return new OkObjectResult(new { verified = true });
     }
 
-    public async Task<IActionResult> ChangePasswordAsync(string? username, string currentPassword, string newPassword, string? currentToken)
+    public async Task<IActionResult> ChangePasswordAsync(
+        string? username,
+        string currentPassword,
+        string newPassword,
+        string? currentToken,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(currentPassword) || string.IsNullOrWhiteSpace(newPassword))
         {
@@ -358,7 +404,8 @@ public class AuthAccountService
             return new UnauthorizedResult();
         }
 
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
+        var user = await _context.AppUsers
+            .FirstOrDefaultAsync(u => u.Username == username, cancellationToken);
         if (user == null)
         {
             return new UnauthorizedResult();
@@ -371,20 +418,26 @@ public class AuthAccountService
         }
 
         user.PasswordHash = _passwordHasher.HashPassword(user.Username, newPassword);
-        var revokedOtherSessions = await _authSessionService.RevokeOtherSessionsAsync(username, currentToken);
-        await _context.SaveChangesAsync();
+        var revokedOtherSessions = await _authSessionService.RevokeOtherSessionsAsync(
+            username,
+            currentToken,
+            cancellationToken);
+        await _context.SaveChangesAsync(cancellationToken);
 
         return new OkObjectResult(new { message = "Password changed successfully.", revokedOtherSessions });
     }
 
-    public async Task<IActionResult> GetTwoFactorStatusAsync(string? username)
+    public async Task<IActionResult> GetTwoFactorStatusAsync(
+        string? username,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(username))
         {
             return new UnauthorizedResult();
         }
 
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
+        var user = await _context.AppUsers
+            .FirstOrDefaultAsync(u => u.Username == username, cancellationToken);
         if (user == null)
         {
             return new UnauthorizedResult();
@@ -393,14 +446,17 @@ public class AuthAccountService
         return new OkObjectResult(new { enabled = user.TotpEnabled });
     }
 
-    public async Task<IActionResult> SetupTotpAsync(string? username)
+    public async Task<IActionResult> SetupTotpAsync(
+        string? username,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(username))
         {
             return new UnauthorizedResult();
         }
 
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
+        var user = await _context.AppUsers
+            .FirstOrDefaultAsync(u => u.Username == username, cancellationToken);
         if (user == null)
         {
             return new UnauthorizedResult();
@@ -412,19 +468,24 @@ public class AuthAccountService
 
         var secret = _totpService.GenerateSecret();
         user.PendingTotpSecret = _secretProtector.Protect(secret);
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
         return new OkObjectResult(new { secret, otpauthUri = _totpService.BuildOtpAuthUri(secret, username) });
     }
 
-    public async Task<IActionResult> EnableTotpAsync(string? username, string? code, string? currentToken)
+    public async Task<IActionResult> EnableTotpAsync(
+        string? username,
+        string? code,
+        string? currentToken,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(username))
         {
             return new UnauthorizedResult();
         }
 
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
+        var user = await _context.AppUsers
+            .FirstOrDefaultAsync(u => u.Username == username, cancellationToken);
         if (user == null || string.IsNullOrEmpty(user.PendingTotpSecret))
         {
             return new BadRequestObjectResult(new { message = "Start two-factor setup first." });
@@ -443,21 +504,32 @@ public class AuthAccountService
         user.TwoFactorFailedAttempts = 0;
         user.TwoFactorLockedUntil = null;
 
-        var recoveryCodes = await _recoveryCodeService.RegenerateAsync(username, user.Id);
-        await _authSessionService.RevokeOtherSessionsAsync(username, currentToken);
-        await _context.SaveChangesAsync();
+        var recoveryCodes = await _recoveryCodeService.RegenerateAsync(
+            username,
+            user.Id,
+            cancellationToken);
+        await _authSessionService.RevokeOtherSessionsAsync(
+            username,
+            currentToken,
+            cancellationToken);
+        await _context.SaveChangesAsync(cancellationToken);
 
         return new OkObjectResult(new { enabled = true, recoveryCodes });
     }
 
-    public async Task<IActionResult> DisableTotpAsync(string? username, string? password, string? code)
+    public async Task<IActionResult> DisableTotpAsync(
+        string? username,
+        string? password,
+        string? code,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(username))
         {
             return new UnauthorizedResult();
         }
 
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
+        var user = await _context.AppUsers
+            .FirstOrDefaultAsync(u => u.Username == username, cancellationToken);
         if (user == null || !user.TotpEnabled || string.IsNullOrEmpty(user.TotpSecret))
         {
             return new BadRequestObjectResult(new { message = "Two-factor authentication is not enabled." });
@@ -471,7 +543,11 @@ public class AuthAccountService
 
         var secret = _secretProtector.Unprotect(user.TotpSecret);
         var validTotp = _totpService.ValidateCode(secret, code ?? string.Empty);
-        var validRecovery = !validTotp && await _recoveryCodeService.TryConsumeAsync(username, code ?? string.Empty, user.Id);
+        var validRecovery = !validTotp && await _recoveryCodeService.TryConsumeAsync(
+            username,
+            code ?? string.Empty,
+            user.Id,
+            cancellationToken);
         if (!validTotp && !validRecovery)
         {
             return new BadRequestObjectResult(new { message = "Invalid code." });
@@ -483,20 +559,24 @@ public class AuthAccountService
         user.LastTotpTimeStep = null;
         user.TwoFactorFailedAttempts = 0;
         user.TwoFactorLockedUntil = null;
-        await _context.SaveChangesAsync();
-        await _recoveryCodeService.DeleteAllAsync(username, user.Id);
+        await _context.SaveChangesAsync(cancellationToken);
+        await _recoveryCodeService.DeleteAllAsync(username, user.Id, cancellationToken);
 
         return new OkObjectResult(new { message = "Two-factor authentication disabled." });
     }
 
-    public async Task<IActionResult> RegenerateRecoveryCodesAsync(string? username, string? password)
+    public async Task<IActionResult> RegenerateRecoveryCodesAsync(
+        string? username,
+        string? password,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(username))
         {
             return new UnauthorizedResult();
         }
 
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
+        var user = await _context.AppUsers
+            .FirstOrDefaultAsync(u => u.Username == username, cancellationToken);
         if (user == null || !user.TotpEnabled)
         {
             return new BadRequestObjectResult(new { message = "Two-factor authentication is not enabled." });
@@ -508,7 +588,10 @@ public class AuthAccountService
             return new BadRequestObjectResult(new { message = "Incorrect password." });
         }
 
-        var codes = await _recoveryCodeService.RegenerateAsync(username, user.Id);
+        var codes = await _recoveryCodeService.RegenerateAsync(
+            username,
+            user.Id,
+            cancellationToken);
         return new OkObjectResult(new { recoveryCodes = codes });
     }
 
@@ -542,7 +625,8 @@ public class AuthAccountService
     private async Task<IActionResult> RecordTwoFactorFailureAsync(
         AppUser user,
         PendingTwoFactor pending,
-        string message = "Invalid code")
+        string message = "Invalid code",
+        CancellationToken cancellationToken = default)
     {
         if (_context.Database.IsRelational())
         {
@@ -553,7 +637,8 @@ public class AuthAccountService
             await _context.PendingTwoFactors
                 .Where(candidate => candidate.Id == pending.Id)
                 .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(candidate => candidate.Attempts, candidate => candidate.Attempts + 1));
+                    .SetProperty(candidate => candidate.Attempts, candidate => candidate.Attempts + 1),
+                    cancellationToken);
 
             await _context.AppUsers
                 .Where(candidate => candidate.Id == user.Id)
@@ -567,18 +652,19 @@ public class AuthAccountService
                         candidate => candidate.TwoFactorFailedAttempts,
                         candidate => candidate.TwoFactorFailedAttempts + 1 >= maxAttempts
                             ? 0
-                            : candidate.TwoFactorFailedAttempts + 1));
+                            : candidate.TwoFactorFailedAttempts + 1),
+                    cancellationToken);
 
             var lockState = await _context.AppUsers
                 .AsNoTracking()
                 .Where(candidate => candidate.Id == user.Id)
                 .Select(candidate => candidate.TwoFactorLockedUntil)
-                .SingleAsync();
+                .SingleAsync(cancellationToken);
             if (lockState.HasValue && lockState.Value > now)
             {
                 await _context.PendingTwoFactors
                     .Where(candidate => candidate.UserId == user.Id)
-                    .ExecuteDeleteAsync();
+                    .ExecuteDeleteAsync(cancellationToken);
                 return new ObjectResult(new { message = "Too many two-factor attempts. Please try again later." }) { StatusCode = 429 };
             }
 
@@ -594,16 +680,18 @@ public class AuthAccountService
             DateTime.UtcNow.AddMinutes(TwoFactorLockoutMinutes));
         if (lockedOut)
         {
-            await RemovePendingTwoFactorsAsync(user.Id);
-            await _context.SaveChangesAsync();
+            await RemovePendingTwoFactorsAsync(user.Id, cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken);
             return new ObjectResult(new { message = "Too many two-factor attempts. Please try again later." }) { StatusCode = 429 };
         }
 
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
         return new UnauthorizedObjectResult(new { message });
     }
 
-    private async Task RecordPasswordFailureAsync(AppUser user)
+    private async Task RecordPasswordFailureAsync(
+        AppUser user,
+        CancellationToken cancellationToken)
     {
         if (!_context.Database.IsRelational())
         {
@@ -613,7 +701,7 @@ public class AuthAccountService
                 lockedUntil => user.LockedUntil = lockedUntil,
                 Math.Max(1, MaxFailedLoginAttempts),
                 DateTime.UtcNow.AddMinutes(LockoutMinutes));
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
             return;
         }
 
@@ -631,10 +719,13 @@ public class AuthAccountService
                     candidate => candidate.FailedLoginAttempts,
                     candidate => candidate.FailedLoginAttempts + 1 >= maxAttempts
                         ? 0
-                        : candidate.FailedLoginAttempts + 1));
+                        : candidate.FailedLoginAttempts + 1),
+                cancellationToken);
     }
 
-    private async Task<DateTime?> RecordPasswordVerificationFailureAsync(string userId)
+    private async Task<DateTime?> RecordPasswordVerificationFailureAsync(
+        string userId,
+        CancellationToken cancellationToken)
     {
         var maxAttempts = Math.Max(1, MaxPasswordVerificationAttempts);
         var now = DateTime.UtcNow;
@@ -660,16 +751,18 @@ public class AuthAccountService
                         candidate => candidate.PasswordVerificationFailedAttempts,
                         candidate => candidate.PasswordVerificationFailedAttempts + 1 >= maxAttempts
                             ? 0
-                            : candidate.PasswordVerificationFailedAttempts + 1));
+                            : candidate.PasswordVerificationFailedAttempts + 1),
+                    cancellationToken);
 
             return await _context.AppUsers
                 .AsNoTracking()
                 .Where(candidate => candidate.Id == userId)
                 .Select(candidate => candidate.PasswordVerificationLockedUntil)
-                .SingleAsync();
+                .SingleAsync(cancellationToken);
         }
 
-        var trackedUser = await _context.AppUsers.SingleAsync(candidate => candidate.Id == userId);
+        var trackedUser = await _context.AppUsers
+            .SingleAsync(candidate => candidate.Id == userId, cancellationToken);
         if (trackedUser.PasswordVerificationLockedUntil.HasValue)
         {
             if (trackedUser.PasswordVerificationLockedUntil.Value > now)
@@ -688,11 +781,13 @@ public class AuthAccountService
             maxAttempts,
             lockedUntil);
 
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
         return trackedUser.PasswordVerificationLockedUntil;
     }
 
-    private async Task ResetPasswordVerificationFailuresAsync(string userId)
+    private async Task ResetPasswordVerificationFailuresAsync(
+        string userId,
+        CancellationToken cancellationToken)
     {
         if (_context.Database.IsRelational())
         {
@@ -700,14 +795,16 @@ public class AuthAccountService
                 .Where(candidate => candidate.Id == userId)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(candidate => candidate.PasswordVerificationFailedAttempts, 0)
-                    .SetProperty(candidate => candidate.PasswordVerificationLockedUntil, (DateTime?)null));
+                    .SetProperty(candidate => candidate.PasswordVerificationLockedUntil, (DateTime?)null),
+                    cancellationToken);
             return;
         }
 
-        var trackedUser = await _context.AppUsers.SingleAsync(candidate => candidate.Id == userId);
+        var trackedUser = await _context.AppUsers
+            .SingleAsync(candidate => candidate.Id == userId, cancellationToken);
         trackedUser.PasswordVerificationFailedAttempts = 0;
         trackedUser.PasswordVerificationLockedUntil = null;
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
     }
 
     private static OkObjectResult PasswordVerificationLockedResult(DateTime lockedUntil)
@@ -725,22 +822,27 @@ public class AuthAccountService
         });
     }
 
-    private async Task<bool> TryConsumePendingTwoFactorAsync(PendingTwoFactor pending)
+    private async Task<bool> TryConsumePendingTwoFactorAsync(
+        PendingTwoFactor pending,
+        CancellationToken cancellationToken)
     {
         if (_context.Database.IsRelational())
         {
             return await _context.PendingTwoFactors
                 .Where(candidate => candidate.Id == pending.Id && candidate.ExpiresAt >= DateTime.UtcNow)
-                .ExecuteDeleteAsync() == 1;
+                .ExecuteDeleteAsync(cancellationToken) == 1;
         }
 
         if (_context.Entry(pending).State == EntityState.Deleted) return false;
         _context.PendingTwoFactors.Remove(pending);
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
         return true;
     }
 
-    private async Task<bool> TryClaimTotpTimeStepAsync(AppUser user, long timeStep)
+    private async Task<bool> TryClaimTotpTimeStepAsync(
+        AppUser user,
+        long timeStep,
+        CancellationToken cancellationToken)
     {
         if (!_context.Database.IsRelational())
         {
@@ -755,7 +857,9 @@ public class AuthAccountService
 
         var claimed = await _context.AppUsers
             .Where(u => u.Id == user.Id && (!u.LastTotpTimeStep.HasValue || u.LastTotpTimeStep.Value < timeStep))
-            .ExecuteUpdateAsync(setters => setters.SetProperty(u => u.LastTotpTimeStep, timeStep));
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(u => u.LastTotpTimeStep, timeStep),
+                cancellationToken);
         if (claimed == 1)
         {
             user.LastTotpTimeStep = timeStep;
@@ -765,19 +869,23 @@ public class AuthAccountService
         return false;
     }
 
-    private async Task SweepExpiredPendingTwoFactorsAsync(string userId)
+    private async Task SweepExpiredPendingTwoFactorsAsync(
+        string userId,
+        CancellationToken cancellationToken)
     {
         var expired = await _context.PendingTwoFactors
             .Where(p => p.UserId == userId && p.ExpiresAt < DateTime.UtcNow)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         _context.PendingTwoFactors.RemoveRange(expired);
     }
 
-    private async Task RemovePendingTwoFactorsAsync(string userId)
+    private async Task RemovePendingTwoFactorsAsync(
+        string userId,
+        CancellationToken cancellationToken)
     {
         var pending = await _context.PendingTwoFactors
             .Where(p => p.UserId == userId)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         _context.PendingTwoFactors.RemoveRange(pending);
     }
 
@@ -806,18 +914,25 @@ public class AuthAccountService
         };
     }
 
-    public async Task<IActionResult> GetSecurityQuestionsSetupStatusAsync(string? username)
+    public async Task<IActionResult> GetSecurityQuestionsSetupStatusAsync(
+        string? username,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(username)) return new UnauthorizedResult();
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
+        var user = await _context.AppUsers
+            .FirstOrDefaultAsync(u => u.Username == username, cancellationToken);
         if (user == null) return new UnauthorizedResult();
         return new OkObjectResult(new { hasSetupSecurityQuestions = user.HasSetupSecurityQuestions });
     }
 
-    public async Task<IActionResult> SetupSecurityQuestionsAsync(string? username, List<QuestionAnswerDto> answers)
+    public async Task<IActionResult> SetupSecurityQuestionsAsync(
+        string? username,
+        List<QuestionAnswerDto> answers,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(username)) return new UnauthorizedResult();
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.Username == username);
+        var user = await _context.AppUsers
+            .FirstOrDefaultAsync(u => u.Username == username, cancellationToken);
         if (user == null) return new UnauthorizedResult();
 
         if (user.HasSetupSecurityQuestions)
@@ -861,17 +976,22 @@ public class AuthAccountService
         }
 
         user.HasSetupSecurityQuestions = true;
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
         return new OkObjectResult(new { message = "Security questions configured successfully." });
     }
 
-    public async Task<IActionResult> GetSecurityQuestionsForRecoveryAsync(string username)
+    public async Task<IActionResult> GetSecurityQuestionsForRecoveryAsync(
+        string username,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(username)) return new BadRequestObjectResult(new { message = "Username is required." });
 
         var normalizedUsername = username.Trim().ToUpperInvariant();
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.NormalizedUsername == normalizedUsername);
+        var user = await _context.AppUsers
+            .FirstOrDefaultAsync(
+                u => u.NormalizedUsername == normalizedUsername,
+                cancellationToken);
 
         if (user == null)
         {
@@ -887,7 +1007,7 @@ public class AuthAccountService
         var userQuestions = await _context.SecurityQuestionAnswers
             .Where(sqa => sqa.UserId == user.Id)
             .Select(sqa => sqa.QuestionId)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         var available = GetAvailableSecurityQuestions();
         var questionsToAsk = userQuestions.Select(id => new { QuestionId = id, Question = available[id] }).ToList();
@@ -895,7 +1015,11 @@ public class AuthAccountService
         return new OkObjectResult(new { username = user.Username, questions = questionsToAsk });
     }
 
-    public async Task<IActionResult> VerifySecurityQuestionsAndResetPasswordAsync(string username, List<QuestionAnswerDto> answers, string newPassword)
+    public async Task<IActionResult> VerifySecurityQuestionsAndResetPasswordAsync(
+        string username,
+        List<QuestionAnswerDto> answers,
+        string newPassword,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(newPassword))
         {
@@ -903,7 +1027,10 @@ public class AuthAccountService
         }
 
         var normalizedUsername = username.Trim().ToUpperInvariant();
-        var user = await _context.AppUsers.FirstOrDefaultAsync(u => u.NormalizedUsername == normalizedUsername);
+        var user = await _context.AppUsers
+            .FirstOrDefaultAsync(
+                u => u.NormalizedUsername == normalizedUsername,
+                cancellationToken);
 
         if (user == null || !user.HasSetupSecurityQuestions)
         {
@@ -917,7 +1044,7 @@ public class AuthAccountService
 
         var storedAnswers = await _context.SecurityQuestionAnswers
             .Where(sqa => sqa.UserId == user.Id)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         if (storedAnswers.Count != 3)
         {
@@ -951,10 +1078,12 @@ public class AuthAccountService
             user.TwoFactorFailedAttempts = 0;
             user.TwoFactorLockedUntil = null;
 
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
             // This endpoint is unauthenticated (no current-user DB scope), so revoke by the
             // verified user's id rather than the ambient scope.
-            await _authSessionService.RevokeAllSessionsForUserAsync(user.Id);
+            await _authSessionService.RevokeAllSessionsForUserAsync(
+                user.Id,
+                cancellationToken);
 
             return new OkObjectResult(new { message = "Password reset successfully." });
         }

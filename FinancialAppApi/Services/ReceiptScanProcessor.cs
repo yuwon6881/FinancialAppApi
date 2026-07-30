@@ -101,7 +101,9 @@ public class ReceiptScanProcessor
         _logger = logger;
     }
 
-    public async Task<ReceiptScanProcessStatus> ProcessAsync(string jobId)
+    public async Task<ReceiptScanProcessStatus> ProcessAsync(
+        string jobId,
+        CancellationToken cancellationToken = default)
     {
         ReceiptScanJob? job;
         if (_context.Database.IsRelational())
@@ -113,14 +115,15 @@ public class ReceiptScanProcessor
                     (j.Status == "queued" || (j.Status == "processing" && j.UpdatedAt < staleBefore)))
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(j => j.Status, "processing")
-                    .SetProperty(j => j.UpdatedAt, claimedAt));
+                    .SetProperty(j => j.UpdatedAt, claimedAt),
+                    cancellationToken);
             if (claimed == 0)
             {
                 var existingStatus = await _context.ReceiptScanJobs
                     .AsNoTracking()
                     .Where(j => j.Id == jobId)
                     .Select(j => j.Status)
-                    .FirstOrDefaultAsync();
+                    .FirstOrDefaultAsync(cancellationToken);
                 return existingStatus switch
                 {
                     null => ReceiptScanProcessStatus.NotFound,
@@ -128,11 +131,13 @@ public class ReceiptScanProcessor
                     _ => ReceiptScanProcessStatus.InProgress
                 };
             }
-            job = await _context.ReceiptScanJobs.FirstOrDefaultAsync(j => j.Id == jobId);
+            job = await _context.ReceiptScanJobs
+                .FirstOrDefaultAsync(j => j.Id == jobId, cancellationToken);
         }
         else
         {
-            job = await _context.ReceiptScanJobs.FirstOrDefaultAsync(j => j.Id == jobId);
+            job = await _context.ReceiptScanJobs
+                .FirstOrDefaultAsync(j => j.Id == jobId, cancellationToken);
             if (job == null)
             {
                 _logger.LogWarning("Receipt scan job {JobId} was not found.", jobId);
@@ -145,7 +150,7 @@ public class ReceiptScanProcessor
                 return ReceiptScanProcessStatus.InProgress;
             job.Status = "processing";
             job.UpdatedAt = DateTime.UtcNow;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
         }
 
         if (job == null)
@@ -160,14 +165,14 @@ public class ReceiptScanProcessor
 
         if (string.IsNullOrWhiteSpace(job.StorageObjectPath))
         {
-            await MarkFailed(job, "Receipt image was not available for processing.");
+            await MarkFailed(job, "Receipt image was not available for processing.", cancellationToken);
             return ReceiptScanProcessStatus.Processed;
         }
 
         byte[]? imageData;
         try
         {
-            imageData = await _imageStore.DownloadAsync(job.StorageObjectPath);
+            imageData = await _imageStore.DownloadAsync(job.StorageObjectPath, cancellationToken);
         }
         catch (ReceiptImageStoreException)
         {
@@ -175,13 +180,13 @@ public class ReceiptScanProcessor
             // recovery loop) can retry a transient Storage API failure.
             job.Status = "queued";
             job.UpdatedAt = DateTime.UtcNow;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
             throw;
         }
 
         if (imageData is not { Length: > 0 })
         {
-            await MarkFailed(job, "Receipt image was not available for processing.");
+            await MarkFailed(job, "Receipt image was not available for processing.", cancellationToken);
             return ReceiptScanProcessStatus.Processed;
         }
 
@@ -190,14 +195,14 @@ public class ReceiptScanProcessor
             var encodedImage = Convert.ToBase64String(imageData);
             var outcome = job.ScanType switch
             {
-                "investment" => await ScanInvestmentImageAsync(encodedImage, job.MimeType),
-                "receipt-split" => await ScanReceiptSplitImageAsync(encodedImage, job.MimeType),
-                _ => await ScanReceiptImageAsync(encodedImage, job.MimeType)
+                "investment" => await ScanInvestmentImageAsync(encodedImage, job.MimeType, cancellationToken),
+                "receipt-split" => await ScanReceiptSplitImageAsync(encodedImage, job.MimeType, cancellationToken),
+                _ => await ScanReceiptImageAsync(encodedImage, job.MimeType, cancellationToken)
             };
             if (outcome.ErrorMessage != null)
             {
                 _logger.LogWarning("Receipt scan job {JobId} failed with user-facing error: {Message}", jobId, outcome.ErrorMessage);
-                await MarkFailed(job, outcome.ErrorMessage);
+                await MarkFailed(job, outcome.ErrorMessage, cancellationToken);
                 return ReceiptScanProcessStatus.Processed;
             }
 
@@ -209,45 +214,54 @@ public class ReceiptScanProcessor
             job.ErrorMessage = null;
             job.CompletedAt = DateTime.UtcNow;
             job.UpdatedAt = DateTime.UtcNow;
-            await _context.SaveChangesAsync();
-            await TryDeleteTerminalImageAsync(job);
+            await _context.SaveChangesAsync(cancellationToken);
+            await TryDeleteTerminalImageAsync(job, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (TaskCanceledException ex)
         {
             _logger.LogWarning(ex, "Receipt scan job {JobId} timed out.", jobId);
-            await MarkFailed(job, "AI service timed out. Please try again.");
+            await MarkFailed(job, "AI service timed out. Please try again.", cancellationToken);
         }
         catch (JsonException ex)
         {
             _logger.LogWarning(ex, "Receipt scan job {JobId} returned invalid JSON.", jobId);
-            await MarkFailed(job, "Could not read the receipt. Please try a clearer photo.");
+            await MarkFailed(job, "Could not read the receipt. Please try a clearer photo.", cancellationToken);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Unexpected error while processing receipt scan job {JobId}.", jobId);
-            await MarkFailed(job, "An unexpected error occurred. Please try again.");
+            await MarkFailed(job, "An unexpected error occurred. Please try again.", cancellationToken);
         }
 
         return ReceiptScanProcessStatus.Processed;
     }
 
-    private async Task MarkFailed(ReceiptScanJob job, string message)
+    private async Task MarkFailed(
+        ReceiptScanJob job,
+        string message,
+        CancellationToken cancellationToken)
     {
         job.Status = "failed";
         job.ErrorMessage = message;
         job.CompletedAt = DateTime.UtcNow;
         job.UpdatedAt = DateTime.UtcNow;
-        await _context.SaveChangesAsync();
-        await TryDeleteTerminalImageAsync(job);
+        await _context.SaveChangesAsync(cancellationToken);
+        await TryDeleteTerminalImageAsync(job, cancellationToken);
     }
 
-    private async Task TryDeleteTerminalImageAsync(ReceiptScanJob job)
+    private async Task TryDeleteTerminalImageAsync(
+        ReceiptScanJob job,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(job.StorageObjectPath)) return;
 
         try
         {
-            await _imageStore.DeleteIfExistsAsync(job.StorageObjectPath);
+            await _imageStore.DeleteIfExistsAsync(job.StorageObjectPath, cancellationToken);
         }
         catch (ReceiptImageStoreException exception)
         {
@@ -260,7 +274,11 @@ public class ReceiptScanProcessor
         job.StorageObjectPath = null;
         try
         {
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception exception)
         {
@@ -297,14 +315,17 @@ Rules:
 - fieldConfidence reports confidence separately for merchant, date, currency, subtotal, and total.
 - Never invent an item, amount, rate, charge rule, date, or currency. Use low confidence and null values for unclear fields.";
 
-    private async Task<ScanOutcome> ScanReceiptImageAsync(string base64Image, string mimeType)
+    private async Task<ScanOutcome> ScanReceiptImageAsync(
+        string base64Image,
+        string mimeType,
+        CancellationToken cancellationToken)
     {
         if (!_aiClient.IsConfigured)
         {
             return ScanOutcome.Failed("Receipt scanning is not configured for this app.");
         }
 
-        var categories = (await _categoryService.GetCategoriesAsync())
+        var categories = (await _categoryService.GetCategoriesAsync(cancellationToken))
             .Select(c => c.Name)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -329,7 +350,8 @@ Rules:
                     SystemInstruction: ScanSystemInstruction,
                     OutputJsonSchema: AiResponseSchemas.Receipt(categories),
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "OpenAiModels:ReceiptOcr"));
+                    ModelConfigurationKey: "OpenAiModels:ReceiptOcr"),
+                cancellationToken);
         }
         catch (AiClientException ex)
         {
@@ -371,12 +393,15 @@ Rules:
         return ScanOutcome.Ok(new ReceiptScanResult(description, amount, date, category, ledgerCategory, "outflow", confidence));
     }
 
-    private async Task<ScanOutcome> ScanReceiptSplitImageAsync(string base64Image, string mimeType)
+    private async Task<ScanOutcome> ScanReceiptSplitImageAsync(
+        string base64Image,
+        string mimeType,
+        CancellationToken cancellationToken)
     {
         if (!_aiClient.IsConfigured)
             return ScanOutcome.Failed("Receipt splitting is not configured for this app.");
 
-        var categories = (await _categoryService.GetCategoriesAsync())
+        var categories = (await _categoryService.GetCategoriesAsync(cancellationToken))
             .Select(c => c.Name)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -400,7 +425,8 @@ Rules:
                     SystemInstruction: ReceiptSplitScanSystemInstruction,
                     OutputJsonSchema: AiResponseSchemas.ReceiptSplit(categories),
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "OpenAiModels:ReceiptOcr"));
+                    ModelConfigurationKey: "OpenAiModels:ReceiptOcr"),
+                cancellationToken);
         }
         catch (AiClientException ex)
         {
@@ -504,7 +530,10 @@ Rules:
 - For dropdown fields, choose the single most confident supported option; otherwise return null.
 - Dates must be YYYY-MM-DD and must be visibly supported by the image.";
 
-    private async Task<ScanOutcome> ScanInvestmentImageAsync(string base64Image, string mimeType)
+    private async Task<ScanOutcome> ScanInvestmentImageAsync(
+        string base64Image,
+        string mimeType,
+        CancellationToken cancellationToken)
     {
         if (!_aiClient.IsConfigured)
             return ScanOutcome.Failed("Investment scanning is not configured for this app.");
@@ -513,7 +542,7 @@ Rules:
             .Where(value => !value.IsArchived)
             .OrderBy(value => value.Name)
             .Select(value => new { id = value.Id, name = value.Name, baseCurrency = value.BaseCurrency })
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         var instruments = await _context.InvestmentInstruments.AsNoTracking()
             .Where(value => !value.IsArchived)
             .OrderBy(value => value.Symbol)
@@ -525,7 +554,7 @@ Rules:
                 currency = value.Currency,
                 exchange = value.Exchange
             })
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         if (accounts.Count == 0)
             return ScanOutcome.Failed("Add an investment account before scanning activity.");
 
@@ -542,7 +571,8 @@ Rules:
                     SystemInstruction: InvestmentScanSystemInstruction,
                     OutputJsonSchema: AiResponseSchemas.InvestmentActivityScan,
                     ThinkingLevel: "low",
-                    ModelConfigurationKey: "OpenAiModels:ReceiptOcr"));
+                    ModelConfigurationKey: "OpenAiModels:ReceiptOcr"),
+                cancellationToken);
         }
         catch (AiClientException ex)
         {

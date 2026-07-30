@@ -154,7 +154,8 @@ public class SavingsGoalsController : ControllerBase
             Status = goal.Status,
             IsRecurring = goal.IsRecurring,
             RecurrenceMonths = goal.RecurrenceMonths,
-            LastFundedCycleKey = goal.LastFundedCycleKey,
+            CycleFundedKey = goal.CycleFundedKey,
+            CycleFundedAmount = ObfuscationHelper.Obfuscate(goal.CycleFundedAmount),
             CreatedAt = goal.CreatedAt,
             CompletedAt = goal.CompletedAt
         };
@@ -168,6 +169,7 @@ public class SavingsGoalsController : ControllerBase
             TotalEarmarked = ObfuscationHelper.Obfuscate(summary.TotalEarmarked),
             Unassigned = ObfuscationHelper.Obfuscate(summary.Unassigned),
             RequiredPerCycleTotal = ObfuscationHelper.Obfuscate(summary.RequiredPerCycleTotal),
+            OutstandingThisCycleTotal = ObfuscationHelper.Obfuscate(summary.OutstandingThisCycleTotal),
             CurrentCycleKey = summary.CurrentCycleKey
         };
     }
@@ -213,7 +215,8 @@ public class SavingsGoalDto
     public string Status { get; set; } = SavingsGoalStatus.Active;
     public bool IsRecurring { get; set; }
     public int RecurrenceMonths { get; set; }
-    public string? LastFundedCycleKey { get; set; }
+    public string? CycleFundedKey { get; set; }
+    public string CycleFundedAmount { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
 }
@@ -224,5 +227,6 @@ public class SavingsGoalPoolDto
     public string TotalEarmarked { get; set; } = string.Empty;
     public string Unassigned { get; set; } = string.Empty;
     public string RequiredPerCycleTotal { get; set; } = string.Empty;
+    public string OutstandingThisCycleTotal { get; set; } = string.Empty;
     public string CurrentCycleKey { get; set; } = string.Empty;
 }

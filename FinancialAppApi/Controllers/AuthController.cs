@@ -39,12 +39,15 @@ public class AuthController : ControllerBase
     // GET: api/auth/status
     [HttpGet("status")]
     public async Task<IActionResult> GetStatus([FromQuery] string? username = null) =>
-        await _authAccountService.GetStatusAsync(username);
+        await _authAccountService.GetStatusAsync(username, HttpContext.RequestAborted);
 
     // POST: api/auth/register
     [HttpPost("register")]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request) =>
-        await _authAccountService.RegisterAsync(request.Username, request.Password);
+        await _authAccountService.RegisterAsync(
+            request.Username,
+            request.Password,
+            HttpContext.RequestAborted);
 
     private void SetAuthCookie(string token)
     {
@@ -63,7 +66,8 @@ public class AuthController : ControllerBase
             request.DeviceId,
             request.DeviceName,
             GetClientIp(HttpContext),
-            HttpContext.Request.Headers["User-Agent"].ToString());
+            HttpContext.Request.Headers["User-Agent"].ToString(),
+            HttpContext.RequestAborted);
 
         if (result is OkObjectResult okResult && okResult.Value is not null)
         {
@@ -86,7 +90,8 @@ public class AuthController : ControllerBase
             request.PendingToken,
             request.Code,
             GetClientIp(HttpContext),
-            HttpContext.Request.Headers["User-Agent"].ToString());
+            HttpContext.Request.Headers["User-Agent"].ToString(),
+            HttpContext.RequestAborted);
 
         if (result is OkObjectResult okResult && okResult.Value is not null)
         {
@@ -119,7 +124,7 @@ public class AuthController : ControllerBase
     {
         if (Request.TryGetBearerToken(out var token) == BearerTokenResult.Ok)
         {
-            await _authSessionService.LogoutAsync(token);
+            await _authSessionService.LogoutAsync(token, HttpContext.RequestAborted);
         }
         ClearAuthCookie();
         return Ok(new { message = "Logged out successfully" });
@@ -131,7 +136,7 @@ public class AuthController : ControllerBase
     public async Task<IActionResult> LockSession()
     {
         if (Request.TryGetBearerToken(out var token) == BearerTokenResult.Ok &&
-            await _authSessionService.LockSessionAsync(token))
+            await _authSessionService.LockSessionAsync(token, HttpContext.RequestAborted))
         {
             return Ok(new { message = "Session locked" });
         }
@@ -150,7 +155,11 @@ public class AuthController : ControllerBase
     public async Task<IActionResult> VerifyPassword([FromBody] VerifyPasswordRequest request)
     {
         Request.TryGetBearerToken(out var currentToken);
-        return await _authAccountService.VerifyPasswordAsync(Username, request.Password, currentToken);
+        return await _authAccountService.VerifyPasswordAsync(
+            Username,
+            request.Password,
+            currentToken,
+            HttpContext.RequestAborted);
     }
 
     // GET: api/auth/sessions
@@ -164,7 +173,10 @@ public class AuthController : ControllerBase
         }
 
         Request.TryGetBearerToken(out var currentToken);
-        var sessions = await _authSessionService.GetSessionsAsync(Username, currentToken);
+        var sessions = await _authSessionService.GetSessionsAsync(
+            Username,
+            currentToken,
+            HttpContext.RequestAborted);
         return Ok(sessions);
     }
 
@@ -175,7 +187,11 @@ public class AuthController : ControllerBase
     {
         if (Request.TryGetBearerToken(out var token) == BearerTokenResult.Ok)
         {
-            await _authSessionService.HeartbeatAsync(token, GetClientIp(HttpContext), HttpContext.Request.Headers["User-Agent"].ToString());
+            await _authSessionService.HeartbeatAsync(
+                token,
+                GetClientIp(HttpContext),
+                HttpContext.Request.Headers["User-Agent"].ToString(),
+                HttpContext.RequestAborted);
         }
         return NoContent();
     }
@@ -190,7 +206,10 @@ public class AuthController : ControllerBase
             return Unauthorized();
         }
 
-        await _authSessionService.RevokeSessionAsync(Username, id);
+        await _authSessionService.RevokeSessionAsync(
+            Username,
+            id,
+            HttpContext.RequestAborted);
         return NoContent();
     }
 
@@ -205,7 +224,11 @@ public class AuthController : ControllerBase
         }
 
         Request.TryGetBearerToken(out var currentToken);
-        var revokedCount = await _authSessionService.RevokeAllSessionsAsync(Username, currentToken, keepCurrent);
+        var revokedCount = await _authSessionService.RevokeAllSessionsAsync(
+            Username,
+            currentToken,
+            keepCurrent,
+            HttpContext.RequestAborted);
         return Ok(new { revokedCount });
     }
 
@@ -215,18 +238,29 @@ public class AuthController : ControllerBase
     public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
     {
         Request.TryGetBearerToken(out var currentToken);
-        return await _authAccountService.ChangePasswordAsync(Username, request.CurrentPassword, request.NewPassword, currentToken);
+        return await _authAccountService.ChangePasswordAsync(
+            Username,
+            request.CurrentPassword,
+            request.NewPassword,
+            currentToken,
+            HttpContext.RequestAborted);
     }
 
     // GET: api/auth/2fa/status
     [AuthorizeToken]
     [HttpGet("2fa/status")]
-    public async Task<IActionResult> GetTwoFactorStatus() => await _authAccountService.GetTwoFactorStatusAsync(Username);
+    public async Task<IActionResult> GetTwoFactorStatus() =>
+        await _authAccountService.GetTwoFactorStatusAsync(
+            Username,
+            HttpContext.RequestAborted);
 
     // POST: api/auth/2fa/totp/setup
     [AuthorizeToken]
     [HttpPost("2fa/totp/setup")]
-    public async Task<IActionResult> SetupTotp() => await _authAccountService.SetupTotpAsync(Username);
+    public async Task<IActionResult> SetupTotp() =>
+        await _authAccountService.SetupTotpAsync(
+            Username,
+            HttpContext.RequestAborted);
 
     // POST: api/auth/2fa/totp/enable
     [AuthorizeToken]
@@ -234,26 +268,39 @@ public class AuthController : ControllerBase
     public async Task<IActionResult> EnableTotp([FromBody] VerifyCodeRequest request)
     {
         Request.TryGetBearerToken(out var currentToken);
-        return await _authAccountService.EnableTotpAsync(Username, request.Code, currentToken);
+        return await _authAccountService.EnableTotpAsync(
+            Username,
+            request.Code,
+            currentToken,
+            HttpContext.RequestAborted);
     }
 
     // POST: api/auth/2fa/totp/disable
     [AuthorizeToken]
     [HttpPost("2fa/totp/disable")]
     public async Task<IActionResult> DisableTotp([FromBody] DisableTotpRequest request) =>
-        await _authAccountService.DisableTotpAsync(Username, request.Password, request.Code);
+        await _authAccountService.DisableTotpAsync(
+            Username,
+            request.Password,
+            request.Code,
+            HttpContext.RequestAborted);
 
     // POST: api/auth/2fa/recovery-codes/regenerate
     [AuthorizeToken]
     [HttpPost("2fa/recovery-codes/regenerate")]
     public async Task<IActionResult> RegenerateRecoveryCodes([FromBody] RegenerateRecoveryCodesRequest request) =>
-        await _authAccountService.RegenerateRecoveryCodesAsync(Username, request.Password);
+        await _authAccountService.RegenerateRecoveryCodesAsync(
+            Username,
+            request.Password,
+            HttpContext.RequestAborted);
 
     // GET: api/auth/security-questions/setup-status
     [AuthorizeToken]
     [HttpGet("security-questions/setup-status")]
     public async Task<IActionResult> GetSecurityQuestionsSetupStatus() =>
-        await _authAccountService.GetSecurityQuestionsSetupStatusAsync(Username);
+        await _authAccountService.GetSecurityQuestionsSetupStatusAsync(
+            Username,
+            HttpContext.RequestAborted);
 
     // GET: api/auth/security-questions/available
     [HttpGet("security-questions/available")]
@@ -264,17 +311,26 @@ public class AuthController : ControllerBase
     [AuthorizeToken]
     [HttpPost("security-questions/setup")]
     public async Task<IActionResult> SetupSecurityQuestions([FromBody] SetupSecurityQuestionsRequest request) =>
-        await _authAccountService.SetupSecurityQuestionsAsync(Username, request.Answers);
+        await _authAccountService.SetupSecurityQuestionsAsync(
+            Username,
+            request.Answers,
+            HttpContext.RequestAborted);
 
     // POST: api/auth/security-questions/recovery/start
     [HttpPost("security-questions/recovery/start")]
     public async Task<IActionResult> StartSecurityQuestionsRecovery([FromBody] SecurityQuestionsRecoveryStartRequest request) =>
-        await _authAccountService.GetSecurityQuestionsForRecoveryAsync(request.Username);
+        await _authAccountService.GetSecurityQuestionsForRecoveryAsync(
+            request.Username,
+            HttpContext.RequestAborted);
 
     // POST: api/auth/security-questions/recovery/reset
     [HttpPost("security-questions/recovery/reset")]
     public async Task<IActionResult> ResetPasswordViaSecurityQuestions([FromBody] SecurityQuestionsRecoveryResetRequest request) =>
-        await _authAccountService.VerifySecurityQuestionsAndResetPasswordAsync(request.Username, request.Answers, request.NewPassword);
+        await _authAccountService.VerifySecurityQuestionsAndResetPasswordAsync(
+            request.Username,
+            request.Answers,
+            request.NewPassword,
+            HttpContext.RequestAborted);
 }
 
 public class RegisterRequest

@@ -69,13 +69,23 @@ public class BootstrapController : ControllerBase
 
         // Resolve (and optionally persist) the active cycle once. Everything below is then
         // built for one explicit period, which is what removes the client-side waterfall.
-        var (month, year) = await _financialService.ResolveActivePeriodAsync(
-            queryMonth, queryYear, persistSelection);
+        var snapshot = await _financialService.CreateBootstrapSnapshotAsync(
+            queryMonth,
+            queryYear,
+            persistSelection,
+            cancellationToken);
+        var month = snapshot.Cycle.ActiveMonth;
+        var year = snapshot.Cycle.ActiveYear;
 
         // persistSelection: false — the line above is the writer of record for this request,
         // so the dashboard call must not redundantly re-save the same values.
-        var dashboard = await _financialService.GetDashboardDataAsync(month, year, persistSelection: false);
-        var insights = await _financialService.GetDashboardInsightsAsync(month, year);
+        var dashboard = await _financialService.GetDashboardDataAsync(
+            snapshot,
+            summaryOnly: false,
+            cancellationToken);
+        var insights = await _financialService.GetDashboardInsightsAsync(
+            snapshot.Cycle,
+            cancellationToken);
 
         var transactions = await _transactionQueryService.GetTransactionsAsync(
             month, year, false, 1, 10, null, null, null, null, null, null, null, null, false, false, null,
@@ -84,11 +94,11 @@ public class BootstrapController : ControllerBase
         var recurringPayments = await RecurringPaymentsController.BuildRecurringPaymentDtosAsync(
             _recurringPaymentService, _payEarlyService, cancellationToken);
 
-        var categories = await _categoryService.GetCategoriesAsync();
+        var categories = await _categoryService.GetCategoriesAsync(cancellationToken);
         var wishlist = await _wishlistService.GetWishlistAsync(cancellationToken);
         var savingsGoals = await _savingsGoalService.GetGoalsAsync(cancellationToken);
         var autocomplete = await _transactionQueryService.GetAutocompleteSuggestionsAsync(cancellationToken);
-        var walletBalance = await _financialService.GetWalletBalanceAsync();
+        var walletBalance = await _financialService.GetWalletBalanceAsync(snapshot, cancellationToken);
 
         return Ok(new
         {

@@ -23,20 +23,24 @@ public class WebAuthnService
         _authSessionService = authSessionService;
     }
 
-    public async Task<IActionResult> RegisterOptionsAsync(string? username, string? requestOrigin, string fallbackOrigin)
+    public async Task<IActionResult> RegisterOptionsAsync(
+        string? username,
+        string? requestOrigin,
+        string fallbackOrigin,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(username))
         {
             return new UnauthorizedObjectResult(new { message = "User not found in session" });
         }
 
-        await CleanupExpiredChallengesAsync();
+        await CleanupExpiredChallengesAsync(cancellationToken);
         var userId = _context.RequireCurrentUserId();
 
         var existingCredentialIds = await _context.WebAuthnCredentials
             .Where(c => c.UserId == userId)
             .Select(c => c.CredentialId)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         var fido2 = BuildFido2(requestOrigin, fallbackOrigin);
         var options = fido2.RequestNewCredential(new RequestNewCredentialParams
@@ -67,7 +71,7 @@ public class WebAuthnService
             OptionsJson = options.ToJson(),
             ExpiresAt = DateTime.UtcNow.Add(ChallengeLifetime)
         });
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
         return new OkObjectResult(new { challengeId, options });
     }
@@ -78,7 +82,8 @@ public class WebAuthnService
         AuthenticatorAttestationRawResponse credential,
         string? deviceLabel,
         string? requestOrigin,
-        string fallbackOrigin)
+        string fallbackOrigin,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(username))
         {
@@ -86,7 +91,11 @@ public class WebAuthnService
         }
 
         var userId = _context.RequireCurrentUserId();
-        var challenge = await ClaimChallengeAsync(challengeId, "register", userId);
+        var challenge = await ClaimChallengeAsync(
+            challengeId,
+            "register",
+            userId,
+            cancellationToken);
         if (challenge == null)
         {
             return new BadRequestObjectResult(new { message = "Registration challenge expired or invalid. Please try again." });
@@ -123,7 +132,7 @@ public class WebAuthnService
             DeviceLabel = deviceLabel,
             CreatedAt = DateTime.UtcNow
         });
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
         return new OkObjectResult(new { message = "Device unlock set up successfully." });
     }
@@ -131,11 +140,12 @@ public class WebAuthnService
     public async Task<IActionResult> LoginOptionsAsync(
         string? requestOrigin,
         string fallbackOrigin,
-        string? username = null)
+        string? username = null,
+        CancellationToken cancellationToken = default)
     {
-        await CleanupExpiredChallengesAsync();
+        await CleanupExpiredChallengesAsync(cancellationToken);
 
-        if (!await _context.AppUsers.AnyAsync())
+        if (!await _context.AppUsers.AnyAsync(cancellationToken))
         {
             return new BadRequestObjectResult(new { message = "No account registered." });
         }
@@ -145,7 +155,10 @@ public class WebAuthnService
         List<AppUser> candidates;
         if (string.IsNullOrWhiteSpace(username))
         {
-            candidates = await usersWithCredentials.OrderBy(user => user.Id).Take(2).ToListAsync();
+            candidates = await usersWithCredentials
+                .OrderBy(user => user.Id)
+                .Take(2)
+                .ToListAsync(cancellationToken);
             if (candidates.Count > 1)
             {
                 return new BadRequestObjectResult(new
@@ -160,7 +173,7 @@ public class WebAuthnService
             candidates = await usersWithCredentials
                 .Where(user => user.NormalizedUsername == normalizedUsername)
                 .Take(1)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
         }
 
         var user = candidates.SingleOrDefault();
@@ -172,7 +185,7 @@ public class WebAuthnService
         var credentials = await _context.WebAuthnCredentials
             .Where(c => c.UserId == user.Id)
             .Select(c => c.CredentialId)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         var fido2 = BuildFido2(requestOrigin, fallbackOrigin);
         var options = fido2.GetAssertionOptions(new GetAssertionOptionsParams
@@ -191,7 +204,7 @@ public class WebAuthnService
             OptionsJson = options.ToJson(),
             ExpiresAt = DateTime.UtcNow.Add(ChallengeLifetime)
         });
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
         return new OkObjectResult(new { challengeId, options });
     }
@@ -204,26 +217,38 @@ public class WebAuthnService
         string? ipAddress,
         string? userAgent,
         string? requestOrigin,
-        string fallbackOrigin)
+        string fallbackOrigin,
+        CancellationToken cancellationToken = default)
     {
-        var challenge = await ClaimChallengeAsync(challengeId, "login");
+        var challenge = await ClaimChallengeAsync(
+            challengeId,
+            "login",
+            cancellationToken: cancellationToken);
         if (challenge == null)
         {
             return new UnauthorizedObjectResult(new { message = "Login challenge expired or invalid. Please try again." });
         }
 
         var storedCred = await _context.WebAuthnCredentials
-            .FirstOrDefaultAsync(c => c.CredentialId == credential.RawId);
+            .FirstOrDefaultAsync(c => c.CredentialId == credential.RawId, cancellationToken);
         var user = storedCred == null
             ? null
-            : await _context.AppUsers.FirstOrDefaultAsync(u => u.Id == storedCred.UserId);
+            : await _context.AppUsers.FirstOrDefaultAsync(
+                u => u.Id == storedCred.UserId,
+                cancellationToken);
         if (storedCred == null || user == null ||
             !string.Equals(challenge.UserId, user.Id, StringComparison.Ordinal))
         {
             return new UnauthorizedObjectResult(new { message = "Unrecognized device credential." });
         }
 
-        var verifyResult = await VerifyAssertionAsync(storedCred, credential, challenge.OptionsJson, requestOrigin, fallbackOrigin);
+        var verifyResult = await VerifyAssertionAsync(
+            storedCred,
+            credential,
+            challenge.OptionsJson,
+            requestOrigin,
+            fallbackOrigin,
+            cancellationToken);
         if (verifyResult != null)
         {
             return verifyResult;
@@ -235,27 +260,32 @@ public class WebAuthnService
             deviceName,
             ipAddress,
             userAgent,
-            storedCred.CredentialId);
+            storedCred.CredentialId,
+            cancellationToken);
 
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
         return new OkObjectResult(new { token = session.Token, username = storedCred.Username, hasSetupSecurityQuestions = user.HasSetupSecurityQuestions });
     }
 
-    public async Task<IActionResult> AssertOptionsAsync(string? username, string? requestOrigin, string fallbackOrigin)
+    public async Task<IActionResult> AssertOptionsAsync(
+        string? username,
+        string? requestOrigin,
+        string fallbackOrigin,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(username))
         {
             return new UnauthorizedObjectResult(new { message = "User not found in session" });
         }
 
-        await CleanupExpiredChallengesAsync();
+        await CleanupExpiredChallengesAsync(cancellationToken);
         var userId = _context.RequireCurrentUserId();
 
         var credentials = await _context.WebAuthnCredentials
             .Where(c => c.UserId == userId)
             .Select(c => c.CredentialId)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         if (credentials.Count == 0)
         {
             return new BadRequestObjectResult(new { message = "Device unlock is not set up yet." });
@@ -278,7 +308,7 @@ public class WebAuthnService
             OptionsJson = options.ToJson(),
             ExpiresAt = DateTime.UtcNow.Add(ChallengeLifetime)
         });
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
 
         return new OkObjectResult(new { challengeId, options });
     }
@@ -289,7 +319,8 @@ public class WebAuthnService
         AuthenticatorAssertionRawResponse credential,
         string? currentToken,
         string? requestOrigin,
-        string fallbackOrigin)
+        string fallbackOrigin,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(username))
         {
@@ -297,43 +328,60 @@ public class WebAuthnService
         }
 
         var userId = _context.RequireCurrentUserId();
-        var challenge = await ClaimChallengeAsync(challengeId, "assert", userId);
+        var challenge = await ClaimChallengeAsync(
+            challengeId,
+            "assert",
+            userId,
+            cancellationToken);
         if (challenge == null)
         {
             return new UnauthorizedObjectResult(new { message = "Verification challenge expired or invalid. Please try again." });
         }
 
         var storedCred = await _context.WebAuthnCredentials
-            .FirstOrDefaultAsync(c => c.CredentialId == credential.RawId && c.UserId == userId);
+            .FirstOrDefaultAsync(
+                c => c.CredentialId == credential.RawId && c.UserId == userId,
+                cancellationToken);
         if (storedCred == null)
         {
             return new UnauthorizedObjectResult(new { message = "Unrecognized device credential." });
         }
 
-        var verifyResult = await VerifyAssertionAsync(storedCred, credential, challenge.OptionsJson, requestOrigin, fallbackOrigin);
+        var verifyResult = await VerifyAssertionAsync(
+            storedCred,
+            credential,
+            challenge.OptionsJson,
+            requestOrigin,
+            fallbackOrigin,
+            cancellationToken);
         if (verifyResult != null)
         {
             return verifyResult;
         }
 
-        await _authSessionService.UnlockSessionAsync(currentToken);
-        await _context.SaveChangesAsync();
+        await _authSessionService.UnlockSessionAsync(currentToken, cancellationToken);
+        await _context.SaveChangesAsync(cancellationToken);
 
         return new OkObjectResult(new { verified = true });
     }
 
-    public async Task<IActionResult> ListCredentialsAsync(string? username)
+    public async Task<IActionResult> ListCredentialsAsync(
+        string? username,
+        CancellationToken cancellationToken = default)
     {
         var userId = _context.RequireCurrentUserId();
         var creds = await _context.WebAuthnCredentials
             .Where(c => c.UserId == userId)
             .OrderBy(c => c.CreatedAt)
             .Select(c => new { id = Convert.ToHexString(c.CredentialId), deviceLabel = c.DeviceLabel, createdAt = c.CreatedAt })
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         return new OkObjectResult(creds);
     }
 
-    public async Task<IActionResult> DeleteCredentialAsync(string? username, string id)
+    public async Task<IActionResult> DeleteCredentialAsync(
+        string? username,
+        string id,
+        CancellationToken cancellationToken = default)
     {
         byte[] credentialId;
         try
@@ -347,14 +395,16 @@ public class WebAuthnService
 
         var userId = _context.RequireCurrentUserId();
         var cred = await _context.WebAuthnCredentials
-            .FirstOrDefaultAsync(c => c.CredentialId == credentialId && c.UserId == userId);
+            .FirstOrDefaultAsync(
+                c => c.CredentialId == credentialId && c.UserId == userId,
+                cancellationToken);
         if (cred == null)
         {
             return new NotFoundObjectResult(new { message = "Credential not found." });
         }
 
         _context.WebAuthnCredentials.Remove(cred);
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
         return new OkObjectResult(new { message = "Device unlock credential removed." });
     }
 
@@ -363,7 +413,8 @@ public class WebAuthnService
         AuthenticatorAssertionRawResponse credential,
         string optionsJson,
         string? requestOrigin,
-        string fallbackOrigin)
+        string fallbackOrigin,
+        CancellationToken cancellationToken)
     {
         var options = AssertionOptions.FromJson(optionsJson);
         var fido2 = BuildFido2(requestOrigin, fallbackOrigin);
@@ -375,6 +426,7 @@ public class WebAuthnService
         dynamic result;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             result = await fido2.MakeAssertionAsync(new MakeAssertionParams
             {
                 AssertionResponse = credential,
@@ -432,7 +484,8 @@ public class WebAuthnService
     private async Task<WebAuthnChallenge?> ClaimChallengeAsync(
         string challengeId,
         string purpose,
-        string? userId = null)
+        string? userId = null,
+        CancellationToken cancellationToken = default)
     {
         var now = DateTime.UtcNow;
         var query = _context.WebAuthnChallenges
@@ -442,34 +495,34 @@ public class WebAuthnService
             query = query.Where(challenge => challenge.UserId == userId);
         }
 
-        var challenge = await query.AsNoTracking().FirstOrDefaultAsync();
+        var challenge = await query.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
         if (challenge == null || challenge.ExpiresAt < now) return null;
 
         if (_context.Database.IsRelational())
         {
             var claimed = await query
                 .Where(candidate => candidate.ExpiresAt >= now)
-                .ExecuteDeleteAsync();
+                .ExecuteDeleteAsync(cancellationToken);
             return claimed == 1 ? challenge : null;
         }
 
         _context.WebAuthnChallenges.Remove(challenge);
-        await _context.SaveChangesAsync();
+        await _context.SaveChangesAsync(cancellationToken);
         return challenge;
     }
 
-    private async Task CleanupExpiredChallengesAsync()
+    private async Task CleanupExpiredChallengesAsync(CancellationToken cancellationToken)
     {
         var userId = _context.CurrentUserId;
         var expired = await _context.WebAuthnChallenges
             .Where(c => c.ExpiresAt < DateTime.UtcNow && (userId == null || c.UserId == userId))
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         if (expired.Count > 0)
         {
             _context.WebAuthnChallenges.RemoveRange(expired);
             try
             {
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(cancellationToken);
             }
             catch (DbUpdateConcurrencyException exception)
             {

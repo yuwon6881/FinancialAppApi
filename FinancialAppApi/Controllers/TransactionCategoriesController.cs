@@ -30,7 +30,7 @@ public class TransactionCategoriesController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<IEnumerable<object>>> GetCategories()
     {
-        var categories = await _categoryService.GetCategoriesAsync();
+        var categories = await _categoryService.GetCategoriesAsync(HttpContext.RequestAborted);
         return Ok(categories.Select(ToResponse).ToList());
     }
 

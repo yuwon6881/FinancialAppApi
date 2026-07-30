@@ -21,7 +21,7 @@ public class FinancialController : ControllerBase
     [HttpGet("wallet-balance")]
     public async Task<ActionResult<object>> GetWalletBalance()
     {
-        return Ok(await _financialService.GetWalletBalanceAsync());
+        return Ok(await _financialService.GetWalletBalanceAsync(HttpContext.RequestAborted));
     }
 
     // GET: api/financial/dashboard
@@ -34,7 +34,12 @@ public class FinancialController : ControllerBase
     {
         if (!IsValidPeriod(queryMonth, queryYear))
             return BadRequest(new { message = "Month must be a valid three-letter abbreviation and include a year." });
-        return Ok(await _financialService.GetDashboardDataAsync(queryMonth, queryYear, persistSelection, summaryOnly));
+        return Ok(await _financialService.GetDashboardDataAsync(
+            queryMonth,
+            queryYear,
+            persistSelection,
+            summaryOnly,
+            HttpContext.RequestAborted));
     }
 
     // GET: api/financial/dashboard/insights
@@ -45,7 +50,10 @@ public class FinancialController : ControllerBase
     {
         if (!IsValidPeriod(queryMonth, queryYear))
             return BadRequest(new { message = "Month must be a valid three-letter abbreviation and include a year." });
-        return Ok(await _financialService.GetDashboardInsightsAsync(queryMonth, queryYear));
+        return Ok(await _financialService.GetDashboardInsightsAsync(
+            queryMonth,
+            queryYear,
+            HttpContext.RequestAborted));
     }
 
     // PUT: api/financial/settings
@@ -63,7 +71,8 @@ public class FinancialController : ControllerBase
             updateDto.HideSensitive,
             updateDto.VibrationEnabled,
             updateDto.Currency,
-            updateDto.StabilityOverflowRedirect));
+            updateDto.StabilityOverflowRedirect),
+            HttpContext.RequestAborted);
         if (validationError != null)
         {
             return BadRequest(new { message = validationError });
@@ -75,7 +84,7 @@ public class FinancialController : ControllerBase
     [HttpPut("dark-mode")]
     public async Task<IActionResult> UpdateDarkMode([FromBody] UpdateDarkModeDto dto)
     {
-        await _financialService.UpdateDarkModeAsync(dto.DarkMode);
+        await _financialService.UpdateDarkModeAsync(dto.DarkMode, HttpContext.RequestAborted);
         return NoContent();
     }
 
@@ -83,7 +92,7 @@ public class FinancialController : ControllerBase
     [HttpPut("hide-sensitive")]
     public async Task<IActionResult> UpdateHideSensitive([FromBody] UpdateHideSensitiveDto dto)
     {
-        await _financialService.UpdateHideSensitiveAsync(dto.HideSensitive);
+        await _financialService.UpdateHideSensitiveAsync(dto.HideSensitive, HttpContext.RequestAborted);
         return NoContent();
     }
 
@@ -91,7 +100,7 @@ public class FinancialController : ControllerBase
     [HttpPut("vibration")]
     public async Task<IActionResult> UpdateVibration([FromBody] UpdateVibrationDto dto)
     {
-        await _financialService.UpdateVibrationAsync(dto.VibrationEnabled);
+        await _financialService.UpdateVibrationAsync(dto.VibrationEnabled, HttpContext.RequestAborted);
         return NoContent();
     }
 
@@ -104,7 +113,7 @@ public class FinancialController : ControllerBase
         {
             return BadRequest(new { message = "Cycle key must be in yyyy-MM format." });
         }
-        await _financialService.UpdateSummarySeenAsync(dto.CycleKey);
+        await _financialService.UpdateSummarySeenAsync(dto.CycleKey, HttpContext.RequestAborted);
         return NoContent();
     }
 
@@ -114,7 +123,10 @@ public class FinancialController : ControllerBase
     {
         if (!IsValidPeriod(periodDto.SelectedMonth, periodDto.SelectedYear))
             return BadRequest(new { message = "Month must be a valid three-letter abbreviation and include a year." });
-        await _financialService.SelectPeriodAsync(periodDto.SelectedMonth, periodDto.SelectedYear);
+        await _financialService.SelectPeriodAsync(
+            periodDto.SelectedMonth,
+            periodDto.SelectedYear,
+            HttpContext.RequestAborted);
         return NoContent();
     }
 

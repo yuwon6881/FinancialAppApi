@@ -195,6 +195,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.Property(e => e.TargetAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.EarmarkedAmount).HasColumnType("numeric(12,2)").HasDefaultValue(0m);
+            entity.Property(e => e.CycleFundedAmount).HasColumnType("numeric(12,2)").HasDefaultValue(0m);
             entity.Property(e => e.TargetDate).HasColumnType("date");
             entity.Property(e => e.Priority).HasDefaultValue("Medium");
             entity.Property(e => e.Status).HasDefaultValue(SavingsGoalStatus.Active);

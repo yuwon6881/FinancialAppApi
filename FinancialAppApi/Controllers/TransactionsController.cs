@@ -112,7 +112,11 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "recurringOnly")] bool recurringOnly = false,
         [FromQuery(Name = "wishlistOnly")] bool wishlistOnly = false)
     {
-        var export = await _transactionQueryService.ExportTransactionsAsync(
+        Response.ContentType = "text/csv; charset=utf-8";
+        Response.Headers.ContentDisposition =
+            $"attachment; filename=\"{_transactionQueryService.GetTransactionsExportFileName()}\"";
+        await _transactionQueryService.WriteTransactionsCsvAsync(
+            Response.Body,
             search,
             ledgerCategory,
             category,
@@ -124,14 +128,16 @@ public class TransactionsController : ControllerBase
             recurringOnly,
             wishlistOnly,
             HttpContext.RequestAborted);
-        return File(export.Bytes, "text/csv", export.FileName);
+        return new EmptyResult();
     }
 
     // POST: api/transactions
     [HttpPost]
     public async Task<ActionResult<TransactionDto>> PostTransaction(TransactionDto dto)
     {
-        var result = await _transactionPersistenceService.CreateTransactionAsync(ToMutationRequest(dto));
+        var result = await _transactionPersistenceService.CreateTransactionAsync(
+            ToMutationRequest(dto),
+            HttpContext.RequestAborted);
         if (result.Status is TransactionMutationStatus.InvalidDate or TransactionMutationStatus.InvalidAmount)
         {
             return BadRequest(new { message = result.Message });
@@ -160,7 +166,10 @@ public class TransactionsController : ControllerBase
     [HttpPut("{id}")]
     public async Task<IActionResult> PutTransaction(string id, TransactionDto dto)
     {
-        var result = await _transactionPersistenceService.UpdateTransactionAsync(id, ToMutationRequest(dto));
+        var result = await _transactionPersistenceService.UpdateTransactionAsync(
+            id,
+            ToMutationRequest(dto),
+            HttpContext.RequestAborted);
         if (result.Status == TransactionMutationStatus.NotFound)
         {
             return NotFound();
@@ -181,7 +190,9 @@ public class TransactionsController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteTransaction(string id)
     {
-        var result = await _transactionPersistenceService.DeleteTransactionAsync(id);
+        var result = await _transactionPersistenceService.DeleteTransactionAsync(
+            id,
+            HttpContext.RequestAborted);
         if (result.Status == TransactionMutationStatus.NotFound)
         {
             return NotFound();

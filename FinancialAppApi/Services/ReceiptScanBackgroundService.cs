@@ -50,7 +50,11 @@ public class ReceiptScanBackgroundService : BackgroundService
             {
                 using var scope = _scopeFactory.CreateScope();
                 var processor = scope.ServiceProvider.GetRequiredService<ReceiptScanProcessor>();
-                await processor.ProcessAsync(jobId);
+                await processor.ProcessAsync(jobId, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
             }
             catch (Exception ex)
             {

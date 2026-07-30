@@ -52,18 +52,21 @@ public class TransactionPersistenceService
         _occurrenceService = occurrenceService;
     }
 
-    public async Task<TransactionMutationResult> CreateTransactionAsync(TransactionMutationRequest request)
+    public async Task<TransactionMutationResult> CreateTransactionAsync(
+        TransactionMutationRequest request,
+        CancellationToken cancellationToken = default)
     {
         if (!string.IsNullOrWhiteSpace(request.Id))
         {
-            var existingTx = await _context.Transactions.FirstOrDefaultAsync(t => t.Id == request.Id);
+            var existingTx = await _context.Transactions
+                .FirstOrDefaultAsync(t => t.Id == request.Id, cancellationToken);
             if (existingTx != null)
             {
                 return new TransactionMutationResult(TransactionMutationStatus.Existing, existingTx);
             }
         }
 
-        if (!await TransactionCategoryExistsAsync(request.Category))
+        if (!await TransactionCategoryExistsAsync(request.Category, cancellationToken))
         {
             return InvalidCategory(request.Category);
         }
@@ -93,22 +96,25 @@ public class TransactionPersistenceService
             RecurringPaymentId = request.RecurringPaymentId,
             WishlistItemId = request.WishlistItemId
         };
-        var occurrence = await ResolveRecurringOccurrenceDateAsync(transaction, request.RecurringOccurrenceDate);
+        var occurrence = await ResolveRecurringOccurrenceDateAsync(
+            transaction,
+            request.RecurringOccurrenceDate,
+            cancellationToken);
         if (!occurrence.IsValid)
         {
             return new TransactionMutationResult(TransactionMutationStatus.InvalidRecurringOccurrence, Message: occurrence.Message);
         }
         transaction.RecurringOccurrenceDate = occurrence.Date;
 
-        var splitSpec = await ResolveIncomeSplitSpecAsync(transaction);
+        var splitSpec = await ResolveIncomeSplitSpecAsync(transaction, cancellationToken);
 
         _context.Transactions.Add(transaction);
         AddIncomeSplitTransactions(transaction, splitSpec);
-        await ApplyWishlistPurchaseLinkAsync(transaction);
+        await ApplyWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
         try
         {
-            await SaveAndInvalidateCycleBalancesAsync(transaction.Date);
+            await SaveAndInvalidateCycleBalancesAsync(transaction.Date, cancellationToken);
         }
         catch (DbUpdateException ex) when (ex.IsUniqueViolation() && transaction.RecurringOccurrenceDate != null)
         {
@@ -118,15 +124,18 @@ public class TransactionPersistenceService
         return new TransactionMutationResult(TransactionMutationStatus.Created, transaction);
     }
 
-    public async Task<TransactionMutationResult> UpdateTransactionAsync(string id, TransactionMutationRequest request)
+    public async Task<TransactionMutationResult> UpdateTransactionAsync(
+        string id,
+        TransactionMutationRequest request,
+        CancellationToken cancellationToken = default)
     {
-        var transaction = await _context.Transactions.FindAsync(id);
+        var transaction = await _context.Transactions.FindAsync([id], cancellationToken);
         if (transaction == null)
         {
             return new TransactionMutationResult(TransactionMutationStatus.NotFound);
         }
 
-        if (!await TransactionCategoryExistsAsync(request.Category))
+        if (!await TransactionCategoryExistsAsync(request.Category, cancellationToken))
         {
             return InvalidCategory(request.Category);
         }
@@ -148,7 +157,7 @@ public class TransactionPersistenceService
 
         var existingSplits = await _context.Transactions
             .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         _context.Transactions.RemoveRange(existingSplits);
 
         transaction.Date = TransactionDate.PreserveTimeWhenSameDate(transaction.Date, putDate);
@@ -159,27 +168,31 @@ public class TransactionPersistenceService
         transaction.RecurringPaymentId = request.RecurringPaymentId ?? transaction.RecurringPaymentId;
         transaction.WishlistItemId = request.WishlistItemId ?? transaction.WishlistItemId;
 
-        var splitSpec = await ResolveIncomeSplitSpecAsync(transaction);
+        var splitSpec = await ResolveIncomeSplitSpecAsync(transaction, cancellationToken);
         AddIncomeSplitTransactions(transaction, splitSpec);
-        await ApplyWishlistPurchaseLinkAsync(transaction);
+        await ApplyWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
-        await SaveAndInvalidateCycleBalancesAsync(originalDate < transaction.Date ? originalDate : transaction.Date);
+        await SaveAndInvalidateCycleBalancesAsync(
+            originalDate < transaction.Date ? originalDate : transaction.Date,
+            cancellationToken);
         return new TransactionMutationResult(TransactionMutationStatus.Updated, transaction);
     }
 
-    public async Task<TransactionMutationResult> DeleteTransactionAsync(string id)
+    public async Task<TransactionMutationResult> DeleteTransactionAsync(
+        string id,
+        CancellationToken cancellationToken = default)
     {
-        var transaction = await _context.Transactions.FindAsync(id);
+        var transaction = await _context.Transactions.FindAsync([id], cancellationToken);
         if (transaction == null)
         {
             return new TransactionMutationResult(TransactionMutationStatus.NotFound);
         }
 
-        await ClearWishlistPurchaseLinkAsync(transaction);
+        await ClearWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
         var attachedDocuments = await _context.VaultDocuments
             .Where(document => document.TransactionId == id)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         foreach (var document in attachedDocuments)
         {
             document.TransactionId = null;
@@ -187,11 +200,11 @@ public class TransactionPersistenceService
 
         var splits = await _context.Transactions
             .Where(t => t.Id.StartsWith(id + "-split-"))
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
         _context.Transactions.RemoveRange(splits);
 
         _context.Transactions.Remove(transaction);
-        await SaveAndInvalidateCycleBalancesAsync(transaction.Date);
+        await SaveAndInvalidateCycleBalancesAsync(transaction.Date, cancellationToken);
 
         return new TransactionMutationResult(TransactionMutationStatus.Deleted, transaction);
     }
@@ -201,7 +214,8 @@ public class TransactionPersistenceService
     // occurrence. Legacy/manual transactions (no match, or no RecurringPaymentId) keep this null.
     private async Task<(bool IsValid, DateOnly? Date, string? Message)> ResolveRecurringOccurrenceDateAsync(
         Transaction transaction,
-        string? requestedOccurrenceDate)
+        string? requestedOccurrenceDate,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(transaction.RecurringPaymentId))
         {
@@ -211,7 +225,7 @@ public class TransactionPersistenceService
         }
 
         var payment = await _context.RecurringPayments.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == transaction.RecurringPaymentId);
+            .FirstOrDefaultAsync(p => p.Id == transaction.RecurringPaymentId, cancellationToken);
         if (payment == null)
         {
             return string.IsNullOrWhiteSpace(requestedOccurrenceDate)
@@ -219,7 +233,8 @@ public class TransactionPersistenceService
                 : (false, null, "The recurring payment could not be found.");
         }
 
-        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
+        var setting = await _context.FinancialSettings.AsNoTracking()
+            .FirstOrDefaultAsync(cancellationToken);
         var cycleDay = setting?.CycleDay ?? 1;
 
         var transactionDate = TransactionDate.ToDateOnly(transaction.Date);
@@ -260,39 +275,47 @@ public class TransactionPersistenceService
         // path from failing outright on that edge case, which the dedicated pay-early flow
         // already rejects explicitly.
         var alreadySettled = await _context.Transactions.AnyAsync(t =>
-            t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate == matchedOccurrence);
+            t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate == matchedOccurrence,
+            cancellationToken);
 
         return alreadySettled
             ? (false, null, "This recurring occurrence has already been settled.")
             : (true, matchedOccurrence, null);
     }
 
-    private async Task InvalidateCycleBalancesFromAsync(DateTime date)
+    private async Task InvalidateCycleBalancesFromAsync(
+        DateTime date,
+        CancellationToken cancellationToken)
     {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
         if (setting == null) return;
 
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(date), setting.CycleDay);
-        await _cycleBalanceService.InvalidateFromAsync(year, monthIndex);
+        await _cycleBalanceService.InvalidateFromAsync(year, monthIndex, cancellationToken);
     }
 
-    private async Task SaveAndInvalidateCycleBalancesAsync(DateTime earliestAffectedDate)
+    private async Task SaveAndInvalidateCycleBalancesAsync(
+        DateTime earliestAffectedDate,
+        CancellationToken cancellationToken)
     {
         var strategy = _context.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
-            await using var dbTransaction = await _context.Database.BeginTransactionAsync();
-            await _context.SaveChangesAsync();
-            await InvalidateCycleBalancesFromAsync(earliestAffectedDate);
-            await dbTransaction.CommitAsync();
+            cancellationToken.ThrowIfCancellationRequested();
+            await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken);
+            await InvalidateCycleBalancesFromAsync(earliestAffectedDate, cancellationToken);
+            await dbTransaction.CommitAsync(cancellationToken);
         });
     }
 
-    private async Task<string> ResolveIncomeSplitSpecAsync(Transaction transaction)
+    private async Task<string> ResolveIncomeSplitSpecAsync(
+        Transaction transaction,
+        CancellationToken cancellationToken)
     {
         if (string.Equals(transaction.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
         {
-            var setting = await _context.FinancialSettings.FirstOrDefaultAsync();
+            var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
             if (setting != null)
             {
                 return $"{setting.EssentialsAlloc * 100:0.##},{setting.GrowthAlloc * 100:0.##},{setting.StabilityAlloc * 100:0.##},{setting.RewardsAlloc * 100:0.##}";
@@ -375,11 +398,15 @@ public class TransactionPersistenceService
         }
     }
 
-    private async Task ApplyWishlistPurchaseLinkAsync(Transaction transaction)
+    private async Task ApplyWishlistPurchaseLinkAsync(
+        Transaction transaction,
+        CancellationToken cancellationToken)
     {
         if (!transaction.WishlistItemId.HasValue) return;
 
-        var item = await _context.WishlistItems.FindAsync(transaction.WishlistItemId.Value);
+        var item = await _context.WishlistItems.FindAsync(
+            [transaction.WishlistItemId.Value],
+            cancellationToken);
         if (item == null) return;
 
         item.IsPurchased = true;
@@ -388,17 +415,23 @@ public class TransactionPersistenceService
         item.IsActive = false;
     }
 
-    private async Task ClearWishlistPurchaseLinkAsync(Transaction transaction)
+    private async Task ClearWishlistPurchaseLinkAsync(
+        Transaction transaction,
+        CancellationToken cancellationToken)
     {
         WishlistItem? item = null;
 
         if (transaction.WishlistItemId.HasValue)
         {
-            item = await _context.WishlistItems.FindAsync(transaction.WishlistItemId.Value);
+            item = await _context.WishlistItems.FindAsync(
+                [transaction.WishlistItemId.Value],
+                cancellationToken);
         }
 
         item ??= await _context.WishlistItems
-            .FirstOrDefaultAsync(w => w.PurchaseTransactionId == transaction.Id);
+            .FirstOrDefaultAsync(
+                w => w.PurchaseTransactionId == transaction.Id,
+                cancellationToken);
 
         if (item == null) return;
 
@@ -407,7 +440,9 @@ public class TransactionPersistenceService
         item.PurchaseTransactionId = null;
 
         var hasActiveUnpurchased = await _context.WishlistItems
-            .AnyAsync(w => w.Id != item.Id && !w.IsPurchased && w.IsActive);
+            .AnyAsync(
+                w => w.Id != item.Id && !w.IsPurchased && w.IsActive,
+                cancellationToken);
         if (!hasActiveUnpurchased)
         {
             item.IsActive = true;
@@ -443,7 +478,9 @@ public class TransactionPersistenceService
         TransactionMutationStatus.InvalidAmount,
         Message: "Amount is malformed.");
 
-    private async Task<bool> TransactionCategoryExistsAsync(string category)
+    private async Task<bool> TransactionCategoryExistsAsync(
+        string category,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(category))
         {
@@ -455,7 +492,9 @@ public class TransactionPersistenceService
             return true;
         }
 
-        return await _context.TransactionCategories.AnyAsync(c => c.Name.ToLower() == category.Trim().ToLower());
+        return await _context.TransactionCategories.AnyAsync(
+            c => c.Name.ToLower() == category.Trim().ToLower(),
+            cancellationToken);
     }
 
     private static TransactionMutationResult InvalidCategory(string category)

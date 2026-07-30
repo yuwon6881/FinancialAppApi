@@ -286,11 +286,52 @@ public class SavingsGoalServiceTests
         // A second tap in the same cycle must not double-contribute.
         Assert.Equal(0m, second.TotalGranted);
         Assert.Equal(afterFirst, context.SavingsGoals.Single().EarmarkedAmount);
-        Assert.Equal("2026-07", context.SavingsGoals.Single().LastFundedCycleKey);
+        Assert.Equal("2026-07", context.SavingsGoals.Single().CycleFundedKey);
     }
 
     [Fact]
-    public async Task FundCurrentCycleAsync_StampsTheCycleEvenWhenThereIsNothingToGive()
+    public async Task FundCurrentCycleAsync_RefundsOnlyWhatWasReleasedAfterFunding()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var goal = NewGoal("Car service", 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
+        context.SavingsGoals.Add(goal);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        await service.FundCurrentCycleAsync();
+        Assert.Equal(666.67m, context.SavingsGoals.Single().EarmarkedAmount);
+
+        // Release 100 of what was just set aside, then fund again.
+        await service.ContributeAsync(goal.Id, -100m);
+        var second = await service.FundCurrentCycleAsync();
+
+        // Exactly the released 100 comes back -- not another full per-cycle contribution.
+        Assert.Equal(100m, second.TotalGranted);
+        Assert.Equal(666.67m, context.SavingsGoals.Single().EarmarkedAmount);
+    }
+
+    [Fact]
+    public async Task FundCurrentCycleAsync_SkipsAGoalTheUserAlreadyToppedUpByHand()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var manual = NewGoal("Car service", 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
+        var untouched = NewGoal("Laptop fund", 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
+        context.SavingsGoals.AddRange(manual, untouched);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        // Cover this cycle's pace by hand first.
+        await service.ContributeAsync(manual.Id, 266.67m);
+        var result = await service.FundCurrentCycleAsync();
+
+        // Only the goal that had nothing this cycle receives anything.
+        Assert.Equal(266.67m, result.TotalGranted);
+        Assert.Equal(666.67m, context.SavingsGoals.Single(goal => goal.Id == manual.Id).EarmarkedAmount);
+        Assert.Equal(666.67m, context.SavingsGoals.Single(goal => goal.Id == untouched.Id).EarmarkedAmount);
+    }
+
+    [Fact]
+    public async Task FundCurrentCycleAsync_LeavesTheTallyAloneWhenThereIsNothingToGive()
     {
         await using var context = NewContext(rewardsBalance: 0m);
         context.SavingsGoals.Add(NewGoal("Car service", 1200m, earmarked: 0m, targetDate: new DateOnly(2026, 9, 20)));
@@ -298,9 +339,53 @@ public class SavingsGoalServiceTests
 
         var result = await NewService(context).FundCurrentCycleAsync();
 
+        // Nothing was contributed, so nothing is recorded against the cycle -- the goal stays
+        // fundable the moment money arrives, rather than being latched shut for the cycle.
         Assert.Equal(0m, result.TotalGranted);
-        // Without the stamp the waterfall would re-run on every page load for no benefit.
-        Assert.Equal("2026-07", context.SavingsGoals.Single().LastFundedCycleKey);
+        Assert.Null(context.SavingsGoals.Single().CycleFundedKey);
+        Assert.Equal(0m, context.SavingsGoals.Single().CycleFundedAmount);
+    }
+
+    [Fact]
+    public async Task GetPoolSummaryAsync_ReportsNothingOutstandingOnceEveryGoalIsPaced()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        context.SavingsGoals.Add(NewGoal("Car service", 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20)));
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var before = await service.GetPoolSummaryAsync();
+        Assert.Equal(266.67m, before.OutstandingThisCycleTotal);
+
+        await service.FundCurrentCycleAsync();
+
+        var after = await service.GetPoolSummaryAsync();
+        // This is what the UI keys the funding action off, so it must go to zero once paced.
+        Assert.Equal(0m, after.OutstandingThisCycleTotal);
+        // The per-cycle requirement itself is unchanged -- only the outstanding part moved.
+        Assert.True(after.RequiredPerCycleTotal > 0m);
+    }
+
+    [Fact]
+    public async Task ContributeAsync_DoesNotLetAReleaseOfOlderMoneyInflateThisCycle()
+    {
+        // Earmarked in an earlier cycle: no tally for the current one.
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var goal = NewGoal("Car service", 1200m, earmarked: 800m, targetDate: new DateOnly(2026, 9, 20));
+        goal.CycleFundedKey = "2026-06";
+        goal.CycleFundedAmount = 800m;
+        context.SavingsGoals.Add(goal);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        await service.ContributeAsync(goal.Id, -300m);
+
+        // The tally floors at zero rather than going negative, so the goal cannot claim more than
+        // one cycle's pace when funding next runs. That pace is re-derived from the new position
+        // (700 still needed over 3 cycles), not from the pre-release one.
+        Assert.Equal(0m, context.SavingsGoals.Single().CycleFundedAmount);
+        var summary = await service.GetPoolSummaryAsync();
+        Assert.Equal(233.34m, summary.OutstandingThisCycleTotal);
     }
 
     [Fact]
@@ -331,7 +416,8 @@ public class SavingsGoalServiceTests
         var goal = NewGoal("Car service", 1200m, earmarked: 1200m, targetDate: new DateOnly(2026, 9, 20));
         goal.IsRecurring = true;
         goal.RecurrenceMonths = 3;
-        goal.LastFundedCycleKey = "2026-07";
+        goal.CycleFundedKey = "2026-07";
+        goal.CycleFundedAmount = 400m;
         context.SavingsGoals.Add(goal);
         await context.SaveChangesAsync();
 
@@ -343,7 +429,8 @@ public class SavingsGoalServiceTests
         // Rolled from the deadline that just passed, so quarterly stays on its quarter boundaries.
         Assert.Equal(new DateTime(2026, 12, 20), stored.TargetDate.Date);
         // Cleared so the new period can be funded immediately rather than waiting a cycle.
-        Assert.Null(stored.LastFundedCycleKey);
+        Assert.Null(stored.CycleFundedKey);
+        Assert.Equal(0m, stored.CycleFundedAmount);
     }
 
     [Fact]
