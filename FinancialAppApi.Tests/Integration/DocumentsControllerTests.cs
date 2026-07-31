@@ -149,6 +149,51 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task BulkCategoryUpdate_UpdatesMultipleDocumentsAndReportsInvalidRows()
+    {
+        var client = await CreateSignedInClientAsync();
+        var lifestyleId = await AddCategoryAsync(client, 2026);
+        var educationResponse = await client.PostAsJsonAsync("/api/documents/relief-categories/2026", new
+        {
+            name = "Education",
+            limit = 7000m,
+            detail = "Education expenses"
+        });
+        Assert.Equal(HttpStatusCode.OK, educationResponse.StatusCode);
+        var education = await educationResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var educationId = education.GetProperty("id").GetString()!;
+
+        using var firstForm = CreateUploadForm(Encoding.UTF8.GetBytes("%PDF-1.7 first"), "first.pdf", lifestyleId);
+        using var secondForm = CreateUploadForm(Encoding.UTF8.GetBytes("%PDF-1.7 second"), "second.pdf", lifestyleId);
+        var firstUpload = await client.PostAsync("/api/documents", firstForm);
+        var secondUpload = await client.PostAsync("/api/documents", secondForm);
+        Assert.Equal(HttpStatusCode.OK, firstUpload.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondUpload.StatusCode);
+        var firstId = (await firstUpload.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        var secondId = (await secondUpload.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+
+        var response = await client.PostAsJsonAsync("/api/documents/bulk-update-categories", new
+        {
+            updates = new[]
+            {
+                new { id = firstId, reliefCategory = educationId },
+                new { id = secondId, reliefCategory = "not-configured" }
+            }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var results = (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("results").EnumerateArray().ToList();
+        Assert.True(results[0].GetProperty("updated").GetBoolean());
+        Assert.False(results[1].GetProperty("updated").GetBoolean());
+
+        var listed = await client.GetFromJsonAsync<JsonElement>("/api/documents?taxYear=2026&take=100");
+        var firstListed = listed.GetProperty("items").EnumerateArray().Single(item => item.GetProperty("id").GetInt32() == firstId);
+        var secondListed = listed.GetProperty("items").EnumerateArray().Single(item => item.GetProperty("id").GetInt32() == secondId);
+        Assert.Equal(educationId, firstListed.GetProperty("reliefCategory").GetString());
+        Assert.Equal(lifestyleId, secondListed.GetProperty("reliefCategory").GetString());
+    }
+
+    [Fact]
     public async Task Endpoints_RequireAuthentication()
     {
         var client = CreateClient();

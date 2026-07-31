@@ -137,6 +137,8 @@ public static class ServiceCollectionExtensions
         var ocrRequestsPerMinute = configuration.GetValue("Ocr:RequestsPerMinute", 10);
         var passwordVerificationRequestsPerMinute =
             configuration.GetValue("Auth:PasswordVerificationRequestsPerMinute", 30);
+        var documentRequestsPerMinute =
+            configuration.GetValue("Documents:RequestsPerMinute", 60);
         services.AddRateLimiter(options =>
         {
             static string PartitionKeyFor(HttpContext httpContext)
@@ -174,7 +176,7 @@ public static class ServiceCollectionExtensions
             options.AddPolicy("documents", httpContext =>
                 RateLimitPartition.GetFixedWindowLimiter("documents:" + PartitionKeyFor(httpContext), _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = 30,
+                    PermitLimit = Math.Max(1, documentRequestsPerMinute),
                     Window = TimeSpan.FromMinutes(1),
                     QueueLimit = 0,
                     AutoReplenishment = true

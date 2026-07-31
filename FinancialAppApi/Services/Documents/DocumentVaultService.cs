@@ -67,6 +67,9 @@ public sealed record TaxReliefCategoryMutationResult(
     TaxReliefCategoryMutationStatus Status,
     TaxReliefCategoryDefinition? Category = null);
 
+public sealed record ReliefCategoryDocumentUpdate(int Id, string? ReliefCategory);
+public sealed record ReliefCategoryDocumentUpdateResult(int Id, bool Updated, string? Message = null);
+
 
 /// <summary>
 /// Outcome codes for a vault document upload attempt.
@@ -125,10 +128,15 @@ public sealed class DocumentVaultService
         string? transactionId,
         string? clientKey,
         string? reliefCategory = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        decimal? amountOverride = null,
+        string? amountCurrencyOverride = null)
     {
         var options = _options.CurrentValue;
         reliefCategory = string.IsNullOrWhiteSpace(reliefCategory) ? null : reliefCategory.Trim();
+        var normalizedAmountCurrency = string.IsNullOrWhiteSpace(amountCurrencyOverride)
+            ? null
+            : amountCurrencyOverride.Trim().ToUpperInvariant();
 
         if (!_store.IsConfigured)
         {
@@ -146,6 +154,8 @@ public sealed class DocumentVaultService
             transactionId?.Length > 450 ||
             clientKey?.Length > 64 ||
             reliefCategory.Length > 80 ||
+            amountOverride is < 0 ||
+            (amountOverride.HasValue && normalizedAmountCurrency is not ("MYR" or "OTHER")) ||
             !await IsReliefCategoryConfiguredAsync(taxYear, reliefCategory, ct))
         {
             return new DocumentVaultCreateResult(DocumentVaultCreateStatus.InvalidMetadata, Message: "Document metadata is invalid.");
@@ -186,9 +196,11 @@ public sealed class DocumentVaultService
         var sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fileData))
             .ToLowerInvariant();
 
-        var extraction = _amountExtractor == null
-            ? new VaultAmountExtraction(null, "MYR", null, "Unavailable", "AI amount extraction is unavailable.")
-            : await _amountExtractor.ExtractAsync(originalFileName, mimeType, fileData, ct);
+        var extraction = amountOverride.HasValue
+            ? new VaultAmountExtraction(amountOverride.Value, normalizedAmountCurrency ?? "MYR", null, "Confirmed", null)
+            : _amountExtractor == null
+                ? new VaultAmountExtraction(null, "MYR", null, "Unavailable", "AI amount extraction is unavailable.")
+                : await _amountExtractor.ExtractAsync(originalFileName, mimeType, fileData, ct);
 
         var documentGuid = Guid.NewGuid().ToString("N");
         var ext = FileSignatureInspector.ExtensionForMimeType(mimeType);
@@ -443,6 +455,76 @@ public sealed class DocumentVaultService
             doc.RetentionUntil);
     }
 
+    public async Task<IReadOnlyList<ReliefCategoryDocumentUpdateResult>> UpdateReliefCategoriesAsync(
+        IReadOnlyCollection<ReliefCategoryDocumentUpdate> updates,
+        CancellationToken ct = default)
+    {
+        var requested = updates
+            .GroupBy(update => update.Id)
+            .Select(group => group.Last())
+            .ToList();
+
+        if (requested.Count == 0) return [];
+
+        var ids = requested
+            .Where(update => update.Id > 0)
+            .Select(update => update.Id)
+            .ToArray();
+        var documents = await _context.VaultDocuments
+            .Where(document => ids.Contains(document.Id))
+            .ToListAsync(ct);
+        var documentsById = documents.ToDictionary(document => document.Id);
+        var validCategoriesByTaxYear = new Dictionary<int, HashSet<string>>();
+        var results = new List<ReliefCategoryDocumentUpdateResult>(requested.Count);
+        var hasChanges = false;
+
+        foreach (var update in requested)
+        {
+            if (!documentsById.TryGetValue(update.Id, out var document))
+            {
+                results.Add(new(update.Id, false, "The document was not found."));
+                continue;
+            }
+
+            var reliefCategory = update.ReliefCategory?.Trim();
+            if (string.IsNullOrWhiteSpace(reliefCategory) || reliefCategory.Length > 80)
+            {
+                results.Add(new(update.Id, false, "A valid tax relief category is required."));
+                continue;
+            }
+
+            if (!validCategoriesByTaxYear.TryGetValue(document.TaxYear, out var validCategories))
+            {
+                var (rows, _) = await GetEffectiveCategoryRowsAsync(document.TaxYear, ct);
+                validCategories = rows
+                    .Select(row => row.CategoryId)
+                    .ToHashSet(StringComparer.Ordinal);
+                validCategoriesByTaxYear[document.TaxYear] = validCategories;
+            }
+
+            if (!validCategories.Contains(reliefCategory))
+            {
+                results.Add(new(update.Id, false, "The category is not configured for this document's tax year."));
+                continue;
+            }
+
+            if (!string.Equals(document.ReliefCategory, reliefCategory, StringComparison.Ordinal))
+            {
+                document.ReliefCategory = reliefCategory;
+                hasChanges = true;
+            }
+
+            results.Add(new(update.Id, true));
+        }
+
+        if (hasChanges)
+        {
+            await _context.SaveChangesAsync(ct);
+        }
+
+        return results;
+    }
+
     public async Task<DocumentVaultUsage> GetUsageAsync(CancellationToken ct = default)
     {
         var aggregate = await _context.VaultDocuments
@@ -620,15 +702,26 @@ public sealed class DocumentVaultService
 
     public Task<bool> HasDocumentsForExportAsync(int? taxYear, CancellationToken ct = default)
     {
-        var query = _context.VaultDocuments.AsNoTracking().AsQueryable();
-        if (taxYear.HasValue) query = query.Where(document => document.TaxYear == taxYear.Value);
-        return query.AnyAsync(ct);
+        return ExportQuery(taxYear, null).AnyAsync(ct);
     }
 
     public async Task WriteZipAsync(int? taxYear, Stream output, CancellationToken ct = default)
     {
-        var query = _context.VaultDocuments.AsNoTracking().AsQueryable();
-        if (taxYear.HasValue) query = query.Where(document => document.TaxYear == taxYear.Value);
+        await WriteZipAsync(ExportQuery(taxYear, null), output, ct);
+    }
+
+    public Task<bool> HasDocumentsForExportAsync(IReadOnlyCollection<int> ids, CancellationToken ct = default)
+    {
+        return ExportQuery(null, ids).AnyAsync(ct);
+    }
+
+    public async Task WriteZipAsync(IReadOnlyCollection<int> ids, Stream output, CancellationToken ct = default)
+    {
+        await WriteZipAsync(ExportQuery(null, ids), output, ct);
+    }
+
+    private async Task WriteZipAsync(IQueryable<VaultDocument> query, Stream output, CancellationToken ct)
+    {
         var documents = await query.OrderBy(document => document.TaxYear).ThenBy(document => document.Id).ToListAsync(ct);
 
         using (var archive = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true))
@@ -643,6 +736,14 @@ public sealed class DocumentVaultService
                 await entryStream.WriteAsync(data, ct);
             }
         }
+    }
+
+    private IQueryable<VaultDocument> ExportQuery(int? taxYear, IReadOnlyCollection<int>? ids)
+    {
+        var query = _context.VaultDocuments.AsNoTracking().AsQueryable();
+        if (taxYear.HasValue) query = query.Where(document => document.TaxYear == taxYear.Value);
+        if (ids is { Count: > 0 }) query = query.Where(document => ids.Contains(document.Id));
+        return query;
     }
 
     private const int MinTaxYear = 2000;

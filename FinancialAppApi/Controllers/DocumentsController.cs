@@ -32,6 +32,8 @@ public class DocumentsController : ControllerBase
         [FromForm] string? transactionId,
         [FromForm] string? clientKey,
         [FromForm] string? reliefCategory,
+        [FromForm] decimal? amount,
+        [FromForm] string? amountCurrency,
         CancellationToken ct)
     {
         // A missing or empty part must not reach CopyToAsync — model binding yields null
@@ -64,7 +66,9 @@ public class DocumentsController : ControllerBase
             transactionId,
             clientKey,
             reliefCategory,
-            ct);
+            ct,
+            amountOverride: amount,
+            amountCurrencyOverride: amountCurrency);
 
         return result.Status switch
         {
@@ -130,6 +134,22 @@ public class DocumentsController : ControllerBase
         return Ok(new { results });
     }
 
+    [HttpPost("bulk-update-categories")]
+    public async Task<IActionResult> BulkUpdateCategories(
+        [FromBody] BulkUpdateDocumentCategoriesRequest? request,
+        CancellationToken ct)
+    {
+        if (request?.Updates is not { Count: > 0 })
+            return BadRequest(new { message = "Choose at least one document category to update." });
+
+        var updates = request.Updates
+            .Take(100)
+            .Select(update => new ReliefCategoryDocumentUpdate(update.Id, update.ReliefCategory))
+            .ToArray();
+        var results = await _service.UpdateReliefCategoriesAsync(updates, ct);
+        return Ok(new { results });
+    }
+
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] int? taxYear,
@@ -152,6 +172,23 @@ public class DocumentsController : ControllerBase
         if (result == null) return NotFound();
 
         return File(result.Value.Data, result.Value.ContentType, result.Value.FileName);
+    }
+
+    [HttpPost("export-selected")]
+    public async Task<IActionResult> ExportSelected(
+        [FromBody] BulkExportDocumentsRequest request,
+        CancellationToken ct)
+    {
+        var ids = request.Ids.Distinct().Take(100).ToArray();
+        if (ids.Length == 0)
+            return BadRequest(new { message = "Choose at least one document." });
+        if (!await _service.HasDocumentsForExportAsync(ids, ct))
+            return NotFound(new { message = "There are no selected documents to export." });
+
+        Response.ContentType = "application/zip";
+        Response.Headers.ContentDisposition = "attachment; filename=\"tax-vault-selected.zip\"";
+        await _service.WriteZipAsync(ids, Response.Body, ct);
+        return new EmptyResult();
     }
 
     [HttpGet("years")]
@@ -337,4 +374,20 @@ public sealed class SaveTaxReliefCategoryRequest
 public sealed class BulkDeleteDocumentsRequest
 {
     public List<int> Ids { get; set; } = [];
+}
+
+public sealed class BulkExportDocumentsRequest
+{
+    public List<int> Ids { get; set; } = [];
+}
+
+public sealed class BulkUpdateDocumentCategoriesRequest
+{
+    public List<BulkDocumentCategoryUpdate>? Updates { get; set; } = [];
+}
+
+public sealed class BulkDocumentCategoryUpdate
+{
+    public int Id { get; set; }
+    public string? ReliefCategory { get; set; }
 }
