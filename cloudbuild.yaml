@@ -90,4 +90,4 @@ availableSecrets:
 # the normal Cloud Run environment value explicit and overridable per project.
 substitutions:
   _SUPABASE_PROJECT_URL: 'https://wdbdsnpldtiwsmscwyqt.supabase.co'
-  _DOCUMENT_VAULT_BUCKET: ''
+  _DOCUMENT_VAULT_BUCKET: 'financialapp-vault-396431756440'
