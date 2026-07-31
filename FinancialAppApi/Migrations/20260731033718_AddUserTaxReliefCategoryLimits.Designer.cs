@@ -3,6 +3,7 @@ using System;
 using FinancialAppApi.Database;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace FinancialAppApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260731033718_AddUserTaxReliefCategoryLimits")]
+    partial class AddUserTaxReliefCategoryLimits
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1433,6 +1436,11 @@ namespace FinancialAppApi.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<string>("DocumentType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
                     b.Property<string>("Notes")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
@@ -1490,6 +1498,29 @@ namespace FinancialAppApi.Migrations
                         .IsDescending(false, false, true, true);
 
                     b.ToTable("VaultDocuments");
+                });
+
+            modelBuilder.Entity("FinancialAppApi.Models.VaultDocumentTypeDefinition", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("VaultDocumentTypes");
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.WebAuthnChallenge", b =>
@@ -1897,6 +1928,15 @@ namespace FinancialAppApi.Migrations
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.VaultDocument", b =>
+                {
+                    b.HasOne("FinancialAppApi.Models.AppUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("FinancialAppApi.Models.VaultDocumentTypeDefinition", b =>
                 {
                     b.HasOne("FinancialAppApi.Models.AppUser", null)
                         .WithMany()

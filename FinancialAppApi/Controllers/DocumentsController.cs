@@ -28,7 +28,6 @@ public class DocumentsController : ControllerBase
     public async Task<IActionResult> Upload(
         [FromForm] IFormFile? file,
         [FromForm] int taxYear,
-        [FromForm] string documentType,
         [FromForm] string? notes,
         [FromForm] string? transactionId,
         [FromForm] string? clientKey,
@@ -40,6 +39,10 @@ public class DocumentsController : ControllerBase
         if (file == null || file.Length == 0)
         {
             return BadRequest(new { message = "No document was uploaded." });
+        }
+        if (string.IsNullOrWhiteSpace(reliefCategory))
+        {
+            return BadRequest(new { message = "A tax relief category is required." });
         }
         if (file.Length > _service.GetConstraints().MaxDocumentBytes)
         {
@@ -57,7 +60,6 @@ public class DocumentsController : ControllerBase
             file.FileName,
             data,
             taxYear,
-            documentType,
             notes,
             transactionId,
             clientKey,
@@ -81,7 +83,6 @@ public class DocumentsController : ControllerBase
     public async Task<IActionResult> BulkUpload(
         [FromForm] List<IFormFile>? files,
         [FromForm] int taxYear,
-        [FromForm] string documentType,
         [FromForm] string? notes,
         [FromForm] string? reliefCategory,
         CancellationToken ct)
@@ -91,6 +92,8 @@ public class DocumentsController : ControllerBase
             return BadRequest(new { message = "No documents were uploaded." });
         if (files.Count > constraints.MaxBulkDocuments)
             return BadRequest(new { message = $"Upload at most {constraints.MaxBulkDocuments} documents at a time." });
+        if (string.IsNullOrWhiteSpace(reliefCategory))
+            return BadRequest(new { message = "A tax relief category is required." });
 
         var results = new List<object>();
         foreach (var file in files)
@@ -114,7 +117,7 @@ public class DocumentsController : ControllerBase
             }
 
             var result = await _service.CreateAsync(
-                file.FileName, data, taxYear, documentType, notes, null, null, reliefCategory, ct);
+                file.FileName, data, taxYear, notes, null, null, reliefCategory, ct);
             results.Add(new
             {
                 fileName = file.FileName,
@@ -159,8 +162,36 @@ public class DocumentsController : ControllerBase
     public IActionResult GetConstraints() => Ok(_service.GetConstraints());
 
     [HttpGet("relief-categories")]
-    public IActionResult GetReliefCategories([FromQuery] int taxYear) =>
-        Ok(_service.GetReliefCategories(taxYear));
+    public async Task<IActionResult> GetReliefCategories([FromQuery] int taxYear, CancellationToken ct)
+    {
+        if (!_service.IsTaxYearAllowed(taxYear))
+            return BadRequest(new { message = "Tax year is invalid." });
+
+        return Ok(await _service.GetReliefCategoriesAsync(taxYear, ct));
+    }
+
+    [HttpPost("relief-categories/{taxYear:int}")]
+    public async Task<IActionResult> AddReliefCategory(
+        int taxYear,
+        [FromBody] SaveTaxReliefCategoryRequest request,
+        CancellationToken ct)
+    {
+        var result = await _service.AddReliefCategoryAsync(
+            taxYear, request.Name, request.Limit, request.Detail, ct);
+        return TaxReliefCategoryResult(result);
+    }
+
+    [HttpPatch("relief-categories/{taxYear:int}/{categoryId}")]
+    public async Task<IActionResult> UpdateReliefCategory(
+        int taxYear,
+        string categoryId,
+        [FromBody] SaveTaxReliefCategoryRequest request,
+        CancellationToken ct)
+    {
+        var result = await _service.UpdateReliefCategoryAsync(
+            taxYear, categoryId, request.Name, request.Limit, request.Detail, ct);
+        return TaxReliefCategoryResult(result);
+    }
 
     [HttpGet("summary/{taxYear:int}")]
     public async Task<IActionResult> GetTaxYearSummary(int taxYear, CancellationToken ct)
@@ -194,20 +225,21 @@ public class DocumentsController : ControllerBase
     {
         var notes = ReadOptionalString(request.Notes);
         var transactionId = ReadOptionalString(request.TransactionId);
-        if (request.DocumentType is { Length: > 40 } ||
-            request.DocumentType is not null && string.IsNullOrWhiteSpace(request.DocumentType) ||
-            !IsOptionalString(request.Notes) ||
+        if (!IsOptionalString(request.Notes) ||
             !IsOptionalString(request.TransactionId) ||
             notes?.Length > 500 ||
             transactionId?.Length > 450)
         {
             return BadRequest(new { message = "Document metadata is invalid." });
         }
+        if (request.ReliefCategorySpecified && string.IsNullOrWhiteSpace(request.ReliefCategory))
+        {
+            return BadRequest(new { message = "A tax relief category is required." });
+        }
 
         var doc = await _service.UpdateAsync(
             id, 
             request.TaxYear, 
-            request.DocumentType, 
             notes,
             request.Notes.ValueKind != JsonValueKind.Undefined,
             transactionId,
@@ -268,6 +300,15 @@ public class DocumentsController : ControllerBase
 
     private static bool IsOptionalString(JsonElement value) =>
         value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null or JsonValueKind.String;
+
+    private IActionResult TaxReliefCategoryResult(TaxReliefCategoryMutationResult result) =>
+        result.Status switch
+        {
+            TaxReliefCategoryMutationStatus.Saved => Ok(result.Category),
+            TaxReliefCategoryMutationStatus.Duplicate => Conflict(new { message = "A category with this name already exists for the selected tax year." }),
+            TaxReliefCategoryMutationStatus.NotFound => NotFound(),
+            _ => BadRequest(new { message = "Tax relief category details are invalid." })
+        };
 }
 
 /// <summary>
@@ -276,7 +317,6 @@ public class DocumentsController : ControllerBase
 public class UpdateDocumentRequest
 {
     public int? TaxYear { get; set; }
-    public string? DocumentType { get; set; }
     public JsonElement Notes { get; set; }
     public JsonElement TransactionId { get; set; }
     public string? ReliefCategory { get; set; }
@@ -285,6 +325,13 @@ public class UpdateDocumentRequest
     public bool AmountSpecified { get; set; }
     public string? AmountCurrency { get; set; }
     public string? AmountStatus { get; set; }
+}
+
+public sealed class SaveTaxReliefCategoryRequest
+{
+    public string? Name { get; set; }
+    public decimal Limit { get; set; }
+    public string? Detail { get; set; }
 }
 
 public sealed class BulkDeleteDocumentsRequest

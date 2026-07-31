@@ -3,6 +3,7 @@ using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using System.IO.Compression;
+using System.Text;
 
 namespace FinancialAppApi.Services.Documents;
 
@@ -15,7 +16,6 @@ public sealed record VaultDocumentDto(
     string ContentType,
     long SizeBytes,
     int TaxYear,
-    string DocumentType,
     string? Notes,
     string? ReliefCategory,
     decimal? Amount,
@@ -33,7 +33,12 @@ public sealed record VaultDocumentDto(
 /// </summary>
 public sealed record DocumentVaultUsage(long TotalBytes, int DocumentCount, long QuotaBytes);
 public sealed record DocumentVaultConstraints(long MaxDocumentBytes, int MaxBulkDocuments, long MaxTotalBytesPerUser);
-public sealed record TaxReliefCategoryDefinition(string Id, string Name, decimal Limit, string Detail);
+public sealed record TaxReliefCategoryDefinition(
+    string Id,
+    string Name,
+    decimal Limit,
+    string Detail,
+    bool IsInherited = false);
 public sealed record TaxReliefCategorySummary(
     string Id,
     string Name,
@@ -44,13 +49,23 @@ public sealed record TaxReliefCategorySummary(
     int PendingReviewCount);
 public sealed record TaxYearReliefSummary(
     int TaxYear,
-    int PolicyYear,
-    bool IsPolicyProvisional,
     decimal ConfirmedAmount,
     decimal PendingReviewAmount,
     int DocumentCount,
     IReadOnlyList<TaxReliefCategorySummary> Categories);
 public sealed record ExpiredTaxYearSummary(int TaxYear, int DocumentCount, long TotalBytes, DateOnly RetentionUntil);
+
+public enum TaxReliefCategoryMutationStatus
+{
+    Saved,
+    Invalid,
+    Duplicate,
+    NotFound
+}
+
+public sealed record TaxReliefCategoryMutationResult(
+    TaxReliefCategoryMutationStatus Status,
+    TaxReliefCategoryDefinition? Category = null);
 
 
 /// <summary>
@@ -83,7 +98,6 @@ public sealed class DocumentVaultService
     private readonly IDocumentVaultStore _store;
     private readonly IOptionsMonitor<DocumentVaultOptions> _options;
     private readonly ILogger<DocumentVaultService> _logger;
-    private readonly VaultDocumentTypeService? _documentTypes;
     private readonly FinancialClock _financialClock;
     private readonly VaultAmountExtractor? _amountExtractor;
 
@@ -92,7 +106,6 @@ public sealed class DocumentVaultService
         IDocumentVaultStore store,
         IOptionsMonitor<DocumentVaultOptions> options,
         ILogger<DocumentVaultService> logger,
-        VaultDocumentTypeService? documentTypes = null,
         FinancialClock? financialClock = null,
         VaultAmountExtractor? amountExtractor = null)
     {
@@ -100,7 +113,6 @@ public sealed class DocumentVaultService
         _store = store;
         _options = options;
         _logger = logger;
-        _documentTypes = documentTypes;
         _financialClock = financialClock ?? FinancialClock.Utc;
         _amountExtractor = amountExtractor;
     }
@@ -109,7 +121,6 @@ public sealed class DocumentVaultService
         string originalFileName,
         byte[] fileData,
         int taxYear,
-        string documentType,
         string? notes,
         string? transactionId,
         string? clientKey,
@@ -117,29 +128,27 @@ public sealed class DocumentVaultService
         CancellationToken ct = default)
     {
         var options = _options.CurrentValue;
+        reliefCategory = string.IsNullOrWhiteSpace(reliefCategory) ? null : reliefCategory.Trim();
 
         if (!_store.IsConfigured)
         {
             return new DocumentVaultCreateResult(DocumentVaultCreateStatus.StorageUnavailable, Message: "Document storage is not configured.");
         }
 
+        if (reliefCategory == null)
+        {
+            return new DocumentVaultCreateResult(DocumentVaultCreateStatus.InvalidMetadata, Message: "A tax relief category is required.");
+        }
+
         if (string.IsNullOrWhiteSpace(originalFileName) || originalFileName.Length > 255 ||
             !IsAllowedTaxYear(taxYear) ||
-            string.IsNullOrWhiteSpace(documentType) || documentType.Length > 40 ||
             notes?.Length > 500 ||
             transactionId?.Length > 450 ||
             clientKey?.Length > 64 ||
-            reliefCategory?.Length > 80 ||
-            reliefCategory != null && !TaxReliefCatalog.IsValid(reliefCategory))
+            reliefCategory.Length > 80 ||
+            !await IsReliefCategoryConfiguredAsync(taxYear, reliefCategory, ct))
         {
             return new DocumentVaultCreateResult(DocumentVaultCreateStatus.InvalidMetadata, Message: "Document metadata is invalid.");
-        }
-
-        if (_documentTypes != null && !await _documentTypes.ExistsAsync(documentType, ct))
-        {
-            return new DocumentVaultCreateResult(
-                DocumentVaultCreateStatus.InvalidMetadata,
-                Message: "Choose an existing document type.");
         }
 
         if (fileData.LongLength > options.MaxDocumentBytes)
@@ -206,7 +215,6 @@ public sealed class DocumentVaultService
             SizeBytes = fileData.LongLength,
             Sha256 = sha256,
             TaxYear = taxYear,
-            DocumentType = documentType,
             Notes = notes,
             ReliefCategory = reliefCategory,
             Amount = extraction.Amount,
@@ -304,7 +312,6 @@ public sealed class DocumentVaultService
                 d.ContentType,
                 d.SizeBytes,
                 d.TaxYear,
-                d.DocumentType,
                 d.Notes,
                 d.ReliefCategory,
                 d.Amount,
@@ -320,13 +327,14 @@ public sealed class DocumentVaultService
         return (items, totalCount);
     }
 
-    public Task<List<int>> GetAvailableTaxYearsAsync(CancellationToken ct = default) =>
-        _context.VaultDocuments
-            .AsNoTracking()
-            .Select(document => document.TaxYear)
-            .Distinct()
+    public Task<List<int>> GetAvailableTaxYearsAsync(CancellationToken ct = default)
+    {
+        var currentYear = _financialClock.Today.Year;
+        var years = Enumerable.Range(MinTaxYear, Math.Max(0, currentYear - MinTaxYear + 1))
             .OrderByDescending(year => year)
-            .ToListAsync(ct);
+            .ToList();
+        return Task.FromResult(years);
+    }
 
     public async Task<(byte[] Data, string ContentType, string FileName)?> GetContentAsync(
         int id,
@@ -351,7 +359,6 @@ public sealed class DocumentVaultService
     public async Task<VaultDocumentDto?> UpdateAsync(
         int id,
         int? taxYear,
-        string? documentType,
         string? notes,
         bool updateNotes,
         string? transactionId,
@@ -371,12 +378,10 @@ public sealed class DocumentVaultService
         {
             return null;
         }
-        if (documentType != null && _documentTypes != null &&
-            !await _documentTypes.ExistsAsync(documentType, ct))
-        {
-            return null;
-        }
-        if (updateReliefCategory && reliefCategory != null && !TaxReliefCatalog.IsValid(reliefCategory))
+        reliefCategory = string.IsNullOrWhiteSpace(reliefCategory) ? null : reliefCategory.Trim();
+        var targetTaxYear = taxYear ?? doc.TaxYear;
+        if (updateReliefCategory &&
+            (reliefCategory == null || !await IsReliefCategoryConfiguredAsync(targetTaxYear, reliefCategory, ct)))
         {
             return null;
         }
@@ -397,7 +402,6 @@ public sealed class DocumentVaultService
             doc.TaxYear = taxYear.Value;
             doc.RetentionUntil = new DateOnly(taxYear.Value, 12, 31).AddYears(7);
         }
-        if (documentType != null) doc.DocumentType = documentType;
         if (updateNotes)
         {
             doc.Notes = string.IsNullOrWhiteSpace(notes) ? null : notes;
@@ -408,7 +412,7 @@ public sealed class DocumentVaultService
         }
         if (updateReliefCategory)
         {
-            doc.ReliefCategory = string.IsNullOrWhiteSpace(reliefCategory) ? null : reliefCategory;
+            doc.ReliefCategory = reliefCategory;
         }
         if (updateAmount)
         {
@@ -427,7 +431,6 @@ public sealed class DocumentVaultService
             doc.ContentType,
             doc.SizeBytes,
             doc.TaxYear,
-            doc.DocumentType,
             doc.Notes,
             doc.ReliefCategory,
             doc.Amount,
@@ -481,6 +484,8 @@ public sealed class DocumentVaultService
 
     public async Task<TaxYearReliefSummary?> GetTaxYearSummaryAsync(int taxYear, CancellationToken ct = default)
     {
+        if (!IsAllowedTaxYear(taxYear)) return null;
+
         var documents = await _context.VaultDocuments
             .AsNoTracking()
             .Where(document => document.TaxYear == taxYear)
@@ -492,10 +497,9 @@ public sealed class DocumentVaultService
                 document.AmountStatus
             })
             .ToListAsync(ct);
-        if (documents.Count == 0) return null;
+        var definitions = await GetReliefCategoriesAsync(taxYear, ct);
+        if (documents.Count == 0 && definitions.Count == 0) return null;
 
-        var policyYear = TaxReliefCatalog.LatestPolicyYear;
-        var definitions = TaxReliefCatalog.ForYear(policyYear);
         var summaries = definitions.Select(definition =>
         {
             var categoryDocuments = documents
@@ -515,20 +519,104 @@ public sealed class DocumentVaultService
                 pending,
                 categoryDocuments.Count,
                 categoryDocuments.Count(document => document.AmountStatus == "NeedsReview"));
-        }).Where(summary => summary.DocumentCount > 0).ToList();
+        }).ToList();
 
         return new TaxYearReliefSummary(
             taxYear,
-            policyYear,
-            taxYear != TaxReliefCatalog.LatestPolicyYear,
             summaries.Sum(summary => summary.ConfirmedAmount),
             summaries.Sum(summary => summary.PendingReviewAmount),
             documents.Count,
             summaries);
     }
 
-    public IReadOnlyList<TaxReliefCategoryDefinition> GetReliefCategories(int taxYear) =>
-        TaxReliefCatalog.ForYear(TaxReliefCatalog.LatestPolicyYear);
+    public async Task<IReadOnlyList<TaxReliefCategoryDefinition>> GetReliefCategoriesAsync(
+        int taxYear,
+        CancellationToken ct = default)
+    {
+        if (!IsAllowedTaxYear(taxYear)) return [];
+
+        var (rows, isInherited) = await GetEffectiveCategoryRowsAsync(taxYear, ct);
+        return rows
+            .Select(row => ToDefinition(row, isInherited))
+            .ToList();
+    }
+
+    public bool IsTaxYearAllowed(int taxYear) => IsAllowedTaxYear(taxYear);
+
+    public async Task<TaxReliefCategoryMutationResult> AddReliefCategoryAsync(
+        int taxYear,
+        string? name,
+        decimal limit,
+        string? detail,
+        CancellationToken ct = default)
+    {
+        if (!TryNormalizeCategoryInput(name, limit, detail, out var normalizedName, out var normalizedDetail))
+        {
+            return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.Invalid);
+        }
+        if (!IsAllowedTaxYear(taxYear))
+        {
+            return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.Invalid);
+        }
+
+        var rows = await EnsureExplicitConfigurationAsync(taxYear, ct);
+        if (rows.Any(row => string.Equals(row.Name, normalizedName, StringComparison.OrdinalIgnoreCase)))
+        {
+            return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.Duplicate);
+        }
+
+        var category = new TaxReliefCategoryLimit
+        {
+            CategoryId = CreateCategoryId(normalizedName, rows),
+            Name = normalizedName,
+            Limit = limit,
+            Detail = normalizedDetail,
+            TaxYear = taxYear
+        };
+        _context.TaxReliefCategoryLimits.Add(category);
+        await _context.SaveChangesAsync(ct);
+
+        return new TaxReliefCategoryMutationResult(
+            TaxReliefCategoryMutationStatus.Saved,
+            ToDefinition(category));
+    }
+
+    public async Task<TaxReliefCategoryMutationResult> UpdateReliefCategoryAsync(
+        int taxYear,
+        string categoryId,
+        string? name,
+        decimal limit,
+        string? detail,
+        CancellationToken ct = default)
+    {
+        if (!TryNormalizeCategoryInput(name, limit, detail, out var normalizedName, out var normalizedDetail) ||
+            string.IsNullOrWhiteSpace(categoryId) || categoryId.Length > 80 ||
+            !IsAllowedTaxYear(taxYear))
+        {
+            return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.Invalid);
+        }
+
+        var rows = await EnsureExplicitConfigurationAsync(taxYear, ct);
+        var category = rows.FirstOrDefault(row => row.CategoryId == categoryId);
+        if (category == null)
+        {
+            return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.NotFound);
+        }
+        if (rows.Any(row => row.Id != category.Id &&
+                           string.Equals(row.Name, normalizedName, StringComparison.OrdinalIgnoreCase)))
+        {
+            return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.Duplicate);
+        }
+
+        category.Name = normalizedName;
+        category.Limit = limit;
+        category.Detail = normalizedDetail;
+        await _context.SaveChangesAsync(ct);
+
+        return new TaxReliefCategoryMutationResult(
+            TaxReliefCategoryMutationStatus.Saved,
+            ToDefinition(category));
+    }
 
     public Task<bool> HasDocumentsForExportAsync(int? taxYear, CancellationToken ct = default)
     {
@@ -557,38 +645,141 @@ public sealed class DocumentVaultService
         }
     }
 
+    private const int MinTaxYear = 2000;
+
+    private async Task<bool> IsReliefCategoryConfiguredAsync(
+        int taxYear,
+        string categoryId,
+        CancellationToken ct)
+    {
+        var (rows, _) = await GetEffectiveCategoryRowsAsync(taxYear, ct);
+        return rows.Any(row => row.CategoryId == categoryId);
+    }
+
+    private async Task<(List<TaxReliefCategoryLimit> Rows, bool IsInherited)> GetEffectiveCategoryRowsAsync(
+        int taxYear,
+        CancellationToken ct)
+    {
+        var current = await _context.TaxReliefCategoryLimits
+            .AsNoTracking()
+            .Where(row => row.TaxYear == taxYear)
+            .OrderBy(row => row.Id)
+            .ToListAsync(ct);
+        if (current.Count > 0)
+        {
+            return (current, false);
+        }
+
+        var previousYear = await _context.TaxReliefCategoryLimits
+            .AsNoTracking()
+            .Where(row => row.TaxYear < taxYear)
+            .OrderByDescending(row => row.TaxYear)
+            .Select(row => (int?)row.TaxYear)
+            .FirstOrDefaultAsync(ct);
+        if (!previousYear.HasValue)
+        {
+            return ([], true);
+        }
+
+        var inherited = await _context.TaxReliefCategoryLimits
+            .AsNoTracking()
+            .Where(row => row.TaxYear == previousYear.Value)
+            .OrderBy(row => row.Id)
+            .ToListAsync(ct);
+        return (inherited, true);
+    }
+
+    private async Task<List<TaxReliefCategoryLimit>> EnsureExplicitConfigurationAsync(
+        int taxYear,
+        CancellationToken ct)
+    {
+        var current = await _context.TaxReliefCategoryLimits
+            .Where(row => row.TaxYear == taxYear)
+            .OrderBy(row => row.Id)
+            .ToListAsync(ct);
+        if (current.Count > 0)
+        {
+            return current;
+        }
+
+        var (inherited, _) = await GetEffectiveCategoryRowsAsync(taxYear, ct);
+        foreach (var row in inherited)
+        {
+            _context.TaxReliefCategoryLimits.Add(new TaxReliefCategoryLimit
+            {
+                CategoryId = row.CategoryId,
+                Name = row.Name,
+                Limit = row.Limit,
+                Detail = row.Detail,
+                TaxYear = taxYear
+            });
+        }
+
+        if (inherited.Count > 0)
+        {
+            await _context.SaveChangesAsync(ct);
+        }
+
+        return await _context.TaxReliefCategoryLimits
+            .Where(row => row.TaxYear == taxYear)
+            .OrderBy(row => row.Id)
+            .ToListAsync(ct);
+    }
+
+    private static TaxReliefCategoryDefinition ToDefinition(
+        TaxReliefCategoryLimit row,
+        bool isInherited = false) =>
+        new(row.CategoryId, row.Name, row.Limit, row.Detail, isInherited);
+
+    private static bool TryNormalizeCategoryInput(
+        string? name,
+        decimal limit,
+        string? detail,
+        out string normalizedName,
+        out string normalizedDetail)
+    {
+        normalizedName = name?.Trim() ?? string.Empty;
+        normalizedDetail = detail?.Trim() ?? string.Empty;
+        return normalizedName.Length is > 0 and <= 120 &&
+               normalizedDetail.Length <= 300 &&
+               limit is >= 0 and <= 9_999_999_999_999_999.99m;
+    }
+
+    private static string CreateCategoryId(
+        string name,
+        IReadOnlyCollection<TaxReliefCategoryLimit> existingRows)
+    {
+        var builder = new StringBuilder();
+        foreach (var character in name.ToLowerInvariant())
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                builder.Append(character);
+            }
+            else if (builder.Length > 0 && builder[^1] != '-')
+            {
+                builder.Append('-');
+            }
+        }
+
+        var baseId = builder.ToString().Trim('-');
+        if (baseId.Length == 0) baseId = "category";
+        if (baseId.Length > 60) baseId = baseId[..60].TrimEnd('-');
+
+        var candidate = baseId;
+        var suffix = 2;
+        while (existingRows.Any(row => string.Equals(row.CategoryId, candidate, StringComparison.OrdinalIgnoreCase)))
+        {
+            var suffixText = $"-{suffix++}";
+            candidate = baseId[..Math.Min(baseId.Length, 80 - suffixText.Length)] + suffixText;
+        }
+
+        return candidate;
+    }
+
     private bool IsAllowedTaxYear(int taxYear)
     {
         var currentYear = _financialClock.Today.Year;
-        return taxYear >= 2000 && taxYear <= currentYear;
+        return taxYear >= MinTaxYear && taxYear <= currentYear;
     }
-}
-
-public static class TaxReliefCatalog
-{
-    public const int LatestPolicyYear = 2025;
-
-    private static readonly IReadOnlyList<TaxReliefCategoryDefinition> Ya2025 =
-    [
-        new("parents-medical", "Parents and grandparents medical care", 8000, "Medical, dental, special needs and carer expenses."),
-        new("supporting-equipment", "Basic supporting equipment", 6000, "For a disabled self, spouse, child or parent."),
-        new("self-education", "Self education fees", 7000, "Qualifying study, upskilling and self-enhancement."),
-        new("medical", "Medical expenses", 10000, "Qualifying serious disease, fertility, vaccination and dental expenses."),
-        new("child-intervention", "Child assessment and intervention", 6000, "Qualifying assessment or early intervention for a child aged 18 or below."),
-        new("lifestyle", "Lifestyle", 2500, "Books, devices, internet and qualifying courses."),
-        new("sports", "Additional sports lifestyle", 1000, "Qualifying equipment, facilities, competitions and training."),
-        new("breastfeeding", "Breastfeeding equipment", 1000, "Available once in every two years of assessment."),
-        new("childcare", "Registered childcare or kindergarten", 3000, "For a child aged six or below."),
-        new("sspn", "SSPN net savings", 8000, "Net deposits after withdrawals for the year."),
-        new("life-epf", "Life insurance and EPF", 7000, "Sub-limits apply within this combined category."),
-        new("prs", "Deferred annuity and PRS", 3000, "Qualifying deferred annuity and private retirement scheme payments."),
-        new("education-medical-insurance", "Education and medical insurance", 4000, "Qualifying education and medical insurance premiums."),
-        new("socso", "SOCSO contributions", 350, "Qualifying Social Security Organisation contributions."),
-        new("ev-compost", "EV charging and composting equipment", 2500, "Qualifying non-business equipment."),
-        new("first-home-interest-under-500k", "First-home interest (home up to RM500,000)", 7000, "Mutually exclusive first-home category; qualifying sale and purchase agreement conditions apply."),
-        new("first-home-interest-over-500k", "First-home interest (home above RM500,000)", 5000, "Mutually exclusive first-home category for homes above RM500,000 up to RM750,000.")
-    ];
-
-    public static IReadOnlyList<TaxReliefCategoryDefinition> ForYear(int year) => Ya2025;
-    public static bool IsValid(string id) => Ya2025.Any(category => category.Id == id);
 }

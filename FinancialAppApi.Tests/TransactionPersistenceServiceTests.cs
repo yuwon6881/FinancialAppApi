@@ -210,7 +210,6 @@ public class TransactionPersistenceServiceTests
             SizeBytes = 10,
             Sha256 = new string('a', 64),
             TaxYear = 2026,
-            DocumentType = "Receipt",
             TransactionId = "tx-1",
             UploadedAt = DateTime.UtcNow,
             RetentionUntil = new DateOnly(2033, 12, 31),

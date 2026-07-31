@@ -246,7 +246,6 @@ public static class ServiceCollectionExtensions
         });
         services.AddSingleton<IDocumentVaultStore, GcsDocumentVaultStore>();
         services.AddScoped<DocumentVaultService>();
-        services.AddScoped<VaultDocumentTypeService>();
         services.AddScoped<VaultAmountExtractor>();
         services.Configure<DocumentVaultOptions>(configuration.GetSection("DocumentVault"));
 

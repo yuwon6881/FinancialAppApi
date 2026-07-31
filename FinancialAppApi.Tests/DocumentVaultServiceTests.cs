@@ -14,6 +14,7 @@ public class DocumentVaultServiceTests
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");
         context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        AddTestCategory(context);
         await context.SaveChangesAsync();
 
         var store = new FakeDocumentVaultStore();
@@ -21,9 +22,26 @@ public class DocumentVaultServiceTests
 
         var data = new byte[] { 0x00, 0x01, 0x02 };
 
-        var result = await service.CreateAsync("file.txt", data, 2026, "Receipt", null, null, null);
+        var result = await service.CreateAsync("file.txt", data, 2026, null, null, null, "test-category");
 
         Assert.Equal(DocumentVaultCreateStatus.UnsupportedType, result.Status);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RequiresTaxReliefCategory()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        await context.SaveChangesAsync();
+
+        var store = new FakeDocumentVaultStore();
+        var service = NewService(context, store);
+        var data = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D };
+
+        var result = await service.CreateAsync("file.pdf", data, 2026, null, null, null);
+
+        Assert.Equal(DocumentVaultCreateStatus.InvalidMetadata, result.Status);
+        Assert.Empty(store.Objects);
     }
 
     [Fact]
@@ -31,6 +49,7 @@ public class DocumentVaultServiceTests
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");
         context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        AddTestCategory(context);
         await context.SaveChangesAsync();
 
         var store = new FakeDocumentVaultStore();
@@ -39,7 +58,7 @@ public class DocumentVaultServiceTests
         var data = new byte[11];
         data[0] = 0x25; data[1] = 0x50; data[2] = 0x44; data[3] = 0x46; data[4] = 0x2D;
 
-        var result = await service.CreateAsync("file.pdf", data, 2026, "Receipt", null, null, null);
+        var result = await service.CreateAsync("file.pdf", data, 2026, null, null, null, "test-category");
 
         Assert.Equal(DocumentVaultCreateStatus.FileTooLarge, result.Status);
     }
@@ -49,12 +68,13 @@ public class DocumentVaultServiceTests
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");
         context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        AddTestCategory(context, 2018);
         await context.SaveChangesAsync();
 
         var service = NewService(context, new FakeDocumentVaultStore());
         var data = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D };
 
-        var result = await service.CreateAsync("file.pdf", data, 2018, "Receipt", null, null, null);
+        var result = await service.CreateAsync("file.pdf", data, 2018, null, null, null, "test-category");
 
         Assert.Equal(DocumentVaultCreateStatus.Created, result.Status);
         var expired = await service.GetExpiredTaxYearsAsync();
@@ -63,7 +83,7 @@ public class DocumentVaultServiceTests
     }
 
     [Fact]
-    public async Task GetAvailableTaxYearsAsync_ReturnsOnlyDistinctYearsWithDocuments()
+    public async Task GetAvailableTaxYearsAsync_ReturnsConfigurableYearsForTheCurrentClock()
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");
         context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
@@ -75,7 +95,10 @@ public class DocumentVaultServiceTests
 
         var service = NewService(context, new FakeDocumentVaultStore());
 
-        Assert.Equal([2026, 2025], await service.GetAvailableTaxYearsAsync());
+        var years = await service.GetAvailableTaxYearsAsync();
+        Assert.Equal(2026, years[0]);
+        Assert.Contains(2025, years);
+        Assert.Contains(2000, years);
     }
 
     [Fact]
@@ -94,6 +117,15 @@ public class DocumentVaultServiceTests
         pending.AmountCurrency = "MYR";
         pending.AmountStatus = "NeedsReview";
         context.VaultDocuments.AddRange(confirmed, pending);
+        context.TaxReliefCategoryLimits.Add(new TaxReliefCategoryLimit
+        {
+            UserId = "test-user",
+            CategoryId = "lifestyle",
+            Name = "Lifestyle",
+            Limit = 2500m,
+            Detail = "User-maintained limit",
+            TaxYear = 2025
+        });
         await context.SaveChangesAsync();
 
         var summary = await NewService(context, new FakeDocumentVaultStore()).GetTaxYearSummaryAsync(2025);
@@ -106,10 +138,47 @@ public class DocumentVaultServiceTests
     }
 
     [Fact]
+    public async Task ReliefCategories_InheritUntilAYearIsEditedWithoutChangingThePriorYear()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        context.TaxReliefCategoryLimits.Add(new TaxReliefCategoryLimit
+        {
+            UserId = "test-user",
+            CategoryId = "lifestyle",
+            Name = "Lifestyle",
+            Limit = 2500m,
+            Detail = "Prior year",
+            TaxYear = 2025
+        });
+        await context.SaveChangesAsync();
+
+        var service = NewService(context, new FakeDocumentVaultStore());
+        var inherited = await service.GetReliefCategoriesAsync(2026);
+        var inheritedLifestyle = Assert.Single(inherited);
+        Assert.True(inheritedLifestyle.IsInherited);
+        Assert.Equal(2500m, inheritedLifestyle.Limit);
+
+        var update = await service.UpdateReliefCategoryAsync(
+            2026, "lifestyle", "Lifestyle", 3000m, "Current year", CancellationToken.None);
+
+        Assert.Equal(TaxReliefCategoryMutationStatus.Saved, update.Status);
+        Assert.False(Assert.Single(await service.GetReliefCategoriesAsync(2026)).IsInherited);
+        Assert.Equal(3000m, Assert.Single(await service.GetReliefCategoriesAsync(2026)).Limit);
+        Assert.Equal(2500m, Assert.Single(await service.GetReliefCategoriesAsync(2025)).Limit);
+
+        var add = await service.AddReliefCategoryAsync(2026, "Sports", 1000m, "New category");
+        Assert.Equal(TaxReliefCategoryMutationStatus.Saved, add.Status);
+        Assert.Single(await service.GetReliefCategoriesAsync(2025));
+        Assert.Collection(await service.GetReliefCategoriesAsync(2026), _ => { }, _ => { });
+    }
+
+    [Fact]
     public async Task CreateAsync_RejectsOverQuota()
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");
         context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        AddTestCategory(context);
         
         context.VaultDocuments.Add(new VaultDocument 
         { 
@@ -120,7 +189,6 @@ public class DocumentVaultServiceTests
             SizeBytes = 90,
             Sha256 = "hash",
             TaxYear = 2026,
-            DocumentType = "Receipt",
             UploadedAt = DateTime.UtcNow,
             RetentionUntil = new DateOnly(2033, 12, 31)
         });
@@ -132,7 +200,7 @@ public class DocumentVaultServiceTests
         var data = new byte[15];
         data[0] = 0x25; data[1] = 0x50; data[2] = 0x44; data[3] = 0x46; data[4] = 0x2D;
 
-        var result = await service.CreateAsync("file.pdf", data, 2026, "Receipt", null, null, null);
+        var result = await service.CreateAsync("file.pdf", data, 2026, null, null, null, "test-category");
 
         Assert.Equal(DocumentVaultCreateStatus.QuotaExceeded, result.Status);
     }
@@ -142,6 +210,7 @@ public class DocumentVaultServiceTests
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");
         context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        AddTestCategory(context);
         await context.SaveChangesAsync();
 
         var store = new FakeDocumentVaultStore();
@@ -149,7 +218,7 @@ public class DocumentVaultServiceTests
 
         var data = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D, 1, 2, 3 };
 
-        var result = await service.CreateAsync("file.pdf", data, 2026, "Receipt", null, null, null);
+        var result = await service.CreateAsync("file.pdf", data, 2026, null, null, null, "test-category");
 
         Assert.Equal(DocumentVaultCreateStatus.Created, result.Status);
         Assert.NotNull(result.DocumentId);
@@ -161,6 +230,7 @@ public class DocumentVaultServiceTests
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");
         context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        AddTestCategory(context);
         await context.SaveChangesAsync();
 
         var store = new FakeDocumentVaultStore();
@@ -168,7 +238,7 @@ public class DocumentVaultServiceTests
 
         var data = new byte[] { 0xFF, 0xD8, 0xFF, 1, 2, 3 };
 
-        var result = await service.CreateAsync("file.jpg", data, 2026, "Receipt", null, null, null);
+        var result = await service.CreateAsync("file.jpg", data, 2026, null, null, null, "test-category");
 
         Assert.Equal(DocumentVaultCreateStatus.Created, result.Status);
         Assert.NotNull(result.DocumentId);
@@ -186,6 +256,7 @@ public class DocumentVaultServiceTests
         await using var context = new AppDbContext(options);
         context.SetCurrentUser("test-user");
         context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        AddTestCategory(context);
         await context.SaveChangesAsync();
         interceptor.FailVaultDocumentSaves = true;
 
@@ -194,7 +265,7 @@ public class DocumentVaultServiceTests
 
         var data = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D };
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync("file.pdf", data, 2026, "Receipt", null, null, null));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync("file.pdf", data, 2026, null, null, null, "test-category"));
 
         Assert.Empty(store.Objects);
     }
@@ -215,7 +286,6 @@ public class DocumentVaultServiceTests
             SizeBytes = 90,
             Sha256 = "hash",
             TaxYear = 2026,
-            DocumentType = "Receipt",
             UploadedAt = DateTime.UtcNow,
             RetentionUntil = new DateOnly(2033, 12, 31)
         };
@@ -241,6 +311,17 @@ public class DocumentVaultServiceTests
         return new DocumentVaultService(context, store, options, NullLogger<DocumentVaultService>.Instance);
     }
 
+    private static void AddTestCategory(AppDbContext context, int taxYear = 2026) =>
+        context.TaxReliefCategoryLimits.Add(new TaxReliefCategoryLimit
+        {
+            UserId = "test-user",
+            CategoryId = "test-category",
+            Name = "Test category",
+            Limit = 1000m,
+            Detail = "Test configuration",
+            TaxYear = taxYear
+        });
+
     private static VaultDocument VaultDocumentForYear(int year, int id) => new()
     {
         Id = id,
@@ -251,7 +332,6 @@ public class DocumentVaultServiceTests
         SizeBytes = 10,
         Sha256 = $"hash-{id}",
         TaxYear = year,
-        DocumentType = "Receipt",
         UploadedAt = DateTime.UtcNow.AddMinutes(-id),
         RetentionUntil = new DateOnly(year, 12, 31).AddYears(7)
     };

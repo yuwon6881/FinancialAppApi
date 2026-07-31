@@ -13,8 +13,9 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
     {
         var client = await CreateSignedInClientAsync();
         var originalBytes = Encoding.UTF8.GetBytes("%PDF-1.7 vault test");
+        var categoryId = await AddCategoryAsync(client, 2026);
 
-        using var uploadForm = CreateUploadForm(originalBytes, "tax evidence.pdf");
+        using var uploadForm = CreateUploadForm(originalBytes, "tax evidence.pdf", categoryId);
         var uploadResponse = await client.PostAsync("/api/documents", uploadForm);
 
         Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
@@ -31,7 +32,8 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
 
         var years = await client.GetFromJsonAsync<int[]>("/api/documents/years");
         Assert.NotNull(years);
-        Assert.Equal([2026], years);
+        Assert.Equal(2026, years[0]);
+        Assert.Contains(2000, years);
 
         var usageResponse = await client.GetAsync("/api/documents/usage");
         Assert.Equal(HttpStatusCode.OK, usageResponse.StatusCode);
@@ -44,10 +46,16 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         Assert.Equal(originalBytes, await downloadResponse.Content.ReadAsByteArrayAsync());
         Assert.Equal("application/pdf", downloadResponse.Content.Headers.ContentType?.MediaType);
 
+        var missingCategoryUpdate = await client.PatchAsJsonAsync($"/api/documents/{documentId}", new
+        {
+            reliefCategory = "",
+            reliefCategorySpecified = true,
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, missingCategoryUpdate.StatusCode);
+
         var updateResponse = await client.PatchAsJsonAsync($"/api/documents/{documentId}", new
         {
             taxYear = 2025,
-            documentType = "Tax Return",
             notes = "Filed copy",
             transactionId = "transaction-1",
         });
@@ -74,27 +82,11 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
     }
 
     [Fact]
-    public async Task DocumentTypes_CanBeAddedSearchedClientSideAndDeletedWhenUnused()
-    {
-        var client = await CreateSignedInClientAsync();
-
-        var defaults = await client.GetFromJsonAsync<JsonElement>("/api/document-types");
-        Assert.Contains(defaults.EnumerateArray(), item => item.GetProperty("name").GetString() == "Receipt");
-
-        var create = await client.PostAsJsonAsync("/api/document-types", new { name = "Education Receipt" });
-        Assert.Equal(HttpStatusCode.OK, create.StatusCode);
-        var created = await create.Content.ReadFromJsonAsync<JsonElement>();
-        var id = created.GetProperty("id").GetString();
-
-        var delete = await client.DeleteAsync($"/api/document-types/{id}");
-        Assert.Equal(HttpStatusCode.NoContent, delete.StatusCode);
-    }
-
-    [Fact]
     public async Task Upload_WithDisguisedExecutable_Returns400()
     {
         var client = await CreateSignedInClientAsync();
-        using var form = CreateUploadForm([0x4D, 0x5A, 0x90, 0x00], "receipt.jpg");
+        var categoryId = await AddCategoryAsync(client, 2026);
+        using var form = CreateUploadForm([0x4D, 0x5A, 0x90, 0x00], "receipt.jpg", categoryId);
 
         var response = await client.PostAsync("/api/documents", form);
 
@@ -105,6 +97,16 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
     public async Task BulkWorkflow_KeepsValidUploadReportsFailureSummarizesExportsAndDeletes()
     {
         var client = await CreateSignedInClientAsync();
+        var categoryResponse = await client.PostAsJsonAsync("/api/documents/relief-categories/2025", new
+        {
+            name = "Lifestyle",
+            limit = 2500m,
+            detail = "User-maintained limit"
+        });
+        Assert.Equal(HttpStatusCode.OK, categoryResponse.StatusCode);
+        var category = await categoryResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var categoryId = category.GetProperty("id").GetString();
+
         using var form = new MultipartFormDataContent();
         var valid = new ByteArrayContent(Encoding.UTF8.GetBytes("%PDF-1.7 valid"));
         valid.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
@@ -113,8 +115,7 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         invalid.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         form.Add(invalid, "files", "invalid.pdf");
         form.Add(new StringContent("2025"), "taxYear");
-        form.Add(new StringContent("Receipt"), "documentType");
-        form.Add(new StringContent("lifestyle"), "reliefCategory");
+        form.Add(new StringContent(categoryId!), "reliefCategory");
 
         var response = await client.PostAsync("/api/documents/bulk", form);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -156,15 +157,28 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/documents/usage")).StatusCode);
     }
 
-    private static MultipartFormDataContent CreateUploadForm(byte[] bytes, string fileName)
+    private static async Task<string> AddCategoryAsync(HttpClient client, int taxYear)
+    {
+        var response = await client.PostAsJsonAsync($"/api/documents/relief-categories/{taxYear}", new
+        {
+            name = "Lifestyle",
+            limit = 2500m,
+            detail = "User-maintained limit"
+        });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var category = await response.Content.ReadFromJsonAsync<JsonElement>();
+        return category.GetProperty("id").GetString()!;
+    }
+
+    private static MultipartFormDataContent CreateUploadForm(byte[] bytes, string fileName, string reliefCategory)
     {
         var content = new MultipartFormDataContent();
         var file = new ByteArrayContent(bytes);
         file.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         content.Add(file, "file", fileName);
         content.Add(new StringContent("2026"), "taxYear");
-        content.Add(new StringContent("Receipt"), "documentType");
         content.Add(new StringContent("Annual filing"), "notes");
+        content.Add(new StringContent(reliefCategory), "reliefCategory");
         return content;
     }
 }

@@ -43,7 +43,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<MarketDataQuotaWindow> MarketDataQuotaWindows => Set<MarketDataQuotaWindow>();
     public DbSet<InstrumentSearchCache> InstrumentSearchCaches => Set<InstrumentSearchCache>();
     public DbSet<VaultDocument> VaultDocuments => Set<VaultDocument>();
-    public DbSet<VaultDocumentTypeDefinition> VaultDocumentTypes => Set<VaultDocumentTypeDefinition>();
+    public DbSet<TaxReliefCategoryLimit> TaxReliefCategoryLimits => Set<TaxReliefCategoryLimit>();
     public DbSet<AiConversation> AiConversations => Set<AiConversation>();
     public DbSet<AiConversationTurn> AiConversationTurns => Set<AiConversationTurn>();
     public DbSet<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey> DataProtectionKeys => Set<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey>();
@@ -381,9 +381,10 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 .HasFilter("\"ClientKey\" IS NOT NULL");
         });
 
-        modelBuilder.Entity<VaultDocumentTypeDefinition>(entity =>
+        modelBuilder.Entity<TaxReliefCategoryLimit>(entity =>
         {
-            entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
+            entity.Property(e => e.Limit).HasPrecision(18, 2);
+            entity.HasIndex(e => new { e.UserId, e.TaxYear, e.CategoryId }).IsUnique();
         });
 
         modelBuilder.Entity<AiConversation>(entity =>
@@ -430,7 +431,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<ManualPriceOverride>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<MarketDataRefreshJob>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<VaultDocument>(), applyQueryFilter: true);
-        ConfigureUserOwnership(modelBuilder.Entity<VaultDocumentTypeDefinition>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<TaxReliefCategoryLimit>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<AiConversation>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<AiConversationTurn>(), applyQueryFilter: true);
     }
