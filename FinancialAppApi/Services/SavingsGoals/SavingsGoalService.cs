@@ -141,6 +141,7 @@ public class SavingsGoalService
         goal.CycleFundedKey = null;
         goal.CycleFundedAmount = 0m;
         goal.EarmarkedAmount = Math.Max(0m, goal.EarmarkedAmount);
+        goal.RecurrenceDayOfMonth = goal.IsRecurring ? goal.TargetDate.Day : null;
 
         // A goal may be seeded with money already set aside. That still has to fit in the pool.
         if (goal.EarmarkedAmount > 0m)
@@ -179,10 +180,16 @@ public class SavingsGoalService
         // rather than holding money the goal no longer needs (and would breach the row-level
         // earmark <= target constraint). Raising the target never moves money.
         goal.EarmarkedAmount = Math.Min(goal.EarmarkedAmount, goal.TargetAmount);
+        var targetDateChanged = goal.TargetDate.Date != updated.TargetDate.Date;
         goal.TargetDate = updated.TargetDate;
         goal.Priority = updated.Priority;
         goal.IsRecurring = updated.IsRecurring;
         goal.RecurrenceMonths = updated.RecurrenceMonths;
+        goal.RecurrenceDayOfMonth = updated.IsRecurring
+            ? targetDateChanged
+                ? updated.TargetDate.Day
+                : NormalizeRecurrenceDay(updated.RecurrenceDayOfMonth ?? goal.RecurrenceDayOfMonth, updated.TargetDate.Day)
+            : null;
 
         await _context.SaveChangesAsync(cancellationToken);
         return new SavingsGoalResult(SavingsGoalMutationStatus.Success, goal);
@@ -321,8 +328,23 @@ public class SavingsGoalService
         if (goal.IsRecurring)
         {
             // Roll forward from the deadline that just passed, not from today, so a quarterly
-            // service stays on its quarter boundaries even when marked done a week late.
-            goal.TargetDate = goal.TargetDate.AddMonths(Math.Max(1, goal.RecurrenceMonths));
+            // service stays on its quarter boundaries even when marked done a week late. Keep the
+            // original day separately because DateTime.AddMonths clamps (for example) January 31
+            // to February 28 and would otherwise make every later deadline the 28th.
+            var recurrenceMonths = Math.Max(1, goal.RecurrenceMonths);
+            var recurrenceDay = NormalizeRecurrenceDay(goal.RecurrenceDayOfMonth, goal.TargetDate.Day);
+            var nextTargetDate = AddRecurringPeriod(goal.TargetDate, recurrenceMonths, recurrenceDay);
+
+            // Completing a stale goal represents one completed period. Skip any additional missed
+            // periods so the next active deadline is actionable instead of leaving the goal overdue
+            // and forcing the user to press Complete repeatedly.
+            while (DateOnly.FromDateTime(nextTargetDate) <= _financialClock.Today)
+            {
+                nextTargetDate = AddRecurringPeriod(nextTargetDate, recurrenceMonths, recurrenceDay);
+            }
+
+            goal.TargetDate = nextTargetDate;
+            goal.RecurrenceDayOfMonth = recurrenceDay;
             goal.EarmarkedAmount = 0m;
             // Cleared, not decremented: the new period starts fresh and should be fundable at once.
             goal.CycleFundedKey = null;
@@ -391,6 +413,18 @@ public class SavingsGoalService
     {
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
         return $"{year:D4}-{monthIndex:D2}";
+    }
+
+    private static int NormalizeRecurrenceDay(int? recurrenceDay, int fallbackDay)
+    {
+        return Math.Clamp(recurrenceDay ?? fallbackDay, 1, 31);
+    }
+
+    private static DateTime AddRecurringPeriod(DateTime currentDate, int recurrenceMonths, int recurrenceDay)
+    {
+        var nextMonth = currentDate.AddMonths(recurrenceMonths);
+        var day = Math.Min(recurrenceDay, DateTime.DaysInMonth(nextMonth.Year, nextMonth.Month));
+        return new DateTime(nextMonth.Year, nextMonth.Month, day);
     }
 
     private static SavingsGoalResult ExceedsAvailable(decimal headroom)

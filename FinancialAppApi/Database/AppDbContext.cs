@@ -201,6 +201,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.Status).HasDefaultValue(SavingsGoalStatus.Active);
             entity.Property(e => e.IsRecurring).HasDefaultValue(false);
             entity.Property(e => e.RecurrenceMonths).HasDefaultValue(12);
+            entity.Property(e => e.RecurrenceDayOfMonth).HasColumnType("integer");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
             // The list is always read as "active goals in funding order", so index the status and
             // deadline together rather than making every page load sort the whole table.

@@ -434,6 +434,47 @@ public class SavingsGoalServiceTests
     }
 
     [Fact]
+    public async Task CompleteGoalAsync_PreservesTheOriginalDayAcrossShortMonths()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var goal = NewGoal("Month end service", 1200m, earmarked: 1200m, targetDate: new DateOnly(2026, 7, 31));
+        goal.IsRecurring = true;
+        goal.RecurrenceMonths = 1;
+        var service = NewService(context, new DateOnly(2026, 7, 15));
+        var created = await service.CreateGoalAsync(goal);
+        Assert.Equal(SavingsGoalMutationStatus.Success, created.Status);
+        Assert.Equal(31, created.Goal!.RecurrenceDayOfMonth);
+
+        await service.CompleteGoalAsync(goal.Id);
+        Assert.Equal(new DateTime(2026, 8, 31), context.SavingsGoals.Single().TargetDate.Date);
+        Assert.Equal(31, context.SavingsGoals.Single().RecurrenceDayOfMonth);
+
+        await NewService(context, new DateOnly(2026, 9, 1)).CompleteGoalAsync(goal.Id);
+        Assert.Equal(new DateTime(2026, 9, 30), context.SavingsGoals.Single().TargetDate.Date);
+
+        await NewService(context, new DateOnly(2026, 10, 1)).CompleteGoalAsync(goal.Id);
+        // The September clamp does not permanently turn the 31st into the 30th.
+        Assert.Equal(new DateTime(2026, 10, 31), context.SavingsGoals.Single().TargetDate.Date);
+    }
+
+    [Fact]
+    public async Task CompleteGoalAsync_SkipsAllMissedRecurringPeriods()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var goal = NewGoal("Overdue quarterly service", 1200m, earmarked: 1200m, targetDate: new DateOnly(2026, 1, 15));
+        goal.IsRecurring = true;
+        goal.RecurrenceMonths = 3;
+        context.SavingsGoals.Add(goal);
+        await context.SaveChangesAsync();
+
+        await NewService(context, new DateOnly(2026, 7, 15)).CompleteGoalAsync(goal.Id);
+
+        // Jan -> Apr -> Jul are already missed (including today's deadline), so one completion
+        // advances the active goal to the next actionable quarter.
+        Assert.Equal(new DateTime(2026, 10, 15), context.SavingsGoals.Single().TargetDate.Date);
+    }
+
+    [Fact]
     public async Task CompleteGoalAsync_RejectsAnAlreadyCompletedGoal()
     {
         await using var context = NewContext(rewardsBalance: 1000m);
@@ -515,11 +556,12 @@ public class SavingsGoalServiceTests
         return context;
     }
 
-    private static SavingsGoalService NewService(AppDbContext context)
+    private static SavingsGoalService NewService(AppDbContext context, DateOnly? today = null)
     {
         var configuration = TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC"));
+        var clockDate = today ?? Today;
         var timeProvider = new FixedTimeProvider(
-            new DateTimeOffset(Today.ToDateTime(new TimeOnly(1, 0)), TimeSpan.Zero));
+            new DateTimeOffset(clockDate.ToDateTime(new TimeOnly(1, 0)), TimeSpan.Zero));
         return new SavingsGoalService(
             context,
             new CycleBalanceService(context),

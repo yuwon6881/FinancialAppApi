@@ -63,6 +63,13 @@ namespace FinancialAppApi.Models
         public int RecurrenceMonths { get; set; } = 12;
 
         /// <summary>
+        /// The original calendar day for a recurring goal. Month ends are clamped to the last
+        /// valid day for that month, but this anchor is retained so a goal created on the 31st can
+        /// return to the 31st when a later month has one.
+        /// </summary>
+        public int? RecurrenceDayOfMonth { get; set; }
+
+        /// <summary>
         /// Cycle key ("yyyy-MM") that <see cref="CycleFundedAmount"/> is measured against. A key
         /// that is not the current cycle means the tally has rolled over and counts as zero.
         /// </summary>
