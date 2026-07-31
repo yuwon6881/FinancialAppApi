@@ -83,7 +83,7 @@ public class DocumentVaultServiceTests
     }
 
     [Fact]
-    public async Task GetAvailableTaxYearsAsync_ReturnsConfigurableYearsForTheCurrentClock()
+    public async Task GetAvailableTaxYearsAsync_ReturnsOnlyYearsWithDocuments()
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");
         context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
@@ -96,9 +96,8 @@ public class DocumentVaultServiceTests
         var service = NewService(context, new FakeDocumentVaultStore());
 
         var years = await service.GetAvailableTaxYearsAsync();
-        Assert.Equal(2026, years[0]);
-        Assert.Contains(2025, years);
-        Assert.Contains(2000, years);
+        Assert.Equal([2026, 2025], years);
+        Assert.DoesNotContain(2000, years);
     }
 
     [Fact]

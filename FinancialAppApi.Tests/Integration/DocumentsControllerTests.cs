@@ -32,8 +32,8 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
 
         var years = await client.GetFromJsonAsync<int[]>("/api/documents/years");
         Assert.NotNull(years);
-        Assert.Equal(2026, years[0]);
-        Assert.Contains(2000, years);
+        Assert.Equal([2026], years);
+        Assert.DoesNotContain(2000, years);
 
         var usageResponse = await client.GetAsync("/api/documents/usage");
         Assert.Equal(HttpStatusCode.OK, usageResponse.StatusCode);

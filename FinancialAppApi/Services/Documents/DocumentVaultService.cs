@@ -341,11 +341,15 @@ public sealed class DocumentVaultService
 
     public Task<List<int>> GetAvailableTaxYearsAsync(CancellationToken ct = default)
     {
-        var currentYear = _financialClock.Today.Year;
-        var years = Enumerable.Range(MinTaxYear, Math.Max(0, currentYear - MinTaxYear + 1))
+        // The Vault filter should only offer years that can return a document. Keeping this as a
+        // distinct database projection avoids transferring every configurable year or making the
+        // client infer availability from a paged document response.
+        return _context.VaultDocuments
+            .AsNoTracking()
+            .Select(document => document.TaxYear)
+            .Distinct()
             .OrderByDescending(year => year)
-            .ToList();
-        return Task.FromResult(years);
+            .ToListAsync(ct);
     }
 
     public async Task<(byte[] Data, string ContentType, string FileName)?> GetContentAsync(
