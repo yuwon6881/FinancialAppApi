@@ -27,21 +27,6 @@ public class WishlistController : ControllerBase
         return Ok(items.Select(MapToDto).ToList());
     }
 
-    // GET: api/wishlist/claimed?page=1&pageSize=5
-    // Server-paged "Rewards Claimed" history (purchased items only, newest first).
-    [HttpGet("claimed")]
-    public async Task<IActionResult> GetClaimedWishlist([FromQuery] int page = 1, [FromQuery] int pageSize = 5)
-    {
-        var result = await _wishlistService.GetClaimedWishlistPagedAsync(page, pageSize, HttpContext.RequestAborted);
-        return Ok(new
-        {
-            items = result.Items.Select(MapToDto).ToList(),
-            total = result.Total,
-            page = result.Page,
-            pageSize = result.PageSize
-        });
-    }
-
     // POST: api/wishlist
     [HttpPost]
     public async Task<ActionResult<WishlistItemDto>> PostWishlistItem(WishlistItemMutationDto dto)

@@ -75,7 +75,7 @@ public class RecurringPaymentPayEarlyService
         }
 
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
-        var cycleDay = setting?.CycleDay ?? 1;
+        var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
         var today = _financialClock.Today;
 
         var occurrence = await FindNextUnpaidOccurrenceAsync(payment, cycleDay, today, includeToday: false, cancellationToken);
@@ -164,7 +164,7 @@ public class RecurringPaymentPayEarlyService
         var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
         var occurrence = await FindNextUnpaidOccurrenceAsync(
             payment,
-            setting?.CycleDay ?? 1,
+            setting?.CycleDay ?? FinancialConstants.DefaultCycleDay,
             _financialClock.Today,
             includeToday: false,
             cancellationToken);
@@ -183,7 +183,7 @@ public class RecurringPaymentPayEarlyService
         var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
         return await FindNextUnpaidOccurrenceAsync(
             payment,
-            setting?.CycleDay ?? 1,
+            setting?.CycleDay ?? FinancialConstants.DefaultCycleDay,
             _financialClock.Today,
             includeToday: true,
             cancellationToken);

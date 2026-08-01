@@ -179,7 +179,18 @@ public class SavingsGoalService
         // Lowering the target below what is already set aside releases the surplus back to the pool
         // rather than holding money the goal no longer needs (and would breach the row-level
         // earmark <= target constraint). Raising the target never moves money.
-        goal.EarmarkedAmount = Math.Min(goal.EarmarkedAmount, goal.TargetAmount);
+        var clampedEarmark = Math.Min(goal.EarmarkedAmount, goal.TargetAmount);
+        if (clampedEarmark != goal.EarmarkedAmount)
+        {
+            // Same rule as ContributeAsync: a release has to come off this cycle's tally too.
+            // Without this the goal keeps reporting the released amount as already funded, so
+            // "Fund this cycle" sees zero outstanding and refuses to top it back up.
+            ApplyCycleFunding(
+                goal,
+                clampedEarmark - goal.EarmarkedAmount,
+                await GetCurrentCycleKeyAsync(cancellationToken));
+            goal.EarmarkedAmount = clampedEarmark;
+        }
         var targetDateChanged = goal.TargetDate.Date != updated.TargetDate.Date;
         goal.TargetDate = updated.TargetDate;
         goal.Priority = updated.Priority;
@@ -401,7 +412,7 @@ public class SavingsGoalService
         var setting = await _context.FinancialSettings
             .AsNoTracking()
             .FirstOrDefaultAsync(cancellationToken);
-        return setting?.CycleDay ?? 28;
+        return setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
     }
 
     private async Task<string> GetCurrentCycleKeyAsync(CancellationToken cancellationToken)

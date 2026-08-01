@@ -235,7 +235,7 @@ public class TransactionPersistenceService
 
         var setting = await _context.FinancialSettings.AsNoTracking()
             .FirstOrDefaultAsync(cancellationToken);
-        var cycleDay = setting?.CycleDay ?? 1;
+        var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
 
         var transactionDate = TransactionDate.ToDateOnly(transaction.Date);
         DateOnly candidateDate;

@@ -196,6 +196,49 @@ public class SavingsGoalServiceTests
     }
 
     [Fact]
+    public async Task UpdateGoalAsync_TakesReleasedMoneyOffThisCyclesTally()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var goal = NewGoal("Car service", 1200m, earmarked: 900m, targetDate: new DateOnly(2026, 9, 20));
+        // All 900 went in during the current cycle, so the goal currently owes nothing more.
+        goal.CycleFundedKey = "2026-07";
+        goal.CycleFundedAmount = 900m;
+        context.SavingsGoals.Add(goal);
+        await context.SaveChangesAsync();
+
+        var service = NewService(context);
+        await service.UpdateGoalAsync(goal.Id, new SavingsGoal
+        {
+            Id = goal.Id,
+            Name = "Car service",
+            TargetAmount = 100m,
+            TargetDate = goal.TargetDate,
+            Priority = "Medium"
+        });
+
+        // Releasing 800 has to come off this cycle's tally too, exactly as a manual release does.
+        var stored = context.SavingsGoals.Single();
+        Assert.Equal(100m, stored.EarmarkedAmount);
+        Assert.Equal(100m, stored.CycleFundedAmount);
+        Assert.Equal("2026-07", stored.CycleFundedKey);
+
+        // And the tally has to be right for the *next* mutation: raising the target again must
+        // reopen funding. With a stale 900 on the clock the goal reports nothing outstanding and
+        // "Fund this cycle" silently skips it.
+        await service.UpdateGoalAsync(goal.Id, new SavingsGoal
+        {
+            Id = goal.Id,
+            Name = "Car service",
+            TargetAmount = 2000m,
+            TargetDate = goal.TargetDate,
+            Priority = "Medium"
+        });
+
+        var summary = await service.GetPoolSummaryAsync();
+        Assert.True(summary.OutstandingThisCycleTotal > 0m);
+    }
+
+    [Fact]
     public async Task UpdateGoalAsync_LeavesTheEarmarkAloneWhenTheTargetIsRaised()
     {
         await using var context = NewContext(rewardsBalance: 3000m);

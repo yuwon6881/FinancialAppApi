@@ -300,6 +300,20 @@ public class DocumentVaultServiceTests
         Assert.NotNull(await context.VaultDocuments.FirstOrDefaultAsync(d => d.Id == 1));
     }
 
+    [Fact]
+    public async Task WriteZipAsync_FailsWhenAStoredObjectIsMissing()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        context.VaultDocuments.Add(VaultDocumentForYear(2026, 1));
+        await context.SaveChangesAsync();
+
+        var service = NewService(context, new FakeDocumentVaultStore());
+
+        await Assert.ThrowsAsync<DocumentVaultStoreException>(() =>
+            service.WriteZipAsync(new[] { 1 }, new MemoryStream()));
+    }
+
     private static DocumentVaultService NewService(AppDbContext context, IDocumentVaultStore store, long maxBytes = 10 * 1024 * 1024, long maxTotalBytes = 100 * 1024 * 1024)
     {
         var options = new FixedOptionsMonitor<DocumentVaultOptions>(new DocumentVaultOptions

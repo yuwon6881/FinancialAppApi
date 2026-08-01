@@ -194,7 +194,7 @@ public class TransactionCategoryService
             await _context.CategorySpendingGuides.AnyAsync(guide => guide.CategoryName == category.Name))
         {
             var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
-            var cycleDay = setting?.CycleDay ?? 28;
+            var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
             var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
                 _financialClock.Today,
                 cycleDay);
@@ -241,7 +241,7 @@ public class TransactionCategoryService
         }
 
         var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
-        var cycleDay = setting?.CycleDay ?? 28;
+        var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
             _financialClock.Today,
             cycleDay);

@@ -289,6 +289,8 @@ public sealed class DocumentVaultService
         int? taxYear,
         string? transactionId,
         string? search,
+        string? reliefCategory,
+        string? sort,
         int skip,
         int take,
         CancellationToken ct = default)
@@ -311,11 +313,26 @@ public sealed class DocumentVaultService
             query = query.Where(d => d.OriginalFileName.ToLower().Contains(s) || (d.Notes != null && d.Notes.ToLower().Contains(s)));
         }
 
+        if (!string.IsNullOrWhiteSpace(reliefCategory))
+        {
+            var category = reliefCategory.Trim();
+            query = query.Where(d => d.ReliefCategory == category);
+        }
+
         var totalCount = await query.CountAsync(ct);
 
-        var items = await query
-            .OrderByDescending(d => d.UploadedAt)
-            .ThenByDescending(d => d.Id)
+        var normalizedSort = sort?.Trim().ToLowerInvariant();
+        IOrderedQueryable<VaultDocument> orderedQuery = normalizedSort switch
+        {
+            "uploaded-asc" => query.OrderBy(d => d.UploadedAt).ThenBy(d => d.Id),
+            "name-asc" => query.OrderBy(d => d.OriginalFileName).ThenByDescending(d => d.UploadedAt).ThenByDescending(d => d.Id),
+            "name-desc" => query.OrderByDescending(d => d.OriginalFileName).ThenByDescending(d => d.UploadedAt).ThenByDescending(d => d.Id),
+            "amount-desc" => query.OrderByDescending(d => d.Amount ?? 0m).ThenByDescending(d => d.UploadedAt).ThenByDescending(d => d.Id),
+            "amount-asc" => query.OrderBy(d => d.Amount ?? 0m).ThenByDescending(d => d.UploadedAt).ThenByDescending(d => d.Id),
+            _ => query.OrderByDescending(d => d.UploadedAt).ThenByDescending(d => d.Id),
+        };
+
+        var items = await orderedQuery
             .Skip(skip)
             .Take(take)
             .Select(d => new VaultDocumentDto(
@@ -719,6 +736,12 @@ public sealed class DocumentVaultService
         return ExportQuery(null, ids).AnyAsync(ct);
     }
 
+    public async Task<bool> HasAllDocumentsForExportAsync(IReadOnlyCollection<int> ids, CancellationToken ct = default)
+    {
+        var distinctIds = ids.Distinct().ToArray();
+        return distinctIds.Length > 0 && await ExportQuery(null, distinctIds).CountAsync(ct) == distinctIds.Length;
+    }
+
     public async Task WriteZipAsync(IReadOnlyCollection<int> ids, Stream output, CancellationToken ct = default)
     {
         await WriteZipAsync(ExportQuery(null, ids), output, ct);
@@ -733,7 +756,10 @@ public sealed class DocumentVaultService
             foreach (var document in documents)
             {
                 var data = await _store.DownloadAsync(document.StorageObjectPath, ct);
-                if (data == null) continue;
+                if (data == null)
+                {
+                    throw new DocumentVaultStoreException($"The stored document {document.Id} could not be found.");
+                }
                 var safeName = Path.GetFileName(document.OriginalFileName);
                 var entry = archive.CreateEntry($"{document.TaxYear}/{document.Id}-{safeName}", CompressionLevel.Fastest);
                 await using var entryStream = entry.Open();

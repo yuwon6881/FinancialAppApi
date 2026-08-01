@@ -30,6 +30,13 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         Assert.Equal("application/pdf", listed.GetProperty("contentType").GetString());
         Assert.Equal("2033-12-31", listed.GetProperty("retentionUntil").GetString());
 
+        var filteredResponse = await client.GetAsync($"/api/documents?taxYear=2026&reliefCategory={categoryId}&sort=name-asc");
+        Assert.Equal(HttpStatusCode.OK, filteredResponse.StatusCode);
+        var filtered = await filteredResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var filteredItems = filtered.GetProperty("items").EnumerateArray().ToList();
+        Assert.Single(filteredItems);
+        Assert.Equal(documentId, filteredItems[0].GetProperty("id").GetInt32());
+
         var years = await client.GetFromJsonAsync<int[]>("/api/documents/years");
         Assert.NotNull(years);
         Assert.Equal([2026], years);
@@ -141,6 +148,13 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         var export = await client.GetAsync("/api/documents/export?taxYear=2025");
         Assert.Equal("application/zip", export.Content.Headers.ContentType?.MediaType);
         Assert.NotEmpty(await export.Content.ReadAsByteArrayAsync());
+
+        var selectedExport = await client.PostAsJsonAsync("/api/documents/export-selected", new { ids = new[] { id } });
+        Assert.Equal(HttpStatusCode.OK, selectedExport.StatusCode);
+        Assert.NotEmpty(await selectedExport.Content.ReadAsByteArrayAsync());
+
+        var staleSelectedExport = await client.PostAsJsonAsync("/api/documents/export-selected", new { ids = new[] { id, id + 100000 } });
+        Assert.Equal(HttpStatusCode.NotFound, staleSelectedExport.StatusCode);
 
         var delete = await client.PostAsJsonAsync("/api/documents/bulk-delete", new { ids = new[] { id } });
         Assert.Equal(HttpStatusCode.OK, delete.StatusCode);

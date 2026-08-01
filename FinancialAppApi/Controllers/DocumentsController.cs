@@ -3,6 +3,7 @@ using FinancialAppApi.Filters;
 using FinancialAppApi.Services.Documents;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.Http.Features;
 
 namespace FinancialAppApi.Controllers;
 
@@ -141,9 +142,10 @@ public class DocumentsController : ControllerBase
     {
         if (request?.Updates is not { Count: > 0 })
             return BadRequest(new { message = "Choose at least one document category to update." });
+        if (request.Updates.Count > 100)
+            return BadRequest(new { message = "Update at most 100 document categories at a time." });
 
         var updates = request.Updates
-            .Take(100)
             .Select(update => new ReliefCategoryDocumentUpdate(update.Id, update.ReliefCategory))
             .ToArray();
         var results = await _service.UpdateReliefCategoriesAsync(updates, ct);
@@ -155,13 +157,15 @@ public class DocumentsController : ControllerBase
         [FromQuery] int? taxYear,
         [FromQuery] string? transactionId,
         [FromQuery] string? search,
+        [FromQuery] string? reliefCategory,
+        [FromQuery] string sort = "uploaded-desc",
         [FromQuery] int skip = 0,
         [FromQuery] int take = 50,
         CancellationToken ct = default)
     {
         skip = Math.Max(0, skip);
         take = Math.Clamp(take, 1, 100);
-        var (items, totalCount) = await _service.ListAsync(taxYear, transactionId, search, skip, take, ct);
+        var (items, totalCount) = await _service.ListAsync(taxYear, transactionId, search, reliefCategory, sort, skip, take, ct);
         return Ok(new { items, totalCount });
     }
 
@@ -176,17 +180,20 @@ public class DocumentsController : ControllerBase
 
     [HttpPost("export-selected")]
     public async Task<IActionResult> ExportSelected(
-        [FromBody] BulkExportDocumentsRequest request,
+        [FromBody] BulkExportDocumentsRequest? request,
         CancellationToken ct)
     {
-        var ids = request.Ids.Distinct().Take(100).ToArray();
+        var ids = request?.Ids?.Distinct().ToArray() ?? [];
         if (ids.Length == 0)
             return BadRequest(new { message = "Choose at least one document." });
-        if (!await _service.HasDocumentsForExportAsync(ids, ct))
-            return NotFound(new { message = "There are no selected documents to export." });
+        if (ids.Length > 100)
+            return BadRequest(new { message = "Export at most 100 documents at a time." });
+        if (!await _service.HasAllDocumentsForExportAsync(ids, ct))
+            return NotFound(new { message = "One or more selected documents are no longer available." });
 
         Response.ContentType = "application/zip";
         Response.Headers.ContentDisposition = "attachment; filename=\"tax-vault-selected.zip\"";
+        HttpContext.Features.Get<IHttpBodyControlFeature>()?.AllowSynchronousIO = true;
         await _service.WriteZipAsync(ids, Response.Body, ct);
         return new EmptyResult();
     }
@@ -250,6 +257,7 @@ public class DocumentsController : ControllerBase
         var suffix = taxYear?.ToString() ?? "all-tax-years";
         Response.ContentType = "application/zip";
         Response.Headers.ContentDisposition = $"attachment; filename=\"tax-vault-{suffix}.zip\"";
+        HttpContext.Features.Get<IHttpBodyControlFeature>()?.AllowSynchronousIO = true;
         await _service.WriteZipAsync(taxYear, Response.Body, ct);
         return new EmptyResult();
     }
@@ -294,10 +302,11 @@ public class DocumentsController : ControllerBase
     }
 
     [HttpPost("bulk-delete")]
-    public async Task<IActionResult> BulkDelete([FromBody] BulkDeleteDocumentsRequest request, CancellationToken ct)
+    public async Task<IActionResult> BulkDelete([FromBody] BulkDeleteDocumentsRequest? request, CancellationToken ct)
     {
-        var ids = request.Ids.Distinct().Take(100).ToList();
+        var ids = request?.Ids?.Distinct().ToList() ?? [];
         if (ids.Count == 0) return BadRequest(new { message = "Choose at least one document." });
+        if (ids.Count > 100) return BadRequest(new { message = "Delete at most 100 documents at a time." });
 
         var results = new List<object>();
         foreach (var id in ids)

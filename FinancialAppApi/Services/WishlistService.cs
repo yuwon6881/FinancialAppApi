@@ -37,12 +37,6 @@ public sealed record WishlistItemProjection(
     DateTime CreatedAt,
     bool IsActive);
 
-public sealed record PagedWishlist(
-    IReadOnlyList<WishlistItemProjection> Items,
-    int Total,
-    int Page,
-    int PageSize);
-
 public class WishlistService
 {
     private readonly AppDbContext _context;
@@ -82,57 +76,6 @@ public class WishlistService
                 w.IsActive
             ))
             .ToListAsync(cancellationToken);
-    }
-
-    // Server-side pagination for the "Rewards Claimed" history. Only purchased items,
-    // newest claim first. The active/queued wishlist still comes through GetWishlistAsync;
-    // this keeps the history list bounded instead of shipping every past claim to the client.
-    public async Task<PagedWishlist> GetClaimedWishlistPagedAsync(
-        int page,
-        int pageSize,
-        CancellationToken cancellationToken = default)
-    {
-        if (page < 1) page = 1;
-        if (pageSize < 1) pageSize = 5;
-        if (pageSize > 100) pageSize = 100;
-
-        var query = _context.WishlistItems
-            .AsNoTracking()
-            .Where(w => w.IsPurchased);
-
-        var total = await query.CountAsync(cancellationToken);
-
-        // Keep the offset calculation out of Int32 arithmetic. A caller can supply
-        // int.MaxValue for page; multiplying that by pageSize would otherwise wrap
-        // and can turn into an invalid negative Skip value.
-        var offset = ((long)page - 1) * pageSize;
-        if (offset >= total)
-        {
-            return new PagedWishlist([], total, page, pageSize);
-        }
-
-        var items = await query
-            .OrderByDescending(w => w.PurchasedAt)
-            .ThenByDescending(w => w.CreatedAt)
-            // PurchasedAt and CreatedAt are not guaranteed to be unique. The PK
-            // tie-breaker keeps rows from moving between pages across requests.
-            .ThenByDescending(w => w.Id)
-            .Skip((int)offset)
-            .Take(pageSize)
-            .Select(w => new WishlistItemProjection(
-                w.Id,
-                w.Name,
-                w.Price,
-                w.Priority,
-                w.IsPurchased,
-                w.PurchasedAt,
-                w.PurchaseTransactionId,
-                w.CreatedAt,
-                w.IsActive
-            ))
-            .ToListAsync(cancellationToken);
-
-        return new PagedWishlist(items, total, page, pageSize);
     }
 
     public async Task<WishlistItemResult> CreateWishlistItemAsync(WishlistItem item, CancellationToken cancellationToken = default)
