@@ -156,7 +156,6 @@ public class DocumentsController : ControllerBase
     public async Task<IActionResult> List(
         [FromQuery] int? taxYear,
         [FromQuery] string? transactionId,
-        [FromQuery] string? search,
         [FromQuery] string? reliefCategory,
         [FromQuery] string sort = "uploaded-desc",
         [FromQuery] int skip = 0,
@@ -165,7 +164,7 @@ public class DocumentsController : ControllerBase
     {
         skip = Math.Max(0, skip);
         take = Math.Clamp(take, 1, 100);
-        var (items, totalCount) = await _service.ListAsync(taxYear, transactionId, search, reliefCategory, sort, skip, take, ct);
+        var (items, totalCount) = await _service.ListAsync(taxYear, transactionId, reliefCategory, sort, skip, take, ct);
         return Ok(new { items, totalCount });
     }
 

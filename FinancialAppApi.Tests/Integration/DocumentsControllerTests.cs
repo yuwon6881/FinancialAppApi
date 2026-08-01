@@ -22,7 +22,7 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         var upload = await uploadResponse.Content.ReadFromJsonAsync<JsonElement>();
         var documentId = upload.GetProperty("id").GetInt32();
 
-        var listResponse = await client.GetAsync("/api/documents?taxYear=2026&search=evidence");
+        var listResponse = await client.GetAsync("/api/documents?taxYear=2026");
         Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
         var list = await listResponse.Content.ReadFromJsonAsync<JsonElement>();
         var listed = Assert.Single(list.GetProperty("items").EnumerateArray());

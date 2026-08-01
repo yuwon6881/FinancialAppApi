@@ -288,7 +288,6 @@ public sealed class DocumentVaultService
     public async Task<(List<VaultDocumentDto> Items, int TotalCount)> ListAsync(
         int? taxYear,
         string? transactionId,
-        string? search,
         string? reliefCategory,
         string? sort,
         int skip,
@@ -305,12 +304,6 @@ public sealed class DocumentVaultService
         if (!string.IsNullOrWhiteSpace(transactionId))
         {
             query = query.Where(d => d.TransactionId == transactionId);
-        }
-
-        if (!string.IsNullOrWhiteSpace(search))
-        {
-            var s = search.ToLower();
-            query = query.Where(d => d.OriginalFileName.ToLower().Contains(s) || (d.Notes != null && d.Notes.ToLower().Contains(s)));
         }
 
         if (!string.IsNullOrWhiteSpace(reliefCategory))
