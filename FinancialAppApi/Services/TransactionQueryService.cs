@@ -16,7 +16,8 @@ public sealed record TransactionProjection(
     decimal Amount,
     string? RecurringPaymentId,
     DateOnly? RecurringOccurrenceDate,
-    int? WishlistItemId);
+    int? WishlistItemId,
+    int? SavingsGoalId);
 
 public sealed record TransactionListResult(
     IReadOnlyList<TransactionProjection> Items,
@@ -89,7 +90,8 @@ public class TransactionQueryService
                     t.Amount,
                     t.RecurringPaymentId,
                     t.RecurringOccurrenceDate,
-                    t.WishlistItemId
+                    t.WishlistItemId,
+                    t.SavingsGoalId
                 ))
                 .ToListAsync(cancellationToken);
 
@@ -117,7 +119,8 @@ public class TransactionQueryService
                     t.Amount,
                     t.RecurringPaymentId,
                     t.RecurringOccurrenceDate,
-                    t.WishlistItemId
+                    t.WishlistItemId,
+                    t.SavingsGoalId
                 ))
                 .ToListAsync(cancellationToken);
             return new TransactionListResult(txs);
@@ -149,7 +152,8 @@ public class TransactionQueryService
                 t.Amount,
                 t.RecurringPaymentId,
                 t.RecurringOccurrenceDate,
-                t.WishlistItemId
+                t.WishlistItemId,
+                t.SavingsGoalId
             ))
             .ToListAsync(cancellationToken);
 
@@ -170,6 +174,7 @@ public class TransactionQueryService
                 && !t.Id.Contains("-split-")
                 && !t.LedgerCategory.StartsWith("Transfer:Income->")
                 && t.WishlistItemId == null
+                && t.SavingsGoalId == null
                 && !t.Description.StartsWith("Purchased:")
                 && !t.Description.EndsWith("(Wish List)"))
             .OrderByDescending(t => t.Date)

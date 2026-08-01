@@ -46,7 +46,7 @@ namespace FinancialAppApi.Models
         [StringLength(10)]
         public string Priority { get; set; } = "Medium";
 
-        /// <summary>active | completed. Completed goals release their earmark and stop being paced.</summary>
+        /// <summary>active | completed. Completed goals spend their earmark and stop being paced.</summary>
         [Required]
         [StringLength(16)]
         public string Status { get; set; } = SavingsGoalStatus.Active;
@@ -94,6 +94,14 @@ namespace FinancialAppApi.Models
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
         public DateTime? CompletedAt { get; set; }
+
+        /// <summary>
+        /// The completion that may still be reversed by deleting its generated ledger row. Any
+        /// subsequent edit or funding change clears this marker so an old delete cannot overwrite
+        /// newer goal state.
+        /// </summary>
+        [StringLength(200)]
+        public string? LastCompletionTransactionId { get; set; }
 
         // Client-supplied idempotency key for offline creates, same rationale as WishlistItem:
         // the int PK is server-generated, so a lost-response retry needs a stable client key to

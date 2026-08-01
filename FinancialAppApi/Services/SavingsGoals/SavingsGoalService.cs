@@ -16,12 +16,15 @@ public enum SavingsGoalMutationStatus
     ContributionInvalid,
     /// <summary>The requested earmark would claim more Rewards money than actually exists.</summary>
     ExceedsAvailable,
-    AlreadyCompleted
+    AlreadyCompleted,
+    NothingEarmarked,
+    Conflict
 }
 
 public sealed record SavingsGoalResult(
     SavingsGoalMutationStatus Status,
     SavingsGoal? Goal = null,
+    Transaction? CompletionTransaction = null,
     string? Message = null);
 
 public sealed record SavingsGoalFundingResult(
@@ -49,8 +52,8 @@ public sealed record SavingsGoalPoolSummary(
 /// Owns dated savings commitments funded from the Rewards pool.
 ///
 /// Two rules hold everything together:
-/// 1. Earmarks are bookkeeping on money that already exists -- nothing here writes to the ledger
-///    and the four budget allocations are never touched.
+/// 1. Earmarks are bookkeeping on money that already exists. Completing a goal consumes its
+///    earmark through one linked Rewards ledger expense; authoring and funding remain ledger-neutral.
 /// 2. SUM(earmarked) can never exceed the Rewards balance. Every mutation that grows an earmark
 ///    re-checks this against a freshly computed balance, so a stale client (or a replayed offline
 ///    op) cannot over-commit the pool.
@@ -142,6 +145,7 @@ public class SavingsGoalService
         goal.CycleFundedAmount = 0m;
         goal.EarmarkedAmount = Math.Max(0m, goal.EarmarkedAmount);
         goal.RecurrenceDayOfMonth = goal.IsRecurring ? goal.TargetDate.Day : null;
+        goal.LastCompletionTransactionId = null;
 
         // A goal may be seeded with money already set aside. That still has to fit in the pool.
         if (goal.EarmarkedAmount > 0m)
@@ -170,6 +174,12 @@ public class SavingsGoalService
 
         var goal = await _context.SavingsGoals.FindAsync([id], cancellationToken);
         if (goal == null) return new SavingsGoalResult(SavingsGoalMutationStatus.NotFound);
+        if (goal.Status != SavingsGoalStatus.Active)
+        {
+            return new SavingsGoalResult(
+                SavingsGoalMutationStatus.AlreadyCompleted,
+                Message: "A completed goal cannot be edited. Undo its completion from the ledger first.");
+        }
 
         var validation = Validate(updated);
         if (validation != null) return validation;
@@ -201,8 +211,18 @@ public class SavingsGoalService
                 ? updated.TargetDate.Day
                 : NormalizeRecurrenceDay(updated.RecurrenceDayOfMonth ?? goal.RecurrenceDayOfMonth, updated.TargetDate.Day)
             : null;
+        InvalidateCompletionUndo(goal);
 
-        await _context.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return new SavingsGoalResult(
+                SavingsGoalMutationStatus.Conflict,
+                Message: "This commitment changed while it was being edited. Refresh and try again.");
+        }
         return new SavingsGoalResult(SavingsGoalMutationStatus.Success, goal);
     }
 
@@ -258,9 +278,19 @@ public class SavingsGoalService
         // Credit the *applied* delta, not the requested one, so a clamped top-up does not claim more
         // of this cycle's entitlement than it actually consumed.
         ApplyCycleFunding(goal, next - goal.EarmarkedAmount, await GetCurrentCycleKeyAsync(cancellationToken));
+        if (next != goal.EarmarkedAmount) InvalidateCompletionUndo(goal);
         goal.EarmarkedAmount = next;
 
-        await _context.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return new SavingsGoalResult(
+                SavingsGoalMutationStatus.Conflict,
+                Message: "This commitment changed while money was being moved. Refresh and try again.");
+        }
         return new SavingsGoalResult(SavingsGoalMutationStatus.Success, goal);
     }
 
@@ -307,10 +337,23 @@ public class SavingsGoalService
             var goal = byId[grant.GoalId];
             var next = Math.Min(goal.TargetAmount, goal.EarmarkedAmount + grant.Amount);
             ApplyCycleFunding(goal, next - goal.EarmarkedAmount, cycleKey);
+            InvalidateCompletionUndo(goal);
             goal.EarmarkedAmount = next;
         }
 
-        await _context.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return new SavingsGoalFundingResult(
+                SavingsGoalMutationStatus.Conflict,
+                [],
+                0m,
+                available,
+                "A commitment changed while this cycle was being funded. Refresh and try again.");
+        }
 
         return new SavingsGoalFundingResult(
             SavingsGoalMutationStatus.Success,
@@ -320,10 +363,9 @@ public class SavingsGoalService
     }
 
     /// <summary>
-    /// Closes out a goal. The earmark is released rather than spent: no ledger row is written here,
-    /// because the real outgoing (the car service, the deposit) is an ordinary Rewards expense the
-    /// user logs in the ledger. A recurring goal rolls its deadline forward and starts again at zero
-    /// instead of closing.
+    /// Closes out a goal by consuming exactly what it has earmarked through a linked Rewards ledger
+    /// expense. Deleting that transaction restores this snapshot while it is still the latest,
+    /// untouched completion. A recurring goal rolls its deadline forward and starts again at zero.
     /// </summary>
     public async Task<SavingsGoalResult> CompleteGoalAsync(int id, CancellationToken cancellationToken = default)
     {
@@ -335,6 +377,30 @@ public class SavingsGoalService
                 SavingsGoalMutationStatus.AlreadyCompleted,
                 Message: "This goal is already completed.");
         }
+        if (goal.EarmarkedAmount <= 0m)
+        {
+            return new SavingsGoalResult(
+                SavingsGoalMutationStatus.NothingEarmarked,
+                Message: "Set aside some rewards before marking this commitment done.");
+        }
+
+        var previousTargetDate = goal.TargetDate;
+        var previousEarmarkedAmount = goal.EarmarkedAmount;
+        var previousCycleFundedKey = goal.CycleFundedKey;
+        var previousCycleFundedAmount = goal.CycleFundedAmount;
+        var wasRecurring = goal.IsRecurring;
+        var transactionDate = TransactionDate.FromInputDate(_financialClock.Today);
+        var transaction = new Transaction
+        {
+            Id = $"savings-goal-completion-{goal.Id}-{Guid.NewGuid():N}",
+            Date = transactionDate,
+            PostedAt = DateTime.UtcNow,
+            Description = $"Completed commitment: {goal.Name}",
+            Category = "Other",
+            LedgerCategory = "Rewards",
+            Amount = -previousEarmarkedAmount,
+            SavingsGoalId = goal.Id
+        };
 
         if (goal.IsRecurring)
         {
@@ -370,8 +436,61 @@ public class SavingsGoalService
             goal.CycleFundedAmount = 0m;
         }
 
-        await _context.SaveChangesAsync(cancellationToken);
-        return new SavingsGoalResult(SavingsGoalMutationStatus.Success, goal);
+        goal.LastCompletionTransactionId = transaction.Id;
+        _context.Transactions.Add(transaction);
+        _context.SavingsGoalCompletions.Add(new SavingsGoalCompletion
+        {
+            TransactionId = transaction.Id,
+            SavingsGoalId = goal.Id,
+            PreviousTargetDate = previousTargetDate,
+            PreviousEarmarkedAmount = previousEarmarkedAmount,
+            PreviousCycleFundedKey = previousCycleFundedKey,
+            PreviousCycleFundedAmount = previousCycleFundedAmount,
+            ResultingTargetDate = goal.TargetDate,
+            WasRecurring = wasRecurring,
+            CreatedAt = DateTime.UtcNow
+        });
+
+        try
+        {
+            await SaveCompletionAndInvalidateAsync(transactionDate, cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return new SavingsGoalResult(
+                SavingsGoalMutationStatus.Conflict,
+                Message: "This commitment changed while it was being completed. Refresh and try again.");
+        }
+        return new SavingsGoalResult(SavingsGoalMutationStatus.Success, goal, transaction);
+    }
+
+    private async Task SaveCompletionAndInvalidateAsync(DateTime transactionDate, CancellationToken cancellationToken)
+    {
+        var cycleDay = await GetCycleDayAsync(cancellationToken);
+        var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+            TransactionDate.ToDateOnly(transactionDate),
+            cycleDay);
+
+        if (!_context.Database.IsRelational())
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            await _cycleBalanceService.InvalidateFromAsync(year, monthIndex, cancellationToken);
+            return;
+        }
+
+        var strategy = _context.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken);
+            await _cycleBalanceService.InvalidateFromAsync(year, monthIndex, cancellationToken);
+            await dbTransaction.CommitAsync(cancellationToken);
+        });
+    }
+
+    private static void InvalidateCompletionUndo(SavingsGoal goal)
+    {
+        goal.LastCompletionTransactionId = null;
     }
 
     /// <summary>

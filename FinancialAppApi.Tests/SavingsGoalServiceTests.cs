@@ -79,7 +79,7 @@ public class SavingsGoalServiceTests
     [Fact]
     public async Task ContributeAsync_NeverEarmarksPastTheGoalTarget()
     {
-        await using var context = NewContext(rewardsBalance: 5000m);
+        await using var context = NewContext(rewardsBalance: 3000m);
         var goal = NewGoal("Car service", 1200m, earmarked: 1100m, targetDate: new DateOnly(2026, 9, 20));
         context.SavingsGoals.Add(goal);
         await context.SaveChangesAsync();
@@ -432,13 +432,13 @@ public class SavingsGoalServiceTests
     }
 
     [Fact]
-    public async Task CompleteGoalAsync_ReleasesTheEarmarkWithoutTouchingTheLedger()
+    public async Task CompleteGoalAsync_SpendsTheEarmarkWithoutIncreasingFreeRewards()
     {
         await using var context = NewContext(rewardsBalance: 3000m);
         var goal = NewGoal("Car service", 1200m, earmarked: 1200m, targetDate: new DateOnly(2026, 9, 20));
         context.SavingsGoals.Add(goal);
         await context.SaveChangesAsync();
-        var transactionsBefore = context.Transactions.Count();
+        var freeBefore = (await NewService(context).GetPoolSummaryAsync()).Unassigned;
 
         var result = await NewService(context).CompleteGoalAsync(goal.Id);
 
@@ -447,15 +447,20 @@ public class SavingsGoalServiceTests
         Assert.Equal(SavingsGoalStatus.Completed, stored.Status);
         Assert.Equal(0m, stored.EarmarkedAmount);
         Assert.NotNull(stored.CompletedAt);
-        // The real outgoing is an ordinary Rewards expense the user logs; completing a goal is
-        // pure bookkeeping and must not synthesise a ledger row.
-        Assert.Equal(transactionsBefore, context.Transactions.Count());
+        var transaction = Assert.Single(context.Transactions.Where(item => item.SavingsGoalId == goal.Id));
+        Assert.Equal(-1200m, transaction.Amount);
+        Assert.Equal("Rewards", transaction.LedgerCategory);
+        Assert.Equal(goal.Id, transaction.SavingsGoalId);
+        Assert.Equal(transaction.Id, stored.LastCompletionTransactionId);
+        Assert.Single(context.SavingsGoalCompletions);
+        // Balance and earmark fall together, so Done cannot turn already-spoken-for money into free cash.
+        Assert.Equal(freeBefore, (await NewService(context).GetPoolSummaryAsync()).Unassigned);
     }
 
     [Fact]
     public async Task CompleteGoalAsync_RollsARecurringGoalForwardInsteadOfClosingIt()
     {
-        await using var context = NewContext(rewardsBalance: 3000m);
+        await using var context = NewContext(rewardsBalance: 5000m);
         var goal = NewGoal("Car service", 1200m, earmarked: 1200m, targetDate: new DateOnly(2026, 9, 20));
         goal.IsRecurring = true;
         goal.RecurrenceMonths = 3;
@@ -479,7 +484,7 @@ public class SavingsGoalServiceTests
     [Fact]
     public async Task CompleteGoalAsync_PreservesTheOriginalDayAcrossShortMonths()
     {
-        await using var context = NewContext(rewardsBalance: 3000m);
+        await using var context = NewContext(rewardsBalance: 5000m);
         var goal = NewGoal("Month end service", 1200m, earmarked: 1200m, targetDate: new DateOnly(2026, 7, 31));
         goal.IsRecurring = true;
         goal.RecurrenceMonths = 1;
@@ -492,9 +497,11 @@ public class SavingsGoalServiceTests
         Assert.Equal(new DateTime(2026, 8, 31), context.SavingsGoals.Single().TargetDate.Date);
         Assert.Equal(31, context.SavingsGoals.Single().RecurrenceDayOfMonth);
 
+        await service.ContributeAsync(goal.Id, 1200m);
         await NewService(context, new DateOnly(2026, 9, 1)).CompleteGoalAsync(goal.Id);
         Assert.Equal(new DateTime(2026, 9, 30), context.SavingsGoals.Single().TargetDate.Date);
 
+        await NewService(context, new DateOnly(2026, 10, 1)).ContributeAsync(goal.Id, 1200m);
         await NewService(context, new DateOnly(2026, 10, 1)).CompleteGoalAsync(goal.Id);
         // The September clamp does not permanently turn the 31st into the 30th.
         Assert.Equal(new DateTime(2026, 10, 31), context.SavingsGoals.Single().TargetDate.Date);
@@ -529,6 +536,82 @@ public class SavingsGoalServiceTests
         var result = await NewService(context).CompleteGoalAsync(goal.Id);
 
         Assert.Equal(SavingsGoalMutationStatus.AlreadyCompleted, result.Status);
+    }
+
+    [Fact]
+    public async Task CompleteGoalAsync_RejectsAGoalWithNothingSetAside()
+    {
+        await using var context = NewContext(rewardsBalance: 1000m);
+        var goal = NewGoal("Car service", 1200m, earmarked: 0m, targetDate: new DateOnly(2026, 9, 20));
+        context.SavingsGoals.Add(goal);
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).CompleteGoalAsync(goal.Id);
+
+        Assert.Equal(SavingsGoalMutationStatus.NothingEarmarked, result.Status);
+        Assert.DoesNotContain(context.Transactions, transaction => transaction.SavingsGoalId == goal.Id);
+    }
+
+    [Fact]
+    public async Task DeletingACompletionTransaction_RestoresTheRecurringGoalAndItsDate()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var goal = NewGoal("Car service", 1200m, earmarked: 1200m, targetDate: new DateOnly(2026, 9, 20));
+        goal.IsRecurring = true;
+        goal.RecurrenceMonths = 3;
+        goal.CycleFundedKey = "2026-07";
+        goal.CycleFundedAmount = 400m;
+        context.SavingsGoals.Add(goal);
+        await context.SaveChangesAsync();
+
+        var completed = await NewService(context).CompleteGoalAsync(goal.Id);
+        var transactionId = completed.CompletionTransaction!.Id;
+        var occurrenceService = new RecurringOccurrenceService(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance);
+        var persistence = new TransactionPersistenceService(
+            context,
+            new CycleBalanceService(context),
+            occurrenceService);
+
+        var deleted = await persistence.DeleteTransactionAsync(transactionId);
+
+        Assert.Equal(TransactionMutationStatus.Deleted, deleted.Status);
+        var restored = context.SavingsGoals.Single();
+        Assert.Equal(SavingsGoalStatus.Active, restored.Status);
+        Assert.Equal(new DateTime(2026, 9, 20), restored.TargetDate.Date);
+        Assert.Equal(1200m, restored.EarmarkedAmount);
+        Assert.Equal("2026-07", restored.CycleFundedKey);
+        Assert.Equal(400m, restored.CycleFundedAmount);
+        Assert.Null(restored.LastCompletionTransactionId);
+        Assert.DoesNotContain(context.Transactions, transaction => transaction.Id == transactionId);
+        Assert.Empty(context.SavingsGoalCompletions);
+    }
+
+    [Fact]
+    public async Task DeletingACompletionTransaction_RejectsOverwritingNewerGoalFunding()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var goal = NewGoal("Car service", 1200m, earmarked: 1200m, targetDate: new DateOnly(2026, 9, 20));
+        goal.IsRecurring = true;
+        goal.RecurrenceMonths = 3;
+        context.SavingsGoals.Add(goal);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+        var completed = await service.CompleteGoalAsync(goal.Id);
+        await service.ContributeAsync(goal.Id, 100m);
+        var occurrenceService = new RecurringOccurrenceService(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance);
+        var persistence = new TransactionPersistenceService(
+            context,
+            new CycleBalanceService(context),
+            occurrenceService);
+
+        var deleted = await persistence.DeleteTransactionAsync(completed.CompletionTransaction!.Id);
+
+        Assert.Equal(TransactionMutationStatus.Conflict, deleted.Status);
+        Assert.Contains("changed after", deleted.Message);
+        Assert.Contains(context.Transactions, transaction => transaction.Id == completed.CompletionTransaction.Id);
+        Assert.Equal(100m, context.SavingsGoals.Single().EarmarkedAmount);
     }
 
     [Fact]

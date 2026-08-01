@@ -135,6 +135,17 @@ public class TransactionPersistenceService
             return new TransactionMutationResult(TransactionMutationStatus.NotFound);
         }
 
+        // Completion entries carry a snapshot whose amount/date must remain exact for deletion to
+        // reverse the commitment safely. Let users delete (undo) them, but never edit them into a
+        // ledger row that no longer matches the saved goal transition.
+        if (transaction.SavingsGoalId.HasValue)
+        {
+            return new TransactionMutationResult(
+                TransactionMutationStatus.Conflict,
+                transaction,
+                "A commitment completion cannot be edited. Delete it to restore the commitment, then complete it again.");
+        }
+
         if (!await TransactionCategoryExistsAsync(request.Category, cancellationToken))
         {
             return InvalidCategory(request.Category);
@@ -188,6 +199,12 @@ public class TransactionPersistenceService
             return new TransactionMutationResult(TransactionMutationStatus.NotFound);
         }
 
+        var goalRestoreError = await RestoreSavingsGoalCompletionAsync(transaction, cancellationToken);
+        if (goalRestoreError != null)
+        {
+            return new TransactionMutationResult(TransactionMutationStatus.Conflict, transaction, goalRestoreError);
+        }
+
         await ClearWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
         var attachedDocuments = await _context.VaultDocuments
@@ -204,7 +221,17 @@ public class TransactionPersistenceService
         _context.Transactions.RemoveRange(splits);
 
         _context.Transactions.Remove(transaction);
-        await SaveAndInvalidateCycleBalancesAsync(transaction.Date, cancellationToken);
+        try
+        {
+            await SaveAndInvalidateCycleBalancesAsync(transaction.Date, cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return new TransactionMutationResult(
+                TransactionMutationStatus.Conflict,
+                transaction,
+                "The linked commitment changed while this completion was being deleted. Refresh and try again.");
+        }
 
         return new TransactionMutationResult(TransactionMutationStatus.Deleted, transaction);
     }
@@ -447,6 +474,48 @@ public class TransactionPersistenceService
         {
             item.IsActive = true;
         }
+    }
+
+    private async Task<string?> RestoreSavingsGoalCompletionAsync(
+        Transaction transaction,
+        CancellationToken cancellationToken)
+    {
+        if (!transaction.SavingsGoalId.HasValue) return null;
+
+        var completion = await _context.SavingsGoalCompletions
+            .FirstOrDefaultAsync(item => item.TransactionId == transaction.Id, cancellationToken);
+        if (completion == null) return null;
+
+        var goal = await _context.SavingsGoals.FindAsync([completion.SavingsGoalId], cancellationToken);
+        if (goal != null)
+        {
+            var expectedStatus = completion.WasRecurring
+                ? SavingsGoalStatus.Active
+                : SavingsGoalStatus.Completed;
+            var isUntouchedLatestCompletion =
+                goal.LastCompletionTransactionId == transaction.Id &&
+                goal.Status == expectedStatus &&
+                goal.TargetDate.Date == completion.ResultingTargetDate.Date &&
+                goal.EarmarkedAmount == 0m &&
+                goal.CycleFundedKey == null &&
+                goal.CycleFundedAmount == 0m;
+
+            if (!isUntouchedLatestCompletion)
+            {
+                return "This commitment changed after it was completed. Undo its newer changes before deleting this completion entry.";
+            }
+
+            goal.TargetDate = completion.PreviousTargetDate;
+            goal.EarmarkedAmount = completion.PreviousEarmarkedAmount;
+            goal.CycleFundedKey = completion.PreviousCycleFundedKey;
+            goal.CycleFundedAmount = completion.PreviousCycleFundedAmount;
+            goal.Status = SavingsGoalStatus.Active;
+            goal.CompletedAt = null;
+            goal.LastCompletionTransactionId = null;
+        }
+
+        _context.SavingsGoalCompletions.Remove(completion);
+        return null;
     }
 
     private static TransactionMutationResult InvalidDate()

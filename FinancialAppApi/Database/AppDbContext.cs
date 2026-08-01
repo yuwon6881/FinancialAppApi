@@ -22,6 +22,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
 
     public DbSet<WishlistItem> WishlistItems => Set<WishlistItem>();
     public DbSet<SavingsGoal> SavingsGoals => Set<SavingsGoal>();
+    public DbSet<SavingsGoalCompletion> SavingsGoalCompletions => Set<SavingsGoalCompletion>();
     public DbSet<WebAuthnCredential> WebAuthnCredentials => Set<WebAuthnCredential>();
     public DbSet<WebAuthnChallenge> WebAuthnChallenges => Set<WebAuthnChallenge>();
     public DbSet<ReceiptScanJob> ReceiptScanJobs => Set<ReceiptScanJob>();
@@ -75,6 +76,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(e => new { e.UserId, e.WishlistItemId })
                 .IsUnique()
                 .HasFilter("\"WishlistItemId\" IS NOT NULL");
+            entity.HasIndex(e => new { e.UserId, e.SavingsGoalId });
             // Guarantees a given recurring-payment occurrence can never be settled twice
             // (normal confirmation racing pay-early, pay-early retried, etc.). Partial so
             // legacy/manual transactions (either column null) are exempt.
@@ -194,7 +196,10 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<SavingsGoal>(entity =>
         {
             entity.Property(e => e.TargetAmount).HasColumnType("numeric(12,2)");
-            entity.Property(e => e.EarmarkedAmount).HasColumnType("numeric(12,2)").HasDefaultValue(0m);
+            entity.Property(e => e.EarmarkedAmount)
+                .HasColumnType("numeric(12,2)")
+                .HasDefaultValue(0m)
+                .IsConcurrencyToken();
             entity.Property(e => e.CycleFundedAmount).HasColumnType("numeric(12,2)").HasDefaultValue(0m);
             entity.Property(e => e.TargetDate).HasColumnType("date");
             entity.Property(e => e.Priority).HasDefaultValue("Medium");
@@ -388,6 +393,16 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(e => new { e.UserId, e.TaxYear, e.CategoryId }).IsUnique();
         });
 
+        modelBuilder.Entity<SavingsGoalCompletion>(entity =>
+        {
+            entity.Property(e => e.PreviousTargetDate).HasColumnType("date");
+            entity.Property(e => e.ResultingTargetDate).HasColumnType("date");
+            entity.Property(e => e.PreviousEarmarkedAmount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.PreviousCycleFundedAmount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.UserId, e.SavingsGoalId, e.CreatedAt });
+        });
+
         modelBuilder.Entity<AiConversation>(entity =>
         {
             entity.Property(e => e.Version).IsConcurrencyToken();
@@ -414,6 +429,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<CategorySpendingGuide>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<WishlistItem>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<SavingsGoal>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<SavingsGoalCompletion>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<CycleBalance>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<UserSession>(), applyQueryFilter: false);
         ConfigureUserOwnership(modelBuilder.Entity<WebAuthnCredential>(), applyQueryFilter: false);

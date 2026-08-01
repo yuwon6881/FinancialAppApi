@@ -112,6 +112,24 @@ public class TransactionPersistenceServiceTests
         Assert.Equal(DateTime.Parse(postedAt).ToUniversalTime(), result.Transaction.PostedAt);
     }
 
+    [Fact]
+    public async Task UpdateTransactionAsync_RejectsACommitmentCompletionEntry()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        var transaction = NewTransaction("completion-1", amount: -1200m);
+        transaction.SavingsGoalId = 7;
+        context.Transactions.Add(transaction);
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).UpdateTransactionAsync(
+            transaction.Id,
+            NewRequest(transaction.Id, amount: -1000m));
+
+        Assert.Equal(TransactionMutationStatus.Conflict, result.Status);
+        Assert.Equal(-1200m, context.Transactions.Single().Amount);
+    }
+
     [Theory]
     [InlineData("Transfer:Rewards->Rewards", 25, "Transfer source and target must be different.")]
     [InlineData("Transfer:Rewards->Unknown", 25, "Transfer source and target must be one of")]

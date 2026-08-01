@@ -174,6 +174,10 @@ public class TransactionsController : ControllerBase
         {
             return NotFound();
         }
+        if (result.Status == TransactionMutationStatus.Conflict)
+        {
+            return Conflict(new { message = result.Message });
+        }
         if (result.Status is TransactionMutationStatus.InvalidDate or TransactionMutationStatus.InvalidAmount)
         {
             return BadRequest(new { message = result.Message });
@@ -196,6 +200,10 @@ public class TransactionsController : ControllerBase
         if (result.Status == TransactionMutationStatus.NotFound)
         {
             return NotFound();
+        }
+        if (result.Status == TransactionMutationStatus.Conflict)
+        {
+            return Conflict(new { message = result.Message });
         }
 
         return NoContent();
@@ -229,7 +237,8 @@ public class TransactionsController : ControllerBase
             Amount = ObfuscationHelper.Obfuscate(t.Amount),
             RecurringPaymentId = t.RecurringPaymentId,
             RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
-            WishlistItemId = t.WishlistItemId
+            WishlistItemId = t.WishlistItemId,
+            SavingsGoalId = t.SavingsGoalId
         };
     }
 
@@ -246,7 +255,8 @@ public class TransactionsController : ControllerBase
             Amount = ObfuscationHelper.Obfuscate(t.Amount),
             RecurringPaymentId = t.RecurringPaymentId,
             RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
-            WishlistItemId = t.WishlistItemId
+            WishlistItemId = t.WishlistItemId,
+            SavingsGoalId = t.SavingsGoalId
         };
     }
 }
@@ -263,4 +273,5 @@ public class TransactionDto
     public string? RecurringPaymentId { get; set; }
     public string? RecurringOccurrenceDate { get; set; }
     public int? WishlistItemId { get; set; }
+    public int? SavingsGoalId { get; set; }
 }

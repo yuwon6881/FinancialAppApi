@@ -38,6 +38,12 @@ public class Transaction : IUserOwnedEntity
     // delete path clears the wishlist purchase state instead of blocking the ledger delete.
     public int? WishlistItemId { get; set; }
 
+    // Denormalized reference to the SavingsGoal completion this transaction settled, if any.
+    // The accompanying SavingsGoalCompletion row holds the reversible pre-completion snapshot.
+    // This stays nullable for ordinary ledger rows and is intentionally not a foreign key: deleting
+    // the ledger row is the supported way to undo the completion.
+    public int? SavingsGoalId { get; set; }
+
     // The exact recurrence-engine billing date (calendar day, no time) this transaction settles,
     // when it was recorded through a recurring-payment-aware path (normal confirmation or
     // pay-early). Null for legacy rows and for transactions that aren't tied to a matching

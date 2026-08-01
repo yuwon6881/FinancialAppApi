@@ -57,6 +57,7 @@ public class SavingsGoalsController : ControllerBase
         {
             SavingsGoalMutationStatus.NotFound => NotFound(),
             SavingsGoalMutationStatus.Success => NoContent(),
+            SavingsGoalMutationStatus.Conflict => Conflict(new { message = result.Message }),
             _ => BadRequest(new { message = result.Message })
         };
     }
@@ -81,6 +82,7 @@ public class SavingsGoalsController : ControllerBase
         {
             SavingsGoalMutationStatus.NotFound => NotFound(),
             SavingsGoalMutationStatus.Success => Ok(MapToDto(result.Goal!)),
+            SavingsGoalMutationStatus.Conflict => Conflict(new { message = result.Message }),
             _ => BadRequest(new { message = result.Message })
         };
     }
@@ -92,6 +94,10 @@ public class SavingsGoalsController : ControllerBase
     public async Task<IActionResult> FundCurrentCycle()
     {
         var result = await _savingsGoalService.FundCurrentCycleAsync(HttpContext.RequestAborted);
+        if (result.Status == SavingsGoalMutationStatus.Conflict)
+        {
+            return Conflict(new { message = result.Message });
+        }
         return Ok(new
         {
             goals = result.Goals.Select(MapToDto).ToList(),
@@ -108,7 +114,12 @@ public class SavingsGoalsController : ControllerBase
         return result.Status switch
         {
             SavingsGoalMutationStatus.NotFound => NotFound(),
-            SavingsGoalMutationStatus.Success => Ok(MapToDto(result.Goal!)),
+            SavingsGoalMutationStatus.Success => Ok(new
+            {
+                goal = MapToDto(result.Goal!),
+                transaction = TransactionsController.MapToDto(result.CompletionTransaction!)
+            }),
+            SavingsGoalMutationStatus.Conflict => Conflict(new { message = result.Message }),
             _ => BadRequest(new { message = result.Message })
         };
     }

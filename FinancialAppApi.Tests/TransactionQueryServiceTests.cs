@@ -190,6 +190,20 @@ public class TransactionQueryServiceTests
         Assert.Equal("Prawn Noodle Soup", suggestion.Description);
     }
 
+    [Fact]
+    public async Task GetAutocompleteSuggestionsAsync_ExcludesCommitmentCompletions()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("ordinary-1", "Prawn Noodle Soup", "Food", "Essentials", -10m),
+            NewTransaction("completion-1", "Completed commitment: Car service", "Other", "Rewards", -1200m, savingsGoalId: 7));
+        await context.SaveChangesAsync();
+
+        var suggestions = await new TransactionQueryService(context).GetAutocompleteSuggestionsAsync();
+
+        Assert.Equal("Prawn Noodle Soup", Assert.Single(suggestions).Description);
+    }
+
     private static Transaction NewTransaction(
         string id,
         string description,
@@ -199,7 +213,8 @@ public class TransactionQueryServiceTests
         DateTime? postedAt = null,
         DateOnly? date = null,
         string? recurringPaymentId = null,
-        int? wishlistItemId = null)
+        int? wishlistItemId = null,
+        int? savingsGoalId = null)
     {
         return new Transaction
         {
@@ -211,7 +226,8 @@ public class TransactionQueryServiceTests
             LedgerCategory = ledgerCategory,
             Amount = amount,
             RecurringPaymentId = recurringPaymentId,
-            WishlistItemId = wishlistItemId
+            WishlistItemId = wishlistItemId,
+            SavingsGoalId = savingsGoalId
         };
     }
 }
