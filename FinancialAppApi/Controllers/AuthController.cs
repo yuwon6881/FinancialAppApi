@@ -38,8 +38,13 @@ public class AuthController : ControllerBase
 
     // GET: api/auth/status
     [HttpGet("status")]
-    public async Task<IActionResult> GetStatus([FromQuery] string? username = null) =>
-        await _authAccountService.GetStatusAsync(username, HttpContext.RequestAborted);
+    public async Task<IActionResult> GetStatus(
+        [FromQuery] string? username = null,
+        [FromQuery] string? deviceCredentialId = null) =>
+        await _authAccountService.GetStatusAsync(
+            username,
+            deviceCredentialId,
+            HttpContext.RequestAborted);
 
     // POST: api/auth/register
     [HttpPost("register")]

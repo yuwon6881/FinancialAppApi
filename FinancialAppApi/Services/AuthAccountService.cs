@@ -61,6 +61,7 @@ public class AuthAccountService
 
     public async Task<IActionResult> GetStatusAsync(
         string? username = null,
+        string? deviceCredentialId = null,
         CancellationToken cancellationToken = default)
     {
         var userCount = await _context.AppUsers.CountAsync(cancellationToken);
@@ -72,12 +73,42 @@ public class AuthAccountService
                 .AnyAsync(
                     user => _context.WebAuthnCredentials.Any(credential => credential.UserId == user.Id),
                     cancellationToken);
+        var hasFingerprintOnDevice = false;
+        if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrWhiteSpace(deviceCredentialId))
+        {
+            if (string.Equals(deviceCredentialId, "already_enrolled", StringComparison.Ordinal))
+            {
+                // The browser records this account-scoped marker only after the platform
+                // authenticator rejects registration because an excluded account credential
+                // already exists on this device.
+                hasFingerprintOnDevice = hasFingerprint;
+            }
+            else
+            {
+                try
+                {
+                    var credentialId = Convert.FromHexString(deviceCredentialId);
+                    var normalizedUsername = username.Trim().ToUpperInvariant();
+                    hasFingerprintOnDevice = await _context.AppUsers
+                        .Where(user => user.NormalizedUsername == normalizedUsername)
+                        .AnyAsync(
+                            user => _context.WebAuthnCredentials.Any(credential =>
+                                credential.UserId == user.Id && credential.CredentialId == credentialId),
+                            cancellationToken);
+                }
+                catch (FormatException)
+                {
+                    // A malformed local browser marker is simply not a registered device.
+                }
+            }
+        }
         // registrationOpen lets the login screen offer a signup form to additional invitees
         // (up to Auth:MaxUsers) even after the first account exists.
         return new OkObjectResult(new
         {
             isRegistered = hasUser,
             hasFingerprint,
+            hasFingerprintOnDevice,
             registrationOpen = userCount < MaxUsers,
         });
     }
