@@ -16,7 +16,6 @@ public sealed record VaultDocumentDto(
     string ContentType,
     long SizeBytes,
     int TaxYear,
-    string? Notes,
     string? ReliefCategory,
     decimal? Amount,
     string AmountCurrency,
@@ -124,7 +123,6 @@ public sealed class DocumentVaultService
         string originalFileName,
         byte[] fileData,
         int taxYear,
-        string? notes,
         string? transactionId,
         string? clientKey,
         string? reliefCategory = null,
@@ -148,9 +146,12 @@ public sealed class DocumentVaultService
             return new DocumentVaultCreateResult(DocumentVaultCreateStatus.InvalidMetadata, Message: "A tax relief category is required.");
         }
 
+        if (!IsAllowedTaxYear(taxYear))
+        {
+            return new DocumentVaultCreateResult(DocumentVaultCreateStatus.InvalidMetadata, Message: GetTaxYearValidationMessage());
+        }
+
         if (string.IsNullOrWhiteSpace(originalFileName) || originalFileName.Length > 255 ||
-            !IsAllowedTaxYear(taxYear) ||
-            notes?.Length > 500 ||
             transactionId?.Length > 450 ||
             clientKey?.Length > 64 ||
             reliefCategory.Length > 80 ||
@@ -216,7 +217,7 @@ public sealed class DocumentVaultService
             return new DocumentVaultCreateResult(DocumentVaultCreateStatus.StorageUnavailable, Message: "Document storage is temporarily unavailable.");
         }
 
-        var retentionUntil = new DateOnly(taxYear, 12, 31).AddYears(7);
+        var retentionUntil = new DateOnly(taxYear, 12, 31).AddYears(TaxYearLookbackYears);
 
         var doc = new VaultDocument
         {
@@ -227,7 +228,6 @@ public sealed class DocumentVaultService
             SizeBytes = fileData.LongLength,
             Sha256 = sha256,
             TaxYear = taxYear,
-            Notes = notes,
             ReliefCategory = reliefCategory,
             Amount = extraction.Amount,
             AmountCurrency = extraction.Currency,
@@ -334,7 +334,6 @@ public sealed class DocumentVaultService
                 d.ContentType,
                 d.SizeBytes,
                 d.TaxYear,
-                d.Notes,
                 d.ReliefCategory,
                 d.Amount,
                 d.AmountCurrency,
@@ -385,8 +384,6 @@ public sealed class DocumentVaultService
     public async Task<VaultDocumentDto?> UpdateAsync(
         int id,
         int? taxYear,
-        string? notes,
-        bool updateNotes,
         string? transactionId,
         bool updateTransactionId,
         string? reliefCategory,
@@ -426,11 +423,7 @@ public sealed class DocumentVaultService
         if (taxYear.HasValue && taxYear.Value != doc.TaxYear)
         {
             doc.TaxYear = taxYear.Value;
-            doc.RetentionUntil = new DateOnly(taxYear.Value, 12, 31).AddYears(7);
-        }
-        if (updateNotes)
-        {
-            doc.Notes = string.IsNullOrWhiteSpace(notes) ? null : notes;
+            doc.RetentionUntil = new DateOnly(taxYear.Value, 12, 31).AddYears(TaxYearLookbackYears);
         }
         if (updateTransactionId)
         {
@@ -457,7 +450,6 @@ public sealed class DocumentVaultService
             doc.ContentType,
             doc.SizeBytes,
             doc.TaxYear,
-            doc.Notes,
             doc.ReliefCategory,
             doc.Amount,
             doc.AmountCurrency,
@@ -769,7 +761,7 @@ public sealed class DocumentVaultService
         return query;
     }
 
-    private const int MinTaxYear = 2000;
+    private const int TaxYearLookbackYears = 7;
 
     private async Task<bool> IsReliefCategoryConfiguredAsync(
         int taxYear,
@@ -904,6 +896,12 @@ public sealed class DocumentVaultService
     private bool IsAllowedTaxYear(int taxYear)
     {
         var currentYear = _financialClock.Today.Year;
-        return taxYear >= MinTaxYear && taxYear <= currentYear;
+        return taxYear >= currentYear - TaxYearLookbackYears && taxYear <= currentYear;
+    }
+
+    private string GetTaxYearValidationMessage()
+    {
+        var currentYear = _financialClock.Today.Year;
+        return $"Tax year must be between {currentYear - TaxYearLookbackYears} and {currentYear}.";
     }
 }

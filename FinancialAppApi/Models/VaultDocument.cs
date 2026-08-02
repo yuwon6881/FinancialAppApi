@@ -36,9 +36,6 @@ public class VaultDocument : IUserOwnedEntity
     [Required]
     public int TaxYear { get; set; }
 
-    [StringLength(500)]
-    public string? Notes { get; set; }
-
     [StringLength(80)]
     public string? ReliefCategory { get; set; }
 

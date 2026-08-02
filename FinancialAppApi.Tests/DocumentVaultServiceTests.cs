@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services;
 using FinancialAppApi.Services.Documents;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -22,7 +23,7 @@ public class DocumentVaultServiceTests
 
         var data = new byte[] { 0x00, 0x01, 0x02 };
 
-        var result = await service.CreateAsync("file.txt", data, 2026, null, null, null, "test-category");
+        var result = await service.CreateAsync("file.txt", data, 2026, null, null, "test-category");
 
         Assert.Equal(DocumentVaultCreateStatus.UnsupportedType, result.Status);
     }
@@ -38,7 +39,7 @@ public class DocumentVaultServiceTests
         var service = NewService(context, store);
         var data = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D };
 
-        var result = await service.CreateAsync("file.pdf", data, 2026, null, null, null);
+        var result = await service.CreateAsync("file.pdf", data, 2026, null, null);
 
         Assert.Equal(DocumentVaultCreateStatus.InvalidMetadata, result.Status);
         Assert.Empty(store.Objects);
@@ -58,28 +59,68 @@ public class DocumentVaultServiceTests
         var data = new byte[11];
         data[0] = 0x25; data[1] = 0x50; data[2] = 0x44; data[3] = 0x46; data[4] = 0x2D;
 
-        var result = await service.CreateAsync("file.pdf", data, 2026, null, null, null, "test-category");
+        var result = await service.CreateAsync("file.pdf", data, 2026, null, null, "test-category");
 
         Assert.Equal(DocumentVaultCreateStatus.FileTooLarge, result.Status);
     }
 
     [Fact]
-    public async Task CreateAsync_AcceptsExpiredTaxYearForManualRetentionManagement()
+    public async Task CreateAsync_RejectsExpiredTaxYearForNewUploads()
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");
         context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
         AddTestCategory(context, 2018);
         await context.SaveChangesAsync();
 
-        var service = NewService(context, new FakeDocumentVaultStore());
+        var store = new FakeDocumentVaultStore();
+        var service = NewService(context, store);
         var data = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D };
 
-        var result = await service.CreateAsync("file.pdf", data, 2018, null, null, null, "test-category");
+        var result = await service.CreateAsync("file.pdf", data, 2018, null, null, "test-category");
+
+        Assert.Equal(DocumentVaultCreateStatus.InvalidMetadata, result.Status);
+        Assert.Contains("Tax year must be between", result.Message);
+        Assert.Empty(store.Objects);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsTheSevenYearLookbackBoundary()
+    {
+        var currentYear = FinancialClock.Utc.Today.Year;
+        var oldestAllowedYear = currentYear - 7;
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        AddTestCategory(context, oldestAllowedYear);
+        await context.SaveChangesAsync();
+
+        var store = new FakeDocumentVaultStore();
+        var service = NewService(context, store);
+        var data = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D };
+
+        var result = await service.CreateAsync("file.pdf", data, oldestAllowedYear, null, null, "test-category");
 
         Assert.Equal(DocumentVaultCreateStatus.Created, result.Status);
+        Assert.Single(store.Objects);
+    }
+
+    [Fact]
+    public async Task ExistingExpiredDocumentsRemainReadableAndAreReportedForManualReview()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        context.VaultDocuments.Add(VaultDocumentForYear(2018, 1));
+        await context.SaveChangesAsync();
+
+        var store = new FakeDocumentVaultStore();
+        var service = NewService(context, store);
+
         var expired = await service.GetExpiredTaxYearsAsync();
+        var listed = await service.ListAsync(2018, null, null, "uploaded-desc", 0, 10);
+
         Assert.Single(expired);
         Assert.Equal(2018, expired[0].TaxYear);
+        Assert.Single(listed.Items);
+        Assert.Equal(2018, listed.Items[0].TaxYear);
     }
 
     [Fact]
@@ -199,7 +240,7 @@ public class DocumentVaultServiceTests
         var data = new byte[15];
         data[0] = 0x25; data[1] = 0x50; data[2] = 0x44; data[3] = 0x46; data[4] = 0x2D;
 
-        var result = await service.CreateAsync("file.pdf", data, 2026, null, null, null, "test-category");
+        var result = await service.CreateAsync("file.pdf", data, 2026, null, null, "test-category");
 
         Assert.Equal(DocumentVaultCreateStatus.QuotaExceeded, result.Status);
     }
@@ -217,7 +258,7 @@ public class DocumentVaultServiceTests
 
         var data = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D, 1, 2, 3 };
 
-        var result = await service.CreateAsync("file.pdf", data, 2026, null, null, null, "test-category");
+        var result = await service.CreateAsync("file.pdf", data, 2026, null, null, "test-category");
 
         Assert.Equal(DocumentVaultCreateStatus.Created, result.Status);
         Assert.NotNull(result.DocumentId);
@@ -237,7 +278,7 @@ public class DocumentVaultServiceTests
 
         var data = new byte[] { 0xFF, 0xD8, 0xFF, 1, 2, 3 };
 
-        var result = await service.CreateAsync("file.jpg", data, 2026, null, null, null, "test-category");
+        var result = await service.CreateAsync("file.jpg", data, 2026, null, null, "test-category");
 
         Assert.Equal(DocumentVaultCreateStatus.Created, result.Status);
         Assert.NotNull(result.DocumentId);
@@ -264,7 +305,7 @@ public class DocumentVaultServiceTests
 
         var data = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D };
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync("file.pdf", data, 2026, null, null, null, "test-category"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync("file.pdf", data, 2026, null, null, "test-category"));
 
         Assert.Empty(store.Objects);
     }

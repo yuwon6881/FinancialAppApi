@@ -29,7 +29,6 @@ public class DocumentsController : ControllerBase
     public async Task<IActionResult> Upload(
         [FromForm] IFormFile? file,
         [FromForm] int taxYear,
-        [FromForm] string? notes,
         [FromForm] string? transactionId,
         [FromForm] string? clientKey,
         [FromForm] string? reliefCategory,
@@ -63,7 +62,6 @@ public class DocumentsController : ControllerBase
             file.FileName,
             data,
             taxYear,
-            notes,
             transactionId,
             clientKey,
             reliefCategory,
@@ -88,7 +86,6 @@ public class DocumentsController : ControllerBase
     public async Task<IActionResult> BulkUpload(
         [FromForm] List<IFormFile>? files,
         [FromForm] int taxYear,
-        [FromForm] string? notes,
         [FromForm] string? reliefCategory,
         CancellationToken ct)
     {
@@ -122,7 +119,7 @@ public class DocumentsController : ControllerBase
             }
 
             var result = await _service.CreateAsync(
-                file.FileName, data, taxYear, notes, null, null, reliefCategory, ct);
+                file.FileName, data, taxYear, null, null, reliefCategory, ct);
             results.Add(new
             {
                 fileName = file.FileName,
@@ -267,11 +264,8 @@ public class DocumentsController : ControllerBase
         [FromBody] UpdateDocumentRequest request,
         CancellationToken ct)
     {
-        var notes = ReadOptionalString(request.Notes);
         var transactionId = ReadOptionalString(request.TransactionId);
-        if (!IsOptionalString(request.Notes) ||
-            !IsOptionalString(request.TransactionId) ||
-            notes?.Length > 500 ||
+        if (!IsOptionalString(request.TransactionId) ||
             transactionId?.Length > 450)
         {
             return BadRequest(new { message = "Document metadata is invalid." });
@@ -283,9 +277,7 @@ public class DocumentsController : ControllerBase
 
         var doc = await _service.UpdateAsync(
             id, 
-            request.TaxYear, 
-            notes,
-            request.Notes.ValueKind != JsonValueKind.Undefined,
+            request.TaxYear,
             transactionId,
             request.TransactionId.ValueKind != JsonValueKind.Undefined,
             request.ReliefCategory,
@@ -362,7 +354,6 @@ public class DocumentsController : ControllerBase
 public class UpdateDocumentRequest
 {
     public int? TaxYear { get; set; }
-    public JsonElement Notes { get; set; }
     public JsonElement TransactionId { get; set; }
     public string? ReliefCategory { get; set; }
     public bool ReliefCategorySpecified { get; set; }

@@ -29,6 +29,7 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         Assert.Equal(documentId, listed.GetProperty("id").GetInt32());
         Assert.Equal("application/pdf", listed.GetProperty("contentType").GetString());
         Assert.Equal("2033-12-31", listed.GetProperty("retentionUntil").GetString());
+        Assert.False(listed.TryGetProperty("notes", out _));
 
         var filteredResponse = await client.GetAsync($"/api/documents?taxYear=2026&reliefCategory={categoryId}&sort=name-asc");
         Assert.Equal(HttpStatusCode.OK, filteredResponse.StatusCode);
@@ -63,24 +64,21 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         var updateResponse = await client.PatchAsJsonAsync($"/api/documents/{documentId}", new
         {
             taxYear = 2025,
-            notes = "Filed copy",
             transactionId = "transaction-1",
         });
         Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
         var updated = await updateResponse.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(2025, updated.GetProperty("taxYear").GetInt32());
-        Assert.Equal("Filed copy", updated.GetProperty("notes").GetString());
+        Assert.False(updated.TryGetProperty("notes", out _));
         Assert.Equal("transaction-1", updated.GetProperty("transactionId").GetString());
         Assert.Equal("2032-12-31", updated.GetProperty("retentionUntil").GetString());
 
         var unlinkResponse = await client.PatchAsJsonAsync($"/api/documents/{documentId}", new
         {
-            notes = (string?)null,
             transactionId = (string?)null,
         });
         Assert.Equal(HttpStatusCode.OK, unlinkResponse.StatusCode);
         var unlinked = await unlinkResponse.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.False(unlinked.TryGetProperty("notes", out _));
         Assert.False(unlinked.TryGetProperty("transactionId", out _));
 
         var deleteResponse = await client.DeleteAsync($"/api/documents/{documentId}");
@@ -236,7 +234,6 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         file.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         content.Add(file, "file", fileName);
         content.Add(new StringContent("2026"), "taxYear");
-        content.Add(new StringContent("Annual filing"), "notes");
         content.Add(new StringContent(reliefCategory), "reliefCategory");
         return content;
     }

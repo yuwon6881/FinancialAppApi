@@ -191,6 +191,25 @@ public class RecurringPaymentPayEarlyServiceTests
     }
 
     [Fact]
+    public async Task PayEarlyAsync_ReplayedClientKey_ReturnsTheOriginalTransaction()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", dueDate: 15));
+        await context.SaveChangesAsync();
+        var service = NewService(context, Today(2026, 7, 10));
+        var expected = new DateOnly(2026, 7, 15);
+
+        var first = await service.PayEarlyAsync("rec-1", expected, CancellationToken.None, "outbox-op-1");
+        var replay = await service.PayEarlyAsync("rec-1", expected, CancellationToken.None, "outbox-op-1");
+
+        Assert.Equal(PayEarlyStatus.Success, first.Status);
+        Assert.Equal(PayEarlyStatus.Success, replay.Status);
+        Assert.Equal(first.Transaction!.Id, replay.Transaction!.Id);
+        Assert.Equal(first.SettledOccurrenceDate, replay.SettledOccurrenceDate);
+        Assert.Single(context.Transactions);
+    }
+
+    [Fact]
     public async Task GetNextUnpaidOccurrenceAsync_IncludesDueTodayButSkipsItAfterSettlement()
     {
         await using var context = TestHelpers.NewInMemoryContext();

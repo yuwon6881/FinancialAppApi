@@ -197,7 +197,7 @@ public class RecurringPaymentsController : ControllerBase
             return BadRequest(new { message = "occurrenceDate must use yyyy-MM-dd format." });
         }
 
-        var result = await _payEarlyService.PayEarlyAsync(id, occurrenceDate, HttpContext.RequestAborted);
+        var result = await _payEarlyService.PayEarlyAsync(id, occurrenceDate, HttpContext.RequestAborted, dto.ClientKey);
 
         return result.Status switch
         {
@@ -289,6 +289,7 @@ public class RecurringPaymentReminderDto
 public class PayEarlyRequestDto
 {
     public string OccurrenceDate { get; set; } = string.Empty;
+    public string? ClientKey { get; set; }
 }
 
 public class RecurringPaymentDto

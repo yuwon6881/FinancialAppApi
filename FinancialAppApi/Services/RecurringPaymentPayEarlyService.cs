@@ -1,6 +1,8 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace FinancialAppApi.Services;
 
@@ -47,7 +49,10 @@ public class RecurringPaymentPayEarlyService
         _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
-    public async Task<PayEarlyResult> PayEarlyAsync(string recurringPaymentId, CancellationToken cancellationToken = default)
+    public async Task<PayEarlyResult> PayEarlyAsync(
+        string recurringPaymentId,
+        CancellationToken cancellationToken = default,
+        string? clientKey = null)
     {
         var candidate = await ResolveNextFutureOccurrenceAsync(recurringPaymentId, cancellationToken);
         if (candidate.Result != null)
@@ -55,13 +60,14 @@ public class RecurringPaymentPayEarlyService
             return candidate.Result;
         }
 
-        return await PayEarlyAsync(recurringPaymentId, candidate.Occurrence!.Value, cancellationToken);
+        return await PayEarlyAsync(recurringPaymentId, candidate.Occurrence!.Value, cancellationToken, clientKey);
     }
 
     public async Task<PayEarlyResult> PayEarlyAsync(
         string recurringPaymentId,
         DateOnly expectedOccurrenceDate,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? clientKey = null)
     {
         var payment = await _context.RecurringPayments
             .FirstOrDefaultAsync(p => p.Id == recurringPaymentId, cancellationToken);
@@ -77,6 +83,32 @@ public class RecurringPaymentPayEarlyService
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
         var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
         var today = _financialClock.Today;
+
+        // The frontend supplies the outbox operation id as a client key. If the response to a
+        // successful POST was lost, replaying the queued operation must return the original row
+        // rather than attempting to settle a later occurrence. The key is hashed into a bounded,
+        // opaque transaction id so arbitrary client input never becomes a database key.
+        if (!string.IsNullOrWhiteSpace(clientKey))
+        {
+            var existing = await _context.Transactions.FirstOrDefaultAsync(
+                transaction => transaction.Id == BuildClientTransactionId(clientKey),
+                cancellationToken);
+            if (existing != null)
+            {
+                if (existing.RecurringPaymentId != payment.Id || existing.RecurringOccurrenceDate == null)
+                {
+                    return new PayEarlyResult(PayEarlyStatus.Conflict, Message: "This pay-early request key was already used.");
+                }
+
+                var nextAfterReplay = await FindNextUnpaidOccurrenceAsync(
+                    payment, cycleDay, today, includeToday: false, cancellationToken);
+                return new PayEarlyResult(
+                    PayEarlyStatus.Success,
+                    existing,
+                    existing.RecurringOccurrenceDate.Value,
+                    nextAfterReplay);
+            }
+        }
 
         var occurrence = await FindNextUnpaidOccurrenceAsync(payment, cycleDay, today, includeToday: false, cancellationToken);
         if (occurrence == null)
@@ -106,7 +138,9 @@ public class RecurringPaymentPayEarlyService
 
         var transaction = new Transaction
         {
-            Id = $"tx-payearly-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}",
+            Id = string.IsNullOrWhiteSpace(clientKey)
+                ? $"tx-payearly-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}"
+                : BuildClientTransactionId(clientKey),
             Date = TransactionDate.FromInputDate(today),
             PostedAt = DateTime.UtcNow,
             Description = payment.Name,
@@ -225,5 +259,11 @@ public class RecurringPaymentPayEarlyService
         }
 
         return null;
+    }
+
+    private static string BuildClientTransactionId(string clientKey)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(clientKey));
+        return $"tx-payearly-{Convert.ToHexString(hash).ToLowerInvariant()}";
     }
 }
