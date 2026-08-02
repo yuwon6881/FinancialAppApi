@@ -54,6 +54,8 @@ public sealed record InvestmentHoldingDto(
     decimal? DailyChangeApp,
     decimal? UnrealisedProfitLossApp,
     decimal? UnrealisedPercent,
+    decimal? RealisedProfitLossApp,
+    decimal? NetDividendsApp,
     DateOnly? PriceDate,
     DateTime? PriceFetchedAt,
     bool UsesManualPrice,
@@ -253,6 +255,8 @@ public sealed class InvestmentPortfolioService(
                 unrealised is not null && position.CostBasisApp is > 0
                     ? unrealised / position.CostBasisApp.Value * 100m
                     : null,
+                position.RealisedApp,
+                position.DividendsApp,
                 latest?.Date,
                 latest?.FetchedAt,
                 latest?.Manual == true,

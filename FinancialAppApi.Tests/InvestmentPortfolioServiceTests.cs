@@ -213,6 +213,56 @@ public sealed class InvestmentPortfolioServiceTests
         Assert.Equal(4m, portfolio.UsdRate);
     }
 
+    [Fact]
+    public async Task Holding_ExposesRealisedProfitLossAndDividends_WithoutChangingSummaryTotals()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "USD" });
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var instrument = new InvestmentInstrument
+        {
+            Symbol = "VTI", Name = "Vanguard Total Stock Market ETF", Type = "ETF", Currency = "USD", IsCustom = true
+        };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+
+        context.InvestmentTransactions.AddRange(
+            new InvestmentTransaction
+            {
+                AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+                Type = "Buy", TradeDate = new DateOnly(2026, 1, 2), Units = 10, UnitPrice = 10, CashAmount = 100, Fees = 2
+            },
+            new InvestmentTransaction
+            {
+                AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+                Type = "Sell", TradeDate = new DateOnly(2026, 2, 2), Units = 4, UnitPrice = 15, CashAmount = 60, Fees = 1
+            },
+            new InvestmentTransaction
+            {
+                AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+                Type = "Dividend", TradeDate = new DateOnly(2026, 3, 2), CashAmount = 12, Taxes = 2
+            },
+            new InvestmentTransaction
+            {
+                AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+                Type = "FeeTax", TradeDate = new DateOnly(2026, 4, 2), CashAmount = 3
+            });
+        context.ManualPriceOverrides.Add(new ManualPriceOverride
+        {
+            InstrumentId = instrument.Id, MarketDate = new DateOnly(2026, 4, 2), Price = 12
+        });
+        await context.SaveChangesAsync();
+
+        var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
+        var holding = Assert.Single(portfolio.Holdings);
+
+        Assert.Equal(15.2m, holding.RealisedProfitLossApp);
+        Assert.Equal(10m, holding.NetDividendsApp);
+        Assert.Equal(holding.RealisedProfitLossApp, portfolio.Summary.RealisedProfitLoss);
+        Assert.Equal(holding.NetDividendsApp, portfolio.Summary.NetDividends);
+    }
+
     private static InvestmentPortfolioService NewService(Database.AppDbContext context)
         => new(context, new InvestmentAccountingService(), new StubProvider());
 
