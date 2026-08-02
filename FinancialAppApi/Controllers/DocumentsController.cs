@@ -217,7 +217,7 @@ public class DocumentsController : ControllerBase
         CancellationToken ct)
     {
         var result = await _service.AddReliefCategoryAsync(
-            taxYear, request.Name, request.Limit, request.Detail, ct);
+            taxYear, request.Name, request.Limit, ct);
         return TaxReliefCategoryResult(result);
     }
 
@@ -229,8 +229,20 @@ public class DocumentsController : ControllerBase
         CancellationToken ct)
     {
         var result = await _service.UpdateReliefCategoryAsync(
-            taxYear, categoryId, request.Name, request.Limit, request.Detail, ct);
+            taxYear, categoryId, request.Name, request.Limit, ct);
         return TaxReliefCategoryResult(result);
+    }
+
+    [HttpDelete("relief-categories/{taxYear:int}/{categoryId}")]
+    public async Task<IActionResult> DeleteReliefCategory(
+        int taxYear,
+        string categoryId,
+        CancellationToken ct)
+    {
+        var result = await _service.DeleteReliefCategoryAsync(taxYear, categoryId, ct);
+        return result.Status == TaxReliefCategoryMutationStatus.Saved
+            ? NoContent()
+            : TaxReliefCategoryResult(result);
     }
 
     [HttpGet("summary/{taxYear:int}")]
@@ -344,6 +356,7 @@ public class DocumentsController : ControllerBase
             TaxReliefCategoryMutationStatus.Saved => Ok(result.Category),
             TaxReliefCategoryMutationStatus.Duplicate => Conflict(new { message = "A category with this name already exists for the selected tax year." }),
             TaxReliefCategoryMutationStatus.NotFound => NotFound(),
+            TaxReliefCategoryMutationStatus.InUse => Conflict(new { message = "Move the documents filed under this category to another one before deleting it." }),
             _ => BadRequest(new { message = "Tax relief category details are invalid." })
         };
 }
@@ -367,7 +380,6 @@ public sealed class SaveTaxReliefCategoryRequest
 {
     public string? Name { get; set; }
     public decimal Limit { get; set; }
-    public string? Detail { get; set; }
 }
 
 public sealed class BulkDeleteDocumentsRequest

@@ -37,6 +37,28 @@ public sealed record InvestmentAllocationRecommendationDto(
     decimal Amount,
     string Message);
 
+public sealed record InvestmentContributionSleeveDto(
+    string Sleeve,
+    string Label,
+    decimal Amount,
+    decimal PercentageOfContribution,
+    decimal ProjectedPercentage,
+    decimal ProjectedDriftPercentagePoints);
+
+/// <summary>
+/// How to split the next routine Growth deposit across the three sleeves so the
+/// portfolio keeps (or moves back toward) its target mix without selling anything.
+/// Unlike <see cref="InvestmentAllocationOverviewDto.Recommendations"/> this is
+/// produced even when the plan is on track, because the routine question — "I am
+/// depositing my usual amount, how much of each do I buy?" — still has an answer.
+/// </summary>
+public sealed record InvestmentContributionPlanDto(
+    decimal Amount,
+    string Basis,
+    int CyclesObserved,
+    bool IsEstimated,
+    IReadOnlyList<InvestmentContributionSleeveDto> Sleeves);
+
 public sealed record InvestmentMarketDataFreshnessDto(
     DateTime? AsOf,
     bool IsStale,
@@ -55,7 +77,8 @@ public sealed record InvestmentAllocationOverviewDto(
     InvestmentMarketDataFreshnessDto Freshness,
     decimal? InvestedValue,
     decimal AvailableCash,
-    decimal? MinimumContribution);
+    decimal? MinimumContribution,
+    InvestmentContributionPlanDto? ContributionPlan = null);
 
 public sealed class InvestmentAllocationService(AppDbContext context)
 {
@@ -160,7 +183,7 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         var cycleDay = await context.FinancialSettings.AsNoTracking()
             .Select(value => (int?)value.CycleDay)
             .SingleOrDefaultAsync(cancellationToken) ?? 28;
-        var usualGrowthDeposit = UsualCompletedCycleContribution(contributions, cycleDay);
+        var (usualGrowthDeposit, cyclesObserved) = UsualCompletedCycleContribution(contributions, cycleDay);
 
         var minimumNewMoney = SleeveDefinitions.Max(definition =>
             values[definition.Key] / (targets[definition.Key] / 100m) - investedValue);
@@ -175,7 +198,9 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         return new InvestmentAllocationOverviewDto(
             status, appCurrency, plan, assignments, sleeves, recommendations, [],
             freshness, RoundMoney(investedValue), RoundMoney(availableCash),
-            RoundMoney(Math.Max(0, minimumNewMoney - availableCash - (usualGrowthDeposit ?? 0))));
+            RoundMoney(Math.Max(0, minimumNewMoney - availableCash - (usualGrowthDeposit ?? 0))),
+            BuildContributionPlan(
+                investedValue, values, targets, usualGrowthDeposit, cyclesObserved, availableCash));
     }
 
     public static string? ValidatePlan(InvestmentPlanMutationDto value)
@@ -318,7 +343,104 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         return recommendations;
     }
 
-    private static decimal? UsualCompletedCycleContribution(
+    /// <summary>
+    /// Splits one routine deposit across the sleeves by cash-flow rebalancing: new money fills
+    /// the gap to each sleeve's target first, and only what is left over is split by target
+    /// weight. Two properties make this the right formula for the routine case:
+    ///
+    /// * On a perfectly balanced portfolio every gap equals target% x contribution, so the split
+    ///   collapses to the plain target split — deposit 1000 against 33/33/34 and you are told to
+    ///   buy 330/330/340.
+    /// * When the mix has drifted, the same deposit leans toward whatever is underweight, so the
+    ///   portfolio converges on target without selling anything (and without triggering tax).
+    ///
+    /// When the deposit is too small to close every gap the gaps are scaled proportionally rather
+    /// than filled greedily: routine buying should keep feeding all three sleeves, and the greedy
+    /// "most underweight first" ordering already exists in the rebalancing recommendations.
+    /// </summary>
+    private static InvestmentContributionPlanDto? BuildContributionPlan(
+        decimal investedValue,
+        IReadOnlyDictionary<string, decimal> values,
+        IReadOnlyDictionary<string, decimal> targets,
+        decimal? usualGrowthDeposit,
+        int cyclesObserved,
+        decimal availableCash)
+    {
+        // Prefer the user's own deposit rhythm; fall back to cash already sitting in the
+        // brokerage, which is the only other amount we can honestly say is ready to invest.
+        var amount = usualGrowthDeposit is > 0 ? usualGrowthDeposit.Value : availableCash;
+        if (amount <= 0.005m) return null;
+        var isEstimated = usualGrowthDeposit is not > 0;
+
+        var projectedTotal = investedValue + amount;
+        var gaps = SleeveDefinitions.ToDictionary(
+            definition => definition.Key,
+            definition => Math.Max(0, projectedTotal * targets[definition.Key] / 100m - values[definition.Key]));
+        var totalGap = gaps.Values.Sum();
+
+        var allocations = SleeveDefinitions.ToDictionary(definition => definition.Key, _ => 0m);
+        if (totalGap <= 0.005m)
+        {
+            // Every sleeve is at or above its target share of the larger portfolio, which can only
+            // happen from rounding. Fall back to the plain target split.
+            foreach (var definition in SleeveDefinitions)
+                allocations[definition.Key] = amount * targets[definition.Key] / 100m;
+        }
+        else if (totalGap >= amount)
+        {
+            foreach (var definition in SleeveDefinitions)
+                allocations[definition.Key] = amount * gaps[definition.Key] / totalGap;
+        }
+        else
+        {
+            var leftover = amount - totalGap;
+            foreach (var definition in SleeveDefinitions)
+                allocations[definition.Key] = gaps[definition.Key] + leftover * targets[definition.Key] / 100m;
+        }
+
+        // Rounding to cents must not invent or lose money: the largest allocation absorbs the
+        // difference so the parts always add back up to the deposit the user is being told to make.
+        var rounded = SleeveDefinitions.ToDictionary(
+            definition => definition.Key,
+            definition => RoundMoney(allocations[definition.Key]));
+        var drift = RoundMoney(amount) - rounded.Values.Sum();
+        if (drift != 0)
+        {
+            var largest = SleeveDefinitions
+                .OrderByDescending(definition => rounded[definition.Key])
+                .First().Key;
+            rounded[largest] += drift;
+        }
+
+        var sleeves = SleeveDefinitions.Select(definition =>
+        {
+            var projectedValue = values[definition.Key] + rounded[definition.Key];
+            var projectedPercentage = projectedTotal <= 0 ? 0 : projectedValue / projectedTotal * 100m;
+            return new InvestmentContributionSleeveDto(
+                definition.Key,
+                definition.Label,
+                rounded[definition.Key],
+                RoundMoney(amount) <= 0 ? 0 : Math.Round(rounded[definition.Key] / RoundMoney(amount) * 100m, 1),
+                Math.Round(projectedPercentage, 2),
+                Math.Round(projectedPercentage - targets[definition.Key], 2));
+        }).ToList();
+
+        var basis = isEstimated
+            ? "Uninvested cash in your brokerage accounts."
+            : cyclesObserved == 1
+                ? "Your Growth deposit from the last completed cycle."
+                : $"The median of your Growth deposits across {cyclesObserved} completed cycles.";
+
+        return new InvestmentContributionPlanDto(
+            RoundMoney(amount), basis, cyclesObserved, isEstimated, sleeves);
+    }
+
+    /// <summary>
+    /// The typical Growth deposit per completed cycle, plus how many cycles that was measured
+    /// over. The median rather than the mean: a single windfall cycle should not raise what the
+    /// user is told to buy every month.
+    /// </summary>
+    private static (decimal? Amount, int Cycles) UsualCompletedCycleContribution(
         IReadOnlyList<InvestmentContributionDto> contributions,
         int cycleDay)
     {
@@ -339,11 +461,11 @@ public sealed class InvestmentAllocationService(AppDbContext context)
             .OrderBy(value => value)
             .ToList();
 
-        if (cycleTotals.Count == 0) return null;
+        if (cycleTotals.Count == 0) return (null, 0);
         var middle = cycleTotals.Count / 2;
-        return RoundMoney(cycleTotals.Count % 2 == 1
+        return (RoundMoney(cycleTotals.Count % 2 == 1
             ? cycleTotals[middle]
-            : (cycleTotals[middle - 1] + cycleTotals[middle]) / 2m);
+            : (cycleTotals[middle - 1] + cycleTotals[middle]) / 2m), cycleTotals.Count);
     }
 
     private static Dictionary<string, decimal> Targets(InvestmentPlanDto plan) => new()

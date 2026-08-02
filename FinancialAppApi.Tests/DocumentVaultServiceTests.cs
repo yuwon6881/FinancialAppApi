@@ -163,7 +163,6 @@ public class DocumentVaultServiceTests
             CategoryId = "lifestyle",
             Name = "Lifestyle",
             Limit = 2500m,
-            Detail = "User-maintained limit",
             TaxYear = 2025
         });
         await context.SaveChangesAsync();
@@ -188,7 +187,6 @@ public class DocumentVaultServiceTests
             CategoryId = "lifestyle",
             Name = "Lifestyle",
             Limit = 2500m,
-            Detail = "Prior year",
             TaxYear = 2025
         });
         await context.SaveChangesAsync();
@@ -200,17 +198,43 @@ public class DocumentVaultServiceTests
         Assert.Equal(2500m, inheritedLifestyle.Limit);
 
         var update = await service.UpdateReliefCategoryAsync(
-            2026, "lifestyle", "Lifestyle", 3000m, "Current year", CancellationToken.None);
+            2026, "lifestyle", "Lifestyle", 3000m, CancellationToken.None);
 
         Assert.Equal(TaxReliefCategoryMutationStatus.Saved, update.Status);
         Assert.False(Assert.Single(await service.GetReliefCategoriesAsync(2026)).IsInherited);
         Assert.Equal(3000m, Assert.Single(await service.GetReliefCategoriesAsync(2026)).Limit);
         Assert.Equal(2500m, Assert.Single(await service.GetReliefCategoriesAsync(2025)).Limit);
 
-        var add = await service.AddReliefCategoryAsync(2026, "Sports", 1000m, "New category");
+        var add = await service.AddReliefCategoryAsync(2026, "Sports", 1000m);
         Assert.Equal(TaxReliefCategoryMutationStatus.Saved, add.Status);
         Assert.Single(await service.GetReliefCategoriesAsync(2025));
         Assert.Collection(await service.GetReliefCategoriesAsync(2026), _ => { }, _ => { });
+    }
+
+    [Fact]
+    public async Task DeleteReliefCategoryAsync_RemovesUnusedCategoryButRefusesOneInUse()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        var filed = VaultDocumentForYear(2026, 1);
+        filed.ReliefCategory = "lifestyle";
+        context.VaultDocuments.Add(filed);
+        context.TaxReliefCategoryLimits.AddRange(
+            new TaxReliefCategoryLimit { UserId = "test-user", CategoryId = "lifestyle", Name = "Lifestyle", Limit = 2500m, TaxYear = 2026 },
+            new TaxReliefCategoryLimit { UserId = "test-user", CategoryId = "sports", Name = "Sports", Limit = 1000m, TaxYear = 2026 });
+        await context.SaveChangesAsync();
+
+        var service = NewService(context, new FakeDocumentVaultStore());
+
+        var inUse = await service.DeleteReliefCategoryAsync(2026, "lifestyle");
+        Assert.Equal(TaxReliefCategoryMutationStatus.InUse, inUse.Status);
+
+        var deleted = await service.DeleteReliefCategoryAsync(2026, "sports");
+        Assert.Equal(TaxReliefCategoryMutationStatus.Saved, deleted.Status);
+        Assert.Equal("lifestyle", Assert.Single(await service.GetReliefCategoriesAsync(2026)).Id);
+
+        var missing = await service.DeleteReliefCategoryAsync(2026, "sports");
+        Assert.Equal(TaxReliefCategoryMutationStatus.NotFound, missing.Status);
     }
 
     [Fact]
@@ -372,7 +396,6 @@ public class DocumentVaultServiceTests
             CategoryId = "test-category",
             Name = "Test category",
             Limit = 1000m,
-            Detail = "Test configuration",
             TaxYear = taxYear
         });
 

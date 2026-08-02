@@ -36,7 +36,6 @@ public sealed record TaxReliefCategoryDefinition(
     string Id,
     string Name,
     decimal Limit,
-    string Detail,
     bool IsInherited = false);
 public sealed record TaxReliefCategorySummary(
     string Id,
@@ -59,7 +58,8 @@ public enum TaxReliefCategoryMutationStatus
     Saved,
     Invalid,
     Duplicate,
-    NotFound
+    NotFound,
+    InUse
 }
 
 public sealed record TaxReliefCategoryMutationResult(
@@ -635,10 +635,9 @@ public sealed class DocumentVaultService
         int taxYear,
         string? name,
         decimal limit,
-        string? detail,
         CancellationToken ct = default)
     {
-        if (!TryNormalizeCategoryInput(name, limit, detail, out var normalizedName, out var normalizedDetail))
+        if (!TryNormalizeCategoryInput(name, limit, out var normalizedName))
         {
             return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.Invalid);
         }
@@ -658,7 +657,6 @@ public sealed class DocumentVaultService
             CategoryId = CreateCategoryId(normalizedName, rows),
             Name = normalizedName,
             Limit = limit,
-            Detail = normalizedDetail,
             TaxYear = taxYear
         };
         _context.TaxReliefCategoryLimits.Add(category);
@@ -674,10 +672,9 @@ public sealed class DocumentVaultService
         string categoryId,
         string? name,
         decimal limit,
-        string? detail,
         CancellationToken ct = default)
     {
-        if (!TryNormalizeCategoryInput(name, limit, detail, out var normalizedName, out var normalizedDetail) ||
+        if (!TryNormalizeCategoryInput(name, limit, out var normalizedName) ||
             string.IsNullOrWhiteSpace(categoryId) || categoryId.Length > 80 ||
             !IsAllowedTaxYear(taxYear))
         {
@@ -698,12 +695,46 @@ public sealed class DocumentVaultService
 
         category.Name = normalizedName;
         category.Limit = limit;
-        category.Detail = normalizedDetail;
         await _context.SaveChangesAsync(ct);
 
         return new TaxReliefCategoryMutationResult(
             TaxReliefCategoryMutationStatus.Saved,
             ToDefinition(category));
+    }
+
+    /// <summary>
+    /// Removes a relief category from one tax year. Documents carry a required relief category,
+    /// so a category that is still referenced by a document in that year is refused rather than
+    /// leaving those documents pointing at a category that no longer exists.
+    /// </summary>
+    public async Task<TaxReliefCategoryMutationResult> DeleteReliefCategoryAsync(
+        int taxYear,
+        string categoryId,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(categoryId) || categoryId.Length > 80 || !IsAllowedTaxYear(taxYear))
+        {
+            return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.Invalid);
+        }
+
+        var rows = await EnsureExplicitConfigurationAsync(taxYear, ct);
+        var category = rows.FirstOrDefault(row => row.CategoryId == categoryId);
+        if (category == null)
+        {
+            return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.NotFound);
+        }
+
+        var isInUse = await _context.VaultDocuments
+            .AnyAsync(document => document.TaxYear == taxYear && document.ReliefCategory == categoryId, ct);
+        if (isInUse)
+        {
+            return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.InUse);
+        }
+
+        _context.TaxReliefCategoryLimits.Remove(category);
+        await _context.SaveChangesAsync(ct);
+
+        return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.Saved);
     }
 
     public Task<bool> HasDocumentsForExportAsync(int? taxYear, CancellationToken ct = default)
@@ -826,7 +857,6 @@ public sealed class DocumentVaultService
                 CategoryId = row.CategoryId,
                 Name = row.Name,
                 Limit = row.Limit,
-                Detail = row.Detail,
                 TaxYear = taxYear
             });
         }
@@ -845,19 +875,15 @@ public sealed class DocumentVaultService
     private static TaxReliefCategoryDefinition ToDefinition(
         TaxReliefCategoryLimit row,
         bool isInherited = false) =>
-        new(row.CategoryId, row.Name, row.Limit, row.Detail, isInherited);
+        new(row.CategoryId, row.Name, row.Limit, isInherited);
 
     private static bool TryNormalizeCategoryInput(
         string? name,
         decimal limit,
-        string? detail,
-        out string normalizedName,
-        out string normalizedDetail)
+        out string normalizedName)
     {
         normalizedName = name?.Trim() ?? string.Empty;
-        normalizedDetail = detail?.Trim() ?? string.Empty;
         return normalizedName.Length is > 0 and <= 120 &&
-               normalizedDetail.Length <= 300 &&
                limit is >= 0 and <= 9_999_999_999_999_999.99m;
     }
 

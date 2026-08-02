@@ -27,9 +27,5 @@ public sealed class TaxReliefCategoryLimit : IUserOwnedEntity
     public decimal Limit { get; set; }
 
     [Required]
-    [StringLength(300)]
-    public string Detail { get; set; } = string.Empty;
-
-    [Required]
     public int TaxYear { get; set; }
 }
