@@ -58,7 +58,6 @@ public sealed record InvestmentHoldingDto(
     decimal? NetDividendsApp,
     DateOnly? PriceDate,
     DateTime? PriceFetchedAt,
-    bool UsesManualPrice,
     bool FxIncomplete,
     decimal? FxRate,
     DateOnly? FxDate,
@@ -109,7 +108,6 @@ public sealed record InvestmentPortfolioDto(
     IReadOnlyList<InvestmentAccountSetupDto> Accounts,
     IReadOnlyList<InvestmentInstrumentSetupDto> Instruments,
     IReadOnlyList<InvestmentHoldingDto> Holdings,
-    IReadOnlyList<ManualPriceDto> ManualPrices,
     IReadOnlyList<InvestmentChartPointDto> Chart,
     IReadOnlyList<InvestmentCashBalanceDto> CashBalances,
     int ActivityCount,
@@ -132,12 +130,6 @@ public sealed record InvestmentTransactionDto(
     decimal Fees,
     decimal Taxes,
     DateTime CreatedAt);
-
-public sealed record ManualPriceDto(
-    Guid Id,
-    Guid InstrumentId,
-    DateOnly MarketDate,
-    decimal Price);
 
 public sealed class InvestmentPortfolioService(
     AppDbContext context,
@@ -164,9 +156,6 @@ public sealed class InvestmentPortfolioService(
             .Include(value => value.Account)
             .OrderByDescending(value => value.TradeDate)
             .ThenByDescending(value => value.CreatedAt)
-            .ToListAsync(cancellationToken);
-        var overrides = await context.ManualPriceOverrides.AsNoTracking()
-            .OrderByDescending(value => value.MarketDate)
             .ToListAsync(cancellationToken);
         var cashFlows = await context.InvestmentCashFlows.AsNoTracking()
             .OrderByDescending(value => value.Date)
@@ -219,7 +208,7 @@ public sealed class InvestmentPortfolioService(
                 continue;
             }
 
-            var prices = ResolvePrices(instrument, priceBars, overrides);
+            var prices = ResolvePrices(instrument, priceBars);
             var latest = prices.LastOrDefault();
             var previous = prices.Count > 1 ? prices[^2] : null;
             var fx = ResolveFx(instrument.Currency, appCurrency, today, fxBars);
@@ -259,13 +248,12 @@ public sealed class InvestmentPortfolioService(
                 position.DividendsApp,
                 latest?.Date,
                 latest?.FetchedAt,
-                latest?.Manual == true,
                 incomplete,
                 fx?.Rate,
                 fx?.Date,
                 fx?.FetchedAt,
                 fx?.Source,
-                latest is null ? null : latest.Manual ? "Manual close" : "Twelve Data daily close",
+                latest is null ? null : "Twelve Data daily close",
                 latest is null || fx is null ? null : latest.Date < fx.Date ? latest.Date : fx.Date));
         }
 
@@ -372,7 +360,7 @@ public sealed class InvestmentPortfolioService(
             netDeposits += flow.Amount * fx.Value;
         }
 
-        var chart = BuildChart(range, transactions, cashFlows, instruments, priceBars, fxBars, overrides, appCurrency);
+        var chart = BuildChart(range, transactions, cashFlows, instruments, priceBars, fxBars, appCurrency);
         var latestFetchedAt = holdings.Where(value => value.PriceFetchedAt is not null)
             .Select(value => value.PriceFetchedAt)
             .Max();
@@ -407,8 +395,7 @@ public sealed class InvestmentPortfolioService(
         }).ToList();
         var instrumentDtos = instruments.Select(value =>
         {
-            var hasHistory = transactions.Any(tx => tx.InstrumentId == value.Id) ||
-                             overrides.Any(price => price.InstrumentId == value.Id);
+            var hasHistory = transactions.Any(tx => tx.InstrumentId == value.Id);
             var canArchive = !openKeys.Any(key => key.InstrumentId == value.Id);
             return new InvestmentInstrumentSetupDto(
                 value.Id, value.Symbol, value.Name, value.Type, value.Exchange, value.Mic, value.Country,
@@ -431,7 +418,6 @@ public sealed class InvestmentPortfolioService(
             accountDtos,
             instrumentDtos,
             holdings.OrderByDescending(value => value.ValueApp ?? decimal.MinValue).ToList(),
-            overrides.Select(ToDto).ToList(),
             chart,
             cashBalances,
             transactions.Count,
@@ -450,7 +436,6 @@ public sealed class InvestmentPortfolioService(
         IReadOnlyList<InvestmentInstrument> instruments,
         IReadOnlyList<MarketPriceBar> priceBars,
         IReadOnlyList<FxRateBar> fxBars,
-        IReadOnlyList<ManualPriceOverride> overrides,
         string appCurrency)
     {
         if (transactions.Count == 0 && cashFlows.Count == 0) return [];
@@ -468,7 +453,6 @@ public sealed class InvestmentPortfolioService(
         var dates = transactions.Select(value => value.TradeDate)
             .Concat(cashFlows.Select(value => value.Date))
             .Concat(priceBars.Select(value => value.MarketDate))
-            .Concat(overrides.Select(value => value.MarketDate))
             .Append(today)
             .Where(value => value >= from && value <= today)
             .Distinct()
@@ -500,7 +484,7 @@ public sealed class InvestmentPortfolioService(
                     continue;
                 }
                 if (position.Units == 0) continue;
-                var price = ResolvePrices(instrument, priceBars, overrides).LastOrDefault(value => value.Date <= date);
+                var price = ResolvePrices(instrument, priceBars).LastOrDefault(value => value.Date <= date);
                 var fx = ResolveFx(instrument.Currency, appCurrency, date, fxBars);
                 if (price is null || fx is null)
                 {
@@ -551,20 +535,15 @@ public sealed class InvestmentPortfolioService(
 
     private static List<ResolvedPrice> ResolvePrices(
         InvestmentInstrument instrument,
-        IReadOnlyList<MarketPriceBar> priceBars,
-        IReadOnlyList<ManualPriceOverride> overrides)
+        IReadOnlyList<MarketPriceBar> priceBars)
     {
-        var provider = priceBars
+        return priceBars
             .Where(value =>
                 value.Symbol.Equals(instrument.ProviderSymbol, StringComparison.OrdinalIgnoreCase) &&
                 value.Mic.Equals(instrument.ProviderMic ?? "", StringComparison.OrdinalIgnoreCase))
-            .Select(value => new ResolvedPrice(value.MarketDate, value.Close, value.FetchedAt, false));
-        var manual = overrides
-            .Where(value => value.InstrumentId == instrument.Id)
-            .Select(value => new ResolvedPrice(value.MarketDate, value.Price, value.UpdatedAt, true));
-        return provider.Concat(manual)
+            .Select(value => new ResolvedPrice(value.MarketDate, value.Close, value.FetchedAt))
             .GroupBy(value => value.Date)
-            .Select(group => group.OrderByDescending(value => value.Manual).ThenByDescending(value => value.FetchedAt).First())
+            .Select(group => group.OrderByDescending(value => value.FetchedAt).First())
             .OrderBy(value => value.Date)
             .ToList();
     }
@@ -648,7 +627,6 @@ public sealed class InvestmentPortfolioService(
             if (total > 0 && (largest.ValueApp ?? 0) / total >= 0.5m)
                 insights.Add("Concentration: one holding represents at least half of the valued portfolio.");
         }
-        if (holdings.Any(value => value.UsesManualPrice)) insights.Add("Manual prices are currently used for one or more holdings.");
         if (warnings.Any(value => value.Contains("FX", StringComparison.OrdinalIgnoreCase))) insights.Add("Converted totals are incomplete until missing FX rates are supplied.");
         if (holdings.Any(value => value.PriceDate is null || value.PriceDate < DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-5))))
             insights.Add("Some holdings have stale or unavailable prices.");
@@ -660,9 +638,6 @@ public sealed class InvestmentPortfolioService(
         value.Units, value.UnitPrice, value.CashAmount, value.Fees, value.Taxes,
         value.CreatedAt);
 
-    public static ManualPriceDto ToDto(ManualPriceOverride value) => new(
-        value.Id, value.InstrumentId, value.MarketDate, value.Price);
-
     public static InvestmentCashFlowDto ToDto(InvestmentCashFlow value) => new(
         value.Id, value.AccountId, value.Currency, value.Type, value.Amount, value.Date,
         value.ToCurrency, value.ToAmount, value.CreatedAt);
@@ -670,6 +645,6 @@ public sealed class InvestmentPortfolioService(
     internal static bool IsConversion(InvestmentCashFlow value)
         => value.Type.Equals("Conversion", StringComparison.OrdinalIgnoreCase);
 
-    private sealed record ResolvedPrice(DateOnly Date, decimal Price, DateTime FetchedAt, bool Manual);
+    private sealed record ResolvedPrice(DateOnly Date, decimal Price, DateTime FetchedAt);
     private sealed record ResolvedFx(decimal Rate, DateOnly Date, string Source, DateTime? FetchedAt);
 }

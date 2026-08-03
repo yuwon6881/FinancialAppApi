@@ -121,8 +121,7 @@ public sealed class InvestmentAllocationService(AppDbContext context)
             if (holding.ValueApp is null)
                 reasons.Add($"{holding.Symbol} cannot be valued in {appCurrency}.");
 
-            if (!holding.UsesManualPrice)
-                freshnessInputs.Add(($"{holding.Symbol} price", holding.PriceFetchedAt));
+            freshnessInputs.Add(($"{holding.Symbol} price", holding.PriceFetchedAt));
             if (!holding.Currency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(holding.FxSource, "Manual FX", StringComparison.OrdinalIgnoreCase))
                 freshnessInputs.Add(($"{holding.Currency}/{appCurrency} FX", holding.FxFetchedAt));

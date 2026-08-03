@@ -50,7 +50,7 @@ public class RecurringPaymentAlertService
         {
             if (!DateTime.TryParse(rp.StartDate, out var startDate)) continue;
 
-            int startYear = Math.Min(2026, startDate.Year);
+            int startYear = Math.Max(2026, startDate.Year);
             for (int y = startYear; y <= todayYear; y++)
             {
                 int endMonthIdx = y == todayYear ? todayMonthIdx : 12;

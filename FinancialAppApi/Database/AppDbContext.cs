@@ -39,7 +39,6 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<InvestmentPlan> InvestmentPlans => Set<InvestmentPlan>();
     public DbSet<MarketPriceBar> MarketPriceBars => Set<MarketPriceBar>();
     public DbSet<FxRateBar> FxRateBars => Set<FxRateBar>();
-    public DbSet<ManualPriceOverride> ManualPriceOverrides => Set<ManualPriceOverride>();
     public DbSet<MarketDataRefreshJob> MarketDataRefreshJobs => Set<MarketDataRefreshJob>();
     public DbSet<MarketDataQuotaWindow> MarketDataQuotaWindows => Set<MarketDataQuotaWindow>();
     public DbSet<InstrumentSearchCache> InstrumentSearchCaches => Set<InstrumentSearchCache>();
@@ -339,16 +338,6 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(e => new { e.Provider, e.BaseCurrency, e.QuoteCurrency, e.MarketDate }).IsUnique();
         });
 
-        modelBuilder.Entity<ManualPriceOverride>(entity =>
-        {
-            entity.Property(e => e.MarketDate).HasColumnType("date");
-            entity.Property(e => e.Price).HasColumnType("numeric(28,10)");
-            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
-            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
-            entity.HasIndex(e => new { e.UserId, e.InstrumentId, e.MarketDate }).IsUnique();
-            entity.HasOne(e => e.Instrument).WithMany().HasForeignKey(e => e.InstrumentId).OnDelete(DeleteBehavior.Cascade);
-        });
-
         modelBuilder.Entity<MarketDataRefreshJob>(entity =>
         {
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
@@ -445,7 +434,6 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentTransaction>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentCashFlow>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentPlan>(), applyQueryFilter: true);
-        ConfigureUserOwnership(modelBuilder.Entity<ManualPriceOverride>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<MarketDataRefreshJob>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<VaultDocument>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<TaxReliefCategoryLimit>(), applyQueryFilter: true);

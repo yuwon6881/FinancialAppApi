@@ -140,18 +140,6 @@ public sealed class FxRateBar
     public DateTime FetchedAt { get; set; } = DateTime.UtcNow;
 }
 
-public sealed class ManualPriceOverride : IUserOwnedEntity
-{
-    public Guid Id { get; set; } = Guid.NewGuid();
-    [Required] public string UserId { get; set; } = string.Empty;
-    public Guid InstrumentId { get; set; }
-    public InvestmentInstrument Instrument { get; set; } = null!;
-    public DateOnly MarketDate { get; set; }
-    public decimal Price { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
-}
-
 public sealed class MarketDataRefreshJob : IUserOwnedEntity
 {
     public Guid Id { get; set; } = Guid.NewGuid();

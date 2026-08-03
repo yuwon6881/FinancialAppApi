@@ -355,7 +355,8 @@ public sealed class InvestmentAllocationServiceTests
         Name = symbol,
         Type = symbol == "BND" ? "MutualFund" : "ETF",
         Currency = "USD",
-        IsCustom = true,
+        IsCustom = false,
+        ProviderSymbol = symbol,
         AllocationSleeve = sleeve
     };
 
@@ -376,11 +377,11 @@ public sealed class InvestmentAllocationServiceTests
             UnitPrice = 1,
             CashAmount = value
         });
-        context.ManualPriceOverrides.Add(new ManualPriceOverride
+        context.MarketPriceBars.Add(new MarketPriceBar
         {
-            InstrumentId = instrument.Id,
+            Symbol = instrument.Symbol,
             MarketDate = DateOnly.FromDateTime(DateTime.UtcNow),
-            Price = 1
+            Close = 1
         });
     }
 

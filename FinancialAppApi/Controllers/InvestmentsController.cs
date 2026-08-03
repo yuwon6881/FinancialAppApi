@@ -246,9 +246,8 @@ public sealed class InvestmentsController(
     {
         var instrument = await context.InvestmentInstruments.FindAsync([id], HttpContext.RequestAborted);
         if (instrument is null) return NotFound();
-        if (await context.InvestmentTransactions.AnyAsync(value => value.InstrumentId == id, HttpContext.RequestAborted) ||
-            await context.ManualPriceOverrides.AnyAsync(value => value.InstrumentId == id, HttpContext.RequestAborted))
-            return Conflict(new { message = "Investments with activity or manual prices cannot be deleted. Archive this investment after closing all units." });
+        if (await context.InvestmentTransactions.AnyAsync(value => value.InstrumentId == id, HttpContext.RequestAborted))
+            return Conflict(new { message = "Investments with activity cannot be deleted. Archive this investment after closing all units." });
         context.InvestmentInstruments.Remove(instrument);
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return Ok(instrument);
@@ -371,69 +370,6 @@ public sealed class InvestmentsController(
         }
         await context.SaveChangesAsync(HttpContext.RequestAborted);
         return NoContent();
-    }
-
-    [HttpPost("manual-prices")]
-    public async Task<ActionResult<ManualPriceDto>> CreateManualPrice(ManualPriceMutationDto dto)
-    {
-        var error = await ValidateManualPriceAsync(dto);
-        if (error is not null) return BadRequest(new { message = error });
-        if (dto.Id is Guid requestedId)
-        {
-            var existing = await context.ManualPriceOverrides.AsNoTracking()
-                .FirstOrDefaultAsync(value => value.Id == requestedId, HttpContext.RequestAborted);
-            if (existing is not null) return Ok(InvestmentPortfolioService.ToDto(existing));
-        }
-        var manual = new ManualPriceOverride
-        {
-            Id = dto.Id ?? Guid.NewGuid(),
-            InstrumentId = dto.InstrumentId,
-            MarketDate = dto.MarketDate,
-            Price = dto.Price
-        };
-        context.ManualPriceOverrides.Add(manual);
-        try
-        {
-            await context.SaveChangesAsync(HttpContext.RequestAborted);
-        }
-        catch (DbUpdateException)
-        {
-            return Conflict(new { message = "A manual price already exists for this instrument and date." });
-        }
-        return Created($"/api/investments/manual-prices/{manual.Id}", InvestmentPortfolioService.ToDto(manual));
-    }
-
-    [HttpPut("manual-prices/{id:guid}")]
-    public async Task<IActionResult> UpdateManualPrice(Guid id, ManualPriceMutationDto dto)
-    {
-        var error = await ValidateManualPriceAsync(dto);
-        if (error is not null) return BadRequest(new { message = error });
-        var manual = await context.ManualPriceOverrides.FindAsync([id], HttpContext.RequestAborted);
-        if (manual is null) return NotFound();
-        manual.InstrumentId = dto.InstrumentId;
-        manual.MarketDate = dto.MarketDate;
-        manual.Price = dto.Price;
-        manual.UpdatedAt = DateTime.UtcNow;
-        try
-        {
-            await context.SaveChangesAsync(HttpContext.RequestAborted);
-        }
-        catch (DbUpdateException)
-        {
-            return Conflict(new { message = "A manual price already exists for this instrument and date." });
-        }
-        return NoContent();
-    }
-
-    [HttpDelete("manual-prices/{id:guid}")]
-    public async Task<ActionResult<ManualPriceDto>> DeleteManualPrice(Guid id)
-    {
-        var manual = await context.ManualPriceOverrides.FindAsync([id], HttpContext.RequestAborted);
-        if (manual is null) return NotFound();
-        var snapshot = InvestmentPortfolioService.ToDto(manual);
-        context.ManualPriceOverrides.Remove(manual);
-        await context.SaveChangesAsync(HttpContext.RequestAborted);
-        return Ok(snapshot);
     }
 
     [HttpPost("cash-flows")]
@@ -663,18 +599,6 @@ public sealed class InvestmentsController(
             .Select(value => value.Currency)
             .FirstOrDefaultAsync(HttpContext.RequestAborted) ?? "USD").ToUpperInvariant();
 
-    private async Task<string?> ValidateManualPriceAsync(ManualPriceMutationDto dto)
-    {
-        if (!await context.InvestmentInstruments.AnyAsync(
-                value => value.Id == dto.InstrumentId && !value.IsArchived,
-                HttpContext.RequestAborted))
-            return "Select an active investment.";
-        if (dto.MarketDate == default || dto.MarketDate > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)))
-            return "Enter a valid market date.";
-        if (dto.Price <= 0) return "Prices must be positive.";
-        return null;
-    }
-
     private static string? ValidateAccount(AccountMutationDto dto)
     {
         if (string.IsNullOrWhiteSpace(dto.Name) || dto.Name.Trim().Length > 120) return "Account name is required.";
@@ -807,12 +731,6 @@ public sealed record InvestmentTransactionMutationDto(
     decimal? CashAmount,
     decimal Fees,
     decimal Taxes,
-    Guid? Id = null);
-
-public sealed record ManualPriceMutationDto(
-    Guid InstrumentId,
-    DateOnly MarketDate,
-    decimal Price,
     Guid? Id = null);
 
 public sealed record CashFlowMutationDto(

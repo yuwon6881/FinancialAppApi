@@ -63,14 +63,14 @@ public sealed class InvestmentPortfolioServiceTests
     }
 
     [Fact]
-    public async Task ManualPriceOverrides_DoNotAffectFx_ProviderRateIsUsed()
+    public async Task PriceBars_DoNotAffectFx_ProviderRateIsUsed()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         var instrument = new InvestmentInstrument
         {
-            Symbol = "TEST", Name = "Test", Type = "Stock", Currency = "USD", IsCustom = true
+            Symbol = "TEST", Name = "Test", Type = "Stock", Currency = "USD", ProviderSymbol = "TEST"
         };
         context.InvestmentAccounts.Add(account);
         context.InvestmentInstruments.Add(instrument);
@@ -81,9 +81,9 @@ public sealed class InvestmentPortfolioServiceTests
             Type = "Buy", TradeDate = new DateOnly(2026, 7, 1),
             Units = 1, UnitPrice = 10, CashAmount = 10
         });
-        context.ManualPriceOverrides.AddRange(
-            new ManualPriceOverride { InstrumentId = instrument.Id, MarketDate = new DateOnly(2026, 7, 20), Price = 10 },
-            new ManualPriceOverride { InstrumentId = instrument.Id, MarketDate = new DateOnly(2026, 7, 23), Price = 10 });
+        context.MarketPriceBars.AddRange(
+            new MarketPriceBar { Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 20), Close = 10 },
+            new MarketPriceBar { Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 23), Close = 10 });
         context.FxRateBars.Add(new FxRateBar
         {
             BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 22), Rate = 4.2m
@@ -221,7 +221,7 @@ public sealed class InvestmentPortfolioServiceTests
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         var instrument = new InvestmentInstrument
         {
-            Symbol = "VTI", Name = "Vanguard Total Stock Market ETF", Type = "ETF", Currency = "USD", IsCustom = true
+            Symbol = "VTI", Name = "Vanguard Total Stock Market ETF", Type = "ETF", Currency = "USD", ProviderSymbol = "VTI"
         };
         context.InvestmentAccounts.Add(account);
         context.InvestmentInstruments.Add(instrument);
@@ -248,9 +248,9 @@ public sealed class InvestmentPortfolioServiceTests
                 AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
                 Type = "FeeTax", TradeDate = new DateOnly(2026, 4, 2), CashAmount = 3
             });
-        context.ManualPriceOverrides.Add(new ManualPriceOverride
+        context.MarketPriceBars.Add(new MarketPriceBar
         {
-            InstrumentId = instrument.Id, MarketDate = new DateOnly(2026, 4, 2), Price = 12
+            Symbol = "VTI", MarketDate = new DateOnly(2026, 4, 2), Close = 12
         });
         await context.SaveChangesAsync();
 
