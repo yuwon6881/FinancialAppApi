@@ -146,10 +146,10 @@ public sealed class InvestmentPortfolioService(
                 .FirstOrDefaultAsync(cancellationToken) ?? "USD")
             .ToUpperInvariant();
         var accounts = await context.InvestmentAccounts.AsNoTracking()
-            .OrderBy(value => value.IsArchived).ThenBy(value => value.Name)
+            .OrderBy(value => value.IsArchived).ThenBy(value => value.Name).ThenBy(value => value.Id)
             .ToListAsync(cancellationToken);
         var instruments = await context.InvestmentInstruments.AsNoTracking()
-            .OrderBy(value => value.Symbol)
+            .OrderBy(value => value.Symbol).ThenBy(value => value.Id)
             .ToListAsync(cancellationToken);
         var transactions = await context.InvestmentTransactions.AsNoTracking()
             .Include(value => value.Instrument)

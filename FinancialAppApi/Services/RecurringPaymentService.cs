@@ -78,6 +78,7 @@ public class RecurringPaymentService
         return await _context.RecurringPayments
             .AsNoTracking()
             .OrderBy(p => p.Name)
+            .ThenBy(p => p.Id)
             .Select(p => new RecurringPaymentProjection(
                 p.Id,
                 p.Name,

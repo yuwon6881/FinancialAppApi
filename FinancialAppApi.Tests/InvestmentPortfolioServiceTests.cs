@@ -263,6 +263,27 @@ public sealed class InvestmentPortfolioServiceTests
         Assert.Equal(holding.NetDividendsApp, portfolio.Summary.NetDividends);
     }
 
+    [Fact]
+    public async Task GetPortfolioAsync_UsesStableAccountAndInvestmentOrdering()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        var accountA = new InvestmentAccount { Id = Guid.Parse("00000000-0000-0000-0000-000000000001"), Name = "Broker", BaseCurrency = "MYR" };
+        var accountB = new InvestmentAccount { Id = Guid.Parse("00000000-0000-0000-0000-000000000002"), Name = "Broker", BaseCurrency = "USD" };
+        var archived = new InvestmentAccount { Id = Guid.Parse("00000000-0000-0000-0000-000000000003"), Name = "Old broker", BaseCurrency = "MYR", IsArchived = true };
+        var instrumentA = new InvestmentInstrument { Id = Guid.Parse("10000000-0000-0000-0000-000000000001"), Symbol = "VWRA", Name = "Fund A", Type = "ETF", Currency = "USD" };
+        var instrumentB = new InvestmentInstrument { Id = Guid.Parse("10000000-0000-0000-0000-000000000002"), Symbol = "VWRA", Name = "Fund B", Type = "ETF", Currency = "USD" };
+        var instrumentC = new InvestmentInstrument { Id = Guid.Parse("10000000-0000-0000-0000-000000000003"), Symbol = "ZPRV", Name = "Fund C", Type = "ETF", Currency = "USD" };
+        context.InvestmentAccounts.AddRange(accountB, archived, accountA);
+        context.InvestmentInstruments.AddRange(instrumentB, instrumentC, instrumentA);
+        await context.SaveChangesAsync();
+
+        var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
+
+        Assert.Equal([accountA.Id, accountB.Id, archived.Id], portfolio.Accounts.Select(account => account.Id));
+        Assert.Equal([instrumentA.Id, instrumentB.Id, instrumentC.Id], portfolio.Instruments.Select(instrument => instrument.Id));
+    }
+
     private static InvestmentPortfolioService NewService(Database.AppDbContext context)
         => new(context, new InvestmentAccountingService(), new StubProvider());
 

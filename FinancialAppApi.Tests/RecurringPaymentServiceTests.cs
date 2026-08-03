@@ -21,6 +21,21 @@ public class RecurringPaymentServiceTests
     }
 
     [Fact]
+    public async Task GetRecurringPaymentsAsync_OrdersByNameThenStableId()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.AddRange(
+            NewPayment("rec-b", "Streaming"),
+            NewPayment("rec-z", "Utilities"),
+            NewPayment("rec-a", "Streaming"));
+        await context.SaveChangesAsync();
+
+        var payments = await new RecurringPaymentService(context).GetRecurringPaymentsAsync();
+
+        Assert.Equal(["rec-a", "rec-b", "rec-z"], payments.Select(payment => payment.Id));
+    }
+
+    [Fact]
     public async Task CreateRecurringPaymentAsync_PersistsPayment()
     {
         await using var context = TestHelpers.NewInMemoryContext();

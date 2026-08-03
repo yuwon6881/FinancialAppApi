@@ -29,7 +29,7 @@ public sealed class InvestmentsController(
     [HttpGet("accounts")]
     public async Task<ActionResult<IReadOnlyList<InvestmentAccount>>> GetAccounts()
         => Ok(await context.InvestmentAccounts.AsNoTracking()
-            .OrderBy(value => value.IsArchived).ThenBy(value => value.Name)
+            .OrderBy(value => value.IsArchived).ThenBy(value => value.Name).ThenBy(value => value.Id)
             .ToListAsync(HttpContext.RequestAborted));
 
     [HttpGet("currencies")]
