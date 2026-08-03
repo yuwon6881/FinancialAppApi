@@ -15,15 +15,27 @@ public sealed class InvestmentsController(
     InvestmentPortfolioService portfolioService,
     InvestmentAccountingService accountingService,
     InvestmentHistoryValidationService historyValidationService,
+    InstrumentHistoryService instrumentHistoryService,
     InvestmentMarketDataService marketDataService) : ControllerBase
 {
     [HttpGet("portfolio")]
     public async Task<ActionResult<InvestmentPortfolioDto>> GetPortfolio(
         [FromQuery] string range = "3m")
     {
-        if (!new[] { "1m", "3m", "6m", "1y", "all" }.Contains(range, StringComparer.OrdinalIgnoreCase))
-            return BadRequest(new { message = "Range must be 1m, 3m, 6m, 1y, or all." });
+        if (!InvestmentChartRange.IsAllowed(range))
+            return BadRequest(new { message = $"Range must be one of {string.Join(", ", InvestmentChartRange.Allowed)}." });
         return Ok(await portfolioService.GetPortfolioAsync(range, HttpContext.RequestAborted));
+    }
+
+    [HttpGet("instruments/{id:guid}/history")]
+    public async Task<ActionResult<InstrumentHistoryDto>> GetInstrumentHistory(
+        Guid id,
+        [FromQuery] string range = "1y")
+    {
+        if (!InvestmentChartRange.IsAllowed(range))
+            return BadRequest(new { message = $"Range must be one of {string.Join(", ", InvestmentChartRange.Allowed)}." });
+        var history = await instrumentHistoryService.GetAsync(id, range, HttpContext.RequestAborted);
+        return history is null ? NotFound() : Ok(history);
     }
 
     [HttpGet("accounts")]

@@ -440,16 +440,10 @@ public sealed class InvestmentPortfolioService(
     {
         if (transactions.Count == 0 && cashFlows.Count == 0) return [];
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var from = range.ToLowerInvariant() switch
-        {
-            "1m" => today.AddMonths(-1),
-            "3m" => today.AddMonths(-3),
-            "6m" => today.AddMonths(-6),
-            "1y" => today.AddYears(-1),
-            _ => transactions.Select(value => value.TradeDate)
+        var from = InvestmentChartRange.StartFor(range, today)
+            ?? transactions.Select(value => value.TradeDate)
                 .Concat(cashFlows.Select(value => value.Date))
-                .Min()
-        };
+                .Min();
         var dates = transactions.Select(value => value.TradeDate)
             .Concat(cashFlows.Select(value => value.Date))
             .Concat(priceBars.Select(value => value.MarketDate))
@@ -458,13 +452,15 @@ public sealed class InvestmentPortfolioService(
             .Distinct()
             .Order()
             .ToList();
-        if (dates.Count > 180)
-        {
-            var interval = (int)Math.Ceiling(dates.Count / 180m);
-            dates = dates.Where((_, index) => index % interval == 0).Append(today).Distinct().Order().ToList();
-        }
+        dates = InvestmentChartRange.Sample(dates);
 
         var instrumentById = instruments.ToDictionary(value => value.Id);
+        // Resolved once per instrument rather than once per (date, position): this loop runs for
+        // every charted date, and re-filtering the whole price-bar table inside it is what made
+        // long ranges expensive as history grew.
+        var pricesByInstrument = instruments.ToDictionary(
+            value => value.Id,
+            value => ResolvePrices(value, priceBars));
         decimal? HistoricalTradeFx(InvestmentTransaction transaction) =>
             ResolveFx(transaction.Instrument.Currency, appCurrency, transaction.TradeDate, fxBars)?.Rate;
         var points = new List<InvestmentChartPointDto>();
@@ -484,7 +480,7 @@ public sealed class InvestmentPortfolioService(
                     continue;
                 }
                 if (position.Units == 0) continue;
-                var price = ResolvePrices(instrument, priceBars).LastOrDefault(value => value.Date <= date);
+                var price = pricesByInstrument[instrument.Id].LastOrDefault(value => value.Date <= date);
                 var fx = ResolveFx(instrument.Currency, appCurrency, date, fxBars);
                 if (price is null || fx is null)
                 {

@@ -414,6 +414,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<InvestmentAccountingService>();
         services.AddScoped<InvestmentHistoryValidationService>();
         services.AddScoped<InvestmentPortfolioService>();
+        services.AddScoped<InstrumentHistoryService>();
         services.AddScoped<InvestmentMarketDataService>();
         services.AddScoped<InvestmentAllocationService>();
         return services;
