@@ -37,16 +37,19 @@ public sealed class InvestmentPortfolioServiceTests
         });
         context.MarketPriceBars.Add(new MarketPriceBar
         {
+            Provider = "test", ExternalInstrumentId = "VOO|ARCX",
             Symbol = "VOO", Mic = "ARCX", MarketDate = new DateOnly(2026, 7, 23), Close = 678.61m
         });
         context.FxRateBars.AddRange(
             new FxRateBar
             {
+                Provider = "test",
                 BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 1),
                 Rate = 4.1m
             },
             new FxRateBar
             {
+                Provider = "test",
                 BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 23),
                 Rate = 4.0968097876965978622781814333m
             });
@@ -57,7 +60,7 @@ public sealed class InvestmentPortfolioServiceTests
         var holding = Assert.Single(portfolio.Holdings);
         Assert.Equal(678.61m, holding.LatestPriceNative);
         Assert.Equal(4.0968097876965978622781814333m, holding.FxRate);
-        Assert.Equal("Twelve Data direct", holding.FxSource);
+        Assert.Equal("Test data direct", holding.FxSource);
         Assert.Equal(2124.58m, decimal.Round(holding.ValueApp!.Value, 2));
         Assert.Equal(2126.71m, decimal.Round(portfolio.Summary.TotalValue!.Value, 2));
     }
@@ -82,10 +85,11 @@ public sealed class InvestmentPortfolioServiceTests
             Units = 1, UnitPrice = 10, CashAmount = 10
         });
         context.MarketPriceBars.AddRange(
-            new MarketPriceBar { Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 20), Close = 10 },
-            new MarketPriceBar { Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 23), Close = 10 });
+            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 20), Close = 10 },
+            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 23), Close = 10 });
         context.FxRateBars.Add(new FxRateBar
         {
+            Provider = "test",
             BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 22), Rate = 4.2m
         });
         await context.SaveChangesAsync();
@@ -93,7 +97,7 @@ public sealed class InvestmentPortfolioServiceTests
         var holding = Assert.Single((await NewService(context).GetPortfolioAsync("all", CancellationToken.None)).Holdings);
 
         Assert.Equal(4.2m, holding.FxRate);
-        Assert.Equal("Twelve Data direct", holding.FxSource);
+        Assert.Equal("Test data direct", holding.FxSource);
     }
 
     [Fact]
@@ -196,6 +200,7 @@ public sealed class InvestmentPortfolioServiceTests
             });
         context.FxRateBars.Add(new FxRateBar
         {
+            Provider = "test",
             BaseCurrency = "USD",
             QuoteCurrency = "MYR",
             MarketDate = date,
@@ -210,7 +215,8 @@ public sealed class InvestmentPortfolioServiceTests
         Assert.Equal(900m, summary.GrowthLedgerBalance);
         Assert.Equal(1000m, summary.GrowthContributions);
         Assert.Equal(320m, summary.NetDeposits);
-        Assert.Equal(4m, portfolio.UsdRate);
+        Assert.Equal(4m, portfolio.ReferenceRate);
+        Assert.Equal(CurrencyCatalog.ReferenceCurrency, portfolio.ReferenceCurrency);
     }
 
     [Fact]
@@ -250,6 +256,7 @@ public sealed class InvestmentPortfolioServiceTests
             });
         context.MarketPriceBars.Add(new MarketPriceBar
         {
+            Provider = "test", ExternalInstrumentId = "VTI|",
             Symbol = "VTI", MarketDate = new DateOnly(2026, 4, 2), Close = 12
         });
         await context.SaveChangesAsync();
@@ -261,6 +268,34 @@ public sealed class InvestmentPortfolioServiceTests
         Assert.Equal(10m, holding.NetDividendsApp);
         Assert.Equal(holding.RealisedProfitLossApp, portfolio.Summary.RealisedProfitLoss);
         Assert.Equal(holding.NetDividendsApp, portfolio.Summary.NetDividends);
+    }
+
+    [Fact]
+    public async Task ShadowProviderRowsCannotAffectTheActivePortfolio()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var instrument = new InvestmentInstrument
+        {
+            Symbol = "VOO", Name = "Fund", Type = "ETF", Currency = "USD", ProviderSymbol = "VOO"
+        };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+            Type = "Buy", TradeDate = new DateOnly(2026, 1, 1), Units = 1, UnitPrice = 10, CashAmount = 10
+        });
+        context.MarketPriceBars.AddRange(
+            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "VOO|", Symbol = "VOO", MarketDate = new DateOnly(2026, 1, 2), Close = 12 },
+            new MarketPriceBar { Provider = "shadow", ExternalInstrumentId = "VOO|", Symbol = "VOO", MarketDate = new DateOnly(2026, 1, 2), Close = 999 });
+        await context.SaveChangesAsync();
+
+        var holding = Assert.Single((await NewService(context).GetPortfolioAsync("all", CancellationToken.None)).Holdings);
+
+        Assert.Equal(12m, holding.LatestPriceNative);
+        Assert.Equal("Test data daily close", holding.PriceSource);
     }
 
     [Fact]
@@ -289,15 +324,20 @@ public sealed class InvestmentPortfolioServiceTests
 
     private sealed class StubProvider : IMarketDataProvider
     {
-        public bool IsConfigured => false;
+        public MarketDataProviderDescriptor Descriptor => new(
+            "test", "Test data", false, MarketDataCapabilities.RequiredForActivation,
+            new MarketDataQuotaPolicy(6, 750, 200));
 
         public Task<IReadOnlyList<InstrumentSearchResult>> SearchAsync(string query, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<InstrumentSearchResult>>([]);
 
-        public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(string symbol, string? mic, DateOnly startDate, CancellationToken cancellationToken)
+        public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(MarketInstrumentReference instrument, DateOnly startDate, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<ProviderPriceBar>>([]);
 
         public Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(string baseCurrency, string quoteCurrency, DateOnly startDate, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<ProviderFxBar>>([]);
+
+        public MarketInstrumentReference? TryResolveLegacyReference(string? symbol, string? mic)
+            => string.IsNullOrWhiteSpace(symbol) ? null : new("test", $"{symbol}|{mic}");
     }
 }

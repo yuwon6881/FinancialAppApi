@@ -24,7 +24,8 @@ public sealed record InstrumentHistoryDto(
 /// </summary>
 public sealed class InstrumentHistoryService(
     AppDbContext context,
-    InvestmentAccountingService accounting)
+    InvestmentAccountingService accounting,
+    IMarketDataProvider provider)
 {
     public async Task<InstrumentHistoryDto?> GetAsync(
         Guid instrumentId,
@@ -73,24 +74,18 @@ public sealed class InstrumentHistoryService(
         DateOnly today,
         CancellationToken cancellationToken)
     {
-        if (instrument.IsCustom || string.IsNullOrWhiteSpace(instrument.ProviderSymbol)) return [];
-
-        var symbol = instrument.ProviderSymbol!;
-        var mic = instrument.ProviderMic ?? "";
+        if (instrument.IsCustom) return [];
+        var reference = await MarketDataReferenceResolver.ResolveAsync(
+            context, instrument, provider, cancellationToken);
+        if (reference is null) return [];
         var bars = await context.MarketPriceBars.AsNoTracking()
-            .Where(value => value.Provider == "twelvedata" &&
-                            value.Symbol == symbol &&
+            .Where(value => value.Provider == provider.Descriptor.Id &&
+                            value.ExternalInstrumentId == reference.ExternalId &&
                             value.MarketDate <= today &&
                             (from == null || value.MarketDate >= from))
             .ToListAsync(cancellationToken);
 
-        // Symbol and MIC are compared case-insensitively, as everywhere else that
-        // resolves prices: a single differently-cased row would otherwise drop out
-        // and leave a gap in the line.
-        // A symbol can also hold several rows for one date after a re-fetch; the
-        // most recently fetched row wins, matching how holdings are valued.
         var points = bars
-            .Where(value => value.Mic.Equals(mic, StringComparison.OrdinalIgnoreCase))
             .GroupBy(value => value.MarketDate)
             .Select(group => group.OrderByDescending(value => value.FetchedAt).First())
             .OrderBy(value => value.MarketDate)

@@ -10,6 +10,15 @@ public static class CurrencyCatalog
 {
     public const string Version = "iso-4217-active-2026-01";
 
+    /// <summary>
+    /// The second currency the investment plan can be read in, alongside the user's own.
+    /// Most listed funds price in USD, so seeing plan amounts in it saves converting by
+    /// hand before placing an order. Defined once and sent to the client as
+    /// <c>ReferenceCurrency</c>, so changing it here changes every label and conversion
+    /// with it — nothing downstream assumes which currency this is.
+    /// </summary>
+    public const string ReferenceCurrency = "USD";
+
     private static readonly IReadOnlyList<CurrencyCatalogItem> ItemsValue = Parse("""
 AED|د.إ|UAE Dirham
 AFN|؋|Afghani

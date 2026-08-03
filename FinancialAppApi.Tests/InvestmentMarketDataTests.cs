@@ -24,9 +24,9 @@ public sealed class InvestmentMarketDataTests
             };
         });
         var client = new HttpClient(handler) { BaseAddress = new Uri("https://api.example.test") };
-        var provider = new TwelveDataMarketDataProvider(client, Options.Create(new MarketDataOptions
+        var provider = new TwelveDataMarketDataProvider(client, Options.Create(new TwelveDataMarketDataOptions
         {
-            TwelveDataApiKey = key
+            ApiKey = key
         }));
 
         var result = await provider.SearchAsync("VOO", CancellationToken.None);
@@ -36,6 +36,34 @@ public sealed class InvestmentMarketDataTests
         Assert.Equal("apikey", captured.Headers.Authorization?.Scheme);
         Assert.Equal(key, captured.Headers.Authorization?.Parameter);
         Assert.DoesNotContain(key, captured.RequestUri!.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TwelveDataAdapter_ClampsAFutureSeriesStartDate()
+    {
+        HttpRequestMessage? captured = null;
+        var handler = new DelegateHandler(request =>
+        {
+            captured = request;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"values":[]}""")
+            };
+        });
+        var provider = new TwelveDataMarketDataProvider(
+            new HttpClient(handler) { BaseAddress = new Uri("https://api.example.test") },
+            Options.Create(new TwelveDataMarketDataOptions { ApiKey = "key" }));
+
+        await provider.GetDailySeriesAsync(
+            TwelveDataMarketDataProvider.CreateReference("VOO", "ARCX"),
+            DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1),
+            CancellationToken.None);
+
+        Assert.NotNull(captured);
+        Assert.Contains(
+            $"start_date={DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1):yyyy-MM-dd}",
+            captured.RequestUri!.Query,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -56,6 +84,25 @@ public sealed class InvestmentMarketDataTests
         Assert.True(result.Complete);
         Assert.Equal(0, result.Total);
         Assert.Equal(0, provider.CallCount);
+    }
+
+    [Fact]
+    public async Task SearchCacheBelongingToAnotherProviderIsNeverReused()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.InstrumentSearchCaches.Add(new InstrumentSearchCache
+        {
+            ProviderId = "shadow", NormalizedQuery = "VOO", ResultsJson = "[]",
+            ExpiresAt = DateTime.UtcNow.AddHours(1)
+        });
+        await context.SaveChangesAsync();
+        var provider = new CountingProvider();
+
+        var result = await NewService(context, provider).SearchAsync("VOO", CancellationToken.None);
+
+        Assert.True(result.ProviderContacted);
+        Assert.Equal(1, provider.CallCount);
+        Assert.Contains(context.InstrumentSearchCaches, value => value.ProviderId == "test");
     }
 
     [Fact]
@@ -128,6 +175,7 @@ public sealed class InvestmentMarketDataTests
         var deletedId = Guid.NewGuid();
         context.MarketDataRefreshJobs.Add(new MarketDataRefreshJob
         {
+            ProviderId = "test",
             Status = "Pending",
             ReportingCurrency = "USD",
             TotalItems = 1,
@@ -152,6 +200,7 @@ public sealed class InvestmentMarketDataTests
         await SeedProviderBackedHoldingAsync(context);
         context.MarketDataRefreshJobs.Add(new MarketDataRefreshJob
         {
+            ProviderId = "test",
             Status = "Pending",
             ReportingCurrency = "USD",
             TotalItems = 1,
@@ -167,12 +216,31 @@ public sealed class InvestmentMarketDataTests
     }
 
     [Fact]
+    public async Task RefreshNeverResumesAJobCreatedForAnotherProvider()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        await SeedProviderBackedHoldingAsync(context);
+        context.MarketDataRefreshJobs.Add(new MarketDataRefreshJob
+        {
+            ProviderId = "shadow", Status = "Pending", ReportingCurrency = "USD",
+            TotalItems = 1, PendingItemsJson = "[\"fx:EUR:USD\"]"
+        });
+        await context.SaveChangesAsync();
+
+        await NewService(context, new CountingProvider()).RefreshAsync(CancellationToken.None);
+
+        Assert.Equal("Superseded", context.MarketDataRefreshJobs.Single(value => value.ProviderId == "shadow").Status);
+        Assert.Contains(context.MarketDataRefreshJobs, value => value.ProviderId == "test");
+    }
+
+    [Fact]
     public async Task TransientProviderFailureRequeuesItemAndDoesNotCompleteTheJob()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         var (_, instrument) = await SeedProviderBackedHoldingAsync(context);
         context.MarketDataRefreshJobs.Add(new MarketDataRefreshJob
         {
+            ProviderId = "test",
             Status = "Pending",
             ReportingCurrency = "USD",
             TotalItems = 1,
@@ -198,6 +266,8 @@ public sealed class InvestmentMarketDataTests
         // A previously fetched bar exists but is stale, so the gate lets the call through.
         context.MarketPriceBars.Add(new MarketPriceBar
         {
+            Provider = "test",
+            ExternalInstrumentId = $"{instrument.ProviderSymbol}|",
             Symbol = instrument.ProviderSymbol!,
             Mic = "",
             MarketDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-3)),
@@ -221,7 +291,7 @@ public sealed class InvestmentMarketDataTests
     }
 
     [Fact]
-    public async Task NewHoldingDatedInUsersTomorrowStartsFromProviderSafeDate()
+    public async Task OrchestrationPassesTheRealTradeDateToTheProviderAdapter()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         var (_, instrument) = await SeedProviderBackedHoldingAsync(context);
@@ -233,7 +303,7 @@ public sealed class InvestmentMarketDataTests
 
         await service.RefreshAsync(CancellationToken.None);
 
-        Assert.Equal(DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1), provider.PriceStartDates.Single());
+        Assert.Equal(DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1), provider.PriceStartDates.Single());
     }
 
     [Fact]
@@ -248,14 +318,14 @@ public sealed class InvestmentMarketDataTests
         // Alice has already spent her per-user allowance for the day.
         context.MarketDataQuotaWindows.Add(new MarketDataQuotaWindow
         {
-            Scope = "user-day:alice",
+            Scope = "test:user-day:alice",
             WindowStart = dayStart,
             Used = 5
         });
         await context.SaveChangesAsync();
         var aliceInstrument = (await SeedProviderBackedHoldingAsync(context)).Instrument;
-        var options = Options.Create(new MarketDataOptions { PerUserDailyCallCeiling = 5 });
-        var provider = new CountingProvider();
+        var options = Options.Create(new MarketDataOptions());
+        var provider = new CountingProvider(perUserDailyCallCeiling: 5);
         var service = new InvestmentMarketDataService(
             context, provider, options, NullLogger<InvestmentMarketDataService>.Instance);
 
@@ -275,7 +345,7 @@ public sealed class InvestmentMarketDataTests
         // Bob's own window is untouched, so his refresh still reaches the provider.
         Assert.True(provider.PriceCallCount > 0);
         Assert.Equal(5, context.MarketDataQuotaWindows
-            .Single(window => window.Scope == "user-day:alice").Used);
+            .Single(window => window.Scope == "test:user-day:alice").Used);
     }
 
     [Fact]
@@ -285,7 +355,7 @@ public sealed class InvestmentMarketDataTests
         await SeedProviderBackedHoldingAsync(context);
         context.MarketDataQuotaWindows.Add(new MarketDataQuotaWindow
         {
-            Scope = "provider-minute",
+            Scope = "test:provider-minute",
             WindowStart = DateTime.UtcNow.AddDays(-3),
             Used = 4
         });
@@ -362,16 +432,19 @@ public sealed class InvestmentMarketDataTests
 
     private sealed class ThrowingProvider : IMarketDataProvider
     {
-        public bool IsConfigured => true;
+        public MarketDataProviderDescriptor Descriptor => TestDescriptor();
 
         public Task<IReadOnlyList<InstrumentSearchResult>> SearchAsync(string query, CancellationToken cancellationToken)
             => throw new MarketDataProviderException("Provider is briefly unavailable.", MarketDataFailure.Timeout);
 
-        public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(string symbol, string? mic, DateOnly startDate, CancellationToken cancellationToken)
+        public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(MarketInstrumentReference instrument, DateOnly startDate, CancellationToken cancellationToken)
             => throw new MarketDataProviderException("Provider is briefly unavailable.", MarketDataFailure.Timeout);
 
         public Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(string baseCurrency, string quoteCurrency, DateOnly startDate, CancellationToken cancellationToken)
             => throw new MarketDataProviderException("Provider is briefly unavailable.", MarketDataFailure.Timeout);
+
+        public MarketInstrumentReference? TryResolveLegacyReference(string? symbol, string? mic)
+            => LegacyReference(symbol, mic);
     }
 
     private sealed class DelegateHandler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
@@ -383,11 +456,16 @@ public sealed class InvestmentMarketDataTests
 
     private sealed class CountingProvider : IMarketDataProvider
     {
+        private readonly int _perUserDailyCallCeiling;
+        public CountingProvider(int perUserDailyCallCeiling = 200)
+        {
+            _perUserDailyCallCeiling = perUserDailyCallCeiling;
+        }
         public int CallCount { get; private set; }
         public int PriceCallCount { get; private set; }
         public List<DateOnly> PriceStartDates { get; } = [];
         public List<(string Base, string Quote)> FxPairs { get; } = [];
-        public bool IsConfigured => true;
+        public MarketDataProviderDescriptor Descriptor => TestDescriptor(_perUserDailyCallCeiling);
 
         public Task<IReadOnlyList<InstrumentSearchResult>> SearchAsync(string query, CancellationToken cancellationToken)
         {
@@ -395,7 +473,7 @@ public sealed class InvestmentMarketDataTests
             return Task.FromResult<IReadOnlyList<InstrumentSearchResult>>([]);
         }
 
-        public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(string symbol, string? mic, DateOnly startDate, CancellationToken cancellationToken)
+        public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(MarketInstrumentReference instrument, DateOnly startDate, CancellationToken cancellationToken)
         {
             CallCount++;
             PriceCallCount++;
@@ -410,5 +488,15 @@ public sealed class InvestmentMarketDataTests
             return Task.FromResult<IReadOnlyList<ProviderFxBar>>(
                 [new ProviderFxBar(DateOnly.FromDateTime(DateTime.UtcNow), 4.2m)]);
         }
+
+        public MarketInstrumentReference? TryResolveLegacyReference(string? symbol, string? mic)
+            => LegacyReference(symbol, mic);
     }
+
+    private static MarketDataProviderDescriptor TestDescriptor(int perUserDailyCallCeiling = 200) => new(
+        "test", "Test data", true, MarketDataCapabilities.RequiredForActivation,
+        new MarketDataQuotaPolicy(6, 750, perUserDailyCallCeiling));
+
+    private static MarketInstrumentReference? LegacyReference(string? symbol, string? mic)
+        => string.IsNullOrWhiteSpace(symbol) ? null : new("test", $"{symbol}|{mic}");
 }

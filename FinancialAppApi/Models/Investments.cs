@@ -49,10 +49,25 @@ public sealed class InvestmentInstrument : IUserOwnedEntity
     [Required, MaxLength(3)] public string Currency { get; set; } = "USD";
     [MaxLength(32)] public string? ProviderSymbol { get; set; }
     [MaxLength(8)] public string? ProviderMic { get; set; }
+    public ICollection<InvestmentInstrumentMarketMapping> MarketMappings { get; set; } = [];
     public bool IsCustom { get; set; }
     public bool IsArchived { get; set; }
     [MaxLength(32)] public string? AllocationSleeve { get; set; }
     public int AllocationOrder { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class InvestmentInstrumentMarketMapping : IUserOwnedEntity
+{
+    public long Id { get; set; }
+    [Required] public string UserId { get; set; } = string.Empty;
+    public Guid InvestmentInstrumentId { get; set; }
+    public InvestmentInstrument InvestmentInstrument { get; set; } = null!;
+    [Required, MaxLength(32)] public string ProviderId { get; set; } = string.Empty;
+    [Required, MaxLength(200)] public string ExternalInstrumentId { get; set; } = string.Empty;
+    [MaxLength(32)] public string? DisplaySymbol { get; set; }
+    [MaxLength(8)] public string? DisplayMic { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }
@@ -121,7 +136,8 @@ public sealed class InvestmentCashFlow : IUserOwnedEntity
 public sealed class MarketPriceBar
 {
     public long Id { get; set; }
-    [Required, MaxLength(32)] public string Provider { get; set; } = "twelvedata";
+    [Required, MaxLength(32)] public string Provider { get; set; } = string.Empty;
+    [Required, MaxLength(200)] public string ExternalInstrumentId { get; set; } = string.Empty;
     [Required, MaxLength(32)] public string Symbol { get; set; } = string.Empty;
     [MaxLength(8)] public string Mic { get; set; } = string.Empty;
     public DateOnly MarketDate { get; set; }
@@ -132,7 +148,7 @@ public sealed class MarketPriceBar
 public sealed class FxRateBar
 {
     public long Id { get; set; }
-    [Required, MaxLength(32)] public string Provider { get; set; } = "twelvedata";
+    [Required, MaxLength(32)] public string Provider { get; set; } = string.Empty;
     [Required, MaxLength(3)] public string BaseCurrency { get; set; } = string.Empty;
     [Required, MaxLength(3)] public string QuoteCurrency { get; set; } = string.Empty;
     public DateOnly MarketDate { get; set; }
@@ -146,6 +162,7 @@ public sealed class MarketDataRefreshJob : IUserOwnedEntity
     [Required] public string UserId { get; set; } = string.Empty;
     [Required, MaxLength(24)] public string Status { get; set; } = "Pending";
     [Required, MaxLength(3)] public string ReportingCurrency { get; set; } = "USD";
+    [Required, MaxLength(32)] public string ProviderId { get; set; } = string.Empty;
     public int UpdatedItems { get; set; }
     public int TotalItems { get; set; }
     [Required] public string PendingItemsJson { get; set; } = "[]";
@@ -159,7 +176,7 @@ public sealed class MarketDataQuotaWindow
 {
     public long Id { get; set; }
     // Wide enough for the per-user scopes ("user-day:{guid}"), not just the global window names.
-    [Required, MaxLength(64)] public string Scope { get; set; } = string.Empty;
+    [Required, MaxLength(128)] public string Scope { get; set; } = string.Empty;
     public DateTime WindowStart { get; set; }
     public int Used { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
@@ -169,6 +186,7 @@ public sealed class MarketDataQuotaWindow
 public sealed class InstrumentSearchCache
 {
     public long Id { get; set; }
+    [Required, MaxLength(32)] public string ProviderId { get; set; } = string.Empty;
     [Required, MaxLength(120)] public string NormalizedQuery { get; set; } = string.Empty;
     [Required] public string ResultsJson { get; set; } = "[]";
     public DateTime ExpiresAt { get; set; }

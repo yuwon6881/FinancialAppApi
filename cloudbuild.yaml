@@ -70,7 +70,7 @@ steps:
       # OcrWorkerKey must be non-empty or the dispatcher silently keeps the fallback.
       - '--update-env-vars=Database__MigrateOnStartup=false,Database__SeedOnStartup=false,SupabaseStorage__ProjectUrl=${_SUPABASE_PROJECT_URL},CloudTasks__ProjectId=$PROJECT_ID,CloudTasks__LocationId=asia-southeast1,CloudTasks__QueueId=receipt-scan,CloudTasks__WorkerBaseUrl=https://financialapp-api-i47taxhzba-as.a.run.app,Fcm__ProjectId=$PROJECT_ID,Push__OidcAudience=https://financialapp-api-i47taxhzba-as.a.run.app/api/push/dispatch,Push__AllowlistedServiceAccounts__0=financialapp-scheduler@$PROJECT_ID.iam.gserviceaccount.com,DocumentVault__Bucket=${_DOCUMENT_VAULT_BUCKET}'
       - '--remove-secrets=AiApiKey'
-      - '--update-secrets=OcrWorkerKey=financialapp-ocr-worker-key:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest,MarketData__TwelveDataApiKey=financialapp-twelvedata-api-key:latest,OpenAiApiKey=financialapp-openai-api-key:latest'
+      - '--update-secrets=OcrWorkerKey=financialapp-ocr-worker-key:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest,MarketData__Providers__TwelveData__ApiKey=financialapp-twelvedata-api-key:latest,OpenAiApiKey=financialapp-openai-api-key:latest'
     id: Deploy
     waitFor:
       - Migrate

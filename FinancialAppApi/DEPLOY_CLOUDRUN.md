@@ -72,7 +72,7 @@ gcloud run deploy financialapp-api \
   --max-instances 2 \
   --memory 512Mi \
   --set-env-vars "SupabaseStorage__ProjectUrl=https://YOUR_PROJECT_REF.supabase.co" \
-  --set-secrets "ConnectionStrings__DefaultConnection=financialapp-db:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest,MarketData__TwelveDataApiKey=financialapp-twelvedata-api-key:latest,OpenAiApiKey=financialapp-openai-api-key:latest"
+  --set-secrets "ConnectionStrings__DefaultConnection=financialapp-db:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest,MarketData__Providers__TwelveData__ApiKey=financialapp-twelvedata-api-key:latest,OpenAiApiKey=financialapp-openai-api-key:latest"
 ```
 
 - `--source .` builds the image from the `Dockerfile` via Cloud Build and deploys it.
@@ -127,7 +127,7 @@ gcloud secrets add-iam-policy-binding financialapp-twelvedata-api-key \
 ```
 
 The deployment maps the secret to
-`MarketData__TwelveDataApiKey=financialapp-twelvedata-api-key:latest`.
+`MarketData__Providers__TwelveData__ApiKey=financialapp-twelvedata-api-key:latest`.
 Non-secret defaults live under `MarketData` in `appsettings.json`: provider base
 URL, 15-minute freshness, six refresh calls per minute (leaving two discovery
 calls available), a 750-call daily ceiling, and feature enablement. With no key,

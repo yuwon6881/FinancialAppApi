@@ -34,6 +34,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PushReminderDelivery> PushReminderDeliveries => Set<PushReminderDelivery>();
     public DbSet<InvestmentAccount> InvestmentAccounts => Set<InvestmentAccount>();
     public DbSet<InvestmentInstrument> InvestmentInstruments => Set<InvestmentInstrument>();
+    public DbSet<InvestmentInstrumentMarketMapping> InvestmentInstrumentMarketMappings => Set<InvestmentInstrumentMarketMapping>();
     public DbSet<InvestmentTransaction> InvestmentTransactions => Set<InvestmentTransaction>();
     public DbSet<InvestmentCashFlow> InvestmentCashFlows => Set<InvestmentCashFlow>();
     public DbSet<InvestmentPlan> InvestmentPlans => Set<InvestmentPlan>();
@@ -276,6 +277,18 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 "\"AllocationSleeve\" IS NULL OR \"AllocationSleeve\" IN ('USEquity', 'InternationalExUS', 'Bonds')"));
         });
 
+        modelBuilder.Entity<InvestmentInstrumentMarketMapping>(entity =>
+        {
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
+            entity.HasOne(e => e.InvestmentInstrument)
+                .WithMany(e => e.MarketMappings)
+                .HasForeignKey(e => e.InvestmentInstrumentId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(e => new { e.UserId, e.InvestmentInstrumentId, e.ProviderId }).IsUnique();
+            entity.HasIndex(e => new { e.ProviderId, e.ExternalInstrumentId });
+        });
+
         modelBuilder.Entity<InvestmentPlan>(entity =>
         {
             entity.Property(e => e.UsEquityTarget).HasColumnType("numeric(5,2)");
@@ -327,7 +340,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.MarketDate).HasColumnType("date");
             entity.Property(e => e.Close).HasColumnType("numeric(28,10)");
             entity.Property(e => e.FetchedAt).HasColumnType("timestamp with time zone");
-            entity.HasIndex(e => new { e.Provider, e.Symbol, e.Mic, e.MarketDate }).IsUnique();
+            entity.HasIndex(e => new { e.Provider, e.ExternalInstrumentId, e.MarketDate }).IsUnique();
         });
 
         modelBuilder.Entity<FxRateBar>(entity =>
@@ -358,7 +371,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.Property(e => e.ExpiresAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
-            entity.HasIndex(e => e.NormalizedQuery).IsUnique();
+            entity.HasIndex(e => new { e.ProviderId, e.NormalizedQuery }).IsUnique();
             entity.HasIndex(e => e.ExpiresAt);
         });
 
@@ -431,6 +444,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<PushReminderDelivery>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentAccount>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentInstrument>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<InvestmentInstrumentMarketMapping>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentTransaction>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentCashFlow>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentPlan>(), applyQueryFilter: true);

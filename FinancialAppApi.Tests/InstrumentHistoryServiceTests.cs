@@ -34,8 +34,8 @@ public sealed class InstrumentHistoryServiceTests
                 Type = "Buy", TradeDate = new DateOnly(2026, 2, 5), Units = 2, UnitPrice = 200, CashAmount = 400
             });
         context.MarketPriceBars.AddRange(
-            new MarketPriceBar { Symbol = "VOO", Mic = "ARCX", MarketDate = new DateOnly(2026, 1, 5), Close = 100 },
-            new MarketPriceBar { Symbol = "VOO", Mic = "ARCX", MarketDate = new DateOnly(2026, 2, 5), Close = 200 });
+            PriceBar(new DateOnly(2026, 1, 5), 100),
+            PriceBar(new DateOnly(2026, 2, 5), 200));
         await context.SaveChangesAsync();
 
         var history = await NewService(context).GetAsync(instrument.Id, "all", CancellationToken.None);
@@ -61,12 +61,12 @@ public sealed class InstrumentHistoryServiceTests
         context.MarketPriceBars.AddRange(
             new MarketPriceBar
             {
-                Symbol = "VOO", Mic = "arcx", MarketDate = new DateOnly(2026, 3, 2), Close = 10,
+                Provider = "test", ExternalInstrumentId = "VOO|ARCX", Symbol = "VOO", Mic = "arcx", MarketDate = new DateOnly(2026, 3, 2), Close = 10,
                 FetchedAt = new DateTime(2026, 3, 2, 1, 0, 0, DateTimeKind.Utc)
             },
             new MarketPriceBar
             {
-                Symbol = "VOO", Mic = "ARCX", MarketDate = new DateOnly(2026, 3, 2), Close = 12,
+                Provider = "test", ExternalInstrumentId = "VOO|ARCX", Symbol = "VOO", Mic = "ARCX", MarketDate = new DateOnly(2026, 3, 2), Close = 12,
                 FetchedAt = new DateTime(2026, 3, 2, 9, 0, 0, DateTimeKind.Utc)
             });
         await context.SaveChangesAsync();
@@ -105,7 +105,28 @@ public sealed class InstrumentHistoryServiceTests
     }
 
     private static InstrumentHistoryService NewService(Database.AppDbContext context)
-        => new(context, new InvestmentAccountingService());
+        => new(context, new InvestmentAccountingService(), new StubProvider());
+
+    private static MarketPriceBar PriceBar(DateOnly date, decimal close) => new()
+    {
+        Provider = "test", ExternalInstrumentId = "VOO|ARCX", Symbol = "VOO", Mic = "ARCX",
+        MarketDate = date, Close = close
+    };
+
+    private sealed class StubProvider : IMarketDataProvider
+    {
+        public MarketDataProviderDescriptor Descriptor => new(
+            "test", "Test data", true, MarketDataCapabilities.RequiredForActivation,
+            new MarketDataQuotaPolicy(6, 750, 200));
+        public Task<IReadOnlyList<InstrumentSearchResult>> SearchAsync(string query, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<InstrumentSearchResult>>([]);
+        public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(MarketInstrumentReference instrument, DateOnly startDate, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<ProviderPriceBar>>([]);
+        public Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(string baseCurrency, string quoteCurrency, DateOnly startDate, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<ProviderFxBar>>([]);
+        public MarketInstrumentReference? TryResolveLegacyReference(string? symbol, string? mic)
+            => string.IsNullOrWhiteSpace(symbol) ? null : new("test", $"{symbol}|{mic}");
+    }
 }
 
 public sealed class InvestmentChartRangeTests

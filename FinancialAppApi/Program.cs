@@ -2,7 +2,9 @@ using FinancialAppApi.Database;
 using FinancialAppApi.Extensions;
 using FinancialAppApi.Middleware;
 using FinancialAppApi.Services;
+using FinancialAppApi.Services.Investments;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 var seedDatabase = args.Contains("--seed-database", StringComparer.OrdinalIgnoreCase);
@@ -24,6 +26,13 @@ builder.Services
 builder.Services.AddProblemDetails();
 
 var app = builder.Build();
+
+// Resolve once at startup so an unknown or incapable active provider fails deployment before
+// the first investment request. Missing credentials remain a supported manual-data mode.
+using (var providerValidationScope = app.Services.CreateScope())
+{
+    _ = providerValidationScope.ServiceProvider.GetRequiredService<MarketDataProviderRegistry>().ActiveProvider;
+}
 
 app.UseExceptionHandler();
 
@@ -92,6 +101,28 @@ if (migrateOnStartup || seedOnStartup || seedDatabase || migrateOnly)
     {
         return;
     }
+}
+
+var backfillProvider = args.FirstOrDefault(value =>
+    value.StartsWith("--backfill-market-provider=", StringComparison.OrdinalIgnoreCase))?
+    .Split('=', 2)[1];
+var validateProvider = args.FirstOrDefault(value =>
+    value.StartsWith("--validate-market-provider=", StringComparison.OrdinalIgnoreCase))?
+    .Split('=', 2)[1];
+if (backfillProvider is not null && validateProvider is not null)
+    throw new InvalidOperationException("Run market-data backfill and validation as separate commands.");
+if (backfillProvider is not null || validateProvider is not null)
+{
+    using var scope = app.Services.CreateScope();
+    var cutover = scope.ServiceProvider.GetRequiredService<MarketDataCutoverService>();
+    object result = backfillProvider is not null
+        ? await cutover.BackfillAsync(backfillProvider, CancellationToken.None)
+        : await cutover.ValidateAsync(
+            validateProvider!,
+            args.Contains("--approve-market-data-differences", StringComparer.OrdinalIgnoreCase),
+            CancellationToken.None);
+    Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
+    return;
 }
 
 app.Run();

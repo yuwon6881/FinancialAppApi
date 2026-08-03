@@ -379,6 +379,8 @@ public sealed class InvestmentAllocationServiceTests
         });
         context.MarketPriceBars.Add(new MarketPriceBar
         {
+            Provider = "test",
+            ExternalInstrumentId = $"{instrument.Symbol}|",
             Symbol = instrument.Symbol,
             MarketDate = DateOnly.FromDateTime(DateTime.UtcNow),
             Close = 1
@@ -409,12 +411,16 @@ public sealed class InvestmentAllocationServiceTests
 
     private sealed class StubProvider : IMarketDataProvider
     {
-        public bool IsConfigured => false;
+        public MarketDataProviderDescriptor Descriptor => new(
+            "test", "Test data", false, MarketDataCapabilities.RequiredForActivation,
+            new MarketDataQuotaPolicy(6, 750, 200));
         public Task<IReadOnlyList<InstrumentSearchResult>> SearchAsync(string query, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<InstrumentSearchResult>>([]);
-        public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(string symbol, string? mic, DateOnly startDate, CancellationToken cancellationToken)
+        public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(MarketInstrumentReference instrument, DateOnly startDate, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<ProviderPriceBar>>([]);
         public Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(string baseCurrency, string quoteCurrency, DateOnly startDate, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<ProviderFxBar>>([]);
+        public MarketInstrumentReference? TryResolveLegacyReference(string? symbol, string? mic)
+            => string.IsNullOrWhiteSpace(symbol) ? null : new("test", $"{symbol}|{mic}");
     }
 }

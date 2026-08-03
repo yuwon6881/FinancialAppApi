@@ -403,19 +403,52 @@ public static class ServiceCollectionExtensions
         services.AddScoped<FinancialService>();
         services.AddScoped<PushSubscriptionService>();
         services.Configure<MarketDataOptions>(configuration.GetSection("MarketData"));
-        services.AddHttpClient<IMarketDataProvider, TwelveDataMarketDataProvider>((serviceProvider, client) =>
+        services.AddOptions<TwelveDataMarketDataOptions>()
+            .Bind(configuration.GetSection("MarketData:Providers:TwelveData"))
+            .PostConfigure(options =>
+            {
+                // One-release compatibility for existing Cloud Run settings. New deployments use
+                // MarketData__Providers__TwelveData__* exclusively.
+                if (configuration["MarketData:Providers:TwelveData:Enabled"] is null)
+                {
+                    options.Enabled = configuration.GetValue("MarketData:Enabled", options.Enabled);
+                }
+
+                options.ApiKey ??= configuration["MarketData:TwelveDataApiKey"];
+                options.BaseUrl = configuration["MarketData:Providers:TwelveData:BaseUrl"]
+                    ?? configuration["MarketData:BaseUrl"]
+                    ?? options.BaseUrl;
+                options.RefreshCallsPerMinute = configuration.GetValue(
+                    "MarketData:Providers:TwelveData:RefreshCallsPerMinute",
+                    configuration.GetValue("MarketData:RefreshCallsPerMinute", options.RefreshCallsPerMinute));
+                options.DailyCallCeiling = configuration.GetValue(
+                    "MarketData:Providers:TwelveData:DailyCallCeiling",
+                    configuration.GetValue("MarketData:DailyCallCeiling", options.DailyCallCeiling));
+                options.PerUserDailyCallCeiling = configuration.GetValue(
+                    "MarketData:Providers:TwelveData:PerUserDailyCallCeiling",
+                    configuration.GetValue("MarketData:PerUserDailyCallCeiling", options.PerUserDailyCallCeiling));
+            });
+        services.AddHttpClient<TwelveDataMarketDataProvider>((serviceProvider, client) =>
         {
             var marketData = serviceProvider.GetRequiredService<
-                Microsoft.Extensions.Options.IOptions<MarketDataOptions>>().Value;
+                Microsoft.Extensions.Options.IOptions<TwelveDataMarketDataOptions>>().Value;
             client.BaseAddress = new Uri(marketData.BaseUrl.TrimEnd('/') + "/");
             client.Timeout = TimeSpan.FromSeconds(20);
             client.DefaultRequestHeaders.UserAgent.ParseAdd("FinancialAppApi/1.0");
         });
+        services.AddScoped(provider => new MarketDataProviderRegistration(
+            provider.GetRequiredService<TwelveDataMarketDataProvider>()));
+        services.AddScoped<MarketDataProviderRegistry>();
+        services.AddScoped<IMarketDataProvider>(provider =>
+            provider.GetRequiredService<MarketDataProviderRegistry>().ActiveProvider);
         services.AddScoped<InvestmentAccountingService>();
         services.AddScoped<InvestmentHistoryValidationService>();
         services.AddScoped<InvestmentPortfolioService>();
         services.AddScoped<InstrumentHistoryService>();
         services.AddScoped<InvestmentMarketDataService>();
+        services.AddScoped<InvestmentMarketSearchService>();
+        services.AddScoped<MarketDataQuotaService>();
+        services.AddScoped<MarketDataCutoverService>();
         services.AddScoped<InvestmentAllocationService>();
         return services;
     }

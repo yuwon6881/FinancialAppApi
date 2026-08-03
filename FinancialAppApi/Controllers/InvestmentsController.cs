@@ -16,7 +16,8 @@ public sealed class InvestmentsController(
     InvestmentAccountingService accountingService,
     InvestmentHistoryValidationService historyValidationService,
     InstrumentHistoryService instrumentHistoryService,
-    InvestmentMarketDataService marketDataService) : ControllerBase
+    InvestmentMarketDataService marketDataService,
+    IMarketDataProvider marketDataProvider) : ControllerBase
 {
     [HttpGet("portfolio")]
     public async Task<ActionResult<InvestmentPortfolioDto>> GetPortfolio(
@@ -203,6 +204,7 @@ public sealed class InvestmentsController(
             .Select(value => (int?)value.AllocationOrder)
             .MaxAsync(HttpContext.RequestAborted) ?? -1) + 1;
         context.InvestmentInstruments.Add(instrument);
+        await AddOrUpdateMarketMappingAsync(instrument, dto);
         try
         {
             await context.SaveChangesAsync(HttpContext.RequestAborted);
@@ -234,7 +236,8 @@ public sealed class InvestmentsController(
         }
         var hasActivity = await context.InvestmentTransactions
             .AnyAsync(value => value.InstrumentId == id, HttpContext.RequestAborted);
-        if (hasActivity && HasHistoricalMarketIdentityChange(instrument, dto))
+        if (hasActivity && (HasHistoricalMarketIdentityChange(instrument, dto) ||
+                            await HasHistoricalProviderReferenceChange(instrument.Id, dto)))
         {
             return Conflict(new
             {
@@ -242,6 +245,7 @@ public sealed class InvestmentsController(
             });
         }
         ApplyInstrument(instrument, dto);
+        await AddOrUpdateMarketMappingAsync(instrument, dto);
         try
         {
             await context.SaveChangesAsync(HttpContext.RequestAborted);
@@ -618,7 +622,7 @@ public sealed class InvestmentsController(
         return null;
     }
 
-    private static string? ValidateInstrument(InstrumentMutationDto dto)
+    private string? ValidateInstrument(InstrumentMutationDto dto)
     {
         if (string.IsNullOrWhiteSpace(dto.Symbol) || dto.Symbol.Trim().Length > 32) return "Symbol is required.";
         if (string.IsNullOrWhiteSpace(dto.Name) || dto.Name.Trim().Length > 200) return "Investment name is required.";
@@ -628,8 +632,57 @@ public sealed class InvestmentsController(
             dto.Country?.Trim().Length > 80 || dto.ProviderSymbol?.Trim().Length > 32 ||
             dto.ProviderMic?.Trim().Length > 8)
             return "Investment market details are too long.";
-        if (!dto.IsCustom && string.IsNullOrWhiteSpace(dto.ProviderSymbol)) return "Provider-backed investments require a provider symbol.";
+        if (dto.MarketDataReference is { } reference &&
+            (string.IsNullOrWhiteSpace(reference.ProviderId) || reference.ProviderId.Length > 32 ||
+             string.IsNullOrWhiteSpace(reference.ExternalId) || reference.ExternalId.Length > 200))
+            return "The market-data reference is invalid.";
+        if (dto.MarketDataReference is { } marketReference &&
+            !marketReference.ProviderId.Equals(marketDataProvider.Descriptor.Id, StringComparison.OrdinalIgnoreCase))
+            return "Choose an investment from the active market-data provider.";
+        if (!dto.IsCustom && dto.MarketDataReference is null && string.IsNullOrWhiteSpace(dto.ProviderSymbol))
+            return "Provider-backed investments require a market-data reference.";
         return null;
+    }
+
+    private async Task<bool> HasHistoricalProviderReferenceChange(Guid instrumentId, InstrumentMutationDto dto)
+    {
+        if (dto.IsCustom || dto.MarketDataReference is null) return false;
+        var existing = await context.InvestmentInstrumentMarketMappings.AsNoTracking()
+            .FirstOrDefaultAsync(value =>
+                value.InvestmentInstrumentId == instrumentId &&
+                value.ProviderId == dto.MarketDataReference.ProviderId,
+                HttpContext.RequestAborted);
+        return existing is not null &&
+               !existing.ExternalInstrumentId.Equals(dto.MarketDataReference.ExternalId, StringComparison.Ordinal);
+    }
+
+    private async Task AddOrUpdateMarketMappingAsync(InvestmentInstrument instrument, InstrumentMutationDto dto)
+    {
+        if (dto.IsCustom) return;
+        var reference = dto.MarketDataReference ?? marketDataProvider.TryResolveLegacyReference(
+            dto.ProviderSymbol, dto.ProviderMic);
+        if (reference is null) return;
+        var mapping = context.InvestmentInstrumentMarketMappings.Local.FirstOrDefault(value =>
+                          value.InvestmentInstrumentId == instrument.Id && value.ProviderId == reference.ProviderId)
+                      ?? await context.InvestmentInstrumentMarketMappings.FirstOrDefaultAsync(value =>
+                          value.InvestmentInstrumentId == instrument.Id && value.ProviderId == reference.ProviderId,
+                          HttpContext.RequestAborted);
+        if (mapping is null)
+        {
+            context.InvestmentInstrumentMarketMappings.Add(new InvestmentInstrumentMarketMapping
+            {
+                InvestmentInstrumentId = instrument.Id,
+                ProviderId = reference.ProviderId,
+                ExternalInstrumentId = reference.ExternalId,
+                DisplaySymbol = Clean(dto.ProviderSymbol) ?? dto.Symbol.Trim().ToUpperInvariant(),
+                DisplayMic = Clean(dto.ProviderMic)?.ToUpperInvariant()
+            });
+            return;
+        }
+        mapping.ExternalInstrumentId = reference.ExternalId;
+        mapping.DisplaySymbol = Clean(dto.ProviderSymbol) ?? dto.Symbol.Trim().ToUpperInvariant();
+        mapping.DisplayMic = Clean(dto.ProviderMic)?.ToUpperInvariant();
+        mapping.UpdatedAt = DateTime.UtcNow;
     }
 
     internal static bool HasHistoricalMarketIdentityChange(
@@ -731,7 +784,8 @@ public sealed record InstrumentMutationDto(
     string? ProviderMic,
     bool IsCustom,
     bool IsArchived = false,
-    Guid? Id = null);
+    Guid? Id = null,
+    MarketInstrumentReference? MarketDataReference = null);
 
 public sealed record InvestmentTransactionMutationDto(
     Guid AccountId,
