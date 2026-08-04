@@ -2,12 +2,19 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using FinancialAppApi.Database;
+using FinancialAppApi.Models;
+using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
 
 public partial class AiAssistantService
 {
-    private AiChatResponse ParseAndValidateResponse(string text, AiContext context, string userMessage, AiConstraints constraints)
+    private async Task<AiChatResponse> ParseAndValidateResponseAsync(
+        string text,
+        AiContext context,
+        string userMessage,
+        AiConstraints constraints,
+        CancellationToken cancellationToken)
     {
         using var doc = JsonDocument.Parse(text);
         var root = doc.RootElement;
@@ -45,7 +52,8 @@ public partial class AiAssistantService
                 {
                     RemoveSensitivePayloadFields(payload);
                 }
-                if (!IsActionSafe(type, payload, context)) continue;
+                if (!IsActionSafe(type, payload, context) ||
+                    !await IsDatabaseActionSafeAsync(type, payload, cancellationToken)) continue;
                 actions.Add(new AiUiAction(type, payload));
             }
         }
@@ -85,7 +93,7 @@ public partial class AiAssistantService
 
     private static readonly HashSet<string> NavigationActionTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        "openLedger", "openDashboard", "openRecurring", "openWishlist", "openLedgerExport"
+        "openLedger", "openDashboard", "openRecurring", "openWishlist", "openReports", "openInvestments", "openLedgerExport"
     };
 
     private static readonly HashSet<string> MutationActionTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -94,6 +102,7 @@ public partial class AiAssistantService
         "requestDeleteLedger", "requestDeleteRecurring", "requestDeleteWishlist",
         "requestConfirmRecurringBill", "requestDiscardRecurringBill",
         "requestPurchaseWishlist", "requestUnpurchaseWishlist", "toggleRecurring", "updateRecurringReminder"
+        , "openAddSavingsGoalDraft", "openEditSavingsGoalDraft"
     };
 
     // The lead-day choices the Recurring card actually offers. A value outside this set would
@@ -212,6 +221,29 @@ public partial class AiAssistantService
 
         if (type.Equals("toggleRecurring", StringComparison.OrdinalIgnoreCase) && !HasBoolean(payload, "active")) return false;
 
+        if (type.Equals("openReports", StringComparison.OrdinalIgnoreCase))
+        {
+            return HasOnlyKeys(payload, ["cycleKey"]) && (!payload.TryGetValue("cycleKey", out var cycleKey) ||
+                cycleKey == null || (cycleKey is JsonElement element && element.ValueKind == JsonValueKind.Null) ||
+                cycleKey.ToString() is { } key && Regex.IsMatch(key, @"^(?:19|20)\d{2}-(?:0[1-9]|1[0-2])$"));
+        }
+        if (type.Equals("openInvestments", StringComparison.OrdinalIgnoreCase)) return payload.Count == 0;
+        if (type.Equals("openWishlist", StringComparison.OrdinalIgnoreCase))
+        {
+            return HasOnlyKeys(payload, ["savingsGoalId"]) && (!payload.ContainsKey("savingsGoalId") || HasPositiveInteger(payload, "savingsGoalId"));
+        }
+        if (type.Equals("openAddSavingsGoalDraft", StringComparison.OrdinalIgnoreCase))
+        {
+            return HasOnlyKeys(payload, ["name", "targetAmount", "targetDate", "priority", "isRecurring", "recurrenceMonths"]) &&
+                HasRequiredString(payload, "name") && HasRequiredPositiveNumber(payload, "targetAmount") &&
+                HasRequiredIsoDate(payload, "targetDate") && HasRequiredKnownString(payload, "priority", ["low", "medium", "high"]) &&
+                HasBoolean(payload, "isRecurring") && HasRequiredInteger(payload, "recurrenceMonths", 0, 120);
+        }
+        if (type.Equals("openEditSavingsGoalDraft", StringComparison.OrdinalIgnoreCase))
+        {
+            return HasOnlyKeys(payload, ["id", "changes"]) && HasPositiveInteger(payload, "id") && HasValidSavingsGoalChanges(payload);
+        }
+
         if (type.Equals("updateRecurringReminder", StringComparison.OrdinalIgnoreCase))
         {
             if (!HasBoolean(payload, "enabled")) return false;
@@ -252,6 +284,45 @@ public partial class AiAssistantService
             return HasKnownId(payload, "id", context.RecentTransactions);
         }
         return true;
+    }
+
+    private async Task<bool> IsDatabaseActionSafeAsync(
+        string type,
+        Dictionary<string, object?> payload,
+        CancellationToken cancellationToken)
+    {
+        if (type.Equals("requestPurchaseWishlist", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!TryReadInteger(payload, "id", out var wishlistId)) return false;
+            var wishlistItem = await _context.WishlistItems
+                .AsNoTracking()
+                .Where(item => item.Id == wishlistId)
+                .Select(item => new { item.Price, item.IsPurchased, item.IsActive })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (wishlistItem == null || wishlistItem.IsPurchased || !wishlistItem.IsActive) return false;
+            var pool = await _savingsGoalService.GetPoolSummaryAsync(cancellationToken);
+            return pool.Unassigned >= wishlistItem.Price;
+        }
+        if (!type.Equals("openWishlist", StringComparison.OrdinalIgnoreCase) &&
+            !type.Equals("openAddSavingsGoalDraft", StringComparison.OrdinalIgnoreCase) &&
+            !type.Equals("openEditSavingsGoalDraft", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var goals = await _savingsGoalService.GetGoalsAsync(cancellationToken);
+        if (type.Equals("openWishlist", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!TryReadInteger(payload, "savingsGoalId", out var goalId)) return true;
+            return goals.Any(goal => goal.Id == goalId && goal.Status == SavingsGoalStatus.Active);
+        }
+        if (type.Equals("openAddSavingsGoalDraft", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        if (!TryReadInteger(payload, "id", out var editId)) return false;
+        var goal = goals.SingleOrDefault(candidate => candidate.Id == editId);
+        return goal != null && goal.Status == SavingsGoalStatus.Active;
     }
 
     private static bool HasValidLedgerDraftPayload(Dictionary<string, object?> payload, AiContext context)
@@ -426,6 +497,58 @@ public partial class AiAssistantService
         if (!payload.TryGetValue(key, out var value) || value == null) return false;
         return value is bool || value is JsonElement element &&
             element.ValueKind is JsonValueKind.True or JsonValueKind.False;
+    }
+
+    private static bool HasRequiredString(IReadOnlyDictionary<string, object?> payload, string key)
+    {
+        var value = ReadPayloadString(payload, key);
+        return !string.IsNullOrWhiteSpace(value) && value.Length <= 200;
+    }
+
+    private static bool HasRequiredKnownString(IReadOnlyDictionary<string, object?> payload, string key, string[] allowed)
+    {
+        var value = ReadPayloadString(payload, key);
+        return value != null && allowed.Contains(value.ToLowerInvariant());
+    }
+
+    private static bool HasOnlyKeys(IReadOnlyDictionary<string, object?> payload, string[] allowed) =>
+        payload.Keys.All(allowed.Contains);
+
+    private static bool HasRequiredIsoDate(IReadOnlyDictionary<string, object?> payload, string key) =>
+        payload.ContainsKey(key) && HasValidOptionalIsoDate(payload, key) && !string.IsNullOrWhiteSpace(ReadPayloadString(payload, key));
+
+    private static bool HasRequiredInteger(IReadOnlyDictionary<string, object?> payload, string key, int minimum, int maximum) =>
+        payload.ContainsKey(key) && HasValidOptionalInteger(payload, key, minimum, maximum);
+
+    private static bool HasPositiveInteger(IReadOnlyDictionary<string, object?> payload, string key) =>
+        TryReadInteger(payload, key, out var value) && value > 0;
+
+    private static bool TryReadInteger(IReadOnlyDictionary<string, object?> payload, string key, out int value)
+    {
+        value = 0;
+        if (!payload.TryGetValue(key, out var raw) || raw == null) return false;
+        if (raw is JsonElement element && element.ValueKind == JsonValueKind.Number)
+            return element.TryGetInt32(out value);
+        return int.TryParse(raw.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static bool HasValidSavingsGoalChanges(IReadOnlyDictionary<string, object?> payload)
+    {
+        if (!payload.TryGetValue("changes", out var raw) || raw == null) return false;
+        Dictionary<string, object?> changes;
+        if (raw is JsonElement element && element.ValueKind == JsonValueKind.Object)
+            changes = JsonSerializer.Deserialize<Dictionary<string, object?>>(element.GetRawText()) ?? [];
+        else if (raw is Dictionary<string, object?> dictionary)
+            changes = dictionary;
+        else
+            return false;
+        if (changes.Count == 0 || !changes.Keys.All(new[] { "name", "targetAmount", "targetDate", "priority", "isRecurring", "recurrenceMonths" }.Contains)) return false;
+        return (!changes.ContainsKey("name") || HasRequiredString(changes, "name")) &&
+            (!changes.ContainsKey("targetAmount") || HasRequiredPositiveNumber(changes, "targetAmount")) &&
+            (!changes.ContainsKey("targetDate") || HasRequiredIsoDate(changes, "targetDate")) &&
+            (!changes.ContainsKey("priority") || HasRequiredKnownString(changes, "priority", ["low", "medium", "high"])) &&
+            (!changes.ContainsKey("isRecurring") || HasBoolean(changes, "isRecurring")) &&
+            (!changes.ContainsKey("recurrenceMonths") || HasRequiredInteger(changes, "recurrenceMonths", 0, 120));
     }
 
     private static bool HasKnownOptionalString(

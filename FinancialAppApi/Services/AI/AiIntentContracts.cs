@@ -32,7 +32,17 @@ public partial class AiAssistantService
         CategoryLimits,
         CycleInsights,
         AllocationBalance,
-        AllocationPerformance
+        AllocationPerformance,
+        RewardsSummary,
+        SavingsGoalList,
+        SavingsGoalPacing,
+        SavingsGoalScenario,
+        SavingsGoalAdd,
+        SavingsGoalEdit,
+        InvestmentSummary,
+        InvestmentHolding,
+        InvestmentAllocation,
+        ReportReview
     }
 
     private static readonly Dictionary<string, AiIntent> IntentByName = new(StringComparer.OrdinalIgnoreCase)
@@ -59,7 +69,17 @@ public partial class AiAssistantService
         ["category_limits.analysis"] = AiIntent.CategoryLimits,
         ["cycle.insights"] = AiIntent.CycleInsights,
         ["allocation.balance"] = AiIntent.AllocationBalance,
-        ["allocation.performance"] = AiIntent.AllocationPerformance
+        ["allocation.performance"] = AiIntent.AllocationPerformance,
+        ["rewards.summary"] = AiIntent.RewardsSummary,
+        ["savings_goal.list"] = AiIntent.SavingsGoalList,
+        ["savings_goal.pacing"] = AiIntent.SavingsGoalPacing,
+        ["savings_goal.scenario"] = AiIntent.SavingsGoalScenario,
+        ["savings_goal.add"] = AiIntent.SavingsGoalAdd,
+        ["savings_goal.edit"] = AiIntent.SavingsGoalEdit,
+        ["investment.summary"] = AiIntent.InvestmentSummary,
+        ["investment.holding"] = AiIntent.InvestmentHolding,
+        ["investment.allocation"] = AiIntent.InvestmentAllocation,
+        ["report.review"] = AiIntent.ReportReview
     };
 
     private static readonly Dictionary<AiIntent, string> NameByIntent =

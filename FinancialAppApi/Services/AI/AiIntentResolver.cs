@@ -34,6 +34,9 @@ public partial class AiAssistantService
         bool NeedsWishlistForecast,
         bool NeedsCategoryLimits,
         bool NeedsCycleInsights,
+        bool NeedsRewards,
+        bool NeedsInvestments,
+        bool NeedsReport,
         bool NeedsCount);
 
     private enum QueryFamily { Transactional, Wishlist, Recurring }
@@ -225,11 +228,13 @@ public partial class AiAssistantService
     // preserving the exact behavior of the previous ApplyNegatedTopics ordering.
     private static SignalNeeds ComputeSignalNeeds(string lower, AiConstraints constraints)
     {
-        var needsCycleAnalysis = CycleAnalysisSignal.IsMatch(lower);
+        var investmentDomain = InvestmentCoreSignal.IsMatch(lower);
+        var rewardsDomain = NeedsRewardsSignal(lower);
+        var needsCycleAnalysis = CycleAnalysisSignal.IsMatch(lower) && !investmentDomain && !rewardsDomain;
         var needsCycleComparison = CycleComparisonSignal.IsMatch(lower);
-        var needsImprovement = ImprovementSignal.IsMatch(lower);
+        var needsImprovement = ImprovementSignal.IsMatch(lower) && !investmentDomain && !rewardsDomain;
         var needsCount = CountQuestionSignal.IsMatch(lower);
-        var needsWishlist = WishlistSignal.IsMatch(lower);
+        var needsWishlist = WishlistSignal.IsMatch(lower) && (!rewardsDomain || ExplicitWishlistSignal.IsMatch(lower));
         var needsWishlistForecast = needsWishlist && WishlistForecastSignal.IsMatch(lower);
         var needsRecurring = RecurringSignal.IsMatch(lower);
         var needsCategoryLimits = CategoryLimitSignal.IsMatch(lower);
@@ -248,8 +253,9 @@ public partial class AiAssistantService
             (!aggregateOnly || needsCount || hasAmountThreshold);
 
         var needsCycleSummary = needsCycleAnalysis || needsCycleComparison || needsImprovement || needsCount ||
-            needsWishlistForecast || asksDailyExtreme || needsCategoryLimits || needsCycleInsights;
-        var needsBudgetTargets = needsCycleAnalysis || needsImprovement;
+            needsWishlistForecast || asksDailyExtreme || needsCategoryLimits || needsCycleInsights ||
+            NeedsReportSignal(lower) || NeedsRewardsSignal(lower);
+        var needsBudgetTargets = (needsCycleAnalysis || needsImprovement) && !investmentDomain && !rewardsDomain;
 
         // Negated topics ("I'm not asking about my wishlist") drop the matching data block so the
         // model is never handed context the user explicitly said they don't want.
@@ -277,8 +283,17 @@ public partial class AiAssistantService
             needsWishlistForecast,
             needsCategoryLimits,
             needsCycleInsights,
+            rewardsDomain,
+            investmentDomain || Regex.IsMatch(lower, @"\binvestment\b.{0,30}\b(allocation|basket|drift|target)\b", RegexOptions.IgnoreCase),
+            NeedsReportSignal(lower),
             needsCount);
     }
+
+    private static bool NeedsRewardsSignal(string message) =>
+        Regex.IsMatch(message, @"\b(rewards?|saving goals?|savings goals?|earmarks?|free rewards?)\b", RegexOptions.IgnoreCase);
+
+    private static bool NeedsReportSignal(string message) =>
+        Regex.IsMatch(message, @"\b(report|findings|review|explain this cycle)\b", RegexOptions.IgnoreCase);
 
     // The deterministic resolver. Produces typed intents + a typed query plan with confidence.
     internal static AiIntentPlan ResolveDeterministically(
@@ -323,6 +338,22 @@ public partial class AiAssistantService
         if (s.NeedsCategoryLimits) intents.Add(AiIntent.CategoryLimits);
         if (s.NeedsCycleInsights) intents.Add(AiIntent.CycleInsights);
         if (s.NeedsBudgetTargets) intents.Add(ImprovementSignal.IsMatch(lower) ? AiIntent.AllocationPerformance : AiIntent.AllocationBalance);
+        if (s.NeedsRewards)
+        {
+            if (Regex.IsMatch(lower, @"\b(add|create|open)\s+(a\s+)?savings?\s+goal\b")) intents.Add(AiIntent.SavingsGoalAdd);
+            else if (Regex.IsMatch(lower, @"\b(edit|update|change|modify)\b.*\b(goal|savings?)\b")) intents.Add(AiIntent.SavingsGoalEdit);
+            else if (Regex.IsMatch(lower, @"\b(scenario|what if|change the target|change the deadline|move the deadline)\b")) intents.Add(AiIntent.SavingsGoalScenario);
+            else if (Regex.IsMatch(lower, @"\b(pace|pacing|on track|deadline|funded|earmarked|commitment)\b")) intents.Add(AiIntent.SavingsGoalPacing);
+            else if (Regex.IsMatch(lower, @"\b(goal|goals|earmark|earmarked|save)\b")) intents.Add(AiIntent.SavingsGoalList);
+            else intents.Add(AiIntent.RewardsSummary);
+        }
+        if (s.NeedsInvestments)
+        {
+            if (Regex.IsMatch(lower, @"\b(allocation|basket|target|drift)\b")) intents.Add(AiIntent.InvestmentAllocation);
+            else if (Regex.IsMatch(lower, @"\b(holding|holdings|position|instrument|fund|stock)\b")) intents.Add(AiIntent.InvestmentHolding);
+            else intents.Add(AiIntent.InvestmentSummary);
+        }
+        if (s.NeedsReport) intents.Add(AiIntent.ReportReview);
         if (Regex.IsMatch(lower, @"\b(open|show|go to|navigate|take me)\b")) intents.Add(AiIntent.Navigation);
         if (intents.Count == 0) intents.Add(AiIntent.General);
 
@@ -428,7 +459,7 @@ public partial class AiAssistantService
 
         var needsTransactionDetail = s.NeedsTransactionDetail || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerMerchantSearch) ||
             Has(AiIntent.LedgerTransactionList) || Has(AiIntent.LedgerEdit) || Has(AiIntent.LedgerAnomaly) || Has(AiIntent.LedgerDuplicates);
-        var needsCycleSummary = s.NeedsCycleSummary || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerSpendingTotal) ||
+        var needsCycleSummary = s.NeedsCycleSummary || Has(AiIntent.ReportReview) || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerSpendingTotal) ||
             Has(AiIntent.LedgerComparison) || Has(AiIntent.LedgerAnomaly) || Has(AiIntent.LedgerDuplicates) ||
             Has(AiIntent.WishlistForecast) || Has(AiIntent.CategoryLimits) ||
             Has(AiIntent.CycleInsights) || Has(AiIntent.AllocationBalance) || Has(AiIntent.AllocationPerformance);

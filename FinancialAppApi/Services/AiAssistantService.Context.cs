@@ -26,7 +26,10 @@ public partial class AiAssistantService
         bool NeedsRecurring,
         bool NeedsBudgetTargets,
         bool NeedsCategoryLimits,
-        bool NeedsCycleInsights);
+        bool NeedsCycleInsights,
+        bool NeedsRewards = false,
+        bool NeedsInvestments = false,
+        bool NeedsReport = false);
 
     private sealed record TargetCycleSelection(IReadOnlyList<CycleKey> Cycles, bool ExplicitlyRequested);
     internal sealed record AiTransactionRow(
@@ -140,7 +143,7 @@ public partial class AiAssistantService
         var resolution = ToResolution(intentPlan);
 
         var datasets = await BuildContextDatasetsAsync(
-            queryPlan, allTransactions, targetSelection, selectedYear, selectedMonthIndex, cycleDay,
+            queryPlan, setting, intentPlan, allTransactions, targetSelection, selectedYear, selectedMonthIndex, cycleDay,
             sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, recurringRows, ledgerDomain,
             cancellationToken);
         var cycleSummaries = datasets.CycleSummaries;
@@ -225,6 +228,9 @@ public partial class AiAssistantService
                 queryPlan, targetSelection.Cycles, cycleDay, allTransactions, sensitiveMode, cancellationToken),
             CycleInsights: BuildCycleInsightsContext(
                 queryPlan, targetSelection.Cycles, cycleDay, allTransactions, sensitiveMode),
+            Rewards: datasets.Rewards,
+            Investments: datasets.Investments,
+            ReportReview: datasets.ReportReview,
             RecurringAdvance: await BuildRecurringAdvanceContextAsync(
                 queryPlan, recurringRows, cycleDay, cancellationToken),
             RecurringReminderStatus: BuildRecurringReminderStatusContext(queryPlan, setting, recurringRows));
@@ -287,7 +293,7 @@ public partial class AiAssistantService
             // that actually contains it, then narrow rows to the exact calendar day below.
             targetSelection = new TargetCycleSelection([ResolveCycleContainingDate(exactDate.Value, cycleDay)], true);
         }
-        if ((queryPlan.NeedsWishlistForecast || ledgerForecastRequest != null) && !targetSelection.ExplicitlyRequested)
+        if ((queryPlan.NeedsWishlistForecast || queryPlan.NeedsRewards || ledgerForecastRequest != null) && !targetSelection.ExplicitlyRequested)
         {
             // The active cycle plus the two before it -- matches the app's past-3 Rewards average
             // window (FinancialService.CalculatePastRewardsAverageFromTxs starts at the active
@@ -507,7 +513,15 @@ public partial class AiAssistantService
             LastQueryFacets = turnFacets.Count > 0 ? turnFacets : null,
             LastRecurringStatus = isRecurringTurn ? turnRecurringStatus : baseState.LastRecurringStatus,
             LastWishlistStatus = isWishlistTurn ? turnWishlistStatus : baseState.LastWishlistStatus,
-            LastTargetAmount = isTransactionalTurn ? turnForecast?.Target : baseState.LastTargetAmount
+            LastTargetAmount = isTransactionalTurn ? turnForecast?.Target : baseState.LastTargetAmount,
+            LastRewardsTopic = queryPlan.NeedsRewards ? "plan" : baseState.LastRewardsTopic,
+            LastSavingsGoalId = intentPlan.ConversationState.LastSavingsGoalId ?? baseState.LastSavingsGoalId,
+            LastInvestmentTopic = queryPlan.NeedsInvestments ? "portfolio" : baseState.LastInvestmentTopic,
+            LastInvestmentRange = intentPlan.ConversationState.LastInvestmentRange ?? baseState.LastInvestmentRange,
+            LastInvestmentInstrumentId = intentPlan.ConversationState.LastInvestmentInstrumentId ?? baseState.LastInvestmentInstrumentId,
+            LastReportCycleKey = queryPlan.NeedsReport && targetSelection.Cycles.Count == 1
+                ? ToCycleKey(targetSelection.Cycles[0])
+                : intentPlan.ConversationState.LastReportCycleKey ?? baseState.LastReportCycleKey
         };
 
         return new ConversationTurn(
@@ -573,6 +587,26 @@ public partial class AiAssistantService
                 ? new AiDatasetState(AiDatasetStatus.Hidden, Reason: "hidden by sensitive mode")
                 : new AiDatasetState(wishlistForecast == null ? AiDatasetStatus.VerifiedEmpty : AiDatasetStatus.Available);
         }
+        if (queryPlan.NeedsRewards)
+        {
+            datasetStates[AiDatasetKey.Rewards] = sensitiveMode
+                ? new AiDatasetState(AiDatasetStatus.Hidden, Reason: "hidden by sensitive mode")
+                : new AiDatasetState(AiDatasetStatus.Available);
+        }
+        if (queryPlan.NeedsInvestments)
+        {
+            datasetStates[AiDatasetKey.Investments] = sensitiveMode
+                ? new AiDatasetState(AiDatasetStatus.Hidden, Reason: "hidden by sensitive mode")
+                : _investmentPortfolioService == null
+                    ? new AiDatasetState(AiDatasetStatus.Unavailable, Reason: "investment portfolio is unavailable")
+                    : new AiDatasetState(AiDatasetStatus.Available);
+        }
+        if (queryPlan.NeedsReport)
+        {
+            datasetStates[AiDatasetKey.ReportReview] = sensitiveMode
+                ? new AiDatasetState(AiDatasetStatus.Hidden, Reason: "hidden by sensitive mode")
+                : new AiDatasetState(AiDatasetStatus.Available);
+        }
         if (queryPlan.NeedsRecurring)
         {
             datasetStates[AiDatasetKey.Recurring] = new AiDatasetState(AiDatasetStatus.Available);
@@ -612,10 +646,17 @@ public partial class AiAssistantService
         return new ContextSufficiencyEvaluation(sufficiencyResult, recoveredOutflow, perCycleRecoveredOutflow, intentNames);
     }
 
-    private sealed record ContextDatasets(List<object> CycleSummaries, object DerivedMetrics);
+    private sealed record ContextDatasets(
+        List<object> CycleSummaries,
+        object DerivedMetrics,
+        object? Rewards = null,
+        object? Investments = null,
+        object? ReportReview = null);
 
     private async Task<ContextDatasets> BuildContextDatasetsAsync(
         AiQueryPlan queryPlan,
+        Models.FinancialSetting? setting,
+        AiIntentPlan intentPlan,
         List<AiTransactionRow> allTransactions,
         TargetCycleSelection targetSelection,
         int selectedYear,
@@ -650,7 +691,18 @@ public partial class AiAssistantService
 
         var derivedMetrics = BuildDerivedMetrics(queryPlan, allTransactions, targetSelection.Cycles, cycleDay, sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, balanceSnapshot, recurringBillStatus, extraMetrics);
 
-        return new ContextDatasets(cycleSummaries, derivedMetrics);
+        var rewards = await BuildRewardsContextAsync(
+            queryPlan,
+            setting,
+            targetSelection.Cycles,
+            cycleDay,
+            allTransactions,
+            sensitiveMode,
+            cancellationToken);
+        var investments = await BuildInvestmentContextAsync(intentPlan, sensitiveMode, cancellationToken);
+        var reportReview = BuildReportReviewContext(queryPlan, targetSelection.Cycles, allTransactions, cycleDay, sensitiveMode);
+
+        return new ContextDatasets(cycleSummaries, derivedMetrics, rewards, investments, reportReview);
     }
 
     private static object BuildDerivedMetrics(
@@ -1184,5 +1236,8 @@ public partial class AiAssistantService
         object? CategoryLimits,
         object? CycleInsights,
         object? RecurringAdvance,
-        object? RecurringReminderStatus);
+        object? RecurringReminderStatus,
+        object? Rewards = null,
+        object? Investments = null,
+        object? ReportReview = null);
 }

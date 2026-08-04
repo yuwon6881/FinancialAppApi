@@ -34,8 +34,11 @@ public class WishlistForecasterTests
         IReadOnlyList<AiAssistantService.AiWishlistRow> wishlist,
         IReadOnlyList<AiAssistantService.AiTransactionRow> transactions,
         string? reference = null,
-        decimal availableFunds = 0m)
-        => new(wishlist, transactions, [Apr, May, Jun], CycleDay, ActiveCycleStart, Today, reference, availableFunds);
+        decimal availableFunds = 0m,
+        decimal requiredPerCycle = 0m,
+        decimal? budgetedRewardsPerCycle = null)
+        => new(wishlist, transactions, [Apr, May, Jun], CycleDay, ActiveCycleStart, Today, reference,
+            availableFunds, requiredPerCycle, budgetedRewardsPerCycle);
 
     [Fact]
     public void PositiveRewardsRate_EstimatesCyclesAndTodayProjectedDate()
@@ -120,6 +123,36 @@ public class WishlistForecasterTests
 
         var forecast = Assert.Single(result);
         Assert.Equal(40m, forecast.RemainingAmount);
+    }
+
+    [Fact]
+    public void FutureFreeRewardsSubtractsCommitmentPace()
+    {
+        var result = AiAssistantService.ComputeWishlistForecast(Policy(
+            [Item(1, "Racket", 300)],
+            [Row(2026, 4, 100), Row(2026, 5, 100), Row(2026, 6, 100)],
+            availableFunds: 200m,
+            requiredPerCycle: 80m));
+
+        var forecast = Assert.Single(result);
+        Assert.Equal(20m, forecast.TypicalSavingsPerCycle);
+        Assert.Equal(AiAssistantService.WishlistForecastStatus.Estimated, forecast.Status);
+        Assert.Equal(5, forecast.EstimatedCycles);
+    }
+
+    [Fact]
+    public void FreeRewardsMakesTwoHundredAvailableButThreeHundredUnavailable()
+    {
+        var result = AiAssistantService.ComputeWishlistForecast(Policy(
+            [Item(1, "Three Hundred", 300), Item(2, "Two Hundred", 200)],
+            [Row(2026, 4, 100), Row(2026, 5, 100), Row(2026, 6, 100)],
+            availableFunds: 200m,
+            requiredPerCycle: 80m));
+
+        Assert.Equal(AiAssistantService.WishlistForecastStatus.Estimated, result[0].Status);
+        Assert.Equal(100m, result[0].RemainingAmount);
+        Assert.Equal(AiAssistantService.WishlistForecastStatus.AlreadyReached, result[1].Status);
+        Assert.Equal(0m, result[1].RemainingAmount);
     }
 
     [Fact]

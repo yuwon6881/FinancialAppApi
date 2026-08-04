@@ -537,6 +537,10 @@ public partial class AiAssistantService
         @"\b(wishlist|wish list|wish-list|wish|bucket list|dream purchase|next purchase|want to buy|planning to buy|saving for|save for|saving up|save up|priority item|afford|goal|goals|savings? goal|savings? target)\b",
         RegexOptions.Compiled);
 
+    private static readonly Regex ExplicitWishlistSignal = new(
+        @"\b(wishlist|wish list|wish-list|dream purchase|next purchase|want to buy|planning to buy|priority item)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex WishlistForecastSignal = new(
         @"\b(how long|when can i|when could i|when will i|when would i|reach|hit|achieve|afford|target date|months? until|cycles? until|how many months|time to save)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -547,6 +551,10 @@ public partial class AiAssistantService
     private static readonly Regex ImprovementSignal = new(
         @"\b(improve|improving|reduce|reducing|cut|cutting|spend less|save more|advice|advise|suggest|suggestion|recommend|recommendation|on track|over ?budget|under ?budget|overspend|overspending|should i|where can i|too much|tips?|optimi[sz]e|budgeting|plan|planning|goal|goals)\b",
         RegexOptions.Compiled);
+
+    private static readonly Regex InvestmentCoreSignal = new(
+        @"\b(portfolio|holding|holdings|investment(?:s)?|broker|instrument|on paper|already banked|dividend|dividends)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     internal sealed record IntentClassification(
         IReadOnlyList<string> Intents,

@@ -45,9 +45,15 @@ public sealed class AiConversationMemoryService
             return new AiConversationResponse(null, 0, [], null);
         }
 
-        var turns = await _context.AiConversationTurns
+        var sensitiveMode = await IsSensitiveModeAsync(cancellationToken);
+        var historyRedacted = sensitiveMode && await _context.AiConversationTurns
             .AsNoTracking()
-            .Where(turn => turn.ConversationId == conversation.Id)
+            .AnyAsync(turn => turn.ConversationId == conversation.Id && !turn.SensitiveMode, cancellationToken);
+        var turnsQuery = _context.AiConversationTurns
+            .AsNoTracking()
+            .Where(turn => turn.ConversationId == conversation.Id);
+        if (sensitiveMode) turnsQuery = turnsQuery.Where(turn => turn.SensitiveMode);
+        var turns = await turnsQuery
             .OrderByDescending(turn => turn.CreatedAt)
             .ThenByDescending(turn => turn.Id)
             .Take(MaxHydratedTurns)
@@ -65,7 +71,8 @@ public sealed class AiConversationMemoryService
             conversation.Id,
             conversation.Version,
             messages,
-            DeserializeState(conversation.StateJson));
+            DeserializeState(conversation.StateJson),
+            historyRedacted);
     }
 
     public async Task DeleteActiveAsync(CancellationToken cancellationToken = default)
@@ -116,13 +123,14 @@ public sealed class AiConversationMemoryService
                 cancellationToken);
         if (duplicate != null)
         {
+            var replaySensitiveMode = await IsSensitiveModeAsync(cancellationToken);
             return new PreparedConversation(
                 conversation,
                 clientTurnId,
                 [],
                 DeserializeState(conversation.StateJson),
-                await IsSensitiveModeAsync(cancellationToken),
-                Replay: ToReplay(conversation, duplicate));
+                replaySensitiveMode,
+                Replay: ToReplay(conversation, duplicate, replaySensitiveMode));
         }
 
         if (request.ConversationId != null && request.ConversationId != conversation.Id)
@@ -251,8 +259,18 @@ public sealed class AiConversationMemoryService
             .Select(setting => (bool?)setting.HideSensitive)
             .SingleOrDefaultAsync(cancellationToken) ?? true;
 
-    private static AiChatResponse ToReplay(AiConversation conversation, AiConversationTurn turn)
+    private static AiChatResponse ToReplay(AiConversation conversation, AiConversationTurn turn, bool sensitiveMode)
     {
+        if (sensitiveMode && !turn.SensitiveMode)
+        {
+            return new AiChatResponse(
+                "Earlier replies are hidden while sensitive mode is active. Unhide balances to replay this explanation.",
+                [],
+                State: null,
+                ConversationId: conversation.Id,
+                ConversationVersion: conversation.Version,
+                HistoryRedacted: true);
+        }
         IReadOnlyList<AiUiAction> actions;
         try
         {
@@ -268,7 +286,8 @@ public sealed class AiConversationMemoryService
             turn.CloseChat,
             DeserializeState(conversation.StateJson),
             conversation.Id,
-            conversation.Version);
+            conversation.Version,
+            turn.SensitiveMode == false && sensitiveMode);
     }
 
     private static AiConversationState? DeserializeState(string? json)

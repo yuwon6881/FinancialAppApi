@@ -82,6 +82,10 @@ public partial class AiAssistantService
             needsRecurring,
             needsBudgetTargets,
             needsCategoryLimits,
-            needsCycleInsights);
+            needsCycleInsights,
+            NeedsRewards: intents.Any(intent => intent is AiIntent.RewardsSummary or AiIntent.SavingsGoalList or
+                AiIntent.SavingsGoalPacing or AiIntent.SavingsGoalScenario or AiIntent.SavingsGoalAdd or AiIntent.SavingsGoalEdit),
+            NeedsInvestments: intents.Any(intent => intent is AiIntent.InvestmentSummary or AiIntent.InvestmentHolding or AiIntent.InvestmentAllocation),
+            NeedsReport: intents.Contains(AiIntent.ReportReview));
     }
 }

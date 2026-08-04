@@ -1,6 +1,7 @@
 using FinancialAppApi.Database;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace FinancialAppApi.Services;
 
@@ -55,7 +56,21 @@ public sealed record AiConversationState(
     string? LastWishlistStatus = null,
     // A user-supplied forecast target is a query parameter (like LastAmountThreshold), never an
     // observed balance or record amount. It is range-checked again when echoed by the client.
-    decimal? LastTargetAmount = null);
+    decimal? LastTargetAmount = null,
+    string? LastRewardsTopic = null,
+    int? LastSavingsGoalId = null,
+    string? LastInvestmentTopic = null,
+    string? LastInvestmentRange = null,
+    Guid? LastInvestmentInstrumentId = null,
+    string? LastReportCycleKey = null);
+
+public sealed record AiInvocationContext(
+    string Surface,
+    string? Preset = null,
+    string? CycleKey = null,
+    string? InvestmentRange = null,
+    int? SavingsGoalId = null,
+    bool HasPendingLocalChanges = false);
 
 public sealed record AiChatMessage(string Role, string Content);
 public sealed record AiChatRequest(
@@ -64,20 +79,23 @@ public sealed record AiChatRequest(
     AiConversationState? State = null,
     Guid? ConversationId = null,
     int? ConversationVersion = null,
-    string? ClientTurnId = null);
+    string? ClientTurnId = null,
+    AiInvocationContext? Context = null);
 public sealed record AiChatResponse(
     string Reply,
     IReadOnlyList<AiUiAction> Actions,
     bool CloseChat = false,
     AiConversationState? State = null,
     Guid? ConversationId = null,
-    int? ConversationVersion = null);
+    int? ConversationVersion = null,
+    bool HistoryRedacted = false);
 public sealed record AiUiAction(string Type, Dictionary<string, object?> Payload);
 public sealed record AiConversationResponse(
     Guid? ConversationId,
     int ConversationVersion,
     IReadOnlyList<AiChatMessage> Messages,
-    AiConversationState? State);
+    AiConversationState? State,
+    bool HistoryRedacted = false);
 
 // AiChatResponse alone is the wire shape returned to the client either way (a friendly
 // message is a valid chat reply whether or not the AI provider itself succeeded) -- but the
@@ -94,12 +112,16 @@ public partial class AiAssistantService
         "openDashboard",
         "openRecurring",
         "openWishlist",
+        "openReports",
+        "openInvestments",
         "openAddLedgerDraft",
         "openAddRecurringDraft",
         "openAddWishlistDraft",
         "openEditLedgerDraft",
         "openEditRecurringDraft",
         "openEditWishlistDraft",
+        "openAddSavingsGoalDraft",
+        "openEditSavingsGoalDraft",
         "requestDeleteLedger",
         "requestDeleteRecurring",
         "requestDeleteWishlist",
@@ -129,6 +151,8 @@ public partial class AiAssistantService
     private readonly FinancialClock _financialClock;
     private readonly ILogger<AiAssistantService> _logger;
     private readonly AiConversationMemoryService _conversationMemory;
+    private readonly SavingsGoals.SavingsGoalService _savingsGoalService;
+    private readonly Investments.InvestmentPortfolioService? _investmentPortfolioService;
 
     public AiAssistantService(
         AiClient aiClient,
@@ -138,7 +162,9 @@ public partial class AiAssistantService
         RecurringOccurrenceService? recurringOccurrenceService = null,
         FinancialClock? financialClock = null,
         ILogger<AiAssistantService>? logger = null,
-        AiConversationMemoryService? conversationMemory = null)
+        AiConversationMemoryService? conversationMemory = null,
+        SavingsGoals.SavingsGoalService? savingsGoalService = null,
+        Investments.InvestmentPortfolioService? investmentPortfolioService = null)
     {
         _logger = logger ?? NullLogger<AiAssistantService>.Instance;
         _aiClient = aiClient;
@@ -149,6 +175,11 @@ public partial class AiAssistantService
             new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
         _financialClock = financialClock ?? FinancialClock.Utc;
         _conversationMemory = conversationMemory ?? new AiConversationMemoryService(context);
+        _savingsGoalService = savingsGoalService ?? new SavingsGoals.SavingsGoalService(
+            context,
+            new CycleBalanceService(context),
+            _financialClock);
+        _investmentPortfolioService = investmentPortfolioService;
     }
 
     public async Task<AiChatOutcome> ChatAsync(AiChatRequest request, CancellationToken cancellationToken = default)
@@ -232,6 +263,20 @@ public partial class AiAssistantService
         {
             return Ok(new AiChatResponse("That message is too long. Please shorten it and try again.", [], State: priorState));
         }
+        if (!TryNormalizeInvocationContext(request.Context, out var invocationContext, out var invocationError))
+        {
+            return Ok(new AiChatResponse(invocationError!, [], State: priorState));
+        }
+        if (invocationContext?.SavingsGoalId is { } savingsGoalId)
+        {
+            var goalExists = (await _savingsGoalService.GetGoalsAsync(cancellationToken))
+                .Any(goal => goal.Id == savingsGoalId);
+            if (!goalExists)
+            {
+                return Ok(new AiChatResponse("That savings goal is not available.", [], State: priorState));
+            }
+        }
+        priorState = ApplyInvocationState(priorState, invocationContext);
         if (TryHandleSmallTalk(message, out var smallTalkResponse))
         {
             return Ok(smallTalkResponse! with { State = smallTalkResponse!.CloseChat ? null : priorState });
@@ -243,18 +288,28 @@ public partial class AiAssistantService
         }
 
         var history = SanitizeHistory(request.History);
-        var intentPlan = ResolveDeterministically(message, priorState);
+        var resolvedMessage = ApplyInvocationMessage(message, invocationContext);
+        var intentPlan = ResolveDeterministically(resolvedMessage, priorState);
         if (intentPlan.Confidence < 0.72 || intentPlan.Intents.Contains(AiIntent.General))
         {
-            var classified = await TryClassifyIntentAsync(message, priorState, cancellationToken);
+            var classified = await TryClassifyIntentAsync(resolvedMessage, priorState, cancellationToken);
             if (classified != null && classified.Confidence >= intentPlan.Confidence)
             {
-                intentPlan = MergeResolutions(message, classified, priorState);
+                intentPlan = MergeResolutions(resolvedMessage, classified, priorState);
             }
         }
 
         var contextResult = await BuildContextAsync(intentPlan, cancellationToken);
         var context = contextResult.Context;
+        if (context.SensitiveMode && RequiresSensitiveFinancialReveal(intentPlan))
+        {
+            return Ok(new AiChatResponse(
+                "Unhide balances before asking for a Rewards, investment, or report explanation.",
+                [], State: contextResult.OutgoingState));
+        }
+        var pendingSyncWarning = invocationContext?.HasPendingLocalChanges == true
+            ? " This uses saved server data and does not include changes still syncing."
+            : string.Empty;
         if (context.SensitiveMode &&
             (LooksLikeProtectedMutationCommand(message) ||
              intentPlan.Intents.Contains(AiIntent.LedgerAdd)))
@@ -303,6 +358,10 @@ public partial class AiAssistantService
         var systemInstruction = SystemInstruction;
         var userContent = BuildUserContent(message, promptHistory, context);
         var isLedgerAdd = intentPlan.Intents.Contains(AiIntent.LedgerAdd);
+        var isReportReview = intentPlan.Intents.Contains(AiIntent.ReportReview);
+        var isInvestmentExplanation = intentPlan.Intents.Any(intent => intent is AiIntent.InvestmentSummary or AiIntent.InvestmentHolding or AiIntent.InvestmentAllocation);
+        var isRewardsPlan = intentPlan.Intents.Any(intent => intent is AiIntent.RewardsSummary or AiIntent.SavingsGoalList or
+            AiIntent.SavingsGoalPacing or AiIntent.SavingsGoalScenario or AiIntent.SavingsGoalAdd or AiIntent.SavingsGoalEdit);
         var structuredLedgerDraftCount = isLedgerAdd ? CountLedgerDraftListRecords(message) : 0;
 
         string text;
@@ -321,6 +380,12 @@ public partial class AiAssistantService
                     SystemInstruction: systemInstruction,
                     OutputJsonSchema: isLedgerAdd
                         ? AiResponseSchemas.LedgerDraftChat(context.Categories, structuredLedgerDraftCount)
+                        : isReportReview
+                            ? AiResponseSchemas.ReportReviewChat()
+                            : isInvestmentExplanation
+                                ? AiResponseSchemas.InvestmentExplainChat()
+                                : isRewardsPlan
+                                    ? AiResponseSchemas.RewardsPlanChat()
                         : AiResponseSchemas.Chat(
                             context.Categories,
                             includeLedgerFilters: WantsLedgerFilterControls(intentPlan),
@@ -337,7 +402,7 @@ public partial class AiAssistantService
             return new AiChatOutcome(new AiChatResponse(ex.Message, []), IsProviderError: true);
         }
 
-        var parsed = ParseAndValidateResponse(text, context, message, intentPlan.Constraints);
+        var parsed = await ParseAndValidateResponseAsync(text, context, message, intentPlan.Constraints, cancellationToken);
         // Enrichment is a best-effort second pass over an already-valid answer. Its own
         // provider call must never turn a complete reply into a 503, so it degrades to
         // the unenriched drafts instead of propagating.
@@ -351,6 +416,10 @@ public partial class AiAssistantService
         }
         // Phase 5: an incomplete aggregate must never surface as a bare exact figure.
         parsed = parsed with { Reply = EnforceApproximateWording(parsed.Reply, contextResult.Sufficiency.Approximate) };
+        parsed = parsed with
+        {
+            Reply = BuildCoverageSentence(intentPlan, contextResult, pendingSyncWarning) + parsed.Reply
+        };
         // Round-trip the structured references so the client can echo them back on the next
         // turn (see AiConversationState). Not attached to small-talk/guardrail replies -- those
         // deliberately carry no financial state.
@@ -358,6 +427,103 @@ public partial class AiAssistantService
     }
 
     private static AiChatOutcome Ok(AiChatResponse response) => new(response, IsProviderError: false);
+
+    private static bool RequiresSensitiveFinancialReveal(AiIntentPlan intentPlan) =>
+        intentPlan.Intents.Any(intent => intent is AiIntent.RewardsSummary or AiIntent.SavingsGoalList or
+            AiIntent.SavingsGoalPacing or AiIntent.SavingsGoalScenario or AiIntent.SavingsGoalAdd or
+            AiIntent.SavingsGoalEdit or AiIntent.InvestmentSummary or AiIntent.InvestmentHolding or
+            AiIntent.InvestmentAllocation or AiIntent.ReportReview);
+
+    private static string BuildCoverageSentence(
+        AiIntentPlan intentPlan,
+        AiContextBuildResult contextResult,
+        string pendingSyncWarning)
+    {
+        var query = intentPlan.QueryPlan.QueryText;
+        var scope = Regex.IsMatch(query, @"\ball[- ]?time\b", RegexOptions.IgnoreCase)
+            ? "Coverage: this analysis is limited to the last 24 cycles, so it is not an exact all-time review."
+            : contextResult.Sufficiency.Approximate
+                ? "Coverage: some saved rows were sampled, so the figures below are approximate."
+                : "Coverage: figures below use the selected cycle and saved server data.";
+        return scope + pendingSyncWarning + " ";
+    }
+
+    private static readonly HashSet<string> InvocationSurfaces =
+        new(StringComparer.OrdinalIgnoreCase) { "dashboard", "reports", "recurring", "ledger", "wishlist", "drafts", "settings", "investments", "documents" };
+
+    private static readonly HashSet<string> InvocationPresets =
+        new(StringComparer.OrdinalIgnoreCase) { "report-review", "investment-explain", "rewards-plan" };
+
+    private static readonly HashSet<string> InvocationRanges =
+        new(StringComparer.OrdinalIgnoreCase) { "1m", "3m", "6m", "1y", "3y", "5y", "all" };
+
+    private static bool TryNormalizeInvocationContext(
+        AiInvocationContext? context,
+        out AiInvocationContext? normalized,
+        out string? error)
+    {
+        normalized = null;
+        error = null;
+        if (context == null) return true;
+        var surface = context.Surface?.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(surface) || !InvocationSurfaces.Contains(surface))
+        {
+            error = "That screen is not a valid Ask AI context.";
+            return false;
+        }
+        var preset = string.IsNullOrWhiteSpace(context.Preset) ? null : context.Preset.Trim().ToLowerInvariant();
+        if (preset != null && !InvocationPresets.Contains(preset))
+        {
+            error = "That Ask AI explanation type is not available.";
+            return false;
+        }
+        var range = string.IsNullOrWhiteSpace(context.InvestmentRange) ? null : context.InvestmentRange.Trim().ToLowerInvariant();
+        if (range != null && !InvocationRanges.Contains(range))
+        {
+            error = "That investment time range is not available.";
+            return false;
+        }
+        var cycleKey = string.IsNullOrWhiteSpace(context.CycleKey) ? null : context.CycleKey.Trim();
+        if (cycleKey != null && !Regex.IsMatch(cycleKey, @"^(?:19|20)\d{2}-(?:0[1-9]|1[0-2])$"))
+        {
+            error = "That cycle reference is not valid.";
+            return false;
+        }
+        if (context.SavingsGoalId is <= 0)
+        {
+            error = "That savings goal reference is not valid.";
+            return false;
+        }
+        normalized = new AiInvocationContext(surface, preset, cycleKey, range, context.SavingsGoalId, context.HasPendingLocalChanges);
+        return true;
+    }
+
+    private static AiConversationState? ApplyInvocationState(
+        AiConversationState? state,
+        AiInvocationContext? context)
+    {
+        if (context == null) return state;
+        return (state ?? new AiConversationState(null, null, null, null)) with
+        {
+            LastInvestmentRange = context.InvestmentRange ?? state?.LastInvestmentRange,
+            LastSavingsGoalId = context.SavingsGoalId ?? state?.LastSavingsGoalId,
+            LastReportCycleKey = context.CycleKey ?? state?.LastReportCycleKey,
+            LastInvestmentTopic = context.Preset == "investment-explain" ? "portfolio" : state?.LastInvestmentTopic,
+            LastRewardsTopic = context.Preset == "rewards-plan" ? "plan" : state?.LastRewardsTopic
+        };
+    }
+
+    private static string ApplyInvocationMessage(string message, AiInvocationContext? context)
+    {
+        if (context == null) return message;
+        var suffix = new List<string>();
+        if (context.CycleKey != null) suffix.Add($"for cycle {context.CycleKey}");
+        if (context.InvestmentRange != null) suffix.Add($"using investment range {context.InvestmentRange}");
+        if (context.Preset == "report-review") suffix.Add("report review");
+        if (context.Preset == "investment-explain") suffix.Add("portfolio explanation");
+        if (context.Preset == "rewards-plan") suffix.Add("Rewards plan");
+        return suffix.Count == 0 ? message : $"{message} ({string.Join(", ", suffix)})";
+    }
 
     // Keep optional payload groups intent-specific so unrelated controls do not distract the model
     // or inflate the structured output contract.

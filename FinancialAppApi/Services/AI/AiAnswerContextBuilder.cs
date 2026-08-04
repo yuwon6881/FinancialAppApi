@@ -74,6 +74,19 @@ public partial class AiAssistantService
         {
             result["cycleInsights"] = context.CycleInsights;
         }
+        if (has("rewards.summary", "savings_goal.list", "savings_goal.pacing", "savings_goal.scenario",
+                "savings_goal.add", "savings_goal.edit"))
+        {
+            result["rewards"] = context.Rewards;
+        }
+        if (has("investment.summary", "investment.holding", "investment.allocation"))
+        {
+            result["investments"] = context.Investments;
+        }
+        if (has("report.review"))
+        {
+            result["reportReview"] = context.ReportReview;
+        }
         return result;
     }
 }

@@ -29,9 +29,10 @@ internal static class AiResponseSchemas
                 {
                     ["type"] = Str(enums:
                     [
-                        "openLedger", "openDashboard", "openRecurring", "openWishlist",
+                        "openLedger", "openDashboard", "openRecurring", "openWishlist", "openReports", "openInvestments",
                         "openAddLedgerDraft", "openAddRecurringDraft", "openAddWishlistDraft",
                         "openEditLedgerDraft", "openEditRecurringDraft", "openEditWishlistDraft",
+                        "openAddSavingsGoalDraft", "openEditSavingsGoalDraft",
                         "requestDeleteLedger", "requestDeleteRecurring", "requestDeleteWishlist",
                         "requestConfirmRecurringBill", "requestDiscardRecurringBill",
                         "requestPurchaseWishlist", "requestUnpurchaseWishlist", "toggleRecurring",
@@ -82,6 +83,55 @@ internal static class AiResponseSchemas
             ["reply", "closeChat", "actions"]);
     }
 
+    public static object ReportReviewChat() => ContextualChat(
+        ["openReports"],
+        new Dictionary<string, object>
+        {
+            ["cycleKey"] = Str("Validated selected cycle in YYYY-MM format.")
+        });
+
+    public static object InvestmentExplainChat() => ContextualChat(
+        ["openInvestments"],
+        new Dictionary<string, object>());
+
+    public static object RewardsPlanChat() => ContextualChat(
+        ["openWishlist", "openAddSavingsGoalDraft", "openEditSavingsGoalDraft"],
+        new Dictionary<string, object>
+        {
+            ["id"] = Int(),
+            ["savingsGoalId"] = Int(),
+            ["name"] = Str("Savings Goal name.") ,
+            ["targetAmount"] = Num("Positive target amount.", 0),
+            ["targetDate"] = Str("Target date in YYYY-MM-DD format."),
+            ["priority"] = Str(enums: ["low", "medium", "high"]),
+            ["isRecurring"] = Bool(),
+            ["recurrenceMonths"] = Int(),
+            ["changes"] = Obj(new Dictionary<string, object>
+            {
+                ["name"] = Str(), ["targetAmount"] = Num(minimum: 0),
+                ["targetDate"] = Str(), ["priority"] = Str(enums: ["low", "medium", "high"]),
+                ["isRecurring"] = Bool(), ["recurrenceMonths"] = Int()
+            })
+        });
+
+    private static object ContextualChat(
+        IReadOnlyList<string> actionTypes,
+        Dictionary<string, object> payloadProperties) => Obj(
+        new Dictionary<string, object>
+        {
+            ["reply"] = Str("Concise beginner-friendly explanation using only server-provided evidence."),
+            ["closeChat"] = Bool(),
+            ["actions"] = Arr(Obj(
+                new Dictionary<string, object>
+                {
+                    ["type"] = Str(enums: actionTypes),
+                    ["payload"] = Obj(payloadProperties)
+                },
+                ["type", "payload"]),
+                maxItems: 2)
+        },
+        ["reply", "closeChat", "actions"]);
+
     private static readonly IReadOnlyList<string> IntentEnum =
     [
         "ledger.activity_count", "ledger.merchant_search", "ledger.spending_total",
@@ -89,7 +139,9 @@ internal static class AiResponseSchemas
         "ledger.anomaly", "ledger.duplicates", "wishlist.list", "wishlist.forecast",
         "wishlist.add", "wishlist.edit", "recurring.list", "recurring.upcoming",
         "recurring.add", "recurring.edit", "category_limits.analysis", "cycle.insights",
-        "allocation.balance", "allocation.performance",
+        "allocation.balance", "allocation.performance", "rewards.summary", "savings_goal.list",
+        "savings_goal.pacing", "savings_goal.scenario", "savings_goal.add", "savings_goal.edit",
+        "investment.summary", "investment.holding", "investment.allocation", "report.review",
         "navigation", "general"
     ];
 

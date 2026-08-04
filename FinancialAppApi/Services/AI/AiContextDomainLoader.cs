@@ -214,7 +214,8 @@ public partial class AiAssistantService
             @"\bstability\b.{0,40}\b(fund|goal|target|on track|progress|reach(?:ed)?|close|there yet|percent)\b|\b(goal|target|on track|progress|reach(?:ed)?|percent)\b.{0,40}\bstability\b",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         var needsTransactions = !sensitiveMode &&
-            (queryPlan.NeedsWishlistForecast || wantsAffordableCount || wantsStabilityProgress || ledgerForecastRequest != null);
+            (queryPlan.NeedsWishlistForecast || queryPlan.NeedsRewards || queryPlan.NeedsReport ||
+             wantsAffordableCount || wantsStabilityProgress || ledgerForecastRequest != null);
         var filtered = queryPlan.TransactionData == TransactionDataLevel.MatchingRows &&
             !string.IsNullOrWhiteSpace(queryPlan.SearchText) || transactionDomain.AppliesTransactionTypeFilter ||
             transactionDomain.ExcludedCategories.Count > 0 || transactionDomain.ExcludedLedgerCategories.Count > 0 ||
@@ -225,13 +226,15 @@ public partial class AiAssistantService
             ledgerTransactions = await LoadUnfilteredCycleTransactionsAsync(targetSelection.Cycles, cycleDay, cancellationToken);
         }
 
-        decimal rewardsBalance = 0m;
+        decimal freeRewards = 0m;
+        decimal requiredRewardsPerCycle = 0m;
         object? stabilityProgress = null;
         int? affordableWishlistCount = null;
         object? ledgerBalanceForecast = null;
         if (needsTransactions)
         {
             var opening = await new CycleBalanceService(_context).GetOpeningBalanceAsync(selectedYear, selectedMonthIndex, cycleDay);
+            var rewardsPool = await _savingsGoalService.GetPoolSummaryAsync(cancellationToken);
             var activeTransactions = ledgerTransactions
                 .Where(row => IsInCycle(row, new CycleKey(selectedYear, selectedMonthIndex), cycleDay))
                 .ToList();
@@ -240,7 +243,11 @@ public partial class AiAssistantService
                 Amount = row.Amount,
                 LedgerCategory = row.LedgerCategory
             }, ledgerCategory));
-            rewardsBalance = opening.rewards + LedgerNet("Rewards");
+            // Wishlist affordability is about money that is free to spend, not the whole Rewards
+            // envelope. SavingsGoalService is the authority for both values, so this cannot drift
+            // from the Rewards page when earmarks are added or released.
+            freeRewards = rewardsPool.Unassigned;
+            requiredRewardsPerCycle = rewardsPool.RequiredPerCycleTotal;
             if (wantsStabilityProgress)
             {
                 var balance = opening.stability + LedgerNet("Stability");
@@ -255,7 +262,7 @@ public partial class AiAssistantService
             }
             if (wantsAffordableCount)
             {
-                affordableWishlistCount = wishlistRows.Count(item => !item.IsPurchased && rewardsBalance >= item.Price);
+                affordableWishlistCount = wishlistRows.Count(item => !item.IsPurchased && freeRewards >= item.Price);
             }
             if (ledgerForecastRequest is { } forecast)
             {
@@ -289,7 +296,8 @@ public partial class AiAssistantService
                 activeCycleStart,
                 _financialClock.LocalNow,
                 wishlistReference,
-                rewardsBalance))
+                freeRewards,
+                requiredRewardsPerCycle))
             : null;
         return new LedgerDomainContext(stabilityProgress, affordableWishlistCount, ledgerBalanceForecast, wishlistForecast);
     }

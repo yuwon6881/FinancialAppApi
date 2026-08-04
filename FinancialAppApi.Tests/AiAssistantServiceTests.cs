@@ -93,7 +93,7 @@ public class AiAssistantServiceTests
         var outcome = await service.ChatAsync(new AiChatRequest("What should I delete to save money?", []));
 
         Assert.True(handler.CallCount >= 1);
-        Assert.Equal("Here is some advice.", outcome.Response.Reply);
+        Assert.Equal("Coverage: figures below use the selected cycle and saved server data. Here is some advice.", outcome.Response.Reply);
     }
 
     [Fact]
@@ -573,6 +573,9 @@ public class AiAssistantServiceTests
     public async Task ChatAsync_WishlistPurchaseAction_RequiresAnUnpurchasedKnownItem()
     {
         await using var context = NewContextWithSettings(hideSensitive: false);
+        var rewards = Txn("rewards", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), "Rewards", 200);
+        rewards.LedgerCategory = "Rewards";
+        context.Transactions.Add(rewards);
         context.WishlistItems.Add(new WishlistItem
         {
             Id = 7, Name = "Headphones", Price = 200, Priority = "Medium",

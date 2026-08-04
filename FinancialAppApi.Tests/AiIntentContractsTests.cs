@@ -38,4 +38,38 @@ public class AiIntentContractsTests
         var result = AiAssistantService.ParseIntents(["ledger.edit", "nope", "ledger.edit", "navigation"]);
         Assert.Equal([Intent.LedgerEdit, Intent.Navigation], result);
     }
+
+    [Fact]
+    public void SavingsGoalPacing_IsNotResolvedAsWishlist()
+    {
+        var plan = AiAssistantService.ResolveDeterministically("How are my savings goals pacing?");
+
+        Assert.Contains(Intent.SavingsGoalPacing, plan.Intents);
+        Assert.DoesNotContain(Intent.WishlistList, plan.Intents);
+        Assert.DoesNotContain(Intent.WishlistForecast, plan.Intents);
+    }
+
+    [Fact]
+    public void InvestmentGrowth_IsNotResolvedAsGrowthBudgetAllocation()
+    {
+        var plan = AiAssistantService.ResolveDeterministically("Explain my Growth portfolio and holdings");
+
+        Assert.Contains(Intent.InvestmentHolding, plan.Intents);
+        Assert.True(plan.QueryPlan.NeedsInvestments);
+        Assert.DoesNotContain(Intent.AllocationBalance, plan.Intents);
+        Assert.DoesNotContain(Intent.AllocationPerformance, plan.Intents);
+
+        var summary = AiAssistantService.ResolveDeterministically("Explain my portfolio");
+        Assert.Contains(Intent.InvestmentSummary, summary.Intents);
+    }
+
+    [Fact]
+    public void ReportReview_RequestsCycleSummaryAndReportDataset()
+    {
+        var plan = AiAssistantService.ResolveDeterministically("Review this cycle and explain the findings");
+
+        Assert.Contains(Intent.ReportReview, plan.Intents);
+        Assert.True(plan.QueryPlan.NeedsCycleSummary);
+        Assert.True(plan.QueryPlan.NeedsReport);
+    }
 }

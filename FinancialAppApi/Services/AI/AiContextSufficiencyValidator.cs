@@ -15,7 +15,10 @@ public enum AiDatasetKey
     Wishlist,
     WishlistForecast,
     Recurring,
-    BudgetTargets
+    BudgetTargets,
+    Rewards,
+    Investments,
+    ReportReview
 }
 
 public partial class AiAssistantService
@@ -62,7 +65,17 @@ public partial class AiAssistantService
         ["category_limits.analysis"] = ([AiDatasetKey.CycleSummaries], false),
         ["cycle.insights"] = ([AiDatasetKey.CycleSummaries], false),
         ["allocation.balance"] = ([AiDatasetKey.CycleSummaries, AiDatasetKey.BudgetTargets], false),
-        ["allocation.performance"] = ([AiDatasetKey.CycleSummaries, AiDatasetKey.BudgetTargets], false)
+        ["allocation.performance"] = ([AiDatasetKey.CycleSummaries, AiDatasetKey.BudgetTargets], false),
+        ["rewards.summary"] = ([AiDatasetKey.Rewards], true),
+        ["savings_goal.list"] = ([AiDatasetKey.Rewards], true),
+        ["savings_goal.pacing"] = ([AiDatasetKey.Rewards], true),
+        ["savings_goal.scenario"] = ([AiDatasetKey.Rewards], true),
+        ["savings_goal.add"] = ([AiDatasetKey.Rewards], true),
+        ["savings_goal.edit"] = ([AiDatasetKey.Rewards], true),
+        ["investment.summary"] = ([AiDatasetKey.Investments], false),
+        ["investment.holding"] = ([AiDatasetKey.Investments], true),
+        ["investment.allocation"] = ([AiDatasetKey.Investments], false),
+        ["report.review"] = ([AiDatasetKey.ReportReview], true)
     };
 
     internal static SufficiencyResult EvaluateSufficiency(

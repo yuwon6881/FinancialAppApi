@@ -10,8 +10,8 @@ namespace FinancialAppApi.Services;
 // WishlistView.getTimelineString + FinancialService.CalculatePastRewardsAverageFromTxs exactly:
 //   * the savings rate is the AVERAGE POSITIVE Rewards-ledger attribution across the last
 //     cycles that had any activity (empty cycles are skipped, not averaged in as zero);
-//   * "remaining" is the item price minus the current Rewards balance (AvailableFunds), because
-//     wishlist goals are funded from the Rewards ledger, not from total net cash flow;
+//   * "remaining" is the item price minus the current free Rewards balance (AvailableFunds),
+//     because wishlist goals are funded from unearmarked Rewards, not total net cash flow;
 //   * the target date is today + ceil(months * 30) days, exactly like the page;
 //   * a wishlist reference that matches more than one active item returns a clarification
 //     marker instead of silently forecasting every item.
@@ -26,9 +26,10 @@ public partial class AiAssistantService
         MultipleMatches
     }
 
-    // AvailableFunds is the current Rewards-ledger balance (opening balance + active-cycle
-    // Rewards net), matching the app's rewardsBalance. Today is the reference date the target
-    // date is projected from. Cycles are the trailing cycles used to compute the savings rate.
+    // AvailableFunds is the current free Rewards balance (the pool's unassigned amount), matching
+    // the Wishlist page. RequiredPerCycle is removed from future Rewards inflow before projecting
+    // a wishlist date, so commitments cannot be spent twice. Today is the reference date for the
+    // target date, and Cycles are the trailing cycles used to compute the gross savings rate.
     internal sealed record WishlistForecastPolicy(
         IReadOnlyList<AiWishlistRow> Wishlist,
         IReadOnlyList<AiTransactionRow> Transactions,
@@ -37,7 +38,9 @@ public partial class AiAssistantService
         DateTime ActiveCycleStart,
         DateTime Today,
         string? WishlistReference,
-        decimal AvailableFunds = 0m);
+        decimal AvailableFunds = 0m,
+        decimal RequiredPerCycle = 0m,
+        decimal? BudgetedRewardsPerCycle = null);
 
     internal sealed record WishlistForecastResult(
         int WishlistItemId,
@@ -119,7 +122,10 @@ public partial class AiAssistantService
             .Where(v => v.HasActivity)
             .Select(v => v.Rewards)
             .ToList();
-        if (perCycleRewards.Count == 0)
+        var grossRate = perCycleRewards.Count > 0
+            ? perCycleRewards.Sum() / perCycleRewards.Count
+            : policy.BudgetedRewardsPerCycle;
+        if (!grossRate.HasValue)
         {
             return candidates.Select(w => new WishlistForecastResult(
                 w.Id, w.Name, w.Price, policy.AvailableFunds, Math.Max(0m, w.Price - policy.AvailableFunds),
@@ -127,8 +133,11 @@ public partial class AiAssistantService
                 "No cycles with activity were available to estimate a Rewards savings rate.")).ToList();
         }
 
-        var rate = perCycleRewards.Sum() / perCycleRewards.Count;
+        var rate = Math.Max(0m, grossRate.Value - policy.RequiredPerCycle);
         var perCycleForDisplay = perCycleRewards.ToList();
+        var rateAssumption = perCycleRewards.Count > 0
+            ? $"Average positive Rewards saved across {perCycleRewards.Count} active cycle(s), less {policy.RequiredPerCycle:0.00} per cycle reserved for savings goals"
+            : $"Budgeted Rewards per cycle, less {policy.RequiredPerCycle:0.00} per cycle reserved for savings goals";
 
         return candidates.Select(w =>
         {
@@ -145,7 +154,7 @@ public partial class AiAssistantService
                 return new WishlistForecastResult(
                     w.Id, w.Name, w.Price, policy.AvailableFunds, remaining, rate, null, null,
                     WishlistForecastStatus.NotReachable, perCycleForDisplay,
-                    $"Average Rewards saved across {perCycleRewards.Count} active cycle(s) is {rate} (<= 0); not currently on track.");
+                    $"{rateAssumption} leaves no free Rewards to put toward this item; not currently on track.");
             }
 
             // Mirror the app: months = remaining / rate, target date = today + ceil(months*30)
@@ -159,14 +168,14 @@ public partial class AiAssistantService
             return new WishlistForecastResult(
                 w.Id, w.Name, w.Price, policy.AvailableFunds, remaining, rate, estimatedCycles, targetDate,
                 WishlistForecastStatus.Estimated, perCycleForDisplay,
-                $"Average positive Rewards saved across {perCycleRewards.Count} active cycle(s); remaining = price minus current Rewards balance; projected as today + {days} days, matching the Wishlist page.");
+                $"{rateAssumption}; remaining = price minus free Rewards now; projected as today + {days} days, matching the Wishlist page.");
         }).ToList();
     }
 
     // Sum of positive Rewards-ledger attribution in a cycle, and whether the cycle had any
     // transactions at all (drives the "active months" divisor). GetCategoryAmount routes
     // IncomeSplit/Transfer rows into their Rewards share, so this counts every way Rewards is fed.
-    private static (decimal Rewards, bool HasActivity) CyclePositiveRewards(
+    internal static (decimal Rewards, bool HasActivity) CyclePositiveRewards(
         IReadOnlyList<AiTransactionRow> transactions, CycleKey cycle, int cycleDay)
     {
         var range = CategoryAttributionService.GetCycleRange(cycle.Year, cycle.MonthIndex, cycleDay);
