@@ -138,7 +138,7 @@ public class TransactionQueryService
 
         var filtered = await _context.Transactions
             .AsNoTracking()
-            .Where(t => t.LedgerCategory.ToUpper() != "DISCARDED" && t.Date >= cycleStartDate && t.Date < cycleEndExclusive)
+            .Where(t => t.LedgerCategory != "Discarded" && t.Date >= cycleStartDate && t.Date < cycleEndExclusive)
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)

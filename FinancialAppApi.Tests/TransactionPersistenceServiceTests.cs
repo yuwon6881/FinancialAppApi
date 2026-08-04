@@ -170,6 +170,20 @@ public class TransactionPersistenceServiceTests
     }
 
     [Fact]
+    public async Task CreateTransactionAsync_CanonicalizesDiscardedLedgerCategory()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).CreateTransactionAsync(
+            NewRequest("tx-discarded", " discarded ", 0m));
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal("Discarded", result.Transaction!.LedgerCategory);
+    }
+
+    [Fact]
     public async Task CreateTransactionAsync_RejectsTransferCategoryWithoutRoute()
     {
         await using var context = TestHelpers.NewInMemoryContext();

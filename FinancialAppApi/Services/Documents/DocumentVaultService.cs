@@ -308,8 +308,15 @@ public sealed class DocumentVaultService
 
         if (!string.IsNullOrWhiteSpace(reliefCategory))
         {
-            var category = reliefCategory.Trim();
-            query = query.Where(d => d.ReliefCategory == category);
+            // The client sends one or more categories joined by commas so a single filter
+            // (documents in category A OR category B) round-trips through one query param.
+            var categories = reliefCategory
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToHashSet(StringComparer.Ordinal);
+            if (categories.Count > 0)
+            {
+                query = query.Where(d => d.ReliefCategory != null && categories.Contains(d.ReliefCategory));
+            }
         }
 
         var totalCount = await query.CountAsync(ct);

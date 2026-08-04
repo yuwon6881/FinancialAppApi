@@ -124,6 +124,29 @@ public class DocumentVaultServiceTests
     }
 
     [Fact]
+    public async Task ListAsync_FiltersByMultipleReliefCategoriesAsOr()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        var lifestyle = VaultDocumentForYear(2026, 1);
+        lifestyle.ReliefCategory = "lifestyle";
+        var education = VaultDocumentForYear(2026, 2);
+        education.ReliefCategory = "education";
+        var medical = VaultDocumentForYear(2026, 3);
+        medical.ReliefCategory = "medical";
+        context.VaultDocuments.AddRange(lifestyle, education, medical);
+        await context.SaveChangesAsync();
+
+        var store = new FakeDocumentVaultStore();
+        var service = NewService(context, store);
+
+        var listed = await service.ListAsync(2026, null, "lifestyle,education", "uploaded-desc", 0, 10);
+
+        Assert.Equal(2, listed.Items.Count);
+        Assert.DoesNotContain(listed.Items, item => item.ReliefCategory == "medical");
+    }
+
+    [Fact]
     public async Task GetAvailableTaxYearsAsync_ReturnsOnlyYearsWithDocuments()
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");

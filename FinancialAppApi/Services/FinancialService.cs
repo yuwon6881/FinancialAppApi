@@ -151,7 +151,8 @@ public class FinancialService
             .AsNoTracking()
             .Where(transaction =>
                 (transaction.Date >= activeRangeStartDate && transaction.Date < activeRangeEndExclusive)
-                || (transaction.RecurringOccurrenceDate != null
+                || (transaction.RecurringPaymentId != null
+                    && transaction.RecurringOccurrenceDate != null
                     && transaction.RecurringOccurrenceDate >= activeRangeStartOnly
                     && transaction.RecurringOccurrenceDate <= activeRangeEndOnly))
             .ToListAsync(cancellationToken);
@@ -201,7 +202,8 @@ public class FinancialService
             .Where(t => t.Date >= activeRangeStartDate && t.Date < activeRangeEndExclusive)
             .ToList();
         var occurrenceTaggedTxs = cycleRelevantTxs
-            .Where(t => t.RecurringOccurrenceDate != null
+            .Where(t => t.RecurringPaymentId != null
+                        && t.RecurringOccurrenceDate != null
                         && t.RecurringOccurrenceDate >= activeRangeStartOnly
                         && t.RecurringOccurrenceDate <= activeRangeEndOnly)
             .ToList();

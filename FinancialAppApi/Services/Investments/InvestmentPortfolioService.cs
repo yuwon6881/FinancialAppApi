@@ -484,7 +484,7 @@ public sealed class InvestmentPortfolioService(
         var points = new List<InvestmentChartPointDto>();
         foreach (var date in dates)
         {
-            var relevant = transactions.Where(value => value.TradeDate <= date).ToList();
+            var relevant = transactions.Where(value => value.TradeDate <= date);
             var result = accounting.Calculate(relevant, appCurrency, HistoricalTradeFx);
             decimal market = 0;
             decimal cash = 0;
