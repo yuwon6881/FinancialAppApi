@@ -213,6 +213,14 @@ public sealed class InvestmentAllocationServiceTests
         AddPosition(context, account, us, 340);
         AddPosition(context, account, international, 330);
         AddPosition(context, account, bonds, 330);
+        context.InvestmentCashFlows.Add(new InvestmentCashFlow
+        {
+            AccountId = account.Id,
+            Currency = "USD",
+            Type = "Deposit",
+            Amount = 1050,
+            Date = DateOnly.FromDateTime(DateTime.UtcNow)
+        });
         AddGrowthDeposit(context, "growth-1", 1, 1000);
         await context.SaveChangesAsync();
 
@@ -223,17 +231,19 @@ public sealed class InvestmentAllocationServiceTests
         Assert.Equal("OnTrack", allocation.Status);
         // The routine split survives even though there is nothing to rebalance.
         Assert.NotNull(plan);
-        Assert.Equal(1000, plan!.Amount);
+        Assert.Equal(1050, plan!.Amount);
+        Assert.Equal(1000, plan.RoutineContribution);
         Assert.False(plan.IsEstimated);
-        Assert.Equal(340, plan.Sleeves.Single(value => value.Sleeve == "USEquity").Amount);
-        Assert.Equal(330, plan.Sleeves.Single(value => value.Sleeve == "InternationalExUS").Amount);
-        Assert.Equal(330, plan.Sleeves.Single(value => value.Sleeve == "Bonds").Amount);
-        Assert.Equal(1000, plan.Sleeves.Sum(value => value.Amount));
+        Assert.Equal(357, plan.Sleeves.Single(value => value.Sleeve == "USEquity").Amount);
+        Assert.Equal(346.50m, plan.Sleeves.Single(value => value.Sleeve == "InternationalExUS").Amount);
+        Assert.Equal(346.50m, plan.Sleeves.Single(value => value.Sleeve == "Bonds").Amount);
+        Assert.Equal(1050, plan.Sleeves.Sum(value => value.Amount));
+        Assert.Contains("uninvested cash", plan.Basis, StringComparison.OrdinalIgnoreCase);
         Assert.All(plan.Sleeves, value => Assert.Equal(0, value.ProjectedDriftPercentagePoints));
     }
 
     [Fact]
-    public async Task ContributionPlan_LeansTheDepositTowardTheUnderweightSleeve()
+    public async Task ContributionPlan_UsesCashAndNewMoneyToFullyCorrectLargeDrift()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { Currency = "USD", CycleDay = 1 });
@@ -256,20 +266,30 @@ public sealed class InvestmentAllocationServiceTests
         AddPosition(context, account, us, 500);
         AddPosition(context, account, international, 400);
         AddPosition(context, account, bonds, 100);
-        AddGrowthDeposit(context, "growth-1", 1, 1000);
+        context.InvestmentCashFlows.Add(new InvestmentCashFlow
+        {
+            AccountId = account.Id,
+            Currency = "USD",
+            Type = "Deposit",
+            Amount = 1100,
+            Date = DateOnly.FromDateTime(DateTime.UtcNow)
+        });
+        AddGrowthDeposit(context, "growth-1", 1, 100);
         await context.SaveChangesAsync();
 
         var plan = (await NewPortfolioService(context)
             .GetPortfolioAsync("1m", CancellationToken.None)).Allocation.ContributionPlan;
 
         Assert.NotNull(plan);
+        Assert.Equal(470.59m, plan!.Amount);
+        Assert.Equal(100, plan.RoutineContribution);
         var bondsAmount = plan!.Sleeves.Single(value => value.Sleeve == "Bonds").Amount;
         var usAmount = plan.Sleeves.Single(value => value.Sleeve == "USEquity").Amount;
         Assert.True(bondsAmount > usAmount, $"Expected bonds ({bondsAmount}) to receive more than US equity ({usAmount}).");
-        Assert.Equal(1000, plan.Sleeves.Sum(value => value.Amount));
-        // Cash-flow rebalancing alone cannot fully close a gap this large, but it must not
-        // overshoot any sleeve past its target either.
-        Assert.All(plan.Sleeves, value => Assert.True(value.ProjectedDriftPercentagePoints <= 0.01m));
+        Assert.Equal(470.59m, plan.Sleeves.Sum(value => value.Amount));
+        Assert.Contains("cash already", plan.Basis, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("new money", plan.Basis, StringComparison.OrdinalIgnoreCase);
+        Assert.All(plan.Sleeves, value => Assert.InRange(value.ProjectedDriftPercentagePoints, -0.01m, 0.01m));
     }
 
     [Fact]

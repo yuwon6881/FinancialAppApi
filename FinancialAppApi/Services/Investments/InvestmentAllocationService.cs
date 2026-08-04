@@ -54,6 +54,7 @@ public sealed record InvestmentContributionSleeveDto(
 /// </summary>
 public sealed record InvestmentContributionPlanDto(
     decimal Amount,
+    decimal? RoutineContribution,
     string Basis,
     int CyclesObserved,
     bool IsEstimated,
@@ -199,7 +200,8 @@ public sealed class InvestmentAllocationService(AppDbContext context)
             freshness, RoundMoney(investedValue), RoundMoney(availableCash),
             RoundMoney(Math.Max(0, minimumNewMoney - availableCash - (usualGrowthDeposit ?? 0))),
             BuildContributionPlan(
-                investedValue, values, targets, usualGrowthDeposit, cyclesObserved, availableCash));
+                appCurrency, investedValue, values, targets, minimumNewMoney, status != "OnTrack",
+                usualGrowthDeposit, cyclesObserved, availableCash));
     }
 
     public static string? ValidatePlan(InvestmentPlanMutationDto value)
@@ -353,21 +355,26 @@ public sealed class InvestmentAllocationService(AppDbContext context)
     /// * When the mix has drifted, the same deposit leans toward whatever is underweight, so the
     ///   portfolio converges on target without selling anything (and without triggering tax).
     ///
-    /// When the deposit is too small to close every gap the gaps are scaled proportionally rather
-    /// than filled greedily: routine buying should keep feeding all three sleeves, and the greedy
-    /// "most underweight first" ordering already exists in the rebalancing recommendations.
+    /// A routine on-track amount may be too small to close every gap, so its gaps are scaled
+    /// proportionally. An off-track plan instead raises the amount to the exact no-sale total.
     /// </summary>
     private static InvestmentContributionPlanDto? BuildContributionPlan(
+        string appCurrency,
         decimal investedValue,
         IReadOnlyDictionary<string, decimal> values,
         IReadOnlyDictionary<string, decimal> targets,
+        decimal minimumNewMoney,
+        bool restoreTarget,
         decimal? usualGrowthDeposit,
         int cyclesObserved,
         decimal availableCash)
     {
-        // Prefer the user's own deposit rhythm; fall back to cash already sitting in the
-        // brokerage, which is the only other amount we can honestly say is ready to invest.
-        var amount = usualGrowthDeposit is > 0 ? usualGrowthDeposit.Value : availableCash;
+        // Cash already inside brokerage accounts participates in every plan. When the normal
+        // cash plus deposit rhythm cannot restore the target, raise the total to the exact
+        // no-sale amount instead of falling back to a separate sell-and-rebuy checklist.
+        var routineNewMoney = usualGrowthDeposit is > 0 ? usualGrowthDeposit.Value : 0;
+        var readyToInvest = availableCash + routineNewMoney;
+        var amount = restoreTarget ? Math.Max(readyToInvest, minimumNewMoney) : readyToInvest;
         if (amount <= 0.005m) return null;
         var isEstimated = usualGrowthDeposit is not > 0;
 
@@ -424,14 +431,33 @@ public sealed class InvestmentAllocationService(AppDbContext context)
                 Math.Round(projectedPercentage - targets[definition.Key], 2));
         }).ToList();
 
-        var basis = isEstimated
-            ? "Uninvested cash in your brokerage accounts."
-            : cyclesObserved == 1
-                ? "Your Growth deposit from the last completed cycle."
-                : $"The median of your Growth deposits across {cyclesObserved} completed cycles.";
+        var depositBasis = cyclesObserved == 1
+            ? "your Growth deposit from the last completed cycle"
+            : $"the median of your Growth deposits across {cyclesObserved} completed cycles";
+        string basis;
+        if (restoreTarget && minimumNewMoney > readyToInvest + 0.005m)
+        {
+            var newMoney = Math.Max(0, amount - availableCash);
+            basis = availableCash > 0
+                ? $"The total needed to restore your target without selling. It includes {Format(availableCash, appCurrency)} of uninvested cash already in your brokerage accounts; the remaining {Format(newMoney, appCurrency)} is new money."
+                : "The total new money needed to restore your target without selling.";
+        }
+        else if (availableCash > 0 && usualGrowthDeposit is > 0)
+        {
+            basis = $"Includes {Format(availableCash, appCurrency)} of uninvested cash already in your brokerage accounts plus {depositBasis}.";
+        }
+        else if (availableCash > 0)
+        {
+            basis = "Uninvested cash already in your brokerage accounts.";
+        }
+        else
+        {
+            basis = char.ToUpperInvariant(depositBasis[0]) + depositBasis[1..] + ".";
+        }
 
         return new InvestmentContributionPlanDto(
-            RoundMoney(amount), basis, cyclesObserved, isEstimated, sleeves);
+            RoundMoney(amount), usualGrowthDeposit is > 0 ? RoundMoney(usualGrowthDeposit.Value) : null,
+            basis, cyclesObserved, isEstimated, sleeves);
     }
 
     /// <summary>

@@ -177,7 +177,7 @@ public class DocumentsController : ControllerBase
         // for the download helper, which reads Content-Disposition before saving the file.
         var safeFileName = result.Value.FileName.Replace("\"", string.Empty, StringComparison.Ordinal);
         Response.Headers.ContentDisposition = $"inline; filename=\"{safeFileName}\"; filename*=UTF-8''{Uri.EscapeDataString(result.Value.FileName)}";
-        return File(result.Value.Data, result.Value.ContentType);
+        return File(result.Value.Data, result.Value.ContentType, enableRangeProcessing: true);
     }
 
     [HttpPost("export-selected")]

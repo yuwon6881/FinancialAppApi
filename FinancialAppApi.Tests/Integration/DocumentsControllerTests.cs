@@ -53,6 +53,14 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
         Assert.Equal(originalBytes, await downloadResponse.Content.ReadAsByteArrayAsync());
         Assert.Equal("application/pdf", downloadResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("inline", downloadResponse.Content.Headers.ContentDisposition?.DispositionType);
+
+        using var rangeRequest = new HttpRequestMessage(HttpMethod.Get, $"/api/documents/{documentId}/content");
+        rangeRequest.Headers.Range = new RangeHeaderValue(0, 9);
+        using var rangeResponse = await client.SendAsync(rangeRequest);
+        Assert.Equal(HttpStatusCode.PartialContent, rangeResponse.StatusCode);
+        Assert.Equal(new ContentRangeHeaderValue(0, 9, originalBytes.Length), rangeResponse.Content.Headers.ContentRange);
+        Assert.Equal(originalBytes[..10], await rangeResponse.Content.ReadAsByteArrayAsync());
 
         var missingCategoryUpdate = await client.PatchAsJsonAsync($"/api/documents/{documentId}", new
         {
