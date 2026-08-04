@@ -171,7 +171,13 @@ public class DocumentsController : ControllerBase
         var result = await _service.GetContentAsync(id, ct);
         if (result == null) return NotFound();
 
-        return File(result.Value.Data, result.Value.ContentType, result.Value.FileName);
+        // The browser PWA opens this endpoint directly in its PDF/image viewer. Mark the
+        // response inline so mobile Chrome does not treat the authenticated preview as a
+        // download or fail while opening a blob-backed viewer. The filename is still exposed
+        // for the download helper, which reads Content-Disposition before saving the file.
+        var safeFileName = result.Value.FileName.Replace("\"", string.Empty, StringComparison.Ordinal);
+        Response.Headers.ContentDisposition = $"inline; filename=\"{safeFileName}\"; filename*=UTF-8''{Uri.EscapeDataString(result.Value.FileName)}";
+        return File(result.Value.Data, result.Value.ContentType);
     }
 
     [HttpPost("export-selected")]
