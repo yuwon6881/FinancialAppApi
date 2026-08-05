@@ -101,6 +101,102 @@ public sealed class InvestmentPortfolioServiceTests
     }
 
     [Fact]
+    public async Task ChangeToday_IncludesFxMovementBetweenTheTwoPriceDates()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var instrument = new InvestmentInstrument
+        {
+            Symbol = "TEST", Name = "Test", Type = "Stock", Currency = "USD", ProviderSymbol = "TEST"
+        };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+            Type = "Buy", TradeDate = new DateOnly(2026, 7, 1), Units = 2, UnitPrice = 10, CashAmount = 20
+        });
+        context.MarketPriceBars.AddRange(
+            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 20), Close = 10 },
+            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 23), Close = 12 });
+        context.FxRateBars.AddRange(
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 20), Rate = 4 },
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 23), Rate = 5 });
+        await context.SaveChangesAsync();
+
+        var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
+        var holding = Assert.Single(portfolio.Holdings);
+
+        // Two units moved from MYR 40 to MYR 60 each: (12*5 - 10*4) * 2.
+        Assert.Equal(40m, holding.DailyChangeApp);
+        Assert.Equal(40m, portfolio.Summary.DailyChange);
+        Assert.Equal(120m, portfolio.Summary.MarketValue);
+        Assert.Null(portfolio.Summary.CostBasis);
+    }
+
+    [Fact]
+    public async Task ChangeToday_IsUnavailableWithoutAPreviousPrice()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var instrument = new InvestmentInstrument
+        {
+            Symbol = "TEST", Name = "Test", Type = "Stock", Currency = "USD", ProviderSymbol = "TEST"
+        };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+            Type = "Buy", TradeDate = new DateOnly(2026, 7, 1), Units = 1, UnitPrice = 10, CashAmount = 10
+        });
+        context.MarketPriceBars.Add(new MarketPriceBar
+        {
+            Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST",
+            MarketDate = new DateOnly(2026, 7, 23), Close = 12
+        });
+        await context.SaveChangesAsync();
+
+        var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
+
+        Assert.Null(Assert.Single(portfolio.Holdings).DailyChangeApp);
+        Assert.Null(portfolio.Summary.DailyChange);
+    }
+
+    [Fact]
+    public async Task YearlyReturn_UsesActualExternalFlowDatesAndDoesNotDependOnChartRange()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var instrument = new InvestmentInstrument { Symbol = "CASH", Name = "Cash income", Type = "Other", Currency = "USD", IsCustom = true };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+        context.InvestmentCashFlows.Add(new InvestmentCashFlow
+        {
+            AccountId = account.Id, Currency = "USD", Type = "Deposit",
+            Amount = 1000, Date = today.AddDays(-365)
+        });
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+            Type = "Dividend", TradeDate = today, CashAmount = 100
+        });
+        await context.SaveChangesAsync();
+
+        var shortRange = await NewService(context).GetPortfolioAsync("1m", CancellationToken.None);
+        var allRange = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
+
+        Assert.NotNull(shortRange.Summary.AnnualReturn);
+        Assert.InRange(shortRange.Summary.AnnualReturn!.Value, 0.09999m, 0.10001m);
+        Assert.Equal(shortRange.Summary.AnnualReturn, allRange.Summary.AnnualReturn);
+    }
+
+    [Fact]
     public async Task Cash_CombinesDepositsWithdrawalsAndDividends_AndCountsTowardTotalValue()
     {
         await using var context = TestHelpers.NewInMemoryContext();

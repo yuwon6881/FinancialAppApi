@@ -15,6 +15,7 @@ public sealed record InvestmentSummaryDto(
     decimal? RealisedProfitLoss,
     decimal? NetDividends,
     decimal? DailyChange,
+    decimal? AnnualReturn,
     decimal? CashValue,
     decimal? TotalValue);
 
@@ -227,18 +228,25 @@ public sealed class InvestmentPortfolioService(
             var latest = prices.LastOrDefault();
             var previous = prices.Count > 1 ? prices[^2] : null;
             var fx = seriesResolver.ResolveFx(instrument.Currency, appCurrency, today, fxBars);
+            var previousFx = previous is null
+                ? null
+                : seriesResolver.ResolveFx(instrument.Currency, appCurrency, previous.Date, fxBars);
             decimal? valueNative = latest is null ? null : latest.Price * position.Units;
             decimal? valueApp = valueNative is not null && fx is not null ? valueNative * fx.Rate : null;
             decimal? unrealised = valueApp is not null && position.CostBasisApp is not null
                 ? valueApp - position.CostBasisApp
                 : null;
-            decimal? daily = latest is not null && previous is not null && fx is not null
-                ? (latest.Price - previous.Price) * position.Units * fx.Rate
+            decimal? daily = latest is not null && previous is not null && fx is not null && previousFx is not null
+                ? (latest.Price * fx.Rate - previous.Price * previousFx.Rate) * position.Units
                 : null;
             var incomplete = !instrument.Currency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase) && fx is null;
             if (incomplete)
             {
                 warnings.Add($"Current FX is missing for {instrument.Currency}/{appCurrency}; converted totals are incomplete.");
+            }
+            if (previous is not null && previousFx is null)
+            {
+                warnings.Add($"Previous FX is missing for {instrument.Currency}/{appCurrency}; change today is incomplete.");
             }
 
             holdings.Add(new InvestmentHoldingDto(
@@ -272,17 +280,20 @@ public sealed class InvestmentPortfolioService(
                 latest is null || fx is null ? null : latest.Date < fx.Date ? latest.Date : fx.Date));
         }
 
-        var convertedComplete = holdings.All(value => value.ValueApp is not null) &&
-                                calculation.Positions.All(value =>
-                                    value.CostBasisApp is not null &&
-                                    value.RealisedApp is not null &&
-                                    value.DividendsApp is not null);
-        decimal? marketValue = convertedComplete ? holdings.Sum(value => value.ValueApp ?? 0) : null;
-        decimal? costBasis = convertedComplete
-            ? calculation.Positions.Where(value => value.Units != 0).Sum(value => value.CostBasisApp ?? 0)
+        // Each summary answers a different question. Missing historical trade FX
+        // can make cost or banked profit unavailable without making today's market
+        // value unavailable, so do not collapse them behind one completeness flag.
+        var openPositions = calculation.Positions.Where(value => value.Units != 0).ToList();
+        var marketValueComplete = holdings.All(value => value.ValueApp is not null);
+        var costBasisComplete = openPositions.All(value => value.CostBasisApp is not null);
+        var realisedComplete = calculation.Positions.All(value => value.RealisedApp is not null);
+        var dividendsComplete = calculation.Positions.All(value => value.DividendsApp is not null);
+        decimal? marketValue = marketValueComplete ? holdings.Sum(value => value.ValueApp ?? 0) : null;
+        decimal? costBasis = costBasisComplete
+            ? openPositions.Sum(value => value.CostBasisApp ?? 0)
             : null;
-        decimal? realised = convertedComplete ? calculation.Positions.Sum(value => value.RealisedApp ?? 0) : null;
-        decimal? dividends = convertedComplete ? calculation.Positions.Sum(value => value.DividendsApp ?? 0) : null;
+        decimal? realised = realisedComplete ? calculation.Positions.Sum(value => value.RealisedApp ?? 0) : null;
+        decimal? dividends = dividendsComplete ? calculation.Positions.Sum(value => value.DividendsApp ?? 0) : null;
         decimal? unrealisedTotal = marketValue is not null && costBasis is not null ? marketValue - costBasis : null;
         var growthAmounts = ledgerTransactions
             .Select(value => new
@@ -361,6 +372,7 @@ public sealed class InvestmentPortfolioService(
             .Select(value => new InvestmentContributionDto(value.Date, value.Amount))
             .ToList();
         decimal? netDeposits = 0;
+        var returnFlows = new List<DatedInvestmentFlow>();
         foreach (var flow in cashFlows)
         {
             // Conversions move value between currencies without adding any, so
@@ -372,13 +384,23 @@ public sealed class InvestmentPortfolioService(
                 netDeposits = null;
                 break;
             }
-            netDeposits += flow.Amount * fx.Value;
+            var amountApp = flow.Amount * fx.Value;
+            netDeposits += amountApp;
+            // A deposit is money leaving the investor; a negative withdrawal is
+            // money returning to them. Internal trades and income stay inside the
+            // terminal portfolio value and therefore are not external return flows.
+            returnFlows.Add(new DatedInvestmentFlow(flow.Date, -amountApp));
         }
 
         var chart = BuildChart(range, transactions, cashFlows, instruments, references, priceBars, fxBars, appCurrency);
         var latestFetchedAt = holdings.Where(value => value.PriceFetchedAt is not null)
             .Select(value => value.PriceFetchedAt)
             .Max();
+        var dailyComplete = holdings.Count == 0 || holdings.All(value => value.DailyChangeApp is not null);
+        var annualReturn = totalValue is not null && netDeposits is not null
+            ? InvestmentReturnCalculator.Calculate(returnFlows.Append(
+                new DatedInvestmentFlow(today, totalValue.Value)))
+            : null;
         var summary = new InvestmentSummaryDto(
             growthLedger,
             growthContributions,
@@ -389,7 +411,8 @@ public sealed class InvestmentPortfolioService(
             unrealisedTotal is not null && costBasis is > 0 ? unrealisedTotal / costBasis * 100m : null,
             realised,
             dividends,
-            convertedComplete ? holdings.Sum(value => value.DailyChangeApp ?? 0) : null,
+            dailyComplete ? holdings.Sum(value => value.DailyChangeApp ?? 0) : null,
+            annualReturn,
             cashValue,
             totalValue);
 
