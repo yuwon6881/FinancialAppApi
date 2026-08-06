@@ -11,6 +11,7 @@ public enum PayEarlyStatus
     Success,
     PaymentNotFound,
     PaymentInactive,
+    AutomaticPayment,
     NoUpcomingOccurrence,
     Conflict
 }
@@ -31,6 +32,18 @@ public class RecurringPaymentPayEarlyService
     // 5 years of monthly cycles is far more runway than any real recurring payment needs; it
     // just bounds the scan so a misconfigured/expired payment can't loop forever.
     private const int MaxCyclesToScan = 60;
+
+    // An auto-deducted bill leaves the account on the bank's schedule, so there is nothing to bring
+    // forward: settling it here would post a ledger row for money that is still going to be taken on
+    // the real due date. The client hides the button, but this is the check that actually decides.
+    private const string AutomaticPaymentMessage =
+        "This bill is deducted automatically, so it can't be paid ahead of time.";
+
+    private static PayEarlyResult? RejectIfNotUserPaid(RecurringPayment payment)
+    {
+        if (payment.PaymentMode != RecurringPaymentMode.AutoDeduct) return null;
+        return new PayEarlyResult(PayEarlyStatus.AutomaticPayment, Message: AutomaticPaymentMessage);
+    }
 
     private readonly AppDbContext _context;
     private readonly RecurringOccurrenceService _occurrenceService;
@@ -78,6 +91,11 @@ public class RecurringPaymentPayEarlyService
         if (!payment.Active)
         {
             return new PayEarlyResult(PayEarlyStatus.PaymentInactive, Message: "This recurring payment is not active.");
+        }
+        var automaticRejection = RejectIfNotUserPaid(payment);
+        if (automaticRejection != null)
+        {
+            return automaticRejection;
         }
 
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
@@ -193,6 +211,13 @@ public class RecurringPaymentPayEarlyService
         if (!payment.Active)
         {
             return (null, new PayEarlyResult(PayEarlyStatus.PaymentInactive, Message: "This recurring payment is not active."));
+        }
+        var automaticRejection = RejectIfNotUserPaid(payment);
+        if (automaticRejection != null)
+        {
+            // Checked here as well as in the date-taking overload so the caller gets the real reason
+            // rather than whatever the occurrence scan happens to conclude.
+            return (null, automaticRejection);
         }
 
         var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);

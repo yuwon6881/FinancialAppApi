@@ -35,6 +35,43 @@ public class RecurringPaymentPayEarlyServiceTests
     }
 
     [Fact]
+    public async Task PayEarlyAsync_ReturnsAutomaticPayment_WhenBillIsAutoDeducted()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        // A perfectly payable occurrence exists -- only the payment mode stands in the way.
+        context.RecurringPayments.Add(NewPayment(
+            "rec-1",
+            startDate: "2026-01-01",
+            dueDate: 15,
+            paymentMode: RecurringPaymentMode.AutoDeduct));
+        await context.SaveChangesAsync();
+        var service = NewService(context, Today(2026, 7, 10));
+
+        var result = await service.PayEarlyAsync("rec-1");
+
+        Assert.Equal(PayEarlyStatus.AutomaticPayment, result.Status);
+        Assert.Empty(context.Transactions);
+    }
+
+    [Fact]
+    public async Task PayEarlyAsync_ReturnsAutomaticPayment_WhenAutoDeductedAndTheClientNamesTheOccurrence()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment(
+            "rec-1",
+            startDate: "2026-01-01",
+            dueDate: 15,
+            paymentMode: RecurringPaymentMode.AutoDeduct));
+        await context.SaveChangesAsync();
+        var service = NewService(context, Today(2026, 7, 10));
+
+        var result = await service.PayEarlyAsync("rec-1", new DateOnly(2026, 7, 15));
+
+        Assert.Equal(PayEarlyStatus.AutomaticPayment, result.Status);
+        Assert.Empty(context.Transactions);
+    }
+
+    [Fact]
     public async Task PayEarlyAsync_SettlesNextFutureOccurrence_WithExactAmountCategoryAndTransactionDate_Monthly()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -279,10 +316,12 @@ public class RecurringPaymentPayEarlyServiceTests
         string startDate = "2026-01-01",
         int dueDate = 15,
         string? endDate = null,
-        bool active = true)
+        bool active = true,
+        string paymentMode = RecurringPaymentMode.Manual)
     {
         return new RecurringPayment
         {
+            PaymentMode = paymentMode,
             Id = id,
             Name = "Payment",
             Amount = amount,

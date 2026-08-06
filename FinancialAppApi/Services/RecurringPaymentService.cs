@@ -55,7 +55,8 @@ public sealed record RecurringPaymentProjection(
     string? EndDate,
     bool ReminderEnabled,
     string ReminderMode,
-    int ReminderLeadDays);
+    int ReminderLeadDays,
+    string PaymentMode);
 
 public class RecurringPaymentService
 {
@@ -93,7 +94,8 @@ public class RecurringPaymentService
                 p.EndDate,
                 p.PushReminderEnabled,
                 p.PushReminderMode,
-                p.PushReminderLeadDays
+                p.PushReminderLeadDays,
+                p.PaymentMode
             ))
             .ToListAsync(cancellationToken);
     }
@@ -173,6 +175,7 @@ public class RecurringPaymentService
         existing.StartDate = updated.StartDate;
         existing.EndDate = updated.EndDate;
         existing.Active = updated.Active;
+        existing.PaymentMode = updated.PaymentMode;
 
         try
         {

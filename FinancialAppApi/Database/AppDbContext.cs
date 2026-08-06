@@ -96,12 +96,14 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.Amount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.PushReminderMode).HasDefaultValue("Once");
             entity.Property(e => e.PushReminderLeadDays).HasDefaultValue(1);
+            entity.Property(e => e.PaymentMode).HasDefaultValue(RecurringPaymentMode.Manual);
             entity.HasIndex(e => e.UserId);
             entity.ToTable(t =>
             {
                 t.HasCheckConstraint("ck_recurringpayments_amount_nonzero", "\"Amount\" <> 0");
                 t.HasCheckConstraint("ck_recurringpayments_pushremindermode", "\"PushReminderMode\" IN ('Once', 'Daily')");
                 t.HasCheckConstraint("ck_recurringpayments_pushreminderleaddays", "\"PushReminderLeadDays\" IN (1, 2, 3, 7)");
+                t.HasCheckConstraint("ck_recurringpayments_paymentmode", "\"PaymentMode\" IN ('AutoDeduct', 'Manual')");
             });
         });
 

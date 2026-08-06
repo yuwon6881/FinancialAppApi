@@ -41,6 +41,14 @@ public class RecurringPayment : IUserOwnedEntity
 
     public string? EndDate { get; set; } // End date (yyyy-MM-dd, optional)
 
+    // "AutoDeduct" means the money leaves the account on its own; "Manual" means the user sends it
+    // each cycle. Only Manual payments can be settled ahead of their due date -- a direct debit
+    // cannot be brought forward, so paying one early would post a ledger row for money the bank is
+    // still going to take on the real due date. Enforced in RecurringPaymentPayEarlyService.
+    [Required]
+    [StringLength(20)]
+    public string PaymentMode { get; set; } = RecurringPaymentMode.Manual;
+
     // Per-payment opt-in for push reminders. Defaults to false: the account-level toggle
     // (FinancialSetting.PushRemindersEnabled) and this payment-level toggle must both be on
     // before any reminder is dispatched.
@@ -57,4 +65,12 @@ public class RecurringPayment : IUserOwnedEntity
     // controller validation and a database check constraint.
     [Required]
     public int PushReminderLeadDays { get; set; } = 1;
+}
+
+// Stored as a string with a database check constraint rather than a CLR enum, matching the
+// SavingsGoalStatus pattern -- this project has no enum-to-string conversion infrastructure.
+public static class RecurringPaymentMode
+{
+    public const string AutoDeduct = "AutoDeduct";
+    public const string Manual = "Manual";
 }

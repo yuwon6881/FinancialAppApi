@@ -61,6 +61,10 @@ public class RecurringPaymentsController : ControllerBase
         {
             return BadRequest(new { message = "Amount must be a valid non-zero value." });
         }
+        if (!TryNormalizePaymentMode(dto.PaymentMode, out var paymentMode))
+        {
+            return BadRequest(new { message = "Payment mode must be AutoDeduct or Manual." });
+        }
 
         var payment = new RecurringPayment
         {
@@ -74,7 +78,8 @@ public class RecurringPaymentsController : ControllerBase
             DueDate = dto.DueDate,
             StartDate = dto.StartDate,
             Active = dto.Active,
-            EndDate = dto.EndDate
+            EndDate = dto.EndDate,
+            PaymentMode = paymentMode
         };
 
         var result = await _recurringPaymentService.CreateRecurringPaymentAsync(payment, HttpContext.RequestAborted);
@@ -121,6 +126,10 @@ public class RecurringPaymentsController : ControllerBase
         {
             return BadRequest(new { message = "Amount must be a valid non-zero value." });
         }
+        if (!TryNormalizePaymentMode(dto.PaymentMode, out var paymentMode))
+        {
+            return BadRequest(new { message = "Payment mode must be AutoDeduct or Manual." });
+        }
 
         var updated = new RecurringPayment
         {
@@ -134,7 +143,8 @@ public class RecurringPaymentsController : ControllerBase
             DueDate = dto.DueDate,
             StartDate = dto.StartDate,
             EndDate = dto.EndDate,
-            Active = dto.Active
+            Active = dto.Active,
+            PaymentMode = paymentMode
         };
 
         var result = await _recurringPaymentService.UpdateRecurringPaymentAsync(id, updated, HttpContext.RequestAborted);
@@ -203,6 +213,7 @@ public class RecurringPaymentsController : ControllerBase
         {
             PayEarlyStatus.PaymentNotFound => NotFound(),
             PayEarlyStatus.PaymentInactive => BadRequest(new { message = result.Message }),
+            PayEarlyStatus.AutomaticPayment => BadRequest(new { message = result.Message }),
             PayEarlyStatus.NoUpcomingOccurrence => BadRequest(new { message = result.Message }),
             PayEarlyStatus.Conflict => Conflict(new { message = result.Message }),
             _ => Ok(new
@@ -231,7 +242,8 @@ public class RecurringPaymentsController : ControllerBase
             EndDate = rp.EndDate,
             ReminderEnabled = rp.PushReminderEnabled,
             ReminderMode = rp.PushReminderMode,
-            ReminderLeadDays = rp.PushReminderLeadDays
+            ReminderLeadDays = rp.PushReminderLeadDays,
+            PaymentMode = rp.PaymentMode
         };
     }
 
@@ -252,6 +264,23 @@ public class RecurringPaymentsController : ControllerBase
         return false;
     }
 
+    private static bool TryNormalizePaymentMode(string? value, out string paymentMode)
+    {
+        if (string.Equals(value, RecurringPaymentMode.AutoDeduct, StringComparison.OrdinalIgnoreCase))
+        {
+            paymentMode = RecurringPaymentMode.AutoDeduct;
+            return true;
+        }
+        if (string.Equals(value, RecurringPaymentMode.Manual, StringComparison.OrdinalIgnoreCase))
+        {
+            paymentMode = RecurringPaymentMode.Manual;
+            return true;
+        }
+
+        paymentMode = string.Empty;
+        return false;
+    }
+
     internal static RecurringPaymentDto MapToDto(RecurringPaymentProjection rp)
     {
         return new RecurringPaymentDto
@@ -269,7 +298,8 @@ public class RecurringPaymentsController : ControllerBase
             EndDate = rp.EndDate,
             ReminderEnabled = rp.ReminderEnabled,
             ReminderMode = rp.ReminderMode,
-            ReminderLeadDays = rp.ReminderLeadDays
+            ReminderLeadDays = rp.ReminderLeadDays,
+            PaymentMode = rp.PaymentMode
         };
     }
 }
@@ -308,4 +338,5 @@ public class RecurringPaymentDto
     public bool ReminderEnabled { get; set; }
     public string ReminderMode { get; set; } = "Once";
     public int ReminderLeadDays { get; set; } = 1;
+    public string PaymentMode { get; set; } = RecurringPaymentMode.Manual;
 }

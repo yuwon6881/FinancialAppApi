@@ -17,7 +17,8 @@ public partial class AiAssistantService
         string Id, string Name, decimal Amount, string Category, string LedgerCategory,
         string StartDate, string? EndDate, int DueDate, bool Active,
         string Frequency, string NextDueDate, bool PushReminderEnabled = false,
-        string PushReminderMode = "Once", int PushReminderLeadDays = 1);
+        string PushReminderMode = "Once", int PushReminderLeadDays = 1,
+        string PaymentMode = Models.RecurringPaymentMode.Manual);
 
     private sealed record AiLedgerEditMatch(string Id, string Description, DateTime Date);
 
@@ -59,7 +60,7 @@ public partial class AiAssistantService
                 r.Id, r.Name, r.Amount, r.Category, r.LedgerCategory,
                 r.StartDate, r.EndDate, r.DueDate, r.Active,
                 r.Frequency, r.NextDueDate, r.PushReminderEnabled,
-                r.PushReminderMode, r.PushReminderLeadDays))
+                r.PushReminderMode, r.PushReminderLeadDays, r.PaymentMode))
             .Take(100)
             .ToListAsync(cancellationToken);
 

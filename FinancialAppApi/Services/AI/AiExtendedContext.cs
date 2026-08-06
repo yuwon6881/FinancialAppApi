@@ -180,8 +180,11 @@ public partial class AiAssistantService
 
         foreach (var payment in models)
         {
+            // An auto-deducted bill has a real next due date but can never be brought forward, so the
+            // occurrence scan is skipped entirely rather than offering a date the server would reject.
+            var isAutoDeducted = payment.PaymentMode == Models.RecurringPaymentMode.AutoDeduct;
             DateOnly? next = null;
-            if (payment.Active)
+            if (payment.Active && !isAutoDeducted)
             {
                 var paid = settledByPayment.GetValueOrDefault(payment.Id) ?? [];
                 var (year, month) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
@@ -201,10 +204,10 @@ public partial class AiAssistantService
             {
                 payment.Id,
                 payment.Name,
-                canPayEarly = payment.Active && next.HasValue,
+                canPayEarly = payment.Active && !isAutoDeducted && next.HasValue,
                 nextUnpaidOccurrence = next?.ToString("yyyy-MM-dd"),
-                reason = !payment.Active ? "Inactive" : next == null ? "NoUpcomingOccurrence" :
-                    "Available"
+                reason = !payment.Active ? "Inactive" : isAutoDeducted ? "AutoDeducted" :
+                    next == null ? "NoUpcomingOccurrence" : "Available"
             });
         }
         return result;

@@ -161,10 +161,14 @@ public class RecurringPaymentsControllerTests
         Assert.IsType<BadRequestObjectResult>(result);
     }
 
-    private static RecurringPayment NewPayment(string id, bool active = true)
+    private static RecurringPayment NewPayment(
+        string id,
+        bool active = true,
+        string paymentMode = RecurringPaymentMode.Manual)
     {
         return new RecurringPayment
         {
+            PaymentMode = paymentMode,
             Id = id,
             Name = "Payment",
             Amount = 100m,
@@ -176,6 +180,101 @@ public class RecurringPaymentsControllerTests
             StartDate = "2026-01-01",
             Active = active
         };
+    }
+
+    [Fact]
+    public async Task PostPayEarly_ReturnsBadRequest_ForAutoDeductedPayment()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", paymentMode: RecurringPaymentMode.AutoDeduct));
+        await context.SaveChangesAsync();
+        var controller = NewController(context);
+
+        var result = await controller.PostPayEarly("rec-1", NextOccurrenceRequest());
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Empty(context.Transactions);
+    }
+
+    [Fact]
+    public async Task GetRecurringPayments_RoundTripsPaymentMode()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", paymentMode: RecurringPaymentMode.AutoDeduct));
+        await context.SaveChangesAsync();
+        var controller = NewController(context);
+
+        var result = await controller.GetRecurringPayments();
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var dto = Assert.Single(Assert.IsType<List<RecurringPaymentDto>>(ok.Value));
+        Assert.Equal(RecurringPaymentMode.AutoDeduct, dto.PaymentMode);
+    }
+
+    [Theory]
+    [InlineData("Automatic")]
+    [InlineData("")]
+    public async Task PostRecurringPayment_RejectsUnsupportedPaymentMode(string paymentMode)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var controller = NewController(context);
+
+        var result = await controller.PostRecurringPayment(new RecurringPaymentDto
+        {
+            Frequency = "Monthly",
+            Amount = Database.ObfuscationHelper.Obfuscate(100m),
+            PaymentMode = paymentMode
+        });
+
+        Assert.IsType<BadRequestObjectResult>(result.Result);
+        Assert.Empty(context.RecurringPayments);
+    }
+
+    [Fact]
+    public async Task PostRecurringPayment_PersistsPaymentMode()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.TransactionCategories.Add(new TransactionCategory { Id = "cat-bills", Name = "Bills" });
+        await context.SaveChangesAsync();
+        var controller = NewController(context);
+
+        var result = await controller.PostRecurringPayment(new RecurringPaymentDto
+        {
+            Id = "rec-1",
+            Name = "Insurance",
+            Amount = Database.ObfuscationHelper.Obfuscate(100m),
+            Frequency = "Monthly",
+            Category = "Bills",
+            LedgerCategory = "Essentials",
+            NextDueDate = "2026-01-15",
+            DueDate = 15,
+            StartDate = "2026-01-01",
+            Active = true,
+            PaymentMode = RecurringPaymentMode.AutoDeduct
+        });
+
+        Assert.IsType<CreatedAtActionResult>(result.Result);
+        var stored = Assert.Single(context.RecurringPayments);
+        Assert.Equal(RecurringPaymentMode.AutoDeduct, stored.PaymentMode);
+    }
+
+    [Fact]
+    public async Task PutRecurringPayment_RejectsUnsupportedPaymentMode()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var controller = NewController(context);
+
+        var result = await controller.PutRecurringPayment(
+            "payment-1",
+            new RecurringPaymentDto
+            {
+                Id = "payment-1",
+                Frequency = "Monthly",
+                Amount = Database.ObfuscationHelper.Obfuscate(100m),
+                PaymentMode = "Direct debit"
+            });
+
+        Assert.IsType<BadRequestObjectResult>(result);
     }
 
     private static PayEarlyRequestDto NextOccurrenceRequest()

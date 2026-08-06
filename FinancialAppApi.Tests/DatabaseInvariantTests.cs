@@ -1,5 +1,7 @@
 using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace FinancialAppApi.Tests;
 
@@ -69,6 +71,24 @@ public class DatabaseInvariantTests
             ]));
 
         Assert.True(index.IsUnique);
+    }
+
+    [Fact]
+    public void Model_ConstrainsRecurringPaymentModeToTheTwoSupportedValues()
+    {
+        using var context = TestHelpers.NewInMemoryContext();
+        // Check constraints live only in the design-time model, not the read-optimized runtime one.
+        var entity = context.GetService<IDesignTimeModel>().Model.FindEntityType(typeof(RecurringPayment))!;
+
+        var constraint = Assert.Single(
+            entity.GetCheckConstraints(),
+            c => c.Name == "ck_recurringpayments_paymentmode");
+
+        Assert.Equal("\"PaymentMode\" IN ('AutoDeduct', 'Manual')", constraint.Sql);
+        // The database is the backstop for the controller's TryNormalizePaymentMode, so the two
+        // must list the same values.
+        Assert.Equal(RecurringPaymentMode.Manual, entity.FindProperty(
+            nameof(RecurringPayment.PaymentMode))!.GetDefaultValue());
     }
 
     [Fact]

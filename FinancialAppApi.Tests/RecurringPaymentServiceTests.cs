@@ -132,6 +132,35 @@ public class RecurringPaymentServiceTests
     }
 
     [Fact]
+    public async Task UpdateRecurringPaymentAsync_ChangesPaymentMode()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.RecurringPayments.Add(NewPayment("rec-1", "Internet", paymentMode: RecurringPaymentMode.Manual));
+        await context.SaveChangesAsync();
+        var service = new RecurringPaymentService(context);
+
+        var result = await service.UpdateRecurringPaymentAsync(
+            "rec-1",
+            NewPayment("rec-1", "Internet", paymentMode: RecurringPaymentMode.AutoDeduct));
+
+        Assert.Equal(UpdateRecurringPaymentStatus.Updated, result.Status);
+        Assert.Equal(RecurringPaymentMode.AutoDeduct, result.Payment!.PaymentMode);
+    }
+
+    [Fact]
+    public async Task GetRecurringPaymentsAsync_ProjectsPaymentMode()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", "Internet", paymentMode: RecurringPaymentMode.AutoDeduct));
+        await context.SaveChangesAsync();
+
+        var payments = await new RecurringPaymentService(context).GetRecurringPaymentsAsync();
+
+        Assert.Equal(RecurringPaymentMode.AutoDeduct, payments[0].PaymentMode);
+    }
+
+    [Fact]
     public async Task DeleteRecurringPaymentAsync_RemovesExistingPayment()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -229,10 +258,12 @@ public class RecurringPaymentServiceTests
         string id,
         string name,
         decimal amount = 100m,
-        bool active = true)
+        bool active = true,
+        string paymentMode = RecurringPaymentMode.Manual)
     {
         return new RecurringPayment
         {
+            PaymentMode = paymentMode,
             Id = id,
             Name = name,
             Amount = amount,
