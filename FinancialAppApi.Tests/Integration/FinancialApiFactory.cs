@@ -101,6 +101,18 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
             {
                 services.Remove(hostedService);
             }
+
+            // StartupWarmupService exists to pay Npgsql and DataProtection costs up front on a
+            // cold Cloud Run container. Against the InMemory store it warms nothing, and its
+            // background scope can outlive a test's factory, so drop it rather than leave every
+            // test racing a task that only ever logs a warning.
+            var warmup = services.FirstOrDefault(d =>
+                d.ServiceType == typeof(IHostedService) &&
+                d.ImplementationType == typeof(StartupWarmupService));
+            if (warmup is not null)
+            {
+                services.Remove(warmup);
+            }
         });
     }
 

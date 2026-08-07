@@ -39,11 +39,19 @@ public static class ServiceCollectionExtensions
             services.AddSwaggerGen();
         }
 
-        services.AddOpenTelemetry()
-            .ConfigureResource(resource => resource.AddService(Telemetry.ServiceName))
-            .WithTracing(tracing =>
-            {
-                tracing
+        // Development only, and the console exporter is the reason: it is the only exporter this
+        // app has. Registering the SDK outside Development installed ActivityListeners and meter
+        // subscriptions that made the instrumentation record spans and measurements on every
+        // request, then dropped all of them -- cold-start assembly loading and steady-state
+        // overhead for data nobody could read. The Telemetry.* call sites stay unconditional:
+        // ActivitySource.StartActivity returns null and instrument writes are no-ops when nothing
+        // is listening, so they cost effectively nothing here. Wire a real exporter (Cloud Trace,
+        // OTLP) into this branch's condition before relying on production traces.
+        if (environment.IsDevelopment())
+        {
+            services.AddOpenTelemetry()
+                .ConfigureResource(resource => resource.AddService(Telemetry.ServiceName))
+                .WithTracing(tracing => tracing
                     .AddSource(Telemetry.ServiceName)
                     .AddAspNetCoreInstrumentation()
                     .AddEntityFrameworkCoreInstrumentation(options =>
@@ -51,26 +59,13 @@ public static class ServiceCollectionExtensions
                         // SQL text can reveal schema and query intent. Aggregate durations and
                         // counts are recorded by PerformanceDbCommandInterceptor instead.
                         options.SetDbStatementForText = false;
-                    });
-
-                // The console exporter dumps every span to stdout; it's a local-dev aid.
-                // In production (Cloud Run) it floods Cloud Logging and inflates ingestion cost.
-                if (environment.IsDevelopment())
-                {
-                    tracing.AddConsoleExporter();
-                }
-            })
-            .WithMetrics(metrics =>
-            {
-                metrics
+                    })
+                    .AddConsoleExporter())
+                .WithMetrics(metrics => metrics
                     .AddMeter(Telemetry.ServiceName)
-                    .AddAspNetCoreInstrumentation();
-
-                if (environment.IsDevelopment())
-                {
-                    metrics.AddConsoleExporter();
-                }
-            });
+                    .AddAspNetCoreInstrumentation()
+                    .AddConsoleExporter());
+        }
 
         services.AddHealthChecks();
 
@@ -388,6 +383,11 @@ public static class ServiceCollectionExtensions
         {
             dataProtection.ProtectKeysWithCertificate(keyEncryptionCertificate);
         }
+
+        // Registered here because everything it warms (the EF model, the Npgsql connection, the
+        // DataProtection key ring) is set up by this method. The --migrate path returns before
+        // app.Run(), so hosted services never start there and no gate is needed.
+        services.AddHostedService<StartupWarmupService>();
 
         services.AddSingleton<FinancialClock>();
         services.AddScoped<CycleBalanceService>();
