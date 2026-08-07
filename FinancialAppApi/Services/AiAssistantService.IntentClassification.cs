@@ -504,7 +504,12 @@ public partial class AiAssistantService
             line,
             @"^[\p{L}\p{N}][\p{L}\p{N}&'().,+/ -]{0,159}?\s+" +
             @"(?:(?:rm|myr|usd|sgd|eur|gbp|aud|cad|jpy|cny|rmb|\$|€|£)\s*)?" +
-            @"\d{1,9}(?:[.,]\d{1,2})?" +
+            // A single record is often typed as a sum of its parts ("Mamak 18+2.30" -- the meal
+            // plus the drink). That is still one record, so it must still pin the response to one
+            // action; without this the amount read as unparseable, the count fell to zero, the
+            // schema stopped requiring an action, and the model answered with a staging sentence
+            // and no draft behind it.
+            @"\d{1,9}(?:[.,]\d{1,2})?(?:\s*\+\s*\d{1,9}(?:[.,]\d{1,2})?)*" +
             @"(?:\s+(?:income|inflow|outflow|expense|refund|deposit|withdrawal|" +
             @"transfer(?:\s+from\s+[\p{L}]+\s+to\s+[\p{L}]+)?|" +
             @"essentials?|growth|stability|rewards?))*\s*$",

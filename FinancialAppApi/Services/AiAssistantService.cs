@@ -414,6 +414,8 @@ public partial class AiAssistantService
         {
             _logger.LogWarning(ex, "Ledger draft enrichment failed; returning unenriched drafts.");
         }
+        // A staging claim survives only if the turn actually carries the action that stages it.
+        parsed = EnforceActionBackedDraftClaims(parsed, context.SensitiveMode);
         // Phase 5: an incomplete aggregate must never surface as a bare exact figure.
         parsed = parsed with { Reply = EnforceApproximateWording(parsed.Reply, contextResult.Sufficiency.Approximate) };
         parsed = parsed with

@@ -74,6 +74,33 @@ public sealed class AiConversationMemoryServiceTests
     }
 
     [Fact]
+    public async Task ClientWithoutAConversationIdMakesNoVersionClaimAndAppendsInstead()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { HideSensitive = false });
+        // The state a stopped-but-committed turn leaves behind: the server is at version 1 while
+        // this client, having never received a response, still holds no id and a default 0.
+        var conversation = new AiConversation { Version = 1 };
+        context.AiConversations.Add(conversation);
+        await context.SaveChangesAsync();
+        var memory = new AiConversationMemoryService(context);
+
+        var prepared = await memory.PrepareAsync(
+            new AiChatRequest("second question", [], ClientTurnId: "turn-2", ConversationVersion: 0),
+            CancellationToken.None);
+
+        Assert.False(prepared.Conflict);
+        Assert.Equal(conversation.Id, prepared.Conversation?.Id);
+        var completed = await memory.CompleteAsync(
+            prepared,
+            "second question",
+            new AiChatResponse("Answered.", []),
+            CancellationToken.None);
+        Assert.NotNull(completed);
+        Assert.Equal(2, completed!.ConversationVersion);
+    }
+
+    [Fact]
     public async Task PromptHistoryIncludesLatestAndRelevantOlderTurnWithinBudget()
     {
         await using var context = TestHelpers.NewInMemoryContext();

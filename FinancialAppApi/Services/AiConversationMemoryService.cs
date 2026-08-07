@@ -138,7 +138,13 @@ public sealed class AiConversationMemoryService
             return new PreparedConversation(
                 conversation, clientTurnId, [], DeserializeState(conversation.StateJson), true, Conflict: true);
         }
-        if (request.ConversationVersion != null && request.ConversationVersion != conversation.Version)
+        // Only a client that already holds this conversation's id can make a claim about its
+        // version. A client without one has never been told a version, so its default 0 is not a
+        // claim -- and treating it as one turned every turn the client never received (a stopped
+        // request that still committed server-side) into a bogus "changed on another device".
+        if (request.ConversationId != null &&
+            request.ConversationVersion != null &&
+            request.ConversationVersion != conversation.Version)
         {
             return new PreparedConversation(
                 conversation, clientTurnId, [], DeserializeState(conversation.StateJson), true, Conflict: true);

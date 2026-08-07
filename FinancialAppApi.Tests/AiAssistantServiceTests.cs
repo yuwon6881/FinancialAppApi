@@ -452,6 +452,80 @@ public class AiAssistantServiceTests
     }
 
     [Fact]
+    public async Task ChatAsync_AddedUpAmountOnOneLine_StillPinsTheResponseToOneDraftAction()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Staging Mamak.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Mamak\",\"amount\":20.30,\"txType\":\"outflow\",\"category\":\"Food\",\"ledgerCategory\":\"Essentials\",\"ledgerCategorySpecified\":false}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("And Mamak 18+2.30", []));
+
+        var action = Assert.Single(outcome.Response.Actions);
+        Assert.Equal("Mamak", action.Payload["description"]?.ToString());
+        using var request = JsonDocument.Parse(handler.RequestBodies[^1]);
+        var actionsSchema = request.RootElement.GetProperty("text")
+            .GetProperty("format")
+            .GetProperty("schema")
+            .GetProperty("properties")
+            .GetProperty("actions");
+        // A sum is one record, so the schema must still forbid an empty actions array -- that is
+        // what stopped the model from answering with a staging sentence and no draft behind it.
+        Assert.Equal(1, actionsSchema.GetProperty("minItems").GetInt32());
+        Assert.Equal(1, actionsSchema.GetProperty("maxItems").GetInt32());
+    }
+
+    [Fact]
+    public async Task ChatAsync_StagingClaimWithNoAction_IsReplacedWithAnHonestReply()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Staging 1 draft: Mamak for MYR 20.30.",
+            actionsJson: "[]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("And Mamak 18+2.30", []));
+
+        Assert.Empty(outcome.Response.Actions);
+        Assert.DoesNotContain("Staging", outcome.Response.Reply);
+        Assert.Contains("Nothing was added", outcome.Response.Reply);
+        Assert.False(outcome.Response.CloseChat);
+    }
+
+    [Fact]
+    public async Task ChatAsync_StagingClaimWhoseActionSensitiveModeDropped_SaysNothingWasAdded()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: true);
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Staging a draft for lunch.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Lunch\",\"amount\":20,\"category\":\"Food\",\"txType\":\"outflow\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("add a food transaction for lunch", []));
+
+        Assert.Empty(outcome.Response.Actions);
+        Assert.DoesNotContain("Staging", outcome.Response.Reply);
+        Assert.Contains("Unhide balances", outcome.Response.Reply);
+    }
+
+    [Fact]
+    public async Task ChatAsync_DraftClarificationQuestion_KeepsItsOwnWording()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Do you want me to open a draft for that, or edit the existing one?",
+            actionsJson: "[]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("add something about lunch", []));
+
+        // An offer is not a claim, so the honesty guard must leave a clarification alone.
+        Assert.Contains("Do you want me to open a draft", outcome.Response.Reply);
+    }
+
+    [Fact]
     public async Task ChatAsync_MultiRecordLedgerAdd_KeepsEveryFlatDraftAction()
     {
         await using var context = NewContextWithSettings(hideSensitive: false);
