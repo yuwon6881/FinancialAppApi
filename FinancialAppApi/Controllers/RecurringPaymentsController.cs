@@ -38,12 +38,15 @@ public class RecurringPaymentsController : ControllerBase
         CancellationToken cancellationToken)
     {
         var list = await recurringPaymentService.GetRecurringPaymentsAsync(cancellationToken);
+        // Resolved for the whole list at once: per-payment lookups issued three queries each, and
+        // this runs on every /api/bootstrap, which every outbox drain re-fetches.
+        var nextUnpaid = await payEarlyService.GetNextUnpaidOccurrencesAsync(list, cancellationToken);
         var result = new List<RecurringPaymentDto>(list.Count);
         foreach (var payment in list)
         {
             var dto = MapToDto(payment);
-            var nextUnpaid = await payEarlyService.GetNextUnpaidOccurrenceAsync(payment.Id, cancellationToken);
-            if (nextUnpaid != null) dto.NextDueDate = nextUnpaid.Value.ToString("yyyy-MM-dd");
+            if (nextUnpaid.TryGetValue(payment.Id, out var occurrence))
+                dto.NextDueDate = occurrence.ToString("yyyy-MM-dd");
             result.Add(dto);
         }
         return result;

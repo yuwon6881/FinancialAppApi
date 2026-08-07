@@ -315,6 +315,44 @@ public sealed class InvestmentPortfolioServiceTests
         Assert.Equal(CurrencyCatalog.ReferenceCurrency, portfolio.ReferenceCurrency);
     }
 
+    // The ledger read behind the funding summary is filtered in SQL rather than materialising every
+    // transaction ever recorded. A salary reaches Growth as a percentage of an `IncomeSplit:` row,
+    // not as a row labelled Growth, so a filter that only matched the literal label would drop every
+    // salary and silently understate contributions — the balance would still add up, which is what
+    // makes it worth pinning.
+    [Fact]
+    public async Task FundingSummary_CountsTheGrowthShareOfASalarySplit_AndIgnoresUnrelatedSpending()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        var date = new DateOnly(2026, 7, 1);
+        context.Transactions.AddRange(
+            new Transaction
+            {
+                Id = "salary",
+                Date = date.ToDateTime(TimeOnly.MinValue),
+                Description = "Salary",
+                Category = "Salary",
+                LedgerCategory = "IncomeSplit:50,20,10,20",
+                Amount = 1000
+            },
+            new Transaction
+            {
+                Id = "coffee",
+                Date = date.AddDays(1).ToDateTime(TimeOnly.MinValue),
+                Description = "Coffee",
+                Category = "Food",
+                LedgerCategory = "Essentials",
+                Amount = -12
+            });
+        await context.SaveChangesAsync();
+
+        var summary = (await NewService(context).GetPortfolioAsync("all", CancellationToken.None)).Summary;
+
+        Assert.Equal(200m, summary.GrowthContributions);
+        Assert.Equal(200m, summary.GrowthLedgerBalance);
+    }
+
     [Fact]
     public async Task Holding_ExposesRealisedProfitLossAndDividends_WithoutChangingSummaryTotals()
     {

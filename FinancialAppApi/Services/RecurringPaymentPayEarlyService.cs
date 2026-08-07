@@ -248,6 +248,62 @@ public class RecurringPaymentPayEarlyService
             cancellationToken);
     }
 
+    /// <summary>
+    /// The next unpaid occurrence for every payment, resolved in two queries rather than three per payment.
+    /// </summary>
+    /// <remarks>
+    /// The per-payment overload is the right shape when settling one bill, but the list endpoints
+    /// (and the composite boot payload behind them) need this for every row, and each call there was
+    /// re-reading the payment it had already been handed plus the one FinancialSettings row that
+    /// cannot differ between them. Twenty bills cost sixty-one round trips; they now cost two.
+    /// The scan itself is unchanged — it is the same pure walk over the same settled set.
+    /// </remarks>
+    public async Task<Dictionary<string, DateOnly>> GetNextUnpaidOccurrencesAsync(
+        IReadOnlyList<RecurringPaymentProjection> payments,
+        CancellationToken cancellationToken = default)
+    {
+        // The recurrence engine reads only these five fields, and the list endpoints hold a
+        // projection rather than the entity — rehydrating one here keeps a single scan
+        // implementation instead of a second overload that could drift from it.
+        var active = payments
+            .Where(p => p.Active)
+            .Select(p => new RecurringPayment
+            {
+                Id = p.Id,
+                StartDate = p.StartDate,
+                EndDate = p.EndDate,
+                Frequency = p.Frequency,
+                DueDate = p.DueDate,
+                Active = p.Active,
+            })
+            .ToList();
+        if (active.Count == 0) return [];
+
+        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
+        var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
+        var today = _financialClock.Today;
+
+        var ids = active.Select(p => p.Id).ToList();
+        var settledRows = await _context.Transactions
+            .Where(t => t.RecurringPaymentId != null
+                        && ids.Contains(t.RecurringPaymentId)
+                        && t.RecurringOccurrenceDate != null)
+            .Select(t => new { t.RecurringPaymentId, Date = t.RecurringOccurrenceDate!.Value })
+            .ToListAsync(cancellationToken);
+        var settledByPayment = settledRows
+            .GroupBy(row => row.RecurringPaymentId!)
+            .ToDictionary(group => group.Key, group => group.Select(row => row.Date).ToHashSet());
+
+        var result = new Dictionary<string, DateOnly>(active.Count);
+        foreach (var payment in active)
+        {
+            var settled = settledByPayment.GetValueOrDefault(payment.Id) ?? [];
+            var occurrence = FindNextUnpaidOccurrence(payment, cycleDay, today, includeToday: true, settled);
+            if (occurrence != null) result[payment.Id] = occurrence.Value;
+        }
+        return result;
+    }
+
     private async Task<DateOnly?> FindNextUnpaidOccurrenceAsync(
         RecurringPayment payment,
         int cycleDay,
@@ -259,8 +315,17 @@ public class RecurringPaymentPayEarlyService
             .Where(t => t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate != null)
             .Select(t => t.RecurringOccurrenceDate!.Value)
             .ToListAsync(cancellationToken);
-        var settledSet = settledOccurrences.ToHashSet();
 
+        return FindNextUnpaidOccurrence(payment, cycleDay, today, includeToday, settledOccurrences.ToHashSet());
+    }
+
+    private DateOnly? FindNextUnpaidOccurrence(
+        RecurringPayment payment,
+        int cycleDay,
+        DateOnly today,
+        bool includeToday,
+        HashSet<DateOnly> settledSet)
+    {
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
 
         for (var i = 0; i < MaxCyclesToScan; i++)

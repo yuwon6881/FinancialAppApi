@@ -271,6 +271,50 @@ public class RecurringPaymentPayEarlyServiceTests
         Assert.Equal(new DateOnly(2026, 8, 10), await service.GetNextUnpaidOccurrenceAsync("rec-1"));
     }
 
+    // The batch overload exists purely to stop the list endpoints issuing three queries per row.
+    // It is only worth having if it answers identically, so assert it against the per-payment
+    // method rather than against dates restated by hand.
+    [Fact]
+    public async Task GetNextUnpaidOccurrencesAsync_MatchesThePerPaymentLookupForEveryPayment()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.AddRange(
+            NewPayment("rec-1", dueDate: 10),
+            NewPayment("rec-2", dueDate: 20),
+            NewPayment("rec-3", dueDate: 5, frequency: "Annually", startDate: "2026-03-01"),
+            NewPayment("rec-ended", dueDate: 10, endDate: "2026-02-01"),
+            NewPayment("rec-inactive", dueDate: 10, active: false));
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-paid",
+            Date = TransactionDate.FromInputDate(new DateOnly(2026, 7, 10)),
+            Description = "Payment",
+            Category = "Bills",
+            LedgerCategory = "Essentials",
+            Amount = 100m,
+            RecurringPaymentId = "rec-1",
+            RecurringOccurrenceDate = new DateOnly(2026, 7, 10)
+        });
+        await context.SaveChangesAsync();
+
+        var service = NewService(context, Today(2026, 7, 10));
+        var projections = await new RecurringPaymentService(context).GetRecurringPaymentsAsync();
+        var batch = await service.GetNextUnpaidOccurrencesAsync(projections);
+
+        foreach (var projection in projections)
+        {
+            var single = await service.GetNextUnpaidOccurrenceAsync(projection.Id);
+            Assert.Equal(single, batch.TryGetValue(projection.Id, out var found) ? found : null);
+        }
+
+        // Guards the settled-occurrence grouping: a settlement on one payment must not be
+        // read as a settlement on another.
+        Assert.Equal(new DateOnly(2026, 8, 10), batch["rec-1"]);
+        Assert.Equal(new DateOnly(2026, 7, 20), batch["rec-2"]);
+        Assert.False(batch.ContainsKey("rec-inactive"));
+        Assert.False(batch.ContainsKey("rec-ended"));
+    }
+
     [Fact]
     public async Task PayEarlyAsync_IsScopedToTheOwningUser_ReturnsNotFoundForAnotherUsersPayment()
     {

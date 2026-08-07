@@ -166,8 +166,19 @@ public sealed class InvestmentPortfolioService(
             .OrderByDescending(value => value.Date)
             .ThenByDescending(value => value.CreatedAt)
             .ToListAsync(cancellationToken);
+        // Only rows that can attribute money to Growth, and only the three columns that decide
+        // how much. This used to materialise every column of every transaction ever recorded to
+        // produce two sums. The prefixes are not cosmetic: an `IncomeSplit:` row routes a
+        // percentage of a salary to Growth and a `Transfer:` row moves money in or out of it, so
+        // filtering on LedgerCategory == "Growth" alone would silently drop every salary. The
+        // match is case-insensitive because GetCategoryAmount's is, and a legacy row that differs
+        // in casing must keep counting exactly as it does on every other surface.
         var ledgerTransactions = await context.Transactions.AsNoTracking()
+            .Where(value => value.LedgerCategory.ToUpper().StartsWith("GROWTH")
+                            || value.LedgerCategory.ToUpper().StartsWith("INCOMESPLIT:")
+                            || value.LedgerCategory.ToUpper().StartsWith("TRANSFER:"))
             .OrderBy(value => value.Date)
+            .Select(value => new { value.Date, value.Amount, value.LedgerCategory })
             .ToListAsync(cancellationToken);
 
         var providerId = provider.Descriptor.Id;
@@ -299,7 +310,11 @@ public sealed class InvestmentPortfolioService(
             .Select(value => new
             {
                 Date = DateOnly.FromDateTime(value.Date),
-                Amount = CategoryAttributionService.GetCategoryAmount(value, "Growth")
+                // GetCategoryAmount reads only these two fields; the query above deliberately
+                // fetches nothing else.
+                Amount = CategoryAttributionService.GetCategoryAmount(
+                    new Transaction { Amount = value.Amount, LedgerCategory = value.LedgerCategory },
+                    "Growth")
             })
             .ToList();
         var growthLedger = growthAmounts.Sum(value => value.Amount);
