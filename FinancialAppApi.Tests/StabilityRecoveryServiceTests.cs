@@ -1,0 +1,275 @@
+using FinancialAppApi.Database;
+using FinancialAppApi.Models;
+using FinancialAppApi.Services;
+using FinancialAppApi.Services.Stability;
+using Microsoft.EntityFrameworkCore;
+
+namespace FinancialAppApi.Tests;
+
+/// <summary>
+/// The EF half of emergency-fund recovery: reading the high-water mark off the cycle-balance cache,
+/// spotting the cycle the fund last fell in, and keeping the income path's view of the balance
+/// honest when a salary is being re-saved.
+/// </summary>
+public class StabilityRecoveryServiceTests
+{
+    private const int CycleDay = 1;
+
+    [Fact]
+    public async Task BuildAsync_AsksNothingOfAFundThatHasOnlyEverGoneUp()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 5, 4), "Stability", 800m);
+        Add(context, "in-2", new DateTime(2026, 6, 4), "Stability", 700m);
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 1500m, current: 1500m);
+
+        Assert.False(recovery.IsActive);
+        Assert.Equal(0m, Money(recovery.OutstandingShortfall));
+    }
+
+    [Fact]
+    public async Task BuildAsync_SpreadsWhatWasSpentAcrossTheRecoveryWindow()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 4, 4), "Stability", 3000m);
+        Add(context, "out-1", new DateTime(2026, 6, 4), "Stability", -900m);
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 2100m, current: 2100m);
+
+        Assert.True(recovery.IsActive);
+        Assert.Equal(3000m, Money(recovery.HighWaterMark));
+        Assert.Equal(900m, Money(recovery.OutstandingShortfall));
+        Assert.Equal("2026-06", recovery.LastDrawdownCycleKey);
+        Assert.Equal(900m, Money(recovery.LastDrawdownAmount));
+        // One cycle of the three-cycle window has already elapsed.
+        Assert.Equal(2, recovery.CyclesRemaining);
+        Assert.Equal(450m, Money(recovery.RequiredThisCycle));
+    }
+
+    /// <summary>
+    /// A withdrawal in the cycle being viewed has no settled row of its own yet, so it has to be
+    /// read straight off the ledger or the card would not appear until the cycle turned over.
+    /// </summary>
+    [Fact]
+    public async Task BuildAsync_SeesADrawdownMadeInTheCycleOnScreen()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 5, 4), "Stability", 2000m);
+        var thisCycle = Add(context, "out-1", new DateTime(2026, 7, 4), "Stability", -500m);
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 2000m, current: 1500m, thisCycle);
+
+        Assert.Equal("2026-07", recovery.LastDrawdownCycleKey);
+        Assert.Equal(3, recovery.CyclesRemaining);
+        Assert.Equal(500m, Money(recovery.OutstandingShortfall));
+    }
+
+    /// <summary>
+    /// All three shapes a withdrawal takes go through one rule, because they all go through the
+    /// same attribution function that produces the balance itself.
+    /// </summary>
+    [Theory]
+    [InlineData("Stability", -400d, "Other")]
+    [InlineData("Transfer:Stability->Rewards", 400d, "Transfer")]
+    [InlineData("Stability", -400d, "Adjustment")]
+    public async Task BuildAsync_CountsEveryShapeOfWithdrawal(string ledgerCategory, double amount, string category)
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 5, 4), "Stability", 2000m);
+        var withdrawal = Add(context, "out-1", new DateTime(2026, 7, 4), ledgerCategory, (decimal)amount, category);
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 2000m, current: 1600m, withdrawal);
+
+        Assert.True(recovery.IsActive);
+        Assert.Equal(400m, Money(recovery.LastDrawdownAmount));
+    }
+
+    [Fact]
+    public async Task BuildAsync_IgnoresMoneyMovingIntoTheFund()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 5, 4), "Stability", 2000m);
+        var topUp = Add(context, "in-2", new DateTime(2026, 7, 4), "Transfer:Rewards->Stability", 300m, "Transfer");
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 2000m, current: 2300m, topUp);
+
+        Assert.False(recovery.IsActive);
+        Assert.Null(recovery.LastDrawdownCycleKey);
+    }
+
+    /// <summary>
+    /// The ordering trap. InvalidateFromAsync deletes cached rows on every transaction mutation, so
+    /// reading the high-water mark before rebuilding the cache under-reports it -- and an
+    /// under-reported mark makes the card vanish silently rather than fail loudly.
+    /// </summary>
+    [Fact]
+    public async Task BuildAsync_RebuildsTheCacheBeforeReadingTheHighWaterMark()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 4, 4), "Stability", 3000m);
+        Add(context, "out-1", new DateTime(2026, 6, 4), "Stability", -900m);
+        await context.SaveChangesAsync();
+
+        var cycleBalanceService = new CycleBalanceService(context);
+        await cycleBalanceService.EnsureComputedThroughAsync(2026, 7, CycleDay);
+        // Simulates the state right after any transaction edit: the whole cache is gone.
+        await cycleBalanceService.InvalidateFromAsync(2026, 1);
+        Assert.Empty(await context.CycleBalances.ToListAsync());
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 2100m, current: 2100m);
+
+        Assert.Equal(3000m, Money(recovery.HighWaterMark));
+        Assert.Equal(900m, Money(recovery.OutstandingShortfall));
+    }
+
+    [Fact]
+    public async Task BuildAsync_ReportsWhatSavingsGoalsStillNeedThisCycle()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        context.SavingsGoals.Add(new SavingsGoal
+        {
+            Name = "Car service",
+            TargetAmount = 600m,
+            EarmarkedAmount = 0m,
+            TargetDate = new DateTime(2026, 7, 20),
+            Status = SavingsGoalStatus.Active,
+            Priority = "Medium"
+        });
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 0m, current: 0m);
+
+        // Due inside the current cycle, so the whole 600 is owed now and the draw must stay above it.
+        Assert.Equal(600m, Money(recovery.RewardsCommitted));
+    }
+
+    [Fact]
+    public async Task BuildAsync_SplitsAProposedTopUpAcrossTheThreeContributingBuckets()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 0m, current: 0m);
+
+        Assert.Equal(new[] { "Essentials", "Growth", "Rewards" }, recovery.SuggestedDraws.Select(draw => draw.Bucket));
+        Assert.Equal(1m, recovery.SuggestedDraws.Sum(draw => draw.Share));
+    }
+
+    [Fact]
+    public async Task GetStabilityStateAsync_ReadsTheLiveBalance()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 7, 4), "Stability", 250m);
+        await context.SaveChangesAsync();
+
+        var state = await NewService(context).GetStabilityStateAsync(setting);
+
+        Assert.Equal(250m, state.CurrentBalance);
+        Assert.Equal(10000m, state.Target);
+    }
+
+    /// <summary>
+    /// Re-saving a salary must be measured against the fund WITHOUT its own earlier contribution.
+    /// Counting it would make an edit look like it had already filled the headroom it is asking for.
+    /// </summary>
+    [Fact]
+    public async Task GetStabilityStateAsync_ExcludesTheTransactionBeingSavedAndItsSplitChildren()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "salary", new DateTime(2026, 7, 4), "IncomeSplit:50,25,15,10", 1000m);
+        Add(context, "salary-split-Stability", new DateTime(2026, 7, 4), "Transfer:Income->Stability", 150m, "Transfer");
+        Add(context, "other", new DateTime(2026, 7, 5), "Stability", 40m);
+        await context.SaveChangesAsync();
+
+        var state = await NewService(context).GetStabilityStateAsync(setting, "salary");
+
+        // Only the unrelated 40 survives: both the parent's own 15% share and the child row it
+        // generated are excluded, and neither is double counted.
+        Assert.Equal(40m, state.CurrentBalance);
+    }
+
+    private static async Task<StabilityRecoveryDto> Build(
+        AppDbContext context,
+        FinancialSetting setting,
+        int year,
+        int monthIndex,
+        decimal opening,
+        decimal current,
+        params Transaction[] activeCycleTxs)
+    {
+        return await NewService(context).BuildAsync(
+            setting, year, monthIndex, activeCycleTxs, opening, current, essentialsCommitted: 0m);
+    }
+
+    private static StabilityRecoveryService NewService(AppDbContext context)
+    {
+        return new StabilityRecoveryService(
+            context,
+            new CycleBalanceService(context),
+            new FinancialClock(
+                TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+                new FixedTimeProvider(new DateTimeOffset(2026, 7, 15, 12, 0, 0, TimeSpan.Zero))));
+    }
+
+    private static AppDbContext NewContext() => TestHelpers.NewInMemoryContext();
+
+    private static FinancialSetting SeedSetting(AppDbContext context, decimal target)
+    {
+        var setting = new FinancialSetting
+        {
+            EssentialsAlloc = 0.50m,
+            GrowthAlloc = 0.25m,
+            StabilityAlloc = 0.15m,
+            RewardsAlloc = 0.10m,
+            TargetStabilityFund = target,
+            StabilityOverflowRedirect = StabilityOverflowRedirectOptions.GrowthRewards,
+            CycleDay = CycleDay
+        };
+        context.FinancialSettings.Add(setting);
+        return setting;
+    }
+
+    private static Transaction Add(
+        AppDbContext context,
+        string id,
+        DateTime date,
+        string ledgerCategory,
+        decimal amount,
+        string category = "Other")
+    {
+        var transaction = new Transaction
+        {
+            Id = id,
+            Date = DateTime.SpecifyKind(date, DateTimeKind.Utc),
+            Description = id,
+            Category = category,
+            LedgerCategory = ledgerCategory,
+            Amount = amount
+        };
+        context.Transactions.Add(transaction);
+        return transaction;
+    }
+
+    private static decimal Money(string obfuscated) => ObfuscationHelper.Deobfuscate(obfuscated);
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+    }
+}

@@ -260,11 +260,173 @@ public class TransactionPersistenceServiceTests
         Assert.Null((await context.VaultDocuments.SingleAsync()).TransactionId);
     }
 
-    private static TransactionPersistenceService NewService(AppDbContext context)
+    private static TransactionPersistenceService NewService(AppDbContext context, FinancialClock? clock = null)
     {
         var occurrenceService = new RecurringOccurrenceService(
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance);
-        return new TransactionPersistenceService(context, new CycleBalanceService(context), occurrenceService);
+        var cycleBalanceService = new CycleBalanceService(context);
+        return new TransactionPersistenceService(
+            context,
+            cycleBalanceService,
+            occurrenceService,
+            new Services.Stability.StabilityRecoveryService(context, cycleBalanceService, clock));
+    }
+
+    /// <summary>
+    /// The regression for the cap living only on the client: anything that was not the web form --
+    /// an AI ledger draft, a recurring settlement, an outbox replay against a stale balance -- sent
+    /// plain "Income" and got raw percentages, sailing straight past TargetStabilityFund.
+    /// </summary>
+    [Fact]
+    public async Task CreateTransactionAsync_StopsPlainIncomeAtTheStabilityTarget()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedSettings(context, targetStabilityFund: 1000m);
+        // 940 already in the fund, so only 60 of the usual 150 share can land.
+        context.Transactions.Add(NewTransaction("seed", ledgerCategory: "Stability", amount: 940m));
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context, ClockAt(2026, 7, 9))
+            .CreateTransactionAsync(NewRequest("salary", ledgerCategory: "Income", amount: 1000m));
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        var stability = await context.Transactions.SingleAsync(t => t.Id == "salary-split-Stability");
+        Assert.Equal(60m, stability.Amount);
+        // Nothing is lost on the way: the 90 that could not fit still reaches the other buckets.
+        var splits = await context.Transactions.Where(t => t.Id.StartsWith("salary-split-")).ToListAsync();
+        Assert.Equal(1000m, splits.Sum(t => t.Amount));
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_SendsNothingToAFundAlreadyAtTarget()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedSettings(context, targetStabilityFund: 1000m);
+        context.Transactions.Add(NewTransaction("seed", ledgerCategory: "Stability", amount: 1200m));
+        await context.SaveChangesAsync();
+
+        await NewService(context, ClockAt(2026, 7, 9))
+            .CreateTransactionAsync(NewRequest("salary", ledgerCategory: "Income", amount: 1000m));
+
+        Assert.False(await context.Transactions.AnyAsync(t => t.Id == "salary-split-Stability"));
+        var splits = await context.Transactions.Where(t => t.Id.StartsWith("salary-split-")).ToListAsync();
+        Assert.Equal(1000m, splits.Sum(t => t.Amount));
+    }
+
+    /// <summary>
+    /// An unset target must not read as "cap the fund at nothing" -- that would quietly stop all
+    /// emergency-fund funding for anyone who never picked a figure.
+    /// </summary>
+    [Fact]
+    public async Task CreateTransactionAsync_TreatsAZeroTargetAsNoCap()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedSettings(context, targetStabilityFund: 0m);
+        await context.SaveChangesAsync();
+
+        await NewService(context, ClockAt(2026, 7, 9))
+            .CreateTransactionAsync(NewRequest("salary", ledgerCategory: "Income", amount: 1000m));
+
+        Assert.Equal(150m, (await context.Transactions.SingleAsync(t => t.Id == "salary-split-Stability")).Amount);
+    }
+
+    /// <summary>
+    /// The offline case. The client proposed against a balance that had moved before the queue
+    /// drained; clamping saves the salary where rejecting it would lose an entry nobody can redo.
+    /// </summary>
+    [Fact]
+    public async Task CreateTransactionAsync_ClampsAStaleClientProposalInsteadOfRejectingIt()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedSettings(context, targetStabilityFund: 1000m);
+        context.Transactions.Add(NewTransaction("seed", ledgerCategory: "Stability", amount: 950m));
+        await context.SaveChangesAsync();
+
+        // A top-up the client believed was affordable: 32% of 1,000 against 50 of real headroom.
+        var result = await NewService(context, ClockAt(2026, 7, 9)).CreateTransactionAsync(
+            NewRequest("salary", ledgerCategory: "IncomeSplit:40,20,32,8", amount: 1000m));
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal(50m, (await context.Transactions.SingleAsync(t => t.Id == "salary-split-Stability")).Amount);
+        var splits = await context.Transactions.Where(t => t.Id.StartsWith("salary-split-")).ToListAsync();
+        Assert.Equal(1000m, splits.Sum(t => t.Amount));
+    }
+
+    /// <summary>An accepted emergency-fund top-up is just a salary split differently.</summary>
+    [Fact]
+    public async Task CreateTransactionAsync_HonoursAnAcceptedTopUpAboveTheUsualShare()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedSettings(context, targetStabilityFund: 10000m);
+        await context.SaveChangesAsync();
+
+        await NewService(context, ClockAt(2026, 7, 9)).CreateTransactionAsync(
+            NewRequest("salary", ledgerCategory: "IncomeSplit:44.1176,22.0588,24,9.8236", amount: 1000m));
+
+        // 240 rather than the 150 the plain percentage would have delivered.
+        Assert.Equal(240m, (await context.Transactions.SingleAsync(t => t.Id == "salary-split-Stability")).Amount);
+        var splits = await context.Transactions.Where(t => t.Id.StartsWith("salary-split-")).ToListAsync();
+        Assert.Equal(1000m, splits.Sum(t => t.Amount));
+    }
+
+    /// <summary>
+    /// Re-saving a salary is measured against the fund WITHOUT its own earlier contribution.
+    /// Counting the old split rows would make the edit look like it had already used up the
+    /// headroom it is asking for, and quietly shrink the new one.
+    /// </summary>
+    [Fact]
+    public async Task UpdateTransactionAsync_MeasuresTheCapWithoutTheSalarysOwnPreviousSplit()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedSettings(context, targetStabilityFund: 1000m);
+        context.Transactions.AddRange(
+            NewTransaction("salary", ledgerCategory: "IncomeSplit:50,25,15,10", amount: 1000m),
+            NewTransaction("salary-split-Stability", ledgerCategory: "Transfer:Income->Stability", amount: 150m),
+            NewTransaction("seed", ledgerCategory: "Stability", amount: 900m));
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context, ClockAt(2026, 7, 9)).UpdateTransactionAsync(
+            "salary",
+            NewRequest("salary", ledgerCategory: "Income", amount: 1000m));
+
+        Assert.Equal(TransactionMutationStatus.Updated, result.Status);
+        // 900 in the fund once the salary's own 150 is set aside, so 100 of room remains -- not the
+        // zero that counting its old split row would have implied.
+        Assert.Equal(100m, (await context.Transactions.SingleAsync(t => t.Id == "salary-split-Stability")).Amount);
+        var splits = await context.Transactions.Where(t => t.Id.StartsWith("salary-split-")).ToListAsync();
+        Assert.Equal(1000m, splits.Sum(t => t.Amount));
+    }
+
+    private static FinancialClock ClockAt(int year, int month, int day)
+    {
+        return new FinancialClock(
+            TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+            new FixedTimeProvider(new DateTimeOffset(year, month, day, 12, 0, 0, TimeSpan.Zero)));
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+    }
+
+    private static void SeedSettings(AppDbContext context, decimal targetStabilityFund)
+    {
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            EssentialsAlloc = 0.50m,
+            GrowthAlloc = 0.25m,
+            StabilityAlloc = 0.15m,
+            RewardsAlloc = 0.10m,
+            TargetStabilityFund = targetStabilityFund,
+            StabilityOverflowRedirect = StabilityOverflowRedirectOptions.GrowthRewards,
+            CycleDay = 1
+        });
     }
 
     private static void SeedCategories(AppDbContext context)

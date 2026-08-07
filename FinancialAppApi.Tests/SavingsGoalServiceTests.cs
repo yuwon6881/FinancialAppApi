@@ -568,10 +568,12 @@ public class SavingsGoalServiceTests
         var transactionId = completed.CompletionTransaction!.Id;
         var occurrenceService = new RecurringOccurrenceService(
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance);
+        var cycleBalanceService = new CycleBalanceService(context);
         var persistence = new TransactionPersistenceService(
             context,
-            new CycleBalanceService(context),
-            occurrenceService);
+            cycleBalanceService,
+            occurrenceService,
+            new Services.Stability.StabilityRecoveryService(context, cycleBalanceService));
 
         var deleted = await persistence.DeleteTransactionAsync(transactionId);
 
@@ -601,10 +603,12 @@ public class SavingsGoalServiceTests
         await service.ContributeAsync(goal.Id, 100m);
         var occurrenceService = new RecurringOccurrenceService(
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance);
+        var cycleBalanceService = new CycleBalanceService(context);
         var persistence = new TransactionPersistenceService(
             context,
-            new CycleBalanceService(context),
-            occurrenceService);
+            cycleBalanceService,
+            occurrenceService,
+            new Services.Stability.StabilityRecoveryService(context, cycleBalanceService));
 
         var deleted = await persistence.DeleteTransactionAsync(completed.CompletionTransaction!.Id);
 

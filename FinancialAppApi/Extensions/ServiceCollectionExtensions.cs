@@ -391,6 +391,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<FinancialClock>();
         services.AddScoped<CycleBalanceService>();
+        services.AddScoped<Services.Stability.StabilityRecoveryService>();
         services.AddScoped<RecurringOccurrenceService>();
         services.AddScoped<RecurringPaymentAlertService>();
         services.AddScoped<RecurringPaymentService>();

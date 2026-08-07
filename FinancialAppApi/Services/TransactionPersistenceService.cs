@@ -41,15 +41,18 @@ public class TransactionPersistenceService
     private readonly AppDbContext _context;
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly RecurringOccurrenceService _occurrenceService;
+    private readonly Stability.StabilityRecoveryService _stabilityRecoveryService;
 
     public TransactionPersistenceService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
-        RecurringOccurrenceService occurrenceService)
+        RecurringOccurrenceService occurrenceService,
+        Stability.StabilityRecoveryService stabilityRecoveryService)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _occurrenceService = occurrenceService;
+        _stabilityRecoveryService = stabilityRecoveryService;
     }
 
     public async Task<TransactionMutationResult> CreateTransactionAsync(
@@ -106,7 +109,9 @@ public class TransactionPersistenceService
         }
         transaction.RecurringOccurrenceDate = occurrence.Date;
 
-        var splitSpec = await ResolveIncomeSplitSpecAsync(transaction, cancellationToken);
+        var splitContext = await LoadIncomeSplitContextAsync(
+            transaction.LedgerCategory, transaction.Id, cancellationToken);
+        var splitSpec = ResolveIncomeSplitSpec(transaction, splitContext);
 
         _context.Transactions.Add(transaction);
         AddIncomeSplitTransactions(transaction, splitSpec);
@@ -166,6 +171,11 @@ public class TransactionPersistenceService
 
         var originalDate = transaction.Date;
 
+        // Before any staging below: see LoadIncomeSplitContextAsync on why its I/O cannot run once
+        // the change tracker is dirty.
+        var splitContext = await LoadIncomeSplitContextAsync(
+            ledgerValidation.LedgerCategory, transaction.Id, cancellationToken);
+
         var existingSplits = await _context.Transactions
             .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
             .ToListAsync(cancellationToken);
@@ -179,7 +189,7 @@ public class TransactionPersistenceService
         transaction.RecurringPaymentId = request.RecurringPaymentId ?? transaction.RecurringPaymentId;
         transaction.WishlistItemId = request.WishlistItemId ?? transaction.WishlistItemId;
 
-        var splitSpec = await ResolveIncomeSplitSpecAsync(transaction, cancellationToken);
+        var splitSpec = ResolveIncomeSplitSpec(transaction, splitContext);
         AddIncomeSplitTransactions(transaction, splitSpec);
         await ApplyWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
@@ -336,28 +346,90 @@ public class TransactionPersistenceService
         });
     }
 
-    private async Task<string> ResolveIncomeSplitSpecAsync(
-        Transaction transaction,
+    /// <summary>
+    /// The settings and fund balance an income split is resolved against.
+    /// </summary>
+    private sealed record IncomeSplitContext(FinancialSetting? Setting, Stability.StabilityState? State);
+
+    private static bool IsIncomeLedgerCategory(string? ledgerCategory) =>
+        string.Equals(ledgerCategory, "Income", StringComparison.OrdinalIgnoreCase)
+        || (!string.IsNullOrEmpty(ledgerCategory)
+            && ledgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Loads what an income split needs, doing all of its I/O up front.
+    /// <para>
+    /// Callers MUST invoke this before staging any change on the context. Reading the fund balance
+    /// goes through <c>GetOpeningBalanceAsync</c>, which can rebuild the cycle-balance cache and
+    /// call <c>SaveChangesAsync</c> -- with edits already staged that would commit them early, and
+    /// outside the transaction <c>SaveAndInvalidateCycleBalancesAsync</c> opens.
+    /// </para>
+    /// </summary>
+    private async Task<IncomeSplitContext> LoadIncomeSplitContextAsync(
+        string? ledgerCategory,
+        string transactionId,
         CancellationToken cancellationToken)
     {
-        if (string.Equals(transaction.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
+        if (!IsIncomeLedgerCategory(ledgerCategory)) return new IncomeSplitContext(null, null);
+
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
+        if (setting == null) return new IncomeSplitContext(null, null);
+
+        // Excludes this transaction's own earlier contribution, so re-saving a salary is measured
+        // against the fund without itself rather than on top of it.
+        var state = await _stabilityRecoveryService.GetStabilityStateAsync(
+            setting, transactionId, cancellationToken);
+        return new IncomeSplitContext(setting, state);
+    }
+
+    private static string ResolveIncomeSplitSpec(Transaction transaction, IncomeSplitContext context)
+    {
+        var isPlainIncome = string.Equals(transaction.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase);
+        var isProposedSplit = !string.IsNullOrEmpty(transaction.LedgerCategory)
+            && transaction.LedgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase);
+        if (!isPlainIncome && !isProposedSplit) return "";
+
+        var (setting, state) = context;
+
+        // Plain "Income" is the only branch that needs settings -- it has no percentages of its own
+        // to fall back on. A proposed split carries its own and must still save without a settings
+        // row, which is how it behaved before the cap moved server-side.
+        if (setting == null && isPlainIncome) return "";
+
+        if (isPlainIncome)
         {
-            var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
-            if (setting != null)
-            {
-                return $"{setting.EssentialsAlloc * 100:0.##},{setting.GrowthAlloc * 100:0.##},{setting.StabilityAlloc * 100:0.##},{setting.RewardsAlloc * 100:0.##}";
-            }
+            // Every caller gets the target cap here, not just the web form. It used to be enforced
+            // client-side only, so AI ledger drafts, recurring settlement and any outbox replay
+            // whose balance had gone stale applied raw percentages and sailed past the target.
+            return Stability.IncomeSplitPlanner.Resolve(
+                transaction.Amount,
+                setting!.EssentialsAlloc,
+                setting.GrowthAlloc,
+                setting.StabilityAlloc,
+                setting.RewardsAlloc,
+                state!.CurrentBalance,
+                state.Target,
+                setting.StabilityOverflowRedirect,
+                requestedTopUp: 0m).ToSpecString();
+        }
+
+        var proposedSpec = transaction.LedgerCategory!["IncomeSplit:".Length..];
+        transaction.LedgerCategory = "Income";
+        if (!Stability.IncomeSplitSpec.TryParseSpecString(proposedSpec, out var proposed))
+        {
             return "";
         }
 
-        if (!string.IsNullOrEmpty(transaction.LedgerCategory) && transaction.LedgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase))
-        {
-            var spec = transaction.LedgerCategory.Substring("IncomeSplit:".Length);
-            transaction.LedgerCategory = "Income";
-            return spec;
-        }
-
-        return "";
+        // Clamped, never rejected: a proposal can arrive from an offline replay whose balance moved
+        // before the queue drained, and rejecting it would fail a salary the user cannot re-enter.
+        // The excess lands wherever StabilityOverflowRedirect points, which is that setting's job.
+        var (spec, _) = Stability.IncomeSplitPlanner.ClampProposed(
+            proposed,
+            transaction.Amount,
+            state?.CurrentBalance ?? 0m,
+            state?.Target ?? 0m,
+            setting?.StabilityOverflowRedirect);
+        return spec.ToSpecString();
     }
 
     private void AddIncomeSplitTransactions(Transaction transaction, string splitSpec)

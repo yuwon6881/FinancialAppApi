@@ -13,4 +13,15 @@ public static class FinancialConstants
     /// no other service recognises.
     /// </summary>
     public const int DefaultCycleDay = 28;
+
+    /// <summary>
+    /// How many cycles the app spreads an emergency-fund recovery over. Three rather than one
+    /// because a single large withdrawal repaid in full next cycle can exceed what the other
+    /// buckets have spare, and an offer that never fits is an offer nobody takes.
+    /// <para>
+    /// Deliberately a constant and not a <see cref="Models.FinancialSetting"/> column: a setting
+    /// with no UI is an orphaned feature, and this one has no screen to live on.
+    /// </para>
+    /// </summary>
+    public const int StabilityRecoveryCycles = 3;
 }

@@ -444,6 +444,69 @@ public class FinancialServiceDashboardTests
         Assert.Equal("OnTrack", progress.GetType().GetProperty("status")!.GetValue(progress));
     }
 
+    [Fact]
+    public async Task GetDashboardDataAsync_CarriesTheEmergencyFundRecoveryBlock()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 1,
+            SelectedMonth = "Jul",
+            SelectedYear = 2026,
+            TargetStabilityFund = 10000m
+        });
+        context.Transactions.AddRange(
+            Tx("built-up", 2026, 4, 10, "Other", 3000m, "Stability"),
+            Tx("spent", 2026, 6, 10, "Other", -900m, "Stability"));
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context, new DateTimeOffset(2026, 7, 15, 0, 0, 0, TimeSpan.Zero))
+            .GetDashboardDataAsync("Jul", 2026);
+
+        var recovery = response.GetType().GetProperty("stabilityRecovery")!.GetValue(response)!;
+        Assert.True((bool)recovery.GetType().GetProperty("IsActive")!.GetValue(recovery)!);
+        Assert.Equal(900m, GetAmount(recovery, "OutstandingShortfall"));
+        Assert.Equal("2026-06", recovery.GetType().GetProperty("LastDrawdownCycleKey")!.GetValue(recovery));
+    }
+
+    [Fact]
+    public async Task GetDashboardDataAsync_LeavesTheRecoveryBlockInactiveForAFundThatNeverFell()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 1,
+            SelectedMonth = "Jul",
+            SelectedYear = 2026,
+            TargetStabilityFund = 10000m
+        });
+        context.Transactions.Add(Tx("built-up", 2026, 4, 10, "Other", 3000m, "Stability"));
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context, new DateTimeOffset(2026, 7, 15, 0, 0, 0, TimeSpan.Zero))
+            .GetDashboardDataAsync("Jul", 2026);
+
+        var recovery = response.GetType().GetProperty("stabilityRecovery")!.GetValue(response)!;
+        Assert.False((bool)recovery.GetType().GetProperty("IsActive")!.GetValue(recovery)!);
+    }
+
+    /// <summary>
+    /// summaryOnly skips EnsureComputedThroughAsync, and the high-water mark is only trustworthy
+    /// once the cycle-balance cache is complete -- so that path reports nothing rather than a
+    /// figure derived from a half-built cache.
+    /// </summary>
+    [Fact]
+    public async Task GetDashboardDataAsync_OmitsTheRecoveryBlockUnderSummaryOnly()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026 });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context).GetDashboardDataAsync("Jul", 2026, summaryOnly: true);
+
+        Assert.Null(response.GetType().GetProperty("stabilityRecovery")!.GetValue(response));
+    }
+
     private static (string category, decimal amount)[] GetBreakdown(object response, string propertyName)
     {
         var raw = (System.Collections.IEnumerable)response.GetType().GetProperty(propertyName)!.GetValue(response)!;

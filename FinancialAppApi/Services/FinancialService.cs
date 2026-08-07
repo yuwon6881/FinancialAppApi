@@ -54,19 +54,23 @@ public class FinancialService
     private readonly RecurringPaymentAlertService _recurringPaymentAlertService;
     private readonly RecurringOccurrenceService _recurringOccurrenceService;
     private readonly FinancialClock _financialClock;
+    private readonly Stability.StabilityRecoveryService _stabilityRecoveryService;
 
     public FinancialService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
         RecurringPaymentAlertService recurringPaymentAlertService,
         RecurringOccurrenceService recurringOccurrenceService,
-        FinancialClock? financialClock = null)
+        FinancialClock? financialClock = null,
+        Stability.StabilityRecoveryService? stabilityRecoveryService = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _recurringPaymentAlertService = recurringPaymentAlertService;
         _recurringOccurrenceService = recurringOccurrenceService;
         _financialClock = financialClock ?? FinancialClock.Utc;
+        _stabilityRecoveryService = stabilityRecoveryService
+            ?? new Stability.StabilityRecoveryService(context, cycleBalanceService, _financialClock);
     }
 
     public async Task<object> GetWalletBalanceAsync(CancellationToken cancellationToken = default)
@@ -298,12 +302,33 @@ public class FinancialService
             activeRange.end,
             cycleDay);
 
+        // Hoisted out of BuildTodayPlanInsights so the recovery block can hold its proposed draw
+        // above the bills this cycle has already committed to, without computing the sum twice.
+        var unpaidEssentials = pendingRecurring
+            .Where(item => string.Equals(item.LedgerCategory, "Essentials", StringComparison.OrdinalIgnoreCase))
+            .Sum(item => item.Amount);
+
         var todayPlanInsights = BuildTodayPlanInsights(
             activeCycleTxs,
             pendingRecurring,
             selectedRemEssentials,
+            unpaidEssentials,
             activeRange.start,
             activeRange.end);
+
+        // Null under summaryOnly: that path deliberately skips EnsureComputedThroughAsync, and the
+        // high-water mark is only trustworthy once the cache is complete.
+        var stabilityRecovery = summaryOnly
+            ? null
+            : await _stabilityRecoveryService.BuildAsync(
+                setting,
+                year,
+                activeMonthIndex,
+                activeCycleTxs,
+                selectedBudgetStability,
+                selectedRemStability,
+                unpaidEssentials,
+                cancellationToken);
 
         var categoryLimitProgress = await BuildCategoryLimitProgressAsync(
             activeCycleTxs,
@@ -367,6 +392,7 @@ public class FinancialService
             pendingNotifications,
             monthlyCategoryBreakdown = ObfuscateBreakdown(monthlyCategoryBreakdown),
             todayPlanInsights,
+            stabilityRecovery,
             categoryLimitProgress,
             cycleSummaryInsights
         };
@@ -950,6 +976,7 @@ public class FinancialService
         List<Transaction> activeCycleTxs,
         List<PendingRecurringItem> pendingRecurring,
         decimal essentialsRemaining,
+        decimal unpaidEssentials,
         DateTime rangeStart,
         DateTime rangeEnd)
     {
@@ -977,9 +1004,6 @@ public class FinancialService
                 ? 0
                 : Math.Max(0, totalDays - elapsedDays);
         var dailyAverage = elapsedDays > 0 ? nonRecurringEssentialsSpent / elapsedDays : 0m;
-        var unpaidEssentials = pendingRecurring
-            .Where(item => string.Equals(item.LedgerCategory, "Essentials", StringComparison.OrdinalIgnoreCase))
-            .Sum(item => item.Amount);
         var projectedEndingBalance = today > end
             ? essentialsRemaining
             : essentialsRemaining - unpaidEssentials - (dailyAverage * remainingDaysAfterToday);
