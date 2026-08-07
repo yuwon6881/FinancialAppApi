@@ -69,6 +69,36 @@ public class StabilityRecoveryServiceTests
         Assert.Equal("2026-07", recovery.LastDrawdownCycleKey);
         Assert.Equal(3, recovery.CyclesRemaining);
         Assert.Equal(500m, Money(recovery.OutstandingShortfall));
+        // Asserting only the shortfall is what let the pace bug through: the card also gates on
+        // this cycle's share, and anchoring that on the opening balance made it zero for a
+        // drawdown made during the cycle -- so the card stayed hidden with a real shortfall on
+        // screen behind it.
+        Assert.True(Money(recovery.OutstandingThisCycle) > 0m);
+        Assert.True(recovery.IsActive);
+    }
+
+    /// <summary>
+    /// Cached rows only record where the fund stood at a cycle boundary. A bonus paid into the fund
+    /// and then dipped into within the same cycle looked like it had never been there, so the dip
+    /// registered as no drawdown at all.
+    /// </summary>
+    [Fact]
+    public async Task BuildAsync_CountsAPeakReachedAndSpentInsideOneCycle()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 5, 4), "Stability", 1000m);
+        var bonus = Add(context, "bonus", new DateTime(2026, 7, 2), "Stability", 3000m);
+        var spend = Add(context, "spend", new DateTime(2026, 7, 20), "Stability", -1200m);
+        await context.SaveChangesAsync();
+
+        // Ends the cycle at 2,800 -- above the 1,000 it opened on, so cycle-ending rows alone see
+        // no fall. The fund really did reach 4,000 and really did lose 1,200 of it.
+        var recovery = await Build(context, setting, 2026, 7, opening: 1000m, current: 2800m, bonus, spend);
+
+        Assert.Equal(4000m, Money(recovery.HighWaterMark));
+        Assert.Equal(1200m, Money(recovery.OutstandingShortfall));
+        Assert.True(recovery.IsActive);
     }
 
     /// <summary>

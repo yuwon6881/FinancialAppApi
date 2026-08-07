@@ -116,12 +116,17 @@ public class StabilityRecoveryService
             lastDrawdownAmount = withdrawnThisCycle;
         }
 
+        // The cycle's own peak, not just the balance it happens to end on. Cached rows record where
+        // the fund stood at a boundary, so money that arrived and was spent inside a single cycle --
+        // a bonus paid in and then dipped into -- looked like it had never been there, and the dip
+        // registered as no drawdown at all.
+        highWaterMark = Math.Max(highWaterMark, PeakWithinCycle(openingStability, activeCycleTxs));
+
         var currentCycleKey = StabilityRecoveryPlanner.CycleKey(year, monthIndex);
         var drawdown = StabilityRecoveryPlanner.ComputeDrawdown(
             highWaterMark,
             setting.TargetStabilityFund,
             currentStability,
-            openingStability,
             lastDrawdownCycleKey,
             lastDrawdownAmount);
 
@@ -251,6 +256,27 @@ public class StabilityRecoveryService
         }
         draws[largest] = draws[largest] with { Share = draws[largest].Share + (1m - draws.Sum(draw => draw.Share)) };
         return draws;
+    }
+
+    /// <summary>
+    /// The highest the fund reached at any point during the cycle, replaying its transactions in
+    /// posting order from the opening balance. Ordered by date then <c>PostedAt</c> then id so the
+    /// walk is deterministic — two transactions on the same day must not swap places between
+    /// requests and move the peak.
+    /// </summary>
+    private static decimal PeakWithinCycle(decimal openingBalance, IReadOnlyList<Transaction> cycleTxs)
+    {
+        var running = openingBalance;
+        var peak = openingBalance;
+        foreach (var transaction in cycleTxs
+                     .OrderBy(t => t.Date)
+                     .ThenBy(t => t.PostedAt)
+                     .ThenBy(t => t.Id, StringComparer.Ordinal))
+        {
+            running += CategoryAttributionService.GetCategoryAmount(transaction, Stability);
+            if (running > peak) peak = running;
+        }
+        return peak;
     }
 
     /// <summary>

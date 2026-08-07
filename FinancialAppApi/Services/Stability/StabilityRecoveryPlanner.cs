@@ -12,10 +12,14 @@ namespace FinancialAppApi.Services.Stability;
 /// mid-recovery cannot invent a drawdown that never happened.
 /// </para>
 /// <para>
-/// <c>OutstandingShortfall</c> is the ceiling minus the live balance, floored at zero;
-/// <c>ShortfallAtCycleStart</c> is the same against the cycle's opening balance, which is what the
-/// pace is derived from so the requirement holds still as it is funded.
+/// <c>OutstandingShortfall</c> is the ceiling minus the live balance, floored at zero.
 /// <c>LastDrawdownCycleKey</c> is "yyyy-MM" of the most recent cycle the fund fell in, or null.
+/// </para>
+/// <para>
+/// There is deliberately no "shortfall at cycle start" here any more. It was the obvious anchor for
+/// the pace and it was wrong: when the drawdown happens during the current cycle, the cycle opened
+/// with no shortfall at all, so the plan asked for nothing in the very cycle the money was spent
+/// and the card stayed hidden. See <see cref="StabilityRecoveryPlanner.ComputePace"/>.
 /// </para>
 /// </summary>
 public sealed record StabilityDrawdown(
@@ -23,9 +27,7 @@ public sealed record StabilityDrawdown(
     decimal Target,
     decimal RecoverableCeiling,
     decimal CurrentBalance,
-    decimal BalanceAtCycleStart,
     decimal OutstandingShortfall,
-    decimal ShortfallAtCycleStart,
     string? LastDrawdownCycleKey,
     decimal LastDrawdownAmount)
 {
@@ -87,7 +89,6 @@ public static class StabilityRecoveryPlanner
         decimal highWaterMark,
         decimal target,
         decimal currentBalance,
-        decimal balanceAtCycleStart,
         string? lastDrawdownCycleKey,
         decimal lastDrawdownAmount)
     {
@@ -104,9 +105,7 @@ public static class StabilityRecoveryPlanner
             target,
             ceiling,
             currentBalance,
-            balanceAtCycleStart,
             Math.Max(0m, ceiling - currentBalance),
-            Math.Max(0m, ceiling - balanceAtCycleStart),
             lastDrawdownCycleKey,
             Math.Max(0m, lastDrawdownAmount));
     }
@@ -134,13 +133,18 @@ public static class StabilityRecoveryPlanner
         var funded = Math.Max(0m, toppedUpThisCycle);
         var cycles = Math.Max(1, cyclesRemaining);
 
-        // Measured from the cycle's OPENING balance, the same reason SavingsGoalPacing measures
-        // from remainingAtCycleStart: using the live balance would shrink the ask the instant money
-        // went in, so the figure on screen would move as you funded it and the cycle could never be
-        // "done".
-        var required = cycles <= 1
-            ? drawdown.ShortfallAtCycleStart
-            : RoundUpToCent(drawdown.ShortfallAtCycleStart / cycles);
+        // Anchored on the shortfall BEFORE this cycle's repayments, not on the cycle's opening
+        // balance. The opening balance was the obvious anchor (SavingsGoalPacing uses it) and it was
+        // wrong here: a savings goal's target exists in advance, but a drawdown can happen *during*
+        // the cycle, and then the cycle opened with no shortfall at all -- so the plan asked for
+        // nothing in the very cycle the money was spent, and the card's "outstanding this cycle"
+        // gate hid it exactly when it was needed.
+        //
+        // Shortfall + funded holds just as still while money goes in, which is the property the
+        // opening balance was chosen for: funding moves one down and the other up by the same
+        // amount, so the requirement does not shrink as it is met.
+        var anchor = drawdown.OutstandingShortfall + funded;
+        var required = cycles <= 1 ? anchor : RoundUpToCent(anchor / cycles);
 
         // Capped by the live shortfall too, so the last stretch only asks for what is actually left.
         var outstanding = Math.Clamp(required - funded, 0m, drawdown.OutstandingShortfall);
