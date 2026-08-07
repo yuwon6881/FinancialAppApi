@@ -106,12 +106,30 @@ public class StabilityRecoveryPlannerTests
     [InlineData("2026-06", "2026-06", 3)]
     [InlineData("2026-06", "2026-07", 2)]
     [InlineData("2026-06", "2026-08", 1)]
-    [InlineData("2026-06", "2026-11", 1)]
+    // Past the window it goes negative rather than clamping, so an overdue plan can be told apart
+    // from its final cycle -- clamped, the card called every cycle "the last one" forever.
+    [InlineData("2026-06", "2026-11", -2)]
     [InlineData("2026-11", "2027-01", 1)]
     [InlineData(null, "2026-08", 3)]
-    public void CyclesRemaining_CountsDownAndNeverReachesZero(string? from, string current, int expected)
+    public void CyclesRemaining_CountsDownPastTheEndOfTheWindow(string? from, string current, int expected)
     {
         Assert.Equal(expected, StabilityRecoveryPlanner.CyclesRemaining(from, current, horizon: 3));
+    }
+
+    [Fact]
+    public void ComputePace_FlagsAnElapsedWindowAsOverdueAndStillAsksForTheRemainder()
+    {
+        var pace = StabilityRecoveryPlanner.ComputePace(Drawdown(800m), cyclesRemaining: -2, toppedUpThisCycle: 0m);
+
+        Assert.True(pace.IsOverdue);
+        Assert.Equal(1, pace.CyclesRemaining);
+        Assert.Equal(800m, pace.OutstandingThisCycle);
+    }
+
+    [Fact]
+    public void ComputePace_DoesNotCallTheFinalCycleOverdue()
+    {
+        Assert.False(StabilityRecoveryPlanner.ComputePace(Drawdown(800m), 1, 0m).IsOverdue);
     }
 
     [Fact]
@@ -331,7 +349,7 @@ public class StabilityRecoveryPlannerTests
 
     private static RecoveryPace Pace(decimal outstandingThisCycle)
     {
-        return new RecoveryPace(3000m, 3, outstandingThisCycle, 0m, outstandingThisCycle);
+        return new RecoveryPace(3000m, 3, outstandingThisCycle, 0m, outstandingThisCycle, false);
     }
 
     private static IReadOnlyList<BucketState> Buckets(

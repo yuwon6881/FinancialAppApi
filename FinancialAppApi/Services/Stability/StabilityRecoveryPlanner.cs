@@ -38,7 +38,9 @@ public sealed record StabilityDrawdown(
 /// What this cycle asks for, before any particular income amount is known.
 /// <para>
 /// <c>CyclesRemaining</c> counts this cycle and never falls below 1: a window that has run out
-/// still owes its remainder, exactly as an overdue savings goal does. <c>ToppedUpThisCycle</c> is
+/// still owes its remainder, exactly as an overdue savings goal does — <c>IsOverdue</c> is what
+/// tells those two apart, so the card can stop calling every cycle "the last one".
+/// <c>ToppedUpThisCycle</c> is
 /// Stability credit received this cycle beyond what the plain allocation percentage would have
 /// delivered, derived from the ledger rather than stored, so deleting the salary reopens the ask.
 /// </para>
@@ -48,7 +50,8 @@ public sealed record RecoveryPace(
     int CyclesRemaining,
     decimal RequiredThisCycle,
     decimal ToppedUpThisCycle,
-    decimal OutstandingThisCycle);
+    decimal OutstandingThisCycle,
+    bool IsOverdue);
 
 /// <summary>One bucket's contribution to a proposed top-up.</summary>
 public sealed record BucketDraw(string Bucket, decimal Share, decimal Amount);
@@ -111,9 +114,11 @@ public static class StabilityRecoveryPlanner
     }
 
     /// <summary>
-    /// Cycles left in the recovery window, counting the current one. Floored at 1 so the final
-    /// cycle asks for the whole remainder instead of dividing by zero, and so a window that has
-    /// already elapsed keeps asking rather than silently giving up.
+    /// Cycles left in the recovery window, counting the current one. Goes to zero or below once the
+    /// window has elapsed — like <c>SavingsGoalPacing.CyclesRemaining</c>, and for the same reason:
+    /// clamping here would make an overdue plan indistinguishable from its final cycle, and the card
+    /// would announce "the last cycle of the plan" every cycle from then on. <c>ComputePace</c> does
+    /// the clamping it needs internally.
     /// </summary>
     public static int CyclesRemaining(string? lastDrawdownCycleKey, string currentCycleKey, int horizon)
     {
@@ -125,7 +130,7 @@ public static class StabilityRecoveryPlanner
         }
 
         var elapsed = (toYear - fromYear) * 12 + (toMonth - fromMonth);
-        return Math.Max(1, horizon - Math.Max(0, elapsed));
+        return horizon - Math.Max(0, elapsed);
     }
 
     public static RecoveryPace ComputePace(StabilityDrawdown drawdown, int cyclesRemaining, decimal toppedUpThisCycle)
@@ -149,7 +154,8 @@ public static class StabilityRecoveryPlanner
         // Capped by the live shortfall too, so the last stretch only asks for what is actually left.
         var outstanding = Math.Clamp(required - funded, 0m, drawdown.OutstandingShortfall);
 
-        return new RecoveryPace(drawdown.OutstandingShortfall, cycles, required, funded, outstanding);
+        return new RecoveryPace(
+            drawdown.OutstandingShortfall, cycles, required, funded, outstanding, cyclesRemaining <= 0);
     }
 
     /// <summary>
