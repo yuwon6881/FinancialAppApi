@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Security.Cryptography;
 using System.Text;
 using FinancialAppApi.Database;
+using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using FinancialAppApi.Diagnostics;
@@ -95,8 +96,15 @@ public sealed class CategorySuggestionService
     {
         // Categories are authoritative server data. The client list is retained in the API
         // shape for compatibility, but cannot expand or inject text into the model's choices.
+        var safeTxType = string.Equals(txType, "inflow", StringComparison.OrdinalIgnoreCase)
+            ? "inflow"
+            : "outflow";
         var requested = NormalizeCategoryNames(requestedCategories).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var allCategoryNames = (await _categoryService.GetCategoriesAsync())
+        var dbCategories = await _categoryService.GetCategoriesAsync(cancellationToken);
+        var matchingCategories = dbCategories
+            .Where(c => c.Type == CategoryFlowType.Both || c.Type == safeTxType || string.IsNullOrEmpty(c.Type))
+            .ToList();
+        var allCategoryNames = matchingCategories
             .Select(c => c.Name)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -104,15 +112,6 @@ public sealed class CategorySuggestionService
             .ToList();
         var requestedServerCategories = allCategoryNames.Where(requested.Contains).ToList();
         var categoryNames = requestedServerCategories.Count > 0 ? requestedServerCategories : allCategoryNames;
-
-        if (categoryNames.Count == 0)
-        {
-            return AiOperationResult<IReadOnlyList<CategorySuggestion>>.Ok([]);
-        }
-
-        var safeTxType = string.Equals(txType, "inflow", StringComparison.OrdinalIgnoreCase)
-            ? "inflow"
-            : "outflow";
 
         var cacheKey = SuggestCachePrefix + _context.RequireCurrentUserId() + ":" + string.Join('|', [
             description.Trim().ToLowerInvariant(),

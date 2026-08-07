@@ -123,6 +123,8 @@ public class TransactionCategoryService
             category.Id = $"cat-{Guid.NewGuid():N}";
         }
 
+        category.Type = CategoryFlowType.Normalize(category.Type);
+
         _context.TransactionCategories.Add(category);
         await _context.SaveChangesAsync();
         _cache.Remove(CacheKey);
@@ -267,6 +269,72 @@ public class TransactionCategoryService
         else
         {
             history.LimitAmount = cycleLimit;
+        }
+
+        await _context.SaveChangesAsync();
+        _cache.Remove(CacheKey);
+
+        return new UpdateCategoryCycleLimitResult(UpdateCategoryCycleLimitStatus.Updated, category);
+    }
+
+    public async Task<UpdateCategoryCycleLimitResult> UpdateCategoryAsync(string id, string? type, decimal? cycleLimit, bool updateLimit)
+    {
+        var category = await _context.TransactionCategories.FindAsync(id);
+        if (category == null)
+        {
+            return new UpdateCategoryCycleLimitResult(UpdateCategoryCycleLimitStatus.NotFound);
+        }
+
+        if (type != null)
+        {
+            if (!CategoryFlowType.IsValid(type))
+            {
+                return new UpdateCategoryCycleLimitResult(
+                    UpdateCategoryCycleLimitStatus.InvalidAmount,
+                    Category: null,
+                    Message: "Category flow type must be 'both', 'inflow', or 'outflow'.");
+            }
+            category.Type = type;
+        }
+
+        if (updateLimit)
+        {
+            if (cycleLimit is <= 0 or > 9_999_999_999.99m)
+            {
+                return new UpdateCategoryCycleLimitResult(
+                    UpdateCategoryCycleLimitStatus.InvalidAmount,
+                    Category: null,
+                    Message: "Cycle spending guide must be greater than zero and fit the supported currency range.");
+            }
+
+            var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
+            var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
+            var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+                _financialClock.Today,
+                cycleDay);
+            var cycleKey = $"{year:D4}-{monthIndex:D2}";
+
+            category.CycleLimit = cycleLimit;
+
+            var history = await _context.CategorySpendingGuides
+                .FirstOrDefaultAsync(guide =>
+                    guide.CategoryName == category.Name &&
+                    guide.EffectiveFromCycleKey == cycleKey);
+            if (history == null)
+            {
+                history = new CategorySpendingGuide
+                {
+                    Id = $"guide-{Guid.NewGuid():N}",
+                    CategoryName = category.Name,
+                    EffectiveFromCycleKey = cycleKey,
+                    LimitAmount = cycleLimit
+                };
+                _context.CategorySpendingGuides.Add(history);
+            }
+            else
+            {
+                history.LimitAmount = cycleLimit;
+            }
         }
 
         await _context.SaveChangesAsync();

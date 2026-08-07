@@ -38,7 +38,7 @@ public class TransactionCategoriesController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<TransactionCategory>> PostCategory(TransactionCategoryMutationDto dto)
     {
-        var category = new TransactionCategory { Id = dto.Id, Name = dto.Name };
+        var category = new TransactionCategory { Id = dto.Id, Name = dto.Name, Type = CategoryFlowType.Normalize(dto.Type) };
         var result = await _categoryService.CreateCategoryAsync(category);
         if (result.Status == CreateTransactionCategoryStatus.Existing)
         {
@@ -51,6 +51,32 @@ public class TransactionCategoriesController : ControllerBase
         }
 
         return CreatedAtAction(nameof(GetCategories), new { id = result.Category!.Id }, ToResponse(result.Category));
+    }
+
+    // PUT: api/categories/{id}
+    [HttpPut("{id}")]
+    public async Task<IActionResult> UpdateCategory(string id, UpdateCategoryDto dto)
+    {
+        decimal? limit = null;
+        bool updateLimit = dto.CycleLimit != null;
+        if (!string.IsNullOrWhiteSpace(dto.CycleLimit))
+        {
+            try
+            {
+                limit = ObfuscationHelper.Deobfuscate(dto.CycleLimit);
+            }
+            catch (FormatException)
+            {
+                return BadRequest(new { message = "Cycle spending guide is invalid." });
+            }
+        }
+
+        var result = await _categoryService.UpdateCategoryAsync(id, dto.Type, limit, updateLimit);
+        if (result.Status == UpdateCategoryCycleLimitStatus.NotFound) return NotFound();
+        if (result.Status == UpdateCategoryCycleLimitStatus.InvalidAmount)
+            return BadRequest(new { message = result.Message });
+
+        return Ok(ToResponse(result.Category!));
     }
 
     // PUT: api/categories/{id}/cycle-limit
@@ -70,7 +96,7 @@ public class TransactionCategoriesController : ControllerBase
             }
         }
 
-        var result = await _categoryService.UpdateCycleLimitAsync(id, limit);
+        var result = await _categoryService.UpdateCategoryAsync(id, type: null, limit, updateLimit: true);
         if (result.Status == UpdateCategoryCycleLimitStatus.NotFound) return NotFound();
         if (result.Status == UpdateCategoryCycleLimitStatus.InvalidAmount)
             return BadRequest(new { message = result.Message });
@@ -249,6 +275,7 @@ public class TransactionCategoriesController : ControllerBase
     {
         category.Id,
         category.Name,
+        Type = category.Type ?? CategoryFlowType.Both,
         CycleLimit = category.CycleLimit.HasValue
             ? ObfuscationHelper.Obfuscate(category.CycleLimit.Value)
             : null
@@ -260,6 +287,13 @@ public class TransactionCategoryMutationDto
 {
     public string Id { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
+    public string? Type { get; set; }
+}
+
+public class UpdateCategoryDto
+{
+    public string? Type { get; set; }
+    public string? CycleLimit { get; set; }
 }
 
 public class UpdateCategoryCycleLimitDto
