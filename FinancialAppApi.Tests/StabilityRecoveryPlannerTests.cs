@@ -64,6 +64,33 @@ public class StabilityRecoveryPlannerTests
         Assert.False(drawdown.IsActive);
     }
 
+    /// <summary>
+    /// An unset target must not switch recovery off. Taking the min against zero would silently
+    /// disable the whole feature for anyone who never picked a figure -- the same trap the income
+    /// split guards on the cap side.
+    /// </summary>
+    [Fact]
+    public void ComputeDrawdown_AimsAtTheHighWaterMarkWhenNoTargetIsSet()
+    {
+        var drawdown = StabilityRecoveryPlanner.ComputeDrawdown(
+            highWaterMark: 5000m, target: 0m, currentBalance: 3000m,
+            balanceAtCycleStart: 3000m, lastDrawdownCycleKey: "2026-06", lastDrawdownAmount: 2000m);
+
+        Assert.True(drawdown.IsActive);
+        Assert.Equal(5000m, drawdown.RecoverableCeiling);
+        Assert.Equal(2000m, drawdown.OutstandingShortfall);
+    }
+
+    [Fact]
+    public void ComputeDrawdown_StillAsksNothingOfAnUnfilledFundWithNoTarget()
+    {
+        var drawdown = StabilityRecoveryPlanner.ComputeDrawdown(
+            highWaterMark: 3000m, target: 0m, currentBalance: 3000m,
+            balanceAtCycleStart: 2800m, lastDrawdownCycleKey: null, lastDrawdownAmount: 0m);
+
+        Assert.False(drawdown.IsActive);
+    }
+
     [Fact]
     public void ComputeDrawdown_ClosesTheAskWhenTheTargetDropsBelowTheBalance()
     {

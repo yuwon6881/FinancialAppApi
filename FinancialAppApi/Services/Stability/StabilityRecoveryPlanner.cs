@@ -92,7 +92,12 @@ public static class StabilityRecoveryPlanner
         decimal lastDrawdownAmount)
     {
         var mark = Math.Max(highWaterMark, currentBalance);
-        var ceiling = Math.Min(mark, target);
+        // A non-positive target means "no target set", not "aim at nothing" -- taking the min
+        // against zero would silently switch recovery off for anyone who never picked a figure,
+        // which is the same trap IncomeSplitPlanner guards on the cap side. With no target the
+        // fund's own high-water mark is the only thing to aim at, and it is enough: the ask is
+        // still only ever money that was really in there.
+        var ceiling = target > 0m ? Math.Min(mark, target) : mark;
 
         return new StabilityDrawdown(
             mark,
