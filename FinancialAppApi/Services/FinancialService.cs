@@ -341,7 +341,10 @@ public class FinancialService
 
         var pendingNotifications = summaryOnly
             ? new List<object>()
-            : await _recurringPaymentAlertService.GetSubscriptionAlertsAsync(cancellationToken);
+            : await _recurringPaymentAlertService.GetSubscriptionAlertsAsync(
+                cycleDay,
+                allRecurring,
+                cancellationToken);
 
         var monthlyCategoryBreakdown = BuildBreakdown(activeCycleTxs);
 
@@ -458,10 +461,24 @@ public class FinancialService
         // memory instead of querying again.
         var last6StartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(GetCycleStartNCyclesBack(activeYear, activeMonthIndex, cycleDay, 6)));
         var last3StartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(GetCycleStartNCyclesBack(activeYear, activeMonthIndex, cycleDay, 3)));
-        var last6Txs = await _context.Transactions
+        // Insights only ever read four columns off these rows (BuildBreakdown needs Category /
+        // LedgerCategory / Amount, the rewards average needs Date as well), so fetch those rather
+        // than whole entities -- six cycles of ledger rows otherwise carries every Description and
+        // denormalized id across the wire on a request the outbox re-issues after every drain.
+        var last6Rows = await _context.Transactions
             .AsNoTracking()
             .Where(t => t.Date >= last6StartDate && t.Date < activeCycleEndExclusive)
+            .Select(t => new { t.Date, t.Amount, t.Category, t.LedgerCategory })
             .ToListAsync(cancellationToken);
+        var last6Txs = last6Rows
+            .Select(r => new Transaction
+            {
+                Date = r.Date,
+                Amount = r.Amount,
+                Category = r.Category,
+                LedgerCategory = r.LedgerCategory
+            })
+            .ToList();
         var last6CategoryBreakdown = BuildBreakdown(last6Txs);
 
         var last3Txs = last6Txs.Where(t => t.Date >= last3StartDate).ToList();

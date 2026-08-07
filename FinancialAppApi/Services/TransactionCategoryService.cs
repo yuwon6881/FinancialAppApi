@@ -343,17 +343,6 @@ public class TransactionCategoryService
         return new UpdateCategoryCycleLimitResult(UpdateCategoryCycleLimitStatus.Updated, category);
     }
 
-    public async Task<bool> CategoryNameExistsAsync(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return false;
-        }
-
-        return await _context.TransactionCategories
-            .AnyAsync(c => c.Name.ToLower() == name.Trim().ToLower());
-    }
-
     public void InvalidateCache()
     {
         _cache.Remove(CacheKey);

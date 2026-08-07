@@ -45,6 +45,69 @@ public sealed class PerformanceQueryCountTests
         Assert.Equal(3, fixture.Counter.CommandCount);
     }
 
+    // The full dashboard reuses the snapshot's settings and active recurring payments when it
+    // builds the pending-bill alerts. The alert service used to re-read both itself, which cost
+    // /api/bootstrap two extra round trips on every cold start and every post-drain refresh.
+    [Fact]
+    public async Task DashboardData_ReusesSnapshotDataForPendingBillAlerts()
+    {
+        await using var fixture = await SqliteFixture.CreateAsync();
+        fixture.Context.FinancialSettings.Add(new FinancialSetting
+        {
+            UserId = TestHelpers.DefaultUserId,
+            SelectedMonth = "Jul",
+            SelectedYear = 2026,
+            CycleDay = 1
+        });
+        fixture.Context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "rp-1",
+            UserId = TestHelpers.DefaultUserId,
+            Name = "Streaming",
+            Amount = 15m,
+            Category = "Entertainment",
+            LedgerCategory = "Rewards",
+            Frequency = "Monthly",
+            StartDate = "2026-01-05",
+            PaymentMode = RecurringPaymentMode.Manual,
+            Active = true
+        });
+        await fixture.Context.SaveChangesAsync();
+
+        var occurrenceService = new RecurringOccurrenceService(
+            NullLogger<RecurringOccurrenceService>.Instance);
+        var financialService = new FinancialService(
+            fixture.Context,
+            new CycleBalanceService(fixture.Context),
+            new RecurringPaymentAlertService(fixture.Context, occurrenceService),
+            occurrenceService);
+
+        var snapshot = await financialService.CreateBootstrapSnapshotAsync(
+            "Jul",
+            2026,
+            persistSelection: false,
+            CancellationToken.None);
+        var alertService = new RecurringPaymentAlertService(fixture.Context, occurrenceService);
+
+        // Standalone: settings + active payments + settled history.
+        fixture.Counter.Reset();
+        var standaloneAlerts = await alertService.GetSubscriptionAlertsAsync(CancellationToken.None);
+        Assert.Equal(3, fixture.Counter.CommandCount);
+
+        // Dashboard path: settings and payments come from the snapshot, so only history is read.
+        fixture.Counter.Reset();
+        var snapshotAlerts = await alertService.GetSubscriptionAlertsAsync(
+            snapshot.Cycle.CycleDay,
+            snapshot.ActiveRecurringPayments,
+            CancellationToken.None);
+        Assert.Equal(1, fixture.Counter.CommandCount);
+
+        // Fewer queries, same answer -- the point of the overload is the round trips, not a
+        // different result.
+        Assert.Equal(standaloneAlerts.Count, snapshotAlerts.Count);
+        Assert.NotEmpty(snapshotAlerts);
+    }
+
     [Theory]
     [InlineData(1)]
     [InlineData(2_000)]

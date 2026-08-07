@@ -25,6 +25,14 @@ public class CycleBalanceService
 
     private readonly AppDbContext _context;
 
+    // Opening balances resolved so far in this request. The service is scoped, so the lifetime is
+    // one request -- long enough to matter (a single /api/bootstrap resolves the same cycle twice,
+    // once for the dashboard and once for the wallet balance, and SavingsGoalService,
+    // StabilityRecoveryService and the AI context loaders each ask again) and short enough that
+    // nothing outside the request can invalidate it behind our back. Inside the request the only
+    // thing that can is Invalidate*Async, which clears it.
+    private readonly Dictionary<(int year, int monthIndex, int cycleDay), (decimal, decimal, decimal, decimal)> _openingBalances = new();
+
     public CycleBalanceService(AppDbContext context)
     {
         _context = context;
@@ -157,6 +165,11 @@ public class CycleBalanceService
             return (0m, 0m, 0m, 0m);
         }
 
+        if (_openingBalances.TryGetValue((year, monthIndex, cycleDay), out var memoized))
+        {
+            return memoized;
+        }
+
         var prevYear = monthIndex == 1 ? year - 1 : year;
         var prevMonth = monthIndex == 1 ? 12 : monthIndex - 1;
 
@@ -165,7 +178,9 @@ public class CycleBalanceService
             prevMonth,
             cycleDay,
             cancellationToken);
-        return (row.EssentialsBalance, row.GrowthBalance, row.StabilityBalance, row.RewardsBalance);
+        var opening = (row.EssentialsBalance, row.GrowthBalance, row.StabilityBalance, row.RewardsBalance);
+        _openingBalances[(year, monthIndex, cycleDay)] = opening;
+        return opening;
     }
 
     // Deletes every cached snapshot for cycles at or after (year, monthIndex) -- call whenever a
@@ -176,6 +191,11 @@ public class CycleBalanceService
         int monthIndex,
         CancellationToken cancellationToken = default)
     {
+        // Clear the whole memo rather than just the cycles at or after (year, monthIndex): a
+        // mutation that invalidates cycle X within a request must not let an opening balance
+        // resolved earlier in that same request survive, and the memo is a handful of entries.
+        _openingBalances.Clear();
+
         var query = _context.CycleBalances
             .Where(b => b.Year > year || (b.Year == year && b.MonthIndex >= monthIndex));
 
@@ -193,6 +213,8 @@ public class CycleBalanceService
     // that shifts every cycle's date boundaries retroactively and invalidates the whole history.
     public async Task InvalidateAllAsync(CancellationToken cancellationToken = default)
     {
+        _openingBalances.Clear();
+
         if (_context.Database.IsRelational())
         {
             await _context.CycleBalances.ExecuteDeleteAsync(cancellationToken);
