@@ -446,8 +446,10 @@ public partial class AiAssistantService
             ? "Coverage: this analysis is limited to the last 24 cycles, so it is not an exact all-time review."
             : contextResult.Sufficiency.Approximate
                 ? "Coverage: some saved rows were sampled, so the figures below are approximate."
-                : "Coverage: figures below use the selected cycle and saved server data.";
-        return scope + pendingSyncWarning + " ";
+                : string.Empty;
+
+        var combined = (scope + pendingSyncWarning).Trim();
+        return string.IsNullOrEmpty(combined) ? string.Empty : combined + " ";
     }
 
     private static readonly HashSet<string> InvocationSurfaces =

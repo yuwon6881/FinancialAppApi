@@ -93,7 +93,7 @@ public class AiAssistantServiceTests
         var outcome = await service.ChatAsync(new AiChatRequest("What should I delete to save money?", []));
 
         Assert.True(handler.CallCount >= 1);
-        Assert.Equal("Coverage: figures below use the selected cycle and saved server data. Here is some advice.", outcome.Response.Reply);
+        Assert.Equal("Here is some advice.", outcome.Response.Reply);
     }
 
     [Fact]
