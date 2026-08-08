@@ -32,6 +32,84 @@ public class SavingsGoalServiceTests
     }
 
     [Fact]
+    public async Task GetPoolSummaryAsync_HoldsPendingRewardsOccurrenceOutOfFreeBalance()
+    {
+        await using var context = NewContext(rewardsBalance: 1150m);
+        context.SavingsGoals.Add(NewGoal(
+            "Camera commitment",
+            300m,
+            targetDate: new DateOnly(2026, 9, 20),
+            earmarked: 100m));
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "chatgpt-plus",
+            Name = "ChatGPT Plus",
+            Amount = 150m,
+            Frequency = "Monthly",
+            Category = "Entertainment",
+            LedgerCategory = "Rewards",
+            StartDate = "2026-01-27",
+            NextDueDate = "2026-07-27",
+            DueDate = 27,
+            Active = true
+        });
+        // A transaction for the next occurrence must not settle this month's bill merely because
+        // it was posted in the current cycle.
+        context.Transactions.Add(new Transaction
+        {
+            Id = "chatgpt-next-month",
+            Date = new DateTime(2026, 7, 5),
+            Description = "ChatGPT Plus",
+            Category = "Entertainment",
+            LedgerCategory = "Rewards",
+            Amount = -150m,
+            RecurringPaymentId = "chatgpt-plus",
+            RecurringOccurrenceDate = new DateOnly(2026, 8, 27)
+        });
+        await context.SaveChangesAsync();
+
+        var summary = await NewService(context).GetPoolSummaryAsync();
+
+        Assert.Equal(850m, summary.RewardsBalance);
+        Assert.Equal(100m, summary.TotalEarmarked);
+        Assert.Equal(750m, summary.Unassigned);
+    }
+
+    [Fact]
+    public async Task GetPoolSummaryAsync_UsesLegacyUndatedTransactionForCurrentOccurrence()
+    {
+        await using var context = NewContext(rewardsBalance: 1150m);
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "legacy-rewards-bill",
+            Name = "Legacy Rewards bill",
+            Amount = 150m,
+            Frequency = "Monthly",
+            Category = "Entertainment",
+            LedgerCategory = "Rewards",
+            StartDate = "2026-01-27",
+            NextDueDate = "2026-07-27",
+            DueDate = 27,
+            Active = true
+        });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "legacy-rewards-payment",
+            Date = new DateTime(2026, 7, 5),
+            Description = "Legacy Rewards bill",
+            Category = "Entertainment",
+            LedgerCategory = "Rewards",
+            Amount = -150m,
+            RecurringPaymentId = "legacy-rewards-bill"
+        });
+        await context.SaveChangesAsync();
+
+        var summary = await NewService(context).GetPoolSummaryAsync();
+
+        Assert.Equal(1000m, summary.Unassigned);
+    }
+
+    [Fact]
     public async Task GetPoolSummaryAsync_IgnoresCompletedGoals()
     {
         await using var context = NewContext(rewardsBalance: 1000m);

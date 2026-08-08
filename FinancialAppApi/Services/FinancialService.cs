@@ -307,6 +307,9 @@ public class FinancialService
         var unpaidEssentials = pendingRecurring
             .Where(item => string.Equals(item.LedgerCategory, "Essentials", StringComparison.OrdinalIgnoreCase))
             .Sum(item => item.Amount);
+        var unpaidRewards = pendingRecurring
+            .Where(item => string.Equals(item.LedgerCategory, "Rewards", StringComparison.OrdinalIgnoreCase))
+            .Sum(item => item.Amount);
 
         var todayPlanInsights = BuildTodayPlanInsights(
             activeCycleTxs,
@@ -328,7 +331,8 @@ public class FinancialService
                 selectedBudgetStability,
                 selectedRemStability,
                 unpaidEssentials,
-                cancellationToken);
+                cancellationToken,
+                rewardsRecurringCommitted: unpaidRewards);
 
         var categoryLimitProgress = await BuildCategoryLimitProgressAsync(
             activeCycleTxs,
@@ -774,7 +778,7 @@ public class FinancialService
                 // never be picked here -- only an exact occurrence match, or an untagged legacy
                 // transaction (matched by posting date the old way), can settle this billingDate.
                 var paidTx = relatedTxs?
-                    .Where(t => t.RecurringOccurrenceDate == null || t.RecurringOccurrenceDate == billingDateOnly)
+                    .Where(t => RecurringOccurrenceService.MatchesOccurrence(t, rp.Id, billingDateOnly))
                     .OrderBy(t => t.RecurringOccurrenceDate == billingDateOnly ? 0 : 1)
                     .ThenBy(t => string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
                     .ThenBy(t => t.Date)
@@ -968,17 +972,17 @@ public class FinancialService
         DateTime rangeEnd,
         int cycleDay)
     {
-        var resolvedRecurringIds = recurringMatchTxs
-            .Where(transaction => !string.IsNullOrWhiteSpace(transaction.RecurringPaymentId))
-            .Select(transaction => transaction.RecurringPaymentId!)
-            .ToHashSet(StringComparer.Ordinal);
         var pending = new List<PendingRecurringItem>();
 
         foreach (var payment in allRecurring)
         {
-            if (resolvedRecurringIds.Contains(payment.Id)) continue;
-            foreach (var _ in _recurringOccurrenceService.GetOccurrencesInRange(payment, rangeStart, rangeEnd, cycleDay))
+            foreach (var occurrence in _recurringOccurrenceService.GetOccurrencesInRange(payment, rangeStart, rangeEnd, cycleDay))
             {
+                var occurrenceDate = DateOnly.FromDateTime(occurrence);
+                var isSettled = recurringMatchTxs.Any(transaction =>
+                    RecurringOccurrenceService.MatchesOccurrence(transaction, payment.Id, occurrenceDate));
+                if (isSettled) continue;
+
                 pending.Add(new PendingRecurringItem(
                     payment.Category,
                     payment.LedgerCategory,

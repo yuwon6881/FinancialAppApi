@@ -168,13 +168,16 @@ public static class SavingsGoalPacing
     }
 
     /// <summary>
-    /// Money in the Rewards pool that no goal has claimed. Floored at zero so a balance that has
-    /// dropped below the outstanding earmarks (a correction, a refund reversal) reports "nothing
-    /// free" rather than a negative amount.
+    /// Money in the Rewards pool that no goal or pending Rewards bill has claimed. Floored at zero
+    /// so a balance that has dropped below the outstanding claims (a correction, a refund reversal)
+    /// reports "nothing free" rather than a negative amount.
     /// </summary>
-    public static decimal Unassigned(decimal rewardsBalance, decimal totalEarmarked)
+    public static decimal Unassigned(
+        decimal rewardsBalance,
+        decimal totalEarmarked,
+        decimal pendingRewardsCommitted = 0m)
     {
-        return Math.Max(0m, rewardsBalance - totalEarmarked);
+        return Math.Max(0m, rewardsBalance - totalEarmarked - Math.Max(0m, pendingRewardsCommitted));
     }
 
     // Contributions are rounded UP to the cent so that N cycles of the required amount always

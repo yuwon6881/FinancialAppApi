@@ -178,7 +178,8 @@ public partial class AiAssistantService
         _savingsGoalService = savingsGoalService ?? new SavingsGoals.SavingsGoalService(
             context,
             new CycleBalanceService(context),
-            _financialClock);
+            _financialClock,
+            _recurringOccurrenceService);
         _investmentPortfolioService = investmentPortfolioService;
     }
 

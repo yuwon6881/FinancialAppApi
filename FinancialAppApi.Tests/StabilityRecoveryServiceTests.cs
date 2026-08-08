@@ -187,6 +187,25 @@ public class StabilityRecoveryServiceTests
     }
 
     [Fact]
+    public async Task BuildAsync_IncludesPendingRewardsBillsInTheRecoveryFloor()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        await context.SaveChangesAsync();
+
+        var recovery = await BuildWithRewards(
+            context,
+            setting,
+            2026,
+            7,
+            opening: 0m,
+            current: 0m,
+            rewardsRecurringCommitted: 150m);
+
+        Assert.Equal(150m, Money(recovery.RewardsCommitted));
+    }
+
+    [Fact]
     public async Task BuildAsync_SplitsAProposedTopUpAcrossTheThreeContributingBuckets()
     {
         await using var context = NewContext();
@@ -243,8 +262,28 @@ public class StabilityRecoveryServiceTests
         decimal current,
         params Transaction[] activeCycleTxs)
     {
+        return await BuildWithRewards(context, setting, year, monthIndex, opening, current, 0m, activeCycleTxs);
+    }
+
+    private static async Task<StabilityRecoveryDto> BuildWithRewards(
+        AppDbContext context,
+        FinancialSetting setting,
+        int year,
+        int monthIndex,
+        decimal opening,
+        decimal current,
+        decimal rewardsRecurringCommitted,
+        params Transaction[] activeCycleTxs)
+    {
         return await NewService(context).BuildAsync(
-            setting, year, monthIndex, activeCycleTxs, opening, current, essentialsCommitted: 0m);
+            setting,
+            year,
+            monthIndex,
+            activeCycleTxs,
+            opening,
+            current,
+            essentialsCommitted: 0m,
+            rewardsRecurringCommitted: rewardsRecurringCommitted);
     }
 
     private static StabilityRecoveryService NewService(AppDbContext context)

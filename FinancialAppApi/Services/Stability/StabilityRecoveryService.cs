@@ -63,10 +63,10 @@ public class StabilityRecoveryService
     /// Builds the dashboard's recovery block for the cycle the caller is showing.
     /// <para>
     /// <c>essentialsCommitted</c> is this cycle's unpaid Essentials bills, which the caller already
-    /// has. The matching Rewards figure -- what active savings goals still need -- is loaded here
-    /// rather than threaded in, so the dashboard does not grow a savings-goal dependency for it.
-    /// Both are floors the proposed draw is held above, so refilling the buffer never spends money
-    /// that is already promised somewhere else.
+    /// has. The caller also supplies unpaid recurring Rewards bills; the matching savings-goal
+    /// figure -- what active goals still need -- is loaded here rather than threaded in. Both kinds
+    /// of Rewards commitment are one floor, so refilling the buffer never spends money already
+    /// promised somewhere else.
     /// </para>
     /// </summary>
     public async Task<StabilityRecoveryDto> BuildAsync(
@@ -77,7 +77,8 @@ public class StabilityRecoveryService
         decimal openingStability,
         decimal currentStability,
         decimal essentialsCommitted,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        decimal rewardsRecurringCommitted = 0m)
     {
         // Must run before the MAX below. InvalidateFromAsync deletes cached rows on every
         // transaction mutation, so reading the high-water mark off a partially-invalidated table
@@ -143,7 +144,7 @@ public class StabilityRecoveryService
             lastDrawdownCycleKey, currentCycleKey, FinancialConstants.StabilityRecoveryCycles);
         var pace = StabilityRecoveryPlanner.ComputePace(drawdown, cyclesRemaining, toppedUp);
 
-        var rewardsCommitted = await GetGoalFundingDueAsync(setting.CycleDay, cancellationToken);
+        var rewardsCommitted = rewardsRecurringCommitted + await GetGoalFundingDueAsync(setting.CycleDay, cancellationToken);
 
         return new StabilityRecoveryDto(
             drawdown.IsActive,

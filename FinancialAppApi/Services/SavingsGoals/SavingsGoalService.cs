@@ -1,6 +1,7 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FinancialAppApi.Services.SavingsGoals;
 
@@ -38,7 +39,8 @@ public sealed record SavingsGoalFundingResult(
 // Zero means there is nothing left to fund.
 /// <summary>
 /// The whole-pool picture the Rewards page renders: one balance, split into what goals have
-/// claimed and what is genuinely free.
+/// claimed and what is genuinely free. The balance is reduced first by pending Rewards bills,
+/// because those are already spoken for even though their ledger rows do not exist yet.
 /// </summary>
 public sealed record SavingsGoalPoolSummary(
     decimal RewardsBalance,
@@ -63,15 +65,19 @@ public class SavingsGoalService
     private readonly AppDbContext _context;
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly FinancialClock _financialClock;
+    private readonly RecurringOccurrenceService _recurringOccurrenceService;
 
     public SavingsGoalService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
-        FinancialClock? financialClock = null)
+        FinancialClock? financialClock = null,
+        RecurringOccurrenceService? recurringOccurrenceService = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _financialClock = financialClock ?? FinancialClock.Utc;
+        _recurringOccurrenceService = recurringOccurrenceService ??
+            new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
     }
 
     public async Task<List<SavingsGoal>> GetGoalsAsync(CancellationToken cancellationToken = default)
@@ -95,6 +101,8 @@ public class SavingsGoalService
     {
         var cycleDay = await GetCycleDayAsync(cancellationToken);
         var rewardsBalance = await GetRewardsBalanceAsync(cycleDay, cancellationToken);
+        var pendingRewards = await GetPendingRewardsRecurringAsync(cycleDay, cancellationToken);
+        var availableRewards = Math.Max(0m, rewardsBalance - pendingRewards);
         var active = await _context.SavingsGoals
             .AsNoTracking()
             .Where(goal => goal.Status == SavingsGoalStatus.Active)
@@ -113,9 +121,9 @@ public class SavingsGoalService
         }
 
         return new SavingsGoalPoolSummary(
-            rewardsBalance,
+            availableRewards,
             totalEarmarked,
-            SavingsGoalPacing.Unassigned(rewardsBalance, totalEarmarked),
+            SavingsGoalPacing.Unassigned(availableRewards, totalEarmarked),
             requiredPerCycleTotal,
             outstandingThisCycleTotal,
             cycleKey);
@@ -320,6 +328,7 @@ public class SavingsGoalService
     {
         var cycleDay = await GetCycleDayAsync(cancellationToken);
         var rewardsBalance = await GetRewardsBalanceAsync(cycleDay, cancellationToken);
+        var pendingRewards = await GetPendingRewardsRecurringAsync(cycleDay, cancellationToken);
         var today = _financialClock.Today;
         var cycleKey = CurrentCycleKey(today, cycleDay);
 
@@ -327,7 +336,10 @@ public class SavingsGoalService
             .Where(goal => goal.Status == SavingsGoalStatus.Active)
             .ToListAsync(cancellationToken);
 
-        var available = SavingsGoalPacing.Unassigned(rewardsBalance, active.Sum(goal => goal.EarmarkedAmount));
+        var available = SavingsGoalPacing.Unassigned(
+            rewardsBalance,
+            active.Sum(goal => goal.EarmarkedAmount),
+            pendingRewards);
 
         var waterfall = SavingsGoalPacing.Distribute(active, available, today, cycleDay, cycleKey);
         var byId = active.ToDictionary(goal => goal.Id);
@@ -520,10 +532,65 @@ public class SavingsGoalService
     {
         var resolvedCycleDay = cycleDay ?? await GetCycleDayAsync(cancellationToken);
         var rewardsBalance = await GetRewardsBalanceAsync(resolvedCycleDay, cancellationToken);
+        var pendingRewards = await GetPendingRewardsRecurringAsync(resolvedCycleDay, cancellationToken);
         var totalEarmarked = await _context.SavingsGoals
             .Where(goal => goal.Status == SavingsGoalStatus.Active)
             .SumAsync(goal => goal.EarmarkedAmount, cancellationToken);
-        return SavingsGoalPacing.Unassigned(rewardsBalance, totalEarmarked);
+        return SavingsGoalPacing.Unassigned(rewardsBalance, totalEarmarked, pendingRewards);
+    }
+
+    /// <summary>
+    /// Holds an unsettled Rewards subscription out of the same pool that goals and wishlist claims
+    /// use. Occurrence-tagged transactions are matched by their exact occurrence date; untagged
+    /// transactions retain the legacy posting-date fallback because older ledger rows predate the
+    /// occurrence column.
+    /// </summary>
+    private async Task<decimal> GetPendingRewardsRecurringAsync(
+        int cycleDay,
+        CancellationToken cancellationToken)
+    {
+        var today = _financialClock.Today;
+        var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
+        var range = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
+        var startDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(range.start));
+        var endExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(range.end));
+        var startOnly = DateOnly.FromDateTime(range.start);
+        var endOnly = DateOnly.FromDateTime(range.end);
+
+        var recurringTransactions = await _context.Transactions
+            .AsNoTracking()
+            .Where(transaction => transaction.RecurringPaymentId != null &&
+                ((transaction.RecurringOccurrenceDate != null &&
+                  transaction.RecurringOccurrenceDate >= startOnly &&
+                  transaction.RecurringOccurrenceDate <= endOnly) ||
+                 (transaction.RecurringOccurrenceDate == null &&
+                  transaction.Date >= startDate && transaction.Date < endExclusive)))
+            .ToListAsync(cancellationToken);
+        var payments = await _context.RecurringPayments
+            .AsNoTracking()
+            .Where(payment => payment.Active)
+            .ToListAsync(cancellationToken);
+
+        var pending = 0m;
+        foreach (var payment in payments)
+        {
+            if (!string.Equals(payment.LedgerCategory, "Rewards", StringComparison.OrdinalIgnoreCase)) continue;
+            foreach (var occurrence in _recurringOccurrenceService.GetOccurrencesInRange(
+                         payment,
+                         range.start,
+                         range.end,
+                         cycleDay))
+            {
+                var occurrenceDate = DateOnly.FromDateTime(occurrence);
+                if (!recurringTransactions.Any(transaction =>
+                        RecurringOccurrenceService.MatchesOccurrence(transaction, payment.Id, occurrenceDate)))
+                {
+                    pending += Math.Abs(payment.Amount);
+                }
+            }
+        }
+
+        return Math.Round(pending, 2, MidpointRounding.AwayFromZero);
     }
 
     private async Task<int> GetCycleDayAsync(CancellationToken cancellationToken)

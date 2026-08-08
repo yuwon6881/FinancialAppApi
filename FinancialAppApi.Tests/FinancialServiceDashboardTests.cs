@@ -287,6 +287,44 @@ public class FinancialServiceDashboardTests
     }
 
     [Fact]
+    public async Task GetDashboardDataAsync_DoesNotSettleOccurrenceWithDifferentTaggedDate()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "streaming",
+            Name = "Streaming Plan",
+            Amount = -25m,
+            Frequency = "Monthly",
+            Category = "Software",
+            LedgerCategory = "Essentials",
+            StartDate = "2026-01-10",
+            NextDueDate = "2026-01-10",
+            DueDate = 10,
+            Active = true
+        });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "streaming-next-occurrence",
+            Date = new DateTime(2026, 7, 10),
+            Description = "Streaming Plan",
+            Amount = -25m,
+            Category = "Software",
+            LedgerCategory = "Essentials",
+            RecurringPaymentId = "streaming",
+            RecurringOccurrenceDate = new DateOnly(2026, 8, 10)
+        });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context).GetDashboardDataAsync("Jul", 2026);
+        var occurrence = Assert.Single(GetObjects(response, "activeRecurringPayments"));
+
+        Assert.Equal("Pending", occurrence.GetType().GetProperty("status")!.GetValue(occurrence));
+        Assert.False((bool)occurrence.GetType().GetProperty("isPaid")!.GetValue(occurrence)!);
+    }
+
+    [Fact]
     public async Task GetDashboardDataAsync_KeepsPaidOccurrenceAfterSubscriptionIsDeleted()
     {
         await using var context = TestHelpers.NewInMemoryContext();

@@ -741,6 +741,74 @@ public class AiAssistantHistoricalContextTests
     }
 
     [Fact]
+    public async Task ChatAsync_RecurringStatusUsesExactOccurrenceAndLegacyFallback()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
+        context.RecurringPayments.AddRange(
+            new RecurringPayment
+            {
+                Id = "chatgpt-plus",
+                Name = "ChatGPT Plus",
+                Amount = 15,
+                Frequency = "Monthly",
+                Category = "Entertainment",
+                LedgerCategory = "Rewards",
+                NextDueDate = "2026-07-27",
+                DueDate = 27,
+                StartDate = "2026-01-27",
+                Active = true
+            },
+            new RecurringPayment
+            {
+                Id = "legacy-rewards",
+                Name = "Legacy Rewards bill",
+                Amount = 20,
+                Frequency = "Monthly",
+                Category = "Entertainment",
+                LedgerCategory = "Rewards",
+                NextDueDate = "2026-07-21",
+                DueDate = 21,
+                StartDate = "2026-01-21",
+                Active = true
+            });
+        context.Transactions.AddRange(
+            new Transaction
+            {
+                Id = "chatgpt-next-occurrence",
+                Date = new DateTime(2026, 7, 5, 12, 0, 0, DateTimeKind.Utc),
+                Description = "ChatGPT Plus",
+                Category = "Entertainment",
+                LedgerCategory = "Rewards",
+                Amount = -15,
+                RecurringPaymentId = "chatgpt-plus",
+                RecurringOccurrenceDate = new DateOnly(2026, 8, 27)
+            },
+            new Transaction
+            {
+                Id = "legacy-rewards-payment",
+                Date = new DateTime(2026, 7, 5, 12, 0, 0, DateTimeKind.Utc),
+                Description = "Legacy Rewards bill",
+                Category = "Entertainment",
+                LedgerCategory = "Rewards",
+                Amount = -20,
+                RecurringPaymentId = "legacy-rewards"
+            });
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+
+        await service.ChatAsync(new AiChatRequest("which recurring bills are pending this cycle?", []));
+
+        Assert.Contains("ChatGPT Plus", handler.UserContent);
+        Assert.Contains("Legacy Rewards bill", handler.UserContent);
+        Assert.Contains("\"status\":\"Pending\"", handler.UserContent);
+        Assert.Contains("\"status\":\"Paid\"", handler.UserContent);
+    }
+
+    [Fact]
     public async Task ChatAsync_StabilityFundProgressMetricSurfaced()
     {
         await using var context = TestHelpers.NewInMemoryContext();

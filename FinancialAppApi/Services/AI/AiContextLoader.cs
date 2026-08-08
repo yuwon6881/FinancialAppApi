@@ -85,9 +85,16 @@ public partial class AiAssistantService
             var range = CategoryAttributionService.GetCycleRange(cycle.Year, cycle.MonthIndex, cycleDay);
             var startDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(range.start));
             var endExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(range.end));
+            var startOnly = DateOnly.FromDateTime(range.start);
+            var endOnly = DateOnly.FromDateTime(range.end);
             var cycleTxs = await _context.Transactions
                 .AsNoTracking()
-                .Where(t => t.Date >= startDate && t.Date < endExclusive && t.RecurringPaymentId != null)
+                .Where(t => t.RecurringPaymentId != null &&
+                    ((t.RecurringOccurrenceDate != null &&
+                      t.RecurringOccurrenceDate >= startOnly &&
+                      t.RecurringOccurrenceDate <= endOnly) ||
+                     (t.RecurringOccurrenceDate == null &&
+                      t.Date >= startDate && t.Date < endExclusive)))
                 .ToListAsync(cancellationToken);
             foreach (var rp in recurring)
             {
@@ -99,8 +106,9 @@ public partial class AiAssistantService
                              cycleDay))
                 {
                     var paidTx = cycleTxs
-                        .Where(t => t.RecurringPaymentId == rp.Id)
-                        .OrderBy(t => string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                        .Where(t => RecurringOccurrenceService.MatchesOccurrence(t, rp.Id, DateOnly.FromDateTime(billingDate)))
+                        .OrderBy(t => t.RecurringOccurrenceDate == DateOnly.FromDateTime(billingDate) ? 0 : 1)
+                        .ThenBy(t => string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
                         .ThenBy(t => t.Date)
                         .ThenBy(t => t.Id, StringComparer.Ordinal)
                         .FirstOrDefault();
