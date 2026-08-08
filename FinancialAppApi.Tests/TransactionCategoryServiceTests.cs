@@ -170,6 +170,75 @@ public class TransactionCategoryServiceTests
     }
 
     [Fact]
+    public async Task UpdateCycleLimitAsync_RejectsAnInflowCategory()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.TransactionCategories.Add(new TransactionCategory
+        {
+            Id = "cat-salary",
+            Name = "Salary",
+            Type = CategoryFlowType.Inflow
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context, new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero));
+
+        var result = await service.UpdateCycleLimitAsync("cat-salary", 400m);
+
+        Assert.Equal(UpdateCategoryCycleLimitStatus.InvalidAmount, result.Status);
+        Assert.Contains("Inflow categories", result.Message);
+        Assert.Null((await context.TransactionCategories.SingleAsync()).CycleLimit);
+        Assert.Empty(await context.CategorySpendingGuides.ToListAsync());
+    }
+
+    [Fact]
+    public async Task UpdateCategoryAsync_ChangingToInflowClosesCurrentGuideButPreservesEarlierHistory()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.TransactionCategories.Add(new TransactionCategory
+        {
+            Id = "cat-transport",
+            Name = "Transport",
+            Type = CategoryFlowType.Outflow,
+            CycleLimit = 400m
+        });
+        context.CategorySpendingGuides.AddRange(
+            new CategorySpendingGuide
+            {
+                Id = "guide-old",
+                CategoryName = "Transport",
+                EffectiveFromCycleKey = "2026-06",
+                LimitAmount = 350m
+            },
+            new CategorySpendingGuide
+            {
+                Id = "guide-current",
+                CategoryName = "Transport",
+                EffectiveFromCycleKey = "2026-07",
+                LimitAmount = 400m
+            });
+        await context.SaveChangesAsync();
+        var service = NewService(context, new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero));
+
+        var result = await service.UpdateCategoryAsync(
+            "cat-transport",
+            CategoryFlowType.Inflow,
+            cycleLimit: null,
+            updateLimit: false);
+
+        Assert.Equal(UpdateCategoryCycleLimitStatus.Updated, result.Status);
+        var category = await context.TransactionCategories.SingleAsync();
+        Assert.Equal(CategoryFlowType.Inflow, category.Type);
+        Assert.Null(category.CycleLimit);
+        var guides = await context.CategorySpendingGuides
+            .OrderBy(guide => guide.EffectiveFromCycleKey)
+            .ToListAsync();
+        Assert.Equal(350m, guides[0].LimitAmount);
+        Assert.Null(guides[1].LimitAmount);
+    }
+
+    [Fact]
     public async Task DeleteCategoryAsync_ClosesItsGuideWithoutRewritingEarlierCycles()
     {
         await using var context = TestHelpers.NewInMemoryContext();

@@ -77,6 +77,11 @@ public class TransactionCategoryService
                 .ToListAsync(cancellationToken);
         });
 
+        foreach (var category in categories!)
+        {
+            category.Type = CategoryFlowType.Normalize(category.Type);
+        }
+
         return categories!;
     }
 
@@ -195,29 +200,7 @@ public class TransactionCategoryService
         if (category.CycleLimit.HasValue ||
             await _context.CategorySpendingGuides.AnyAsync(guide => guide.CategoryName == category.Name))
         {
-            var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
-            var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
-            var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
-                _financialClock.Today,
-                cycleDay);
-            var cycleKey = $"{year:D4}-{monthIndex:D2}";
-            var currentGuide = await _context.CategorySpendingGuides.FirstOrDefaultAsync(guide =>
-                guide.CategoryName == category.Name &&
-                guide.EffectiveFromCycleKey == cycleKey);
-            if (currentGuide == null)
-            {
-                _context.CategorySpendingGuides.Add(new CategorySpendingGuide
-                {
-                    Id = $"guide-{Guid.NewGuid():N}",
-                    CategoryName = category.Name,
-                    EffectiveFromCycleKey = cycleKey,
-                    LimitAmount = null
-                });
-            }
-            else
-            {
-                currentGuide.LimitAmount = null;
-            }
+            await UpsertCurrentCycleGuideAsync(category.Name, null);
         }
 
         _context.TransactionCategories.Remove(category);
@@ -229,52 +212,7 @@ public class TransactionCategoryService
 
     public async Task<UpdateCategoryCycleLimitResult> UpdateCycleLimitAsync(string id, decimal? cycleLimit)
     {
-        if (cycleLimit is <= 0 or > 9_999_999_999.99m)
-        {
-            return new UpdateCategoryCycleLimitResult(
-                UpdateCategoryCycleLimitStatus.InvalidAmount,
-                Message: "Cycle spending guide must be greater than zero and fit the supported currency range.");
-        }
-
-        var category = await _context.TransactionCategories.FindAsync(id);
-        if (category == null)
-        {
-            return new UpdateCategoryCycleLimitResult(UpdateCategoryCycleLimitStatus.NotFound);
-        }
-
-        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
-        var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
-        var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
-            _financialClock.Today,
-            cycleDay);
-        var cycleKey = $"{year:D4}-{monthIndex:D2}";
-
-        category.CycleLimit = cycleLimit;
-
-        var history = await _context.CategorySpendingGuides
-            .FirstOrDefaultAsync(guide =>
-                guide.CategoryName == category.Name &&
-                guide.EffectiveFromCycleKey == cycleKey);
-        if (history == null)
-        {
-            history = new CategorySpendingGuide
-            {
-                Id = $"guide-{Guid.NewGuid():N}",
-                CategoryName = category.Name,
-                EffectiveFromCycleKey = cycleKey,
-                LimitAmount = cycleLimit
-            };
-            _context.CategorySpendingGuides.Add(history);
-        }
-        else
-        {
-            history.LimitAmount = cycleLimit;
-        }
-
-        await _context.SaveChangesAsync();
-        _cache.Remove(CacheKey);
-
-        return new UpdateCategoryCycleLimitResult(UpdateCategoryCycleLimitStatus.Updated, category);
+        return await UpdateCategoryAsync(id, type: null, cycleLimit, updateLimit: true);
     }
 
     public async Task<UpdateCategoryCycleLimitResult> UpdateCategoryAsync(string id, string? type, decimal? cycleLimit, bool updateLimit)
@@ -285,6 +223,7 @@ public class TransactionCategoryService
             return new UpdateCategoryCycleLimitResult(UpdateCategoryCycleLimitStatus.NotFound);
         }
 
+        var normalizedType = CategoryFlowType.Normalize(category.Type);
         if (type != null)
         {
             if (!CategoryFlowType.IsValid(type))
@@ -294,7 +233,7 @@ public class TransactionCategoryService
                     Category: null,
                     Message: "Category flow type must be 'both', 'inflow', or 'outflow'.");
             }
-            category.Type = type;
+            normalizedType = CategoryFlowType.Normalize(type);
         }
 
         if (updateLimit)
@@ -307,34 +246,30 @@ public class TransactionCategoryService
                     Message: "Cycle spending guide must be greater than zero and fit the supported currency range.");
             }
 
-            var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
-            var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
-            var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
-                _financialClock.Today,
-                cycleDay);
-            var cycleKey = $"{year:D4}-{monthIndex:D2}";
+            if (cycleLimit.HasValue && !CategoryFlowType.AllowsSpendingGuide(normalizedType))
+            {
+                return new UpdateCategoryCycleLimitResult(
+                    UpdateCategoryCycleLimitStatus.InvalidAmount,
+                    Category: null,
+                    Message: "Inflow categories cannot have cycle spending guides.");
+            }
+        }
 
+        category.Type = normalizedType;
+        if (!CategoryFlowType.AllowsSpendingGuide(normalizedType))
+        {
+            var hadCurrentOrHistoricalGuide = category.CycleLimit.HasValue ||
+                await _context.CategorySpendingGuides.AnyAsync(guide => guide.CategoryName == category.Name);
+            category.CycleLimit = null;
+            if (hadCurrentOrHistoricalGuide)
+            {
+                await UpsertCurrentCycleGuideAsync(category.Name, null);
+            }
+        }
+        else if (updateLimit)
+        {
             category.CycleLimit = cycleLimit;
-
-            var history = await _context.CategorySpendingGuides
-                .FirstOrDefaultAsync(guide =>
-                    guide.CategoryName == category.Name &&
-                    guide.EffectiveFromCycleKey == cycleKey);
-            if (history == null)
-            {
-                history = new CategorySpendingGuide
-                {
-                    Id = $"guide-{Guid.NewGuid():N}",
-                    CategoryName = category.Name,
-                    EffectiveFromCycleKey = cycleKey,
-                    LimitAmount = cycleLimit
-                };
-                _context.CategorySpendingGuides.Add(history);
-            }
-            else
-            {
-                history.LimitAmount = cycleLimit;
-            }
+            await UpsertCurrentCycleGuideAsync(category.Name, cycleLimit);
         }
 
         await _context.SaveChangesAsync();
@@ -352,6 +287,37 @@ public class TransactionCategoryService
     {
         return string.Equals(name, "Transfer", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(name, "Adjustment", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task UpsertCurrentCycleGuideAsync(string categoryName, decimal? limitAmount)
+    {
+        var cycleKey = await GetCurrentCycleKeyAsync();
+        var guide = await _context.CategorySpendingGuides.FirstOrDefaultAsync(item =>
+            item.CategoryName == categoryName && item.EffectiveFromCycleKey == cycleKey);
+        if (guide == null)
+        {
+            _context.CategorySpendingGuides.Add(new CategorySpendingGuide
+            {
+                Id = $"guide-{Guid.NewGuid():N}",
+                CategoryName = categoryName,
+                EffectiveFromCycleKey = cycleKey,
+                LimitAmount = limitAmount
+            });
+        }
+        else
+        {
+            guide.LimitAmount = limitAmount;
+        }
+    }
+
+    private async Task<string> GetCurrentCycleKeyAsync()
+    {
+        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
+        var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
+        var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+            _financialClock.Today,
+            cycleDay);
+        return $"{year:D4}-{monthIndex:D2}";
     }
 
     private string CacheKey => CacheKeyPrefix + _context.RequireCurrentUserId();

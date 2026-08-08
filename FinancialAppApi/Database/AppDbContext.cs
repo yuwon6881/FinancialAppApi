@@ -252,6 +252,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<TransactionCategory>(entity =>
         {
             entity.Property(e => e.CycleLimit).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.Type).HasDefaultValue(CategoryFlowType.Both);
             entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
         });
 

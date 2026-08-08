@@ -339,6 +339,7 @@ public class FinancialService
             pendingRecurring,
             activeYear,
             activeMonthIndex,
+            cycleDay,
             activeRange.start,
             activeRange.end,
             cancellationToken);
@@ -1045,11 +1046,22 @@ public class FinancialService
         List<PendingRecurringItem> pendingRecurring,
         int activeYear,
         int activeMonthIndex,
+        int cycleDay,
         DateTime rangeStart,
         DateTime rangeEnd,
         CancellationToken cancellationToken)
     {
         var cycleKey = $"{activeYear:D4}-{activeMonthIndex:D2}";
+        var (currentCycleYear, currentCycleMonthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+            _financialClock.Today,
+            cycleDay);
+        var currentCycleKey = $"{currentCycleYear:D4}-{currentCycleMonthIndex:D2}";
+        var categoryTypes = (await _context.TransactionCategories
+                .AsNoTracking()
+                .Select(category => new { category.Name, category.Type })
+                .ToListAsync(cancellationToken))
+            .GroupBy(category => category.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().Type, StringComparer.OrdinalIgnoreCase);
         var allGuideVersions = await _context.CategorySpendingGuides
             .AsNoTracking()
             .Where(guide => string.Compare(guide.EffectiveFromCycleKey, cycleKey) <= 0)
@@ -1058,6 +1070,12 @@ public class FinancialService
             .GroupBy(guide => guide.CategoryName, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.OrderByDescending(guide => guide.EffectiveFromCycleKey).First())
             .Where(guide => guide.LimitAmount.HasValue)
+            // A current/future guide is valid only while its category accepts outflows.
+            // Earlier cycles retain their historical guide even if the category later changes
+            // flow type or is removed.
+            .Where(guide => string.CompareOrdinal(guide.EffectiveFromCycleKey, currentCycleKey) < 0 ||
+                (categoryTypes.TryGetValue(guide.CategoryName, out var type) &&
+                 CategoryFlowType.AllowsSpendingGuide(type)))
             .OrderBy(guide => guide.CategoryName)
             .ToList();
 

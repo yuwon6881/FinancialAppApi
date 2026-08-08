@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
@@ -58,7 +59,7 @@ public class TransactionCategoriesController : ControllerBase
     public async Task<IActionResult> UpdateCategory(string id, UpdateCategoryDto dto)
     {
         decimal? limit = null;
-        bool updateLimit = dto.CycleLimit != null;
+        bool updateLimit = dto.CycleLimitSpecified;
         if (!string.IsNullOrWhiteSpace(dto.CycleLimit))
         {
             try
@@ -275,7 +276,7 @@ public class TransactionCategoriesController : ControllerBase
     {
         category.Id,
         category.Name,
-        Type = category.Type ?? CategoryFlowType.Both,
+        Type = CategoryFlowType.Normalize(category.Type),
         CycleLimit = category.CycleLimit.HasValue
             ? ObfuscationHelper.Obfuscate(category.CycleLimit.Value)
             : null
@@ -293,7 +294,20 @@ public class TransactionCategoryMutationDto
 public class UpdateCategoryDto
 {
     public string? Type { get; set; }
-    public string? CycleLimit { get; set; }
+
+    private string? _cycleLimit;
+    public string? CycleLimit
+    {
+        get => _cycleLimit;
+        set
+        {
+            _cycleLimit = value;
+            CycleLimitSpecified = true;
+        }
+    }
+
+    [JsonIgnore]
+    public bool CycleLimitSpecified { get; private set; }
 }
 
 public class UpdateCategoryCycleLimitDto

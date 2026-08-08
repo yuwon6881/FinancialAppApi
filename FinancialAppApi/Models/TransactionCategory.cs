@@ -31,8 +31,16 @@ public static class CategoryFlowType
     public const string Inflow = "inflow";
     public const string Outflow = "outflow";
 
-    public static bool IsValid(string? type) => type is Both or Inflow or Outflow;
+    public static bool IsValid(string? type) => type?.Trim().ToLowerInvariant() is Both or Inflow or Outflow;
 
-    public static string Normalize(string? type) => IsValid(type) ? type! : Both;
+    public static string Normalize(string? type) => type?.Trim().ToLowerInvariant() switch
+    {
+        Inflow => Inflow,
+        Outflow => Outflow,
+        Both => Both,
+        _ => Both
+    };
+
+    public static bool AllowsSpendingGuide(string? type) =>
+        !string.Equals(Normalize(type), Inflow, StringComparison.Ordinal);
 }
-

@@ -446,6 +446,12 @@ public class FinancialServiceDashboardTests
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.TransactionCategories.Add(new TransactionCategory
+        {
+            Id = "cat-transport",
+            Name = "Transport",
+            Type = CategoryFlowType.Outflow
+        });
         context.Transactions.Add(Tx("transport", 2026, 7, 4, "Transport", -150m));
         context.CategorySpendingGuides.AddRange(
             new CategorySpendingGuide
@@ -480,6 +486,33 @@ public class FinancialServiceDashboardTests
         Assert.Equal(150m, GetAmount(progress, "spent"));
         Assert.Equal(290.63m, GetAmount(progress, "projectedSpend"));
         Assert.Equal("OnTrack", progress.GetType().GetProperty("status")!.GetValue(progress));
+    }
+
+    [Fact]
+    public async Task GetDashboardDataAsync_ExcludesCurrentInflowCategoryGuides()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.TransactionCategories.Add(new TransactionCategory
+        {
+            Id = "cat-salary",
+            Name = "Salary",
+            Type = CategoryFlowType.Inflow,
+            CycleLimit = 500m
+        });
+        context.CategorySpendingGuides.Add(new CategorySpendingGuide
+        {
+            Id = "guide-salary",
+            CategoryName = "Salary",
+            EffectiveFromCycleKey = "2026-07",
+            LimitAmount = 500m
+        });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context, new DateTimeOffset(2026, 7, 16, 0, 0, 0, TimeSpan.Zero))
+            .GetDashboardDataAsync("Jul", 2026);
+
+        Assert.Empty(GetObjects(response, "categoryLimitProgress"));
     }
 
     [Fact]

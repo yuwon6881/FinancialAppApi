@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
@@ -20,6 +21,17 @@ public partial class AiAssistantService
         var guideVersions = await _context.CategorySpendingGuides.AsNoTracking().ToListAsync(cancellationToken);
         if (guideVersions.Count == 0) return Array.Empty<object>();
 
+        var (currentCycleYear, currentCycleMonthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+            _financialClock.Today,
+            cycleDay);
+        var currentCycleKey = $"{currentCycleYear:D4}-{currentCycleMonthIndex:D2}";
+        var categoryTypes = (await _context.TransactionCategories
+                .AsNoTracking()
+                .Select(category => new { category.Name, category.Type })
+                .ToListAsync(cancellationToken))
+            .GroupBy(category => category.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().Type, StringComparer.OrdinalIgnoreCase);
+
         var billStatuses = await LoadRecurringBillStatusesAsync(cycles, cycleDay, cancellationToken);
         var today = _financialClock.Today;
         var results = new List<object>();
@@ -36,6 +48,9 @@ public partial class AiAssistantService
                 .GroupBy(guide => guide.CategoryName, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.OrderByDescending(guide => guide.EffectiveFromCycleKey).First())
                 .Where(guide => guide.LimitAmount.HasValue)
+                .Where(guide => string.CompareOrdinal(guide.EffectiveFromCycleKey, currentCycleKey) < 0 ||
+                    (categoryTypes.TryGetValue(guide.CategoryName, out var type) &&
+                     CategoryFlowType.AllowsSpendingGuide(type)))
                 .OrderBy(guide => guide.CategoryName)
                 .ToList();
 
