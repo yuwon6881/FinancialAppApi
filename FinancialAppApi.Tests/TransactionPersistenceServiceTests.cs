@@ -260,6 +260,89 @@ public class TransactionPersistenceServiceTests
         Assert.Null((await context.VaultDocuments.SingleAsync()).TransactionId);
     }
 
+    [Fact]
+    public async Task DeleteTransactionsAsync_DeduplicatesParents_ClearsWishlistAndKeepsVaultDocuments()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.WishlistItems.Add(new WishlistItem
+        {
+            Id = 1,
+            Name = "Camera",
+            Price = 100m,
+            Priority = "Medium",
+            IsPurchased = true,
+            PurchaseTransactionId = "tx-1"
+        });
+        context.Transactions.AddRange(
+            NewTransaction("tx-1", wishlistItemId: 1),
+            NewTransaction("tx-1-split-Rewards", ledgerCategory: "Transfer:Income->Rewards", amount: 10m),
+            NewTransaction("tx-2"));
+        context.VaultDocuments.Add(new VaultDocument
+        {
+            StorageObjectPath = "test-user/2026/document.pdf",
+            OriginalFileName = "document.pdf",
+            ContentType = "application/pdf",
+            SizeBytes = 10,
+            Sha256 = new string('a', 64),
+            TaxYear = 2026,
+            TransactionId = "tx-1",
+            UploadedAt = DateTime.UtcNow,
+            RetentionUntil = new DateOnly(2033, 12, 31),
+        });
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).DeleteTransactionsAsync(["tx-1-split-Rewards", "tx-1", "tx-1", "tx-2"]);
+
+        Assert.Equal(TransactionMutationStatus.Deleted, result.Status);
+        Assert.Equal(2, result.Transactions.Count);
+        Assert.Empty(await context.Transactions.ToListAsync());
+        var item = (await context.WishlistItems.FindAsync(1))!;
+        Assert.False(item.IsPurchased);
+        Assert.True(item.IsActive);
+        Assert.Null(item.PurchaseTransactionId);
+        Assert.Null((await context.VaultDocuments.SingleAsync()).TransactionId);
+    }
+
+    [Fact]
+    public async Task DeleteTransactionsAsync_RejectsCommitmentWithoutDeletingOtherRows()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var completion = NewTransaction("completion-1");
+        completion.SavingsGoalId = 7;
+        context.Transactions.AddRange(completion, NewTransaction("tx-2"));
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).DeleteTransactionsAsync(["completion-1", "tx-2"]);
+
+        Assert.Equal(TransactionMutationStatus.Conflict, result.Status);
+        Assert.Equal(2, await context.Transactions.CountAsync());
+    }
+
+    [Fact]
+    public async Task RestoreTransactionsAsync_IsIdempotentAndRegeneratesIncomeSplits()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            EssentialsAlloc = 0.50m,
+            GrowthAlloc = 0.25m,
+            StabilityAlloc = 0.15m,
+            RewardsAlloc = 0.10m,
+            CycleDay = 1
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+        var request = NewRequest("salary-restore", ledgerCategory: "Income", amount: 1000m);
+
+        var first = await service.RestoreTransactionsAsync([request]);
+        var second = await service.RestoreTransactionsAsync([request]);
+
+        Assert.Equal(TransactionMutationStatus.Created, first.Status);
+        Assert.Equal(TransactionMutationStatus.Existing, second.Status);
+        Assert.Equal(5, await context.Transactions.CountAsync());
+    }
+
     private static TransactionPersistenceService NewService(AppDbContext context, FinancialClock? clock = null)
     {
         var occurrenceService = new RecurringOccurrenceService(

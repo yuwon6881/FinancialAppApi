@@ -139,6 +139,45 @@ public class TransactionsIntegrationTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task BulkDeleteAndRestoreTransactions_IsIdempotentAndReturnsSnapshots()
+    {
+        var client = await CreateSignedInClientAsync();
+        var ids = new[] { "tx-bulk-a", "tx-bulk-b" };
+        foreach (var id in ids)
+        {
+            var create = await client.PostAsJsonAsync("/api/transactions", new
+            {
+                id,
+                date = "2026-06-15",
+                description = id,
+                category = "Food",
+                ledgerCategory = "Essentials",
+                amount = ObfuscationHelper.Obfuscate(-1m),
+            });
+            Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        }
+
+        var delete = await client.PostAsJsonAsync("/api/transactions/bulk-delete", new { ids = new[] { ids[0], ids[0], ids[1] } });
+        Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
+        var deletedBody = await delete.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2, deletedBody.GetProperty("deleted").GetArrayLength());
+
+        var retry = await client.PostAsJsonAsync("/api/transactions/bulk-delete", new { ids });
+        Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+        Assert.Equal(0, (await retry.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("deleted").GetArrayLength());
+
+        var restore = await client.PostAsJsonAsync(
+            "/api/transactions/bulk-restore",
+            new { transactions = deletedBody.GetProperty("deleted").EnumerateArray().ToArray() });
+        Assert.Equal(HttpStatusCode.OK, restore.StatusCode);
+
+        var list = await client.GetFromJsonAsync<JsonElement>("/api/transactions?all=true");
+        var restoredIds = list.GetProperty("items").EnumerateArray().Select(item => item.GetProperty("id").GetString()).ToHashSet();
+        Assert.Contains(ids[0], restoredIds);
+        Assert.Contains(ids[1], restoredIds);
+    }
+
+    [Fact]
     public async Task AuthenticatedUsers_CannotReadOrDeleteEachOthersTransactions()
     {
         var aliceToken = await SeedUserAndSessionAsync("alice");

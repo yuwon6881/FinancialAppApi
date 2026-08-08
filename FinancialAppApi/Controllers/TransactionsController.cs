@@ -162,6 +162,69 @@ public class TransactionsController : ControllerBase
         return CreatedAtAction(nameof(GetTransactions), new { id = result.Transaction!.Id }, MapToDto(result.Transaction));
     }
 
+    [HttpPost("bulk-delete")]
+    public async Task<IActionResult> BulkDeleteTransactions(
+        [FromBody] BulkDeleteTransactionsRequest? request)
+    {
+        var ids = request?.Ids?
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .Select(CanonicalTransactionId)
+            .Distinct(StringComparer.Ordinal)
+            .ToList() ?? [];
+        if (ids.Count == 0) return BadRequest(new { message = "Choose at least one transaction." });
+        if (ids.Count > 100) return BadRequest(new { message = "Delete at most 100 transactions at a time." });
+
+        var result = await _transactionPersistenceService.DeleteTransactionsAsync(ids, HttpContext.RequestAborted);
+        if (result.Status == TransactionMutationStatus.Conflict)
+        {
+            return Conflict(new { message = result.Message });
+        }
+        if (result.Status == TransactionMutationStatus.InvalidAmount)
+        {
+            return BadRequest(new { message = result.Message });
+        }
+
+        return Ok(new { deleted = result.Transactions.Select(MapToDto).ToList() });
+    }
+
+    [HttpPost("bulk-restore")]
+    public async Task<IActionResult> BulkRestoreTransactions(
+        [FromBody] BulkRestoreTransactionsRequest? request)
+    {
+        var transactions = request?.Transactions ?? [];
+        if (transactions.Count == 0) return BadRequest(new { message = "Choose at least one transaction to restore." });
+        if (transactions.Count > 100) return BadRequest(new { message = "Restore at most 100 transactions at a time." });
+        if (transactions.Any(transaction => transaction.SavingsGoalId.HasValue))
+        {
+            return Conflict(new { message = "Commitment completions must be restored through their individual undo flow." });
+        }
+
+        var result = await _transactionPersistenceService.RestoreTransactionsAsync(
+            transactions.Select(ToMutationRequest).ToList(),
+            HttpContext.RequestAborted);
+        if (result.Status is TransactionMutationStatus.Conflict)
+        {
+            return Conflict(new { message = result.Message });
+        }
+        if (result.Status is TransactionMutationStatus.InvalidDate
+            or TransactionMutationStatus.InvalidAmount
+            or TransactionMutationStatus.InvalidCategory
+            or TransactionMutationStatus.InvalidLedgerCategory
+            or TransactionMutationStatus.InvalidRecurringOccurrence)
+        {
+            return BadRequest(new { message = result.Message });
+        }
+
+        return Ok(new { restored = result.Transactions.Select(MapToDto).ToList() });
+    }
+
+    private static string CanonicalTransactionId(string id)
+    {
+        var splitIndex = id.IndexOf("-split-", StringComparison.Ordinal);
+        return splitIndex < 0 ? id : id[..splitIndex];
+    }
+
     // PUT: api/transactions/{id}
     [HttpPut("{id}")]
     public async Task<IActionResult> PutTransaction(string id, TransactionDto dto)
@@ -274,4 +337,14 @@ public class TransactionDto
     public string? RecurringOccurrenceDate { get; set; }
     public int? WishlistItemId { get; set; }
     public int? SavingsGoalId { get; set; }
+}
+
+public sealed class BulkDeleteTransactionsRequest
+{
+    public List<string> Ids { get; set; } = [];
+}
+
+public sealed class BulkRestoreTransactionsRequest
+{
+    public List<TransactionDto> Transactions { get; set; } = [];
 }

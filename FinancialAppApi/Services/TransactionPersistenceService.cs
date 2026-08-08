@@ -246,6 +246,180 @@ public class TransactionPersistenceService
         return new TransactionMutationResult(TransactionMutationStatus.Deleted, transaction);
     }
 
+    public async Task<(TransactionMutationStatus Status, List<Transaction> Transactions, string? Message)> DeleteTransactionsAsync(
+        IReadOnlyCollection<string> ids,
+        CancellationToken cancellationToken = default)
+    {
+        var canonicalIds = ids
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => CanonicalTransactionId(id.Trim()))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (canonicalIds.Count == 0)
+        {
+            return (TransactionMutationStatus.NotFound, [], "Choose at least one transaction.");
+        }
+        if (canonicalIds.Count > 100)
+        {
+            return (TransactionMutationStatus.InvalidAmount, [], "Delete at most 100 transactions at a time.");
+        }
+
+        var transactions = await _context.Transactions
+            .Where(transaction => canonicalIds.Contains(transaction.Id))
+            .ToListAsync(cancellationToken);
+        var protectedTransaction = transactions.FirstOrDefault(transaction => transaction.SavingsGoalId.HasValue);
+        if (protectedTransaction != null)
+        {
+            return (
+                TransactionMutationStatus.Conflict,
+                [],
+                "Commitment completions must be deleted individually so the linked commitment can be restored safely.");
+        }
+
+        if (transactions.Count == 0) return (TransactionMutationStatus.Deleted, [], null);
+
+        var earliestDate = transactions.Min(transaction => transaction.Date);
+        foreach (var transaction in transactions)
+        {
+            await ClearWishlistPurchaseLinkAsync(transaction, cancellationToken);
+
+            var attachedDocuments = await _context.VaultDocuments
+                .Where(document => document.TransactionId == transaction.Id)
+                .ToListAsync(cancellationToken);
+            foreach (var document in attachedDocuments) document.TransactionId = null;
+
+            var splits = await _context.Transactions
+                .Where(candidate => candidate.Id.StartsWith(transaction.Id + "-split-"))
+                .ToListAsync(cancellationToken);
+            _context.Transactions.RemoveRange(splits);
+            _context.Transactions.Remove(transaction);
+        }
+
+        await SaveAndInvalidateCycleBalancesAsync(earliestDate, cancellationToken);
+        return (TransactionMutationStatus.Deleted, transactions, null);
+    }
+
+    public async Task<(TransactionMutationStatus Status, List<Transaction> Transactions, string? Message)> RestoreTransactionsAsync(
+        IReadOnlyCollection<TransactionMutationRequest> requests,
+        CancellationToken cancellationToken = default)
+    {
+        var distinctRequests = new List<TransactionMutationRequest>();
+        var requestsById = new Dictionary<string, TransactionMutationRequest>(StringComparer.Ordinal);
+        foreach (var request in requests)
+        {
+            if (string.IsNullOrWhiteSpace(request.Id))
+            {
+                return (TransactionMutationStatus.InvalidDate, [], "Every transaction to restore needs an id.");
+            }
+
+            var id = request.Id.Trim();
+            if (id.Contains("-split-", StringComparison.Ordinal))
+            {
+                return (TransactionMutationStatus.Conflict, [], "Restore the parent transaction, not an Income Auto-Split row.");
+            }
+
+            var normalizedRequest = request with { Id = id };
+            if (requestsById.TryGetValue(id, out var previous))
+            {
+                if (!MatchesRestoreRequests(previous, normalizedRequest))
+                {
+                    return (TransactionMutationStatus.Conflict, [], "The restore batch contains conflicting snapshots for one transaction.");
+                }
+                continue;
+            }
+
+            requestsById[id] = normalizedRequest;
+            distinctRequests.Add(normalizedRequest);
+        }
+        if (distinctRequests.Count == 0)
+        {
+            return (TransactionMutationStatus.NotFound, [], "Choose at least one transaction to restore.");
+        }
+        if (distinctRequests.Count > 100)
+        {
+            return (TransactionMutationStatus.InvalidAmount, [], "Restore at most 100 transactions at a time.");
+        }
+
+        var existingTransactions = await _context.Transactions
+            .Where(transaction => requestsById.Keys.Contains(transaction.Id))
+            .ToDictionaryAsync(transaction => transaction.Id, StringComparer.Ordinal, cancellationToken);
+        foreach (var request in distinctRequests)
+        {
+            if (existingTransactions.TryGetValue(request.Id!, out var existing)
+                && !MatchesRestoreRequest(existing, request))
+            {
+                return (TransactionMutationStatus.Conflict, [], "A transaction with one of these ids already exists with different details.");
+            }
+        }
+
+        var restored = new List<Transaction>();
+        var sawCreated = false;
+        foreach (var request in distinctRequests)
+        {
+            var result = await CreateTransactionAsync(request, cancellationToken);
+            if (result.Status is not (TransactionMutationStatus.Created or TransactionMutationStatus.Existing))
+            {
+                return (result.Status, [], result.Message);
+            }
+            sawCreated |= result.Status == TransactionMutationStatus.Created;
+            if (result.Transaction != null) restored.Add(result.Transaction);
+        }
+        return (sawCreated ? TransactionMutationStatus.Created : TransactionMutationStatus.Existing, restored, null);
+    }
+
+    private static string CanonicalTransactionId(string id)
+    {
+        var splitIndex = id.IndexOf("-split-", StringComparison.Ordinal);
+        return splitIndex < 0 ? id : id[..splitIndex];
+    }
+
+    private static bool MatchesRestoreRequests(
+        TransactionMutationRequest left,
+        TransactionMutationRequest right) =>
+        string.Equals(left.Date, right.Date, StringComparison.Ordinal)
+        && string.Equals(left.PostedAt, right.PostedAt, StringComparison.Ordinal)
+        && string.Equals(left.Description, right.Description, StringComparison.Ordinal)
+        && string.Equals(left.Category, right.Category, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(left.LedgerCategory, right.LedgerCategory, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(left.Amount, right.Amount, StringComparison.Ordinal)
+        && string.Equals(left.RecurringPaymentId, right.RecurringPaymentId, StringComparison.Ordinal)
+        && left.WishlistItemId == right.WishlistItemId
+        && string.Equals(left.RecurringOccurrenceDate, right.RecurringOccurrenceDate, StringComparison.Ordinal);
+
+    private static bool MatchesRestoreRequest(
+        Transaction existing,
+        TransactionMutationRequest request)
+    {
+        if (!TransactionDate.TryParseInputDate(request.Date, out var requestDate)
+            || !ObfuscationHelper.TryDeobfuscate(request.Amount, out var decodedAmount))
+        {
+            return false;
+        }
+
+        var requestOccurrence = string.IsNullOrWhiteSpace(request.RecurringOccurrenceDate)
+            ? (DateOnly?)null
+            : DateOnly.TryParseExact(request.RecurringOccurrenceDate, "yyyy-MM-dd", out var parsedOccurrence)
+                ? parsedOccurrence
+                : null;
+        if (!string.IsNullOrWhiteSpace(request.RecurringOccurrenceDate) && requestOccurrence == null)
+        {
+            return false;
+        }
+
+        var postedAtMatches = string.IsNullOrWhiteSpace(request.PostedAt)
+            || (DateTimeOffset.TryParse(request.PostedAt, out var postedAt)
+                && existing.PostedAt.ToUniversalTime() == postedAt.UtcDateTime);
+        return TransactionDate.ToDateOnly(existing.Date) == requestDate
+            && postedAtMatches
+            && string.Equals(existing.Description, request.Description, StringComparison.Ordinal)
+            && string.Equals(existing.Category, request.Category, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(existing.LedgerCategory, request.LedgerCategory, StringComparison.OrdinalIgnoreCase)
+            && existing.Amount == Math.Round(decodedAmount, 2, MidpointRounding.AwayFromZero)
+            && string.Equals(existing.RecurringPaymentId, request.RecurringPaymentId, StringComparison.Ordinal)
+            && existing.WishlistItemId == request.WishlistItemId
+            && existing.RecurringOccurrenceDate == requestOccurrence;
+    }
+
     // Tags a new transaction with the exact recurrence-engine billing date it settles, when it
     // was created against a recurring payment and its date lines up with that payment's cycle
     // occurrence. Legacy/manual transactions (no match, or no RecurringPaymentId) keep this null.
