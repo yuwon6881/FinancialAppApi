@@ -60,4 +60,9 @@ public class FinancialSetting : IUserOwnedEntity
     // subscriptions are authoritative; subscribe/unsubscribe keeps this value in sync.
     [Required]
     public bool PushRemindersEnabled { get; set; }
+
+    // Separate consent from payment reminders: existing users registered for bill pushes must
+    // explicitly opt in before category names can appear in lock-screen notifications.
+    [Required]
+    public bool CategoryLimitAlertsEnabled { get; set; }
 }

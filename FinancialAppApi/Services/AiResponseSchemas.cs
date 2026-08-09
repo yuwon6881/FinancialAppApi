@@ -132,18 +132,7 @@ internal static class AiResponseSchemas
         },
         ["reply", "closeChat", "actions"]);
 
-    private static readonly IReadOnlyList<string> IntentEnum =
-    [
-        "ledger.activity_count", "ledger.merchant_search", "ledger.spending_total",
-        "ledger.transaction_list", "ledger.comparison", "ledger.edit", "ledger.add",
-        "ledger.anomaly", "ledger.duplicates", "wishlist.list", "wishlist.forecast",
-        "wishlist.add", "wishlist.edit", "recurring.list", "recurring.upcoming",
-        "recurring.add", "recurring.edit", "category_limits.analysis", "cycle.insights",
-        "allocation.balance", "allocation.performance", "rewards.summary", "savings_goal.list",
-        "savings_goal.pacing", "savings_goal.scenario", "savings_goal.add", "savings_goal.edit",
-        "investment.summary", "investment.holding", "investment.allocation", "report.review",
-        "navigation", "general"
-    ];
+    private static readonly IReadOnlyList<string> IntentEnum = AiAssistantService.KnownIntentNames;
 
     public static readonly object IntentClassification = Obj(
         new Dictionary<string, object>

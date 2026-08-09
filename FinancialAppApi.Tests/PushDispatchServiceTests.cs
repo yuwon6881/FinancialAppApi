@@ -418,8 +418,9 @@ public class PushDispatchServiceTests
         Assert.DoesNotContain("54.9", content.Body);
         Assert.Equal($"payment:rec-1:{today:yyyy-MM-dd}", content.Tag);
         Assert.Equal("/recurring?subscription=rec-1", content.Route);
-        Assert.Equal("rec-1", content.RecurringPaymentId);
-        Assert.Equal(today, content.OccurrenceDate);
+        Assert.Equal("recurring-payment", content.Kind);
+        Assert.Equal("rec-1", content.Data["recurringPaymentId"]);
+        Assert.Equal(today.ToString("yyyy-MM-dd"), content.Data["occurrenceDate"]);
     }
 
     [Fact]

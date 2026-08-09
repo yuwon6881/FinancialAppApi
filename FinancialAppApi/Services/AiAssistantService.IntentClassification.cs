@@ -251,7 +251,13 @@ public partial class AiAssistantService
             continuation ? priorState?.LastQueryFacets : null,
             carryRecurringFrame ? priorState?.LastRecurringStatus : null,
             carryWishlistFrame ? priorState?.LastWishlistStatus : null,
-            carryTransactionFrame ? priorState?.LastTargetAmount : null);
+            carryTransactionFrame ? priorState?.LastTargetAmount : null,
+            priorState?.LastRewardsTopic,
+            priorState?.LastSavingsGoalId,
+            priorState?.LastInvestmentTopic,
+            priorState?.LastInvestmentRange,
+            priorState?.LastInvestmentInstrumentId,
+            priorState?.LastReportCycleKey);
     }
 
     private static string? ExtractConversationCycle(string? text)
@@ -288,16 +294,7 @@ public partial class AiAssistantService
 
     // The canonical intent vocabulary. Also used to reject unknown/tampered intent strings
     // arriving on client-carried conversation state or classifier output.
-    private static readonly HashSet<string> KnownIntents = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "ledger.activity_count", "ledger.merchant_search", "ledger.spending_total",
-        "ledger.transaction_list", "ledger.comparison", "ledger.edit", "ledger.add",
-        "ledger.anomaly", "ledger.duplicates", "wishlist.list", "wishlist.forecast",
-        "wishlist.add", "wishlist.edit", "recurring.list", "recurring.upcoming",
-        "recurring.add", "recurring.edit", "category_limits.analysis", "cycle.insights",
-        "allocation.balance", "allocation.performance",
-        "navigation", "general"
-    };
+    private static bool IsKnownIntentName(string name) => IntentByName.ContainsKey(name);
 
     private const int MaxStateSearchLength = 80;
     private const int MaxStateMatchedIds = 50;
@@ -309,7 +306,7 @@ public partial class AiAssistantService
     internal static AiConversationState? SanitizeConversationState(AiConversationState? state)
     {
         if (state == null) return null;
-        var intent = !string.IsNullOrWhiteSpace(state.LastIntent) && KnownIntents.Contains(state.LastIntent)
+        var intent = !string.IsNullOrWhiteSpace(state.LastIntent) && IsKnownIntentName(state.LastIntent)
             ? state.LastIntent.ToLowerInvariant()
             : null;
         string? Clamp(string? value) => string.IsNullOrWhiteSpace(value)
@@ -354,7 +351,7 @@ public partial class AiAssistantService
             ? state.LastExactDate
             : null;
         var intents = state.LastIntents?
-            .Where(i => !string.IsNullOrWhiteSpace(i) && KnownIntents.Contains(i))
+            .Where(i => !string.IsNullOrWhiteSpace(i) && IsKnownIntentName(i))
             .Select(i => i.ToLowerInvariant())
             .Distinct()
             .Take(6)
@@ -374,6 +371,16 @@ public partial class AiAssistantService
             ? state.LastWishlistStatus
             : null;
         var targetAmount = state.LastTargetAmount is > 0m and <= 1_000_000_000m ? state.LastTargetAmount : null;
+        var rewardsTopic = state.LastRewardsTopic is "plan" ? state.LastRewardsTopic : null;
+        var savingsGoalId = state.LastSavingsGoalId is > 0 ? state.LastSavingsGoalId : null;
+        var investmentTopic = state.LastInvestmentTopic is "portfolio" ? state.LastInvestmentTopic : null;
+        var investmentRange = state.LastInvestmentRange is "1m" or "3m" or "6m" or "1y" or "3y" or "5y" or "all"
+            ? state.LastInvestmentRange
+            : null;
+        Guid? investmentInstrumentId = state.LastInvestmentInstrumentId is { } instrumentId && instrumentId != Guid.Empty
+            ? instrumentId
+            : null;
+        var reportCycleKey = IsValidCycleKey(state.LastReportCycleKey) ? state.LastReportCycleKey : null;
         return new AiConversationState(
             intent,
             Clamp(state.LastSearchText),
@@ -398,7 +405,13 @@ public partial class AiAssistantService
             facets is { Count: > 0 } ? facets : null,
             recurringStatus,
             wishlistStatus,
-            targetAmount);
+            targetAmount,
+            rewardsTopic,
+            savingsGoalId,
+            investmentTopic,
+            investmentRange,
+            investmentInstrumentId,
+            reportCycleKey);
     }
 
     private static readonly Regex CycleKeyPattern = new(@"^\d{4}-(0[1-9]|1[0-2])$", RegexOptions.Compiled);
@@ -512,7 +525,7 @@ public partial class AiAssistantService
             @"\d{1,9}(?:[.,]\d{1,2})?(?:\s*\+\s*\d{1,9}(?:[.,]\d{1,2})?)*" +
             @"(?:\s+(?:income|inflow|outflow|expense|refund|deposit|withdrawal|" +
             @"transfer(?:\s+from\s+[\p{L}]+\s+to\s+[\p{L}]+)?|" +
-            @"essentials?|growth|stability|rewards?))*\s*$",
+            @"essentials?|growth|stability|rewards?|[\p{L}][\p{L}-]{0,30})){0,3}\s*$",
             RegexOptions.IgnoreCase));
         return everyLineIsADraft ? lines.Count : 0;
     }
@@ -596,7 +609,7 @@ public partial class AiAssistantService
         var intents = (rawIntents ?? [])
             .Where(i => !string.IsNullOrWhiteSpace(i))
             .Select(i => i.Trim().ToLowerInvariant())
-            .Where(KnownIntents.Contains)
+            .Where(IsKnownIntentName)
             .Distinct()
             .Take(4)
             .ToList();

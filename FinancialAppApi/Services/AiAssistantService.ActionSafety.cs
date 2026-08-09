@@ -33,7 +33,8 @@ public partial class AiAssistantService
                 actionEl.TryGetProperty("type", out var actionType) &&
                 actionType.ValueKind == JsonValueKind.String &&
                 actionType.GetString()?.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase) == true);
-            var actionLimit = containsOnlyLedgerDrafts ? AiResponseSchemas.MaxChatActions : 3;
+            var actionLimit = AiResponseSchemas.MaxChatActions;
+            var nonLedgerMutationClaimed = false;
 
             foreach (var actionEl in returnedActions.Take(actionLimit))
             {
@@ -45,6 +46,9 @@ public partial class AiAssistantService
                     : [];
                 if (context.SensitiveMode && (IsMutationAction(type) || type.Equals("openLedgerExport", StringComparison.OrdinalIgnoreCase))) continue;
                 if (IsQuestionOnlyRequest(userMessage) && type.Equals("openLedger", StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsMutationAction(type) &&
+                    (constraints.Hypothetical || LooksLikeNegatedMutation(userMessage) ||
+                     !HasExplicitMutationCommand(userMessage, type))) continue;
                 // "Don't open the ledger" -> honor the negation deterministically; drop every
                 // navigation action regardless of what the model chose to return.
                 if (constraints.PreventNavigation && IsNavigationAction(type)) continue;
@@ -54,6 +58,12 @@ public partial class AiAssistantService
                 }
                 if (!IsActionSafe(type, payload, context) ||
                     !await IsDatabaseActionSafeAsync(type, payload, cancellationToken)) continue;
+                if (IsMutationAction(type) &&
+                    !type.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (nonLedgerMutationClaimed) continue;
+                    nonLedgerMutationClaimed = true;
+                }
                 actions.Add(new AiUiAction(type, payload));
             }
         }
@@ -112,6 +122,36 @@ public partial class AiAssistantService
 
     private static bool IsNavigationAction(string type) => NavigationActionTypes.Contains(type);
     private static bool IsMutationAction(string type) => MutationActionTypes.Contains(type);
+
+    private static readonly Regex NegatedMutationSignal = new(
+        @"\b(?:do not|don't|dont|never|not now|without)\b.{0,60}\b(?:add|create|prepare|draft|edit|update|change|delete|remove|erase|purchase|buy|claim|confirm|discard|skip|enable|disable|pause|resume|toggle|remind)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static bool LooksLikeNegatedMutation(string message) => NegatedMutationSignal.IsMatch(message);
+
+    private static bool HasExplicitMutationCommand(string message, string type)
+    {
+        if (type.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase) &&
+            CountLedgerDraftListRecords(message) > 0) return true;
+
+        var verbPattern = type switch
+        {
+            "openAddLedgerDraft" or "openAddRecurringDraft" or "openAddWishlistDraft" or "openAddSavingsGoalDraft" =>
+                @"\b(?:add|create|prepare|draft|log|record|transfer|move)\b",
+            "openEditLedgerDraft" or "openEditRecurringDraft" or "openEditWishlistDraft" or "openEditSavingsGoalDraft" =>
+                @"\b(?:edit|update|change|modify)\b",
+            "requestDeleteLedger" or "requestDeleteRecurring" or "requestDeleteWishlist" =>
+                @"\b(?:delete|remove|erase)\b",
+            "requestConfirmRecurringBill" => @"\b(?:confirm|mark)\b.{0,35}\b(?:paid|payment|bill)\b",
+            "requestDiscardRecurringBill" => @"\b(?:discard|skip)\b",
+            "requestPurchaseWishlist" => @"\b(?:purchase|buy|claim)\b",
+            "requestUnpurchaseWishlist" => @"\b(?:unpurchase|undo|reverse)\b",
+            "toggleRecurring" => @"\b(?:enable|disable|activate|deactivate|pause|resume|turn on|turn off|toggle)\b",
+            "updateRecurringReminder" => @"\b(?:remind|reminder|notify|notification)\b",
+            _ => null
+        };
+        return verbPattern != null && Regex.IsMatch(message, verbPattern, RegexOptions.IgnoreCase);
+    }
 
     private static bool IsQuestionOnlyRequest(string message)
     {
@@ -239,6 +279,22 @@ public partial class AiAssistantService
                 HasRequiredIsoDate(payload, "targetDate") && HasRequiredKnownString(payload, "priority", ["low", "medium", "high"]) &&
                 HasBoolean(payload, "isRecurring") && HasRequiredInteger(payload, "recurrenceMonths", 0, 120);
         }
+
+        if (type.Equals("openAddRecurringDraft", StringComparison.OrdinalIgnoreCase))
+        {
+            return HasOnlyKeys(payload, ["name", "amount", "category", "ledgerCategory", "frequency", "startDate", "endDate"]) &&
+                HasRequiredString(payload, "name") && HasRequiredPositiveNumber(payload, "amount") &&
+                HasRequiredString(payload, "category") && HasRequiredKnownString(payload, "ledgerCategory", context.LedgerCategories) &&
+                HasRequiredKnownString(payload, "frequency", ["Monthly", "Annually"]) &&
+                HasRequiredIsoDate(payload, "startDate");
+        }
+        if (type.Equals("openAddWishlistDraft", StringComparison.OrdinalIgnoreCase))
+        {
+            return HasOnlyKeys(payload, ["name", "price", "priority", "isActive"]) &&
+                HasRequiredString(payload, "name") && HasRequiredPositiveNumber(payload, "price") &&
+                HasRequiredKnownString(payload, "priority", ["low", "medium", "high"]) &&
+                HasBoolean(payload, "isActive");
+        }
         if (type.Equals("openEditSavingsGoalDraft", StringComparison.OrdinalIgnoreCase))
         {
             return HasOnlyKeys(payload, ["id", "changes"]) && HasPositiveInteger(payload, "id") && HasValidSavingsGoalChanges(payload);
@@ -249,18 +305,25 @@ public partial class AiAssistantService
             if (!HasBoolean(payload, "enabled")) return false;
             // Mode and lead time only exist while the reminder is on; when turning it off the
             // model is expected to omit them rather than invent a pair the user never chose.
-            if (ReadPayloadNumber(payload, "leadDays") is { } leadDays &&
-                !ReminderLeadDayOptions.Contains((int)leadDays))
+            var enabled = ReadPayloadBoolean(payload, "enabled");
+            var leadDays = ReadPayloadNumber(payload, "leadDays");
+            if (enabled == true &&
+                (!HasRequiredKnownString(payload, "reminderMode", ["Once", "Daily"]) ||
+                 leadDays == null || leadDays != Math.Truncate(leadDays.Value) ||
+                 !ReminderLeadDayOptions.Contains((int)leadDays.Value)))
             {
                 return false;
             }
             return HasKnownId(payload, "id", context.RecurringPayments);
         }
 
+        if (type.Equals("requestConfirmRecurringBill", StringComparison.OrdinalIgnoreCase) ||
+            type.Equals("requestDiscardRecurringBill", StringComparison.OrdinalIgnoreCase))
+        {
+            return HasKnownId(payload, "id", context.RecurringPayments) && HasRequiredIsoDate(payload, "date");
+        }
         if (type.Equals("openEditRecurringDraft", StringComparison.OrdinalIgnoreCase) ||
             type.Equals("requestDeleteRecurring", StringComparison.OrdinalIgnoreCase) ||
-            type.Equals("requestConfirmRecurringBill", StringComparison.OrdinalIgnoreCase) ||
-            type.Equals("requestDiscardRecurringBill", StringComparison.OrdinalIgnoreCase) ||
             type.Equals("toggleRecurring", StringComparison.OrdinalIgnoreCase))
         {
             return HasKnownId(payload, "id", context.RecurringPayments);
@@ -499,16 +562,25 @@ public partial class AiAssistantService
             element.ValueKind is JsonValueKind.True or JsonValueKind.False;
     }
 
+    private static bool? ReadPayloadBoolean(IReadOnlyDictionary<string, object?> payload, string key)
+    {
+        if (!payload.TryGetValue(key, out var value) || value == null) return null;
+        if (value is bool boolean) return boolean;
+        if (value is JsonElement element && element.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            return element.GetBoolean();
+        return null;
+    }
+
     private static bool HasRequiredString(IReadOnlyDictionary<string, object?> payload, string key)
     {
         var value = ReadPayloadString(payload, key);
         return !string.IsNullOrWhiteSpace(value) && value.Length <= 200;
     }
 
-    private static bool HasRequiredKnownString(IReadOnlyDictionary<string, object?> payload, string key, string[] allowed)
+    private static bool HasRequiredKnownString(IReadOnlyDictionary<string, object?> payload, string key, IReadOnlyCollection<string> allowed)
     {
         var value = ReadPayloadString(payload, key);
-        return value != null && allowed.Contains(value.ToLowerInvariant());
+        return value != null && allowed.Contains(value, StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool HasOnlyKeys(IReadOnlyDictionary<string, object?> payload, string[] allowed) =>

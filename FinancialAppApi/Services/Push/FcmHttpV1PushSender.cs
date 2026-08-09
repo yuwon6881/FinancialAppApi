@@ -42,6 +42,15 @@ public sealed class FcmHttpV1PushSender : IFcmPushSender
             return new FcmSendResult(FcmSendStatus.TransientFailure, "ADC token acquisition failed.");
         }
 
+        var data = new Dictionary<string, string>(content.Data)
+        {
+            ["kind"] = content.Kind,
+            ["title"] = content.Title,
+            ["body"] = content.Body,
+            ["tag"] = content.Tag,
+            ["route"] = content.Route
+        };
+
         var payload = new
         {
             message = new
@@ -54,15 +63,7 @@ public sealed class FcmHttpV1PushSender : IFcmPushSender
                         ["TTL"] = Math.Max(1, (long)content.TimeToLive.TotalSeconds).ToString()
                     }
                 },
-                data = new Dictionary<string, string>
-                {
-                    ["title"] = content.Title,
-                    ["body"] = content.Body,
-                    ["tag"] = content.Tag,
-                    ["route"] = content.Route,
-                    ["recurringPaymentId"] = content.RecurringPaymentId,
-                    ["occurrenceDate"] = content.OccurrenceDate.ToString("yyyy-MM-dd")
-                }
+                data
             }
         };
 

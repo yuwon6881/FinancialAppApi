@@ -47,6 +47,14 @@ public sealed class AiConversationTurn : IUserOwnedEntity
     [Required]
     public string ActionsJson { get; set; } = "[]";
 
+    [Required]
+    [StringLength(16)]
+    public string Status { get; set; } = "Completed";
+
+    public DateTime? ActionsResolvedAt { get; set; }
+
+    public DateTime? ActionsDismissedAt { get; set; }
+
     public bool CloseChat { get; set; }
 
     [StringLength(80)]
@@ -64,4 +72,6 @@ public sealed class AiConversationTurn : IUserOwnedEntity
     public int ConversationVersion { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public DateTime? CompletedAt { get; set; }
 }

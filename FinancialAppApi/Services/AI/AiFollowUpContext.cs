@@ -11,10 +11,13 @@ public partial class AiAssistantService
     private const string TransactionTopic = "transactional";
     private const string WishlistTopic = "wishlist";
     private const string RecurringTopic = "recurring";
+    private const string RewardsTopic = "rewards";
+    private const string InvestmentTopic = "investment";
+    private const string ReportTopic = "report";
 
     private static readonly HashSet<string> KnownConversationTopics = new(StringComparer.Ordinal)
     {
-        TransactionTopic, WishlistTopic, RecurringTopic
+        TransactionTopic, WishlistTopic, RecurringTopic, RewardsTopic, InvestmentTopic, ReportTopic
     };
 
     // These facets preserve the *kind* of answer requested, not just its data scope. This is what
@@ -137,7 +140,8 @@ public partial class AiAssistantService
             {
                 QueryFamily.Wishlist => WishlistFacets.Contains,
                 QueryFamily.Recurring => RecurringFacets.Contains,
-                _ => TransactionFacets.Contains
+                QueryFamily.Transactional => TransactionFacets.Contains,
+                _ => _ => false
             })
             .ToList();
         if (prior.Count == 0) return [];
@@ -164,6 +168,13 @@ public partial class AiAssistantService
         IReadOnlyList<string> intentNames,
         AiConversationState? priorState)
     {
+        if (intentNames.Any(i => i.StartsWith("savings_goal.", StringComparison.OrdinalIgnoreCase) ||
+                                 i.StartsWith("rewards.", StringComparison.OrdinalIgnoreCase)) ||
+            NeedsRewardsSignal(message)) return RewardsTopic;
+        if (intentNames.Any(i => i.StartsWith("investment.", StringComparison.OrdinalIgnoreCase)) ||
+            InvestmentCoreSignal.IsMatch(message)) return InvestmentTopic;
+        if (intentNames.Any(i => i.StartsWith("report.", StringComparison.OrdinalIgnoreCase)) ||
+            NeedsReportSignal(message)) return ReportTopic;
         if (WishlistSignal.IsMatch(message)) return WishlistTopic;
         if (RecurringSignal.IsMatch(message)) return RecurringTopic;
         if (ExplicitTransactionDomainSignal.IsMatch(message) || TryParseAmountThreshold(message) != null) return TransactionTopic;
@@ -183,6 +194,7 @@ public partial class AiAssistantService
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static bool IsSelfContainedFinancialRequest(string message) =>
+        NeedsRewardsSignal(message) || InvestmentCoreSignal.IsMatch(message) || NeedsReportSignal(message) ||
         WishlistSignal.IsMatch(message) || RecurringSignal.IsMatch(message) ||
         ExplicitTransactionDomainSignal.IsMatch(message) || CategoryLimitSignal.IsMatch(message) ||
         CycleInsightSignal.IsMatch(message) ||

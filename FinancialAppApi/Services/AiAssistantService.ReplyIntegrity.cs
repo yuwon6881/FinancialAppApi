@@ -12,7 +12,7 @@ public partial class AiAssistantService
     // History does not rescue it either: a past turn is replayed as text, so the next turn cannot
     // tell the draft never landed. Restate the turn honestly instead of shipping the false claim.
     private static readonly Regex DraftClaimSignal = new(
-        @"\b(?:stage|staged|staging|drafted|draft|drafts)\b",
+        @"\b(?:stage|staged|staging|drafted|draft|drafts|prepared|added|created|opened|ready for review)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly HashSet<string> DraftCreatingActionTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -25,7 +25,15 @@ public partial class AiAssistantService
 
     internal static AiChatResponse EnforceActionBackedDraftClaims(AiChatResponse response, bool sensitiveMode)
     {
-        if (response.Actions.Any(action => DraftCreatingActionTypes.Contains(action.Type))) return response;
+        var draftCount = response.Actions.Count(action => DraftCreatingActionTypes.Contains(action.Type));
+        if (draftCount > 0)
+        {
+            return response with
+            {
+                Reply = $"I prepared {draftCount} {(draftCount == 1 ? "draft" : "drafts")} for review. " +
+                        "Check each one before saving."
+            };
+        }
         if (!DraftClaimSignal.IsMatch(response.Reply)) return response;
         // "Do you want me to open a draft?" is an offer, not a claim -- the guardrail at
         // SystemInstruction already requires a clarification to carry no actions.

@@ -39,7 +39,7 @@ public partial class AiAssistantService
         bool NeedsReport,
         bool NeedsCount);
 
-    private enum QueryFamily { Transactional, Wishlist, Recurring }
+    private enum QueryFamily { Transactional, Wishlist, Recurring, Rewards, Investment, Report }
 
     // Two-phase family resolution. A short continuation ("how about last cycle", "what about the
     // next one") often carries no topic of its own, so deciding the family from the message alone
@@ -49,6 +49,9 @@ public partial class AiAssistantService
     // request re-resolved.
     private static QueryFamily ResolveContinuationFamily(string message, AiConversationState? priorState)
     {
+        if (NeedsRewardsSignal(message)) return QueryFamily.Rewards;
+        if (InvestmentCoreSignal.IsMatch(message)) return QueryFamily.Investment;
+        if (NeedsReportSignal(message)) return QueryFamily.Report;
         if (WishlistSignal.IsMatch(message)) return QueryFamily.Wishlist;
         if (RecurringSignal.IsMatch(message)) return QueryFamily.Recurring;
         // A real transaction/amount cue wins. A cycle by itself does not: recurring bill status is
@@ -61,6 +64,14 @@ public partial class AiAssistantService
             var intents = priorState.LastIntents ?? (priorState.LastIntent == null ? [] : [priorState.LastIntent]);
             if (topic == RecurringTopic || intents.Any(i => i.StartsWith("recurring", StringComparison.Ordinal)))
                 return QueryFamily.Recurring;
+            if (topic == RewardsTopic || intents.Any(i =>
+                    i.StartsWith("rewards.", StringComparison.Ordinal) ||
+                    i.StartsWith("savings_goal.", StringComparison.Ordinal)))
+                return QueryFamily.Rewards;
+            if (topic == InvestmentTopic || intents.Any(i => i.StartsWith("investment.", StringComparison.Ordinal)))
+                return QueryFamily.Investment;
+            if (topic == ReportTopic || intents.Any(i => i.StartsWith("report.", StringComparison.Ordinal)))
+                return QueryFamily.Report;
             // Wishlist data has no cycle dimension in this app. Preserve the existing, useful
             // behavior where a cycle-only request after wishlist returns to the transaction frame.
             if (!MessageMentionsCycle(message) &&
@@ -159,6 +170,26 @@ public partial class AiAssistantService
             if (DetectRecurringStatus(message) == null && !string.IsNullOrWhiteSpace(priorState.LastRecurringStatus))
                 clauses.Add($"{priorState.LastRecurringStatus} bill status");
             AppendCycleAndDateContext(clauses, message, priorState);
+            return string.Join(" ", clauses);
+        }
+        if (family == QueryFamily.Rewards)
+        {
+            if (!NeedsRewardsSignal(message)) clauses.Add("savings goals and Rewards plan");
+            return string.Join(" ", clauses);
+        }
+        if (family == QueryFamily.Investment)
+        {
+            if (!InvestmentCoreSignal.IsMatch(message)) clauses.Add("investment portfolio");
+            if (!Regex.IsMatch(message, @"\b(?:1m|3m|6m|1y|3y|5y|all)\b", RegexOptions.IgnoreCase) &&
+                !string.IsNullOrWhiteSpace(priorState.LastInvestmentRange))
+                clauses.Add($"range {priorState.LastInvestmentRange}");
+            return string.Join(" ", clauses);
+        }
+        if (family == QueryFamily.Report)
+        {
+            if (!NeedsReportSignal(message)) clauses.Add("report review");
+            if (!MessageMentionsCycle(message) && !string.IsNullOrWhiteSpace(priorState.LastReportCycleKey))
+                clauses.Add($"cycle {priorState.LastReportCycleKey}");
             return string.Join(" ", clauses);
         }
 

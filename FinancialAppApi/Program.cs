@@ -61,6 +61,7 @@ app.UseCors("AllowFrontend");
 app.UseMiddleware<CsrfProtectionMiddleware>();
 app.UseRateLimiter();
 app.UseAuthorization();
+app.UseMiddleware<CategoryLimitAlertMiddleware>();
 app.MapGet("/api/ping", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
 app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
 {

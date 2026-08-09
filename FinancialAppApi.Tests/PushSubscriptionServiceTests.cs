@@ -16,13 +16,16 @@ public class PushSubscriptionServiceTests
 
         Assert.False(status.AccountEnabled);
         Assert.False(status.DeviceSubscribed);
+        Assert.False(status.CategoryAlertsEnabled);
     }
 
     [Fact]
     public async Task GetStatusAsync_ReflectsAccountToggleAndDeviceSubscription()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        context.FinancialSettings.Add(NewSetting(pushEnabled: true));
+        var setting = NewSetting(pushEnabled: true);
+        setting.CategoryLimitAlertsEnabled = true;
+        context.FinancialSettings.Add(setting);
         context.PushSubscriptions.Add(NewSubscription("device-1"));
         await context.SaveChangesAsync();
         var service = new PushSubscriptionService(context);
@@ -31,6 +34,36 @@ public class PushSubscriptionServiceTests
 
         Assert.True(status.AccountEnabled);
         Assert.True(status.DeviceSubscribed);
+        Assert.True(status.CategoryAlertsEnabled);
+    }
+
+    [Fact]
+    public async Task SetCategoryAlertsEnabledAsync_RequiresAnEnabledPushDevice()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(NewSetting(pushEnabled: false));
+        await context.SaveChangesAsync();
+        var service = new PushSubscriptionService(context);
+
+        var updated = await service.SetCategoryAlertsEnabledAsync(true);
+
+        Assert.False(updated);
+        Assert.False((await context.FinancialSettings.SingleAsync()).CategoryLimitAlertsEnabled);
+    }
+
+    [Fact]
+    public async Task SetCategoryAlertsEnabledAsync_PersistsExplicitConsent()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(NewSetting(pushEnabled: true));
+        context.PushSubscriptions.Add(NewSubscription("device-1"));
+        await context.SaveChangesAsync();
+        var service = new PushSubscriptionService(context);
+
+        var updated = await service.SetCategoryAlertsEnabledAsync(true);
+
+        Assert.True(updated);
+        Assert.True((await context.FinancialSettings.SingleAsync()).CategoryLimitAlertsEnabled);
     }
 
     [Fact]

@@ -427,7 +427,15 @@ Rules:
                 appliedCount += step.AppliedCount;
             }
 
-            await _context.SaveChangesAsync();
+            _context.SuppressCategoryLimitAlertCapture = true;
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            finally
+            {
+                _context.SuppressCategoryLimitAlertCapture = false;
+            }
             await transaction.CommitAsync();
         });
 

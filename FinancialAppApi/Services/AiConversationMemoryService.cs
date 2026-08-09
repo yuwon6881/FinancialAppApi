@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
 
-public sealed class AiConversationMemoryService
+public sealed partial class AiConversationMemoryService
 {
     internal const int MaxPromptHistoryCharacters = 12_000;
     private const int MaxHydratedTurns = 100;
@@ -33,9 +33,13 @@ public sealed class AiConversationMemoryService
         AiConversationState? State,
         bool SensitiveMode,
         bool Conflict = false,
-        AiChatResponse? Replay = null);
+        AiChatResponse? Replay = null,
+        AiConversationTurn? PendingTurn = null,
+        int ClientContractVersion = 1);
 
-    public async Task<AiConversationResponse> GetActiveAsync(CancellationToken cancellationToken = default)
+    public async Task<AiConversationResponse> GetActiveAsync(
+        bool forceSensitiveMode = false,
+        CancellationToken cancellationToken = default)
     {
         var conversation = await _context.AiConversations
             .AsNoTracking()
@@ -45,13 +49,13 @@ public sealed class AiConversationMemoryService
             return new AiConversationResponse(null, 0, [], null);
         }
 
-        var sensitiveMode = await IsSensitiveModeAsync(cancellationToken);
+        var sensitiveMode = await ResolveEffectiveSensitiveModeAsync(forceSensitiveMode, cancellationToken);
         var historyRedacted = sensitiveMode && await _context.AiConversationTurns
             .AsNoTracking()
             .AnyAsync(turn => turn.ConversationId == conversation.Id && !turn.SensitiveMode, cancellationToken);
         var turnsQuery = _context.AiConversationTurns
             .AsNoTracking()
-            .Where(turn => turn.ConversationId == conversation.Id);
+            .Where(turn => turn.ConversationId == conversation.Id && turn.Status == "Completed");
         if (sensitiveMode) turnsQuery = turnsQuery.Where(turn => turn.SensitiveMode);
         var turns = await turnsQuery
             .OrderByDescending(turn => turn.CreatedAt)
@@ -67,20 +71,31 @@ public sealed class AiConversationMemoryService
                 new AiChatMessage("assistant", turn.AssistantReply)
             })
             .ToList();
+        var pendingBatches = await LoadPendingActionBatchesAsync(
+            conversation.Id,
+            sensitiveMode,
+            cancellationToken);
         return new AiConversationResponse(
             conversation.Id,
             conversation.Version,
             messages,
             DeserializeState(conversation.StateJson),
-            historyRedacted);
+            historyRedacted,
+            pendingBatches);
     }
 
-    public async Task DeleteActiveAsync(CancellationToken cancellationToken = default)
+    public async Task<bool> DeleteActiveAsync(
+        Guid? conversationId = null,
+        int? expectedVersion = null,
+        CancellationToken cancellationToken = default)
     {
         var conversation = await _context.AiConversations.SingleOrDefaultAsync(cancellationToken);
-        if (conversation == null) return;
+        if (conversation == null) return true;
+        if (conversationId != null && conversation.Id != conversationId) return false;
+        if (expectedVersion != null && conversation.Version != expectedVersion) return false;
         _context.AiConversations.Remove(conversation);
         await _context.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     internal async Task<PreparedConversation> PrepareAsync(
@@ -123,14 +138,30 @@ public sealed class AiConversationMemoryService
                 cancellationToken);
         if (duplicate != null)
         {
-            var replaySensitiveMode = await IsSensitiveModeAsync(cancellationToken);
+            var replaySensitiveMode = await ResolveEffectiveSensitiveModeAsync(request.ForceSensitiveMode, cancellationToken);
+            if (!duplicate.Status.Equals("Completed", StringComparison.Ordinal))
+            {
+                return new PreparedConversation(
+                    conversation,
+                    clientTurnId,
+                    [],
+                    DeserializeState(conversation.StateJson),
+                    replaySensitiveMode,
+                    Replay: new AiChatResponse(
+                        "That request is still being processed. Retry in a moment to collect its result.",
+                        [],
+                        ConversationId: conversation.Id,
+                        ConversationVersion: conversation.Version),
+                    ClientContractVersion: request.ClientContractVersion);
+            }
             return new PreparedConversation(
                 conversation,
                 clientTurnId,
                 [],
                 DeserializeState(conversation.StateJson),
                 replaySensitiveMode,
-                Replay: ToReplay(conversation, duplicate, replaySensitiveMode));
+                Replay: ToReplay(conversation, duplicate, replaySensitiveMode),
+                ClientContractVersion: request.ClientContractVersion);
         }
 
         if (request.ConversationId != null && request.ConversationId != conversation.Id)
@@ -150,18 +181,62 @@ public sealed class AiConversationMemoryService
                 conversation, clientTurnId, [], DeserializeState(conversation.StateJson), true, Conflict: true);
         }
 
-        var sensitiveMode = await IsSensitiveModeAsync(cancellationToken);
+        var sensitiveMode = await ResolveEffectiveSensitiveModeAsync(request.ForceSensitiveMode, cancellationToken);
         var history = await SelectPromptHistoryAsync(
             conversation.Id,
             request.Message,
             sensitiveMode,
             cancellationToken);
+        var pendingTurn = new AiConversationTurn
+        {
+            ConversationId = conversation.Id,
+            ClientTurnId = clientTurnId,
+            UserMessage = sensitiveMode ? "[Hidden request]" : request.Message.Trim(),
+            AssistantReply = string.Empty,
+            ActionsJson = "[]",
+            Status = "Pending",
+            SensitiveMode = sensitiveMode,
+            ConversationVersion = conversation.Version,
+            CreatedAt = DateTime.UtcNow
+        };
+        _context.AiConversationTurns.Add(pendingTurn);
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            _context.ChangeTracker.Clear();
+            conversation = await _context.AiConversations.SingleAsync(cancellationToken);
+            var winner = await _context.AiConversationTurns
+                .AsNoTracking()
+                .SingleAsync(
+                    turn => turn.ConversationId == conversation.Id && turn.ClientTurnId == clientTurnId,
+                    cancellationToken);
+            var replaySensitiveMode = await ResolveEffectiveSensitiveModeAsync(request.ForceSensitiveMode, cancellationToken);
+            return new PreparedConversation(
+                conversation,
+                clientTurnId,
+                [],
+                DeserializeState(conversation.StateJson),
+                replaySensitiveMode,
+                Replay: winner.Status == "Completed"
+                    ? ToReplay(conversation, winner, replaySensitiveMode)
+                    : new AiChatResponse(
+                        "That request is still being processed. Retry in a moment to collect its result.",
+                        [],
+                        ConversationId: conversation.Id,
+                        ConversationVersion: conversation.Version),
+                ClientContractVersion: request.ClientContractVersion);
+        }
         return new PreparedConversation(
             conversation,
             clientTurnId,
             history,
             DeserializeState(conversation.StateJson),
-            sensitiveMode);
+            sensitiveMode,
+            PendingTurn: pendingTurn,
+            ClientContractVersion: request.ClientContractVersion);
     }
 
     internal async Task<AiChatResponse?> CompleteAsync(
@@ -178,21 +253,23 @@ public sealed class AiConversationMemoryService
         conversation.UpdatedAt = DateTime.UtcNow;
 
         var metadata = BuildMetadata(message, state);
-        _context.AiConversationTurns.Add(new AiConversationTurn
-        {
-            ConversationId = conversation.Id,
-            ClientTurnId = prepared.ClientTurnId,
-            UserMessage = message.Trim(),
-            AssistantReply = response.Reply,
-            ActionsJson = JsonSerializer.Serialize(response.Actions, JsonOptions),
-            CloseChat = response.CloseChat,
-            Intent = metadata.Intent,
-            Topic = metadata.Topic,
-            FacetsJson = JsonSerializer.Serialize(metadata.Facets, JsonOptions),
-            KeywordsJson = JsonSerializer.Serialize(metadata.Keywords, JsonOptions),
-            SensitiveMode = prepared.SensitiveMode,
-            ConversationVersion = nextVersion
-        });
+        var actions = response.Actions
+            .Select(action => action.ActionId == null ? action with { ActionId = Guid.NewGuid() } : action)
+            .ToList();
+        var turn = prepared.PendingTurn ?? throw new InvalidOperationException("The AI turn was not reserved.");
+        turn.UserMessage = prepared.SensitiveMode ? "[Hidden request]" : message.Trim();
+        turn.AssistantReply = response.Reply;
+        turn.ActionsJson = JsonSerializer.Serialize(actions, JsonOptions);
+        turn.CloseChat = response.CloseChat;
+        turn.Intent = metadata.Intent;
+        turn.Topic = metadata.Topic;
+        turn.FacetsJson = JsonSerializer.Serialize(metadata.Facets, JsonOptions);
+        turn.KeywordsJson = JsonSerializer.Serialize(metadata.Keywords, JsonOptions);
+        turn.SensitiveMode = prepared.SensitiveMode;
+        turn.ConversationVersion = nextVersion;
+        turn.Status = "Completed";
+        turn.CompletedAt = DateTime.UtcNow;
+        if (prepared.ClientContractVersion < 2 || actions.Count == 0) turn.ActionsResolvedAt = DateTime.UtcNow;
 
         try
         {
@@ -203,12 +280,43 @@ public sealed class AiConversationMemoryService
             return null;
         }
 
+        var actionBatch = prepared.ClientContractVersion >= 2 && actions.Count > 0
+            ? new AiActionBatchResponse(turn.Id, actions)
+            : null;
         return response with
         {
+            Actions = actions,
             State = state,
             ConversationId = conversation.Id,
-            ConversationVersion = nextVersion
+            ConversationVersion = nextVersion,
+            ActionBatch = actionBatch
         };
+    }
+
+    internal async Task FailAsync(PreparedConversation prepared, CancellationToken cancellationToken)
+    {
+        if (prepared.PendingTurn == null) return;
+        _context.ChangeTracker.Clear();
+        var pending = await _context.AiConversationTurns
+            .SingleOrDefaultAsync(turn => turn.Id == prepared.PendingTurn.Id && turn.Status == "Pending", cancellationToken);
+        if (pending == null) return;
+        _context.AiConversationTurns.Remove(pending);
+        await _context.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<bool> ResolveActionBatchAsync(
+        Guid batchId,
+        bool dismissed,
+        CancellationToken cancellationToken)
+    {
+        var turn = await _context.AiConversationTurns
+            .SingleOrDefaultAsync(candidate => candidate.Id == batchId && candidate.Status == "Completed", cancellationToken);
+        if (turn == null) return false;
+        if (turn.ActionsResolvedAt != null) return true;
+        turn.ActionsResolvedAt = DateTime.UtcNow;
+        turn.ActionsDismissedAt = dismissed ? DateTime.UtcNow : null;
+        await _context.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     private async Task<IReadOnlyList<AiChatMessage>> SelectPromptHistoryAsync(
@@ -219,7 +327,7 @@ public sealed class AiConversationMemoryService
     {
         var query = _context.AiConversationTurns
             .AsNoTracking()
-            .Where(turn => turn.ConversationId == conversationId);
+            .Where(turn => turn.ConversationId == conversationId && turn.Status == "Completed");
         if (sensitiveMode)
         {
             query = query.Where(turn => turn.SensitiveMode);
@@ -265,36 +373,10 @@ public sealed class AiConversationMemoryService
             .Select(setting => (bool?)setting.HideSensitive)
             .SingleOrDefaultAsync(cancellationToken) ?? true;
 
-    private static AiChatResponse ToReplay(AiConversation conversation, AiConversationTurn turn, bool sensitiveMode)
-    {
-        if (sensitiveMode && !turn.SensitiveMode)
-        {
-            return new AiChatResponse(
-                "Earlier replies are hidden while sensitive mode is active. Unhide balances to replay this explanation.",
-                [],
-                State: null,
-                ConversationId: conversation.Id,
-                ConversationVersion: conversation.Version,
-                HistoryRedacted: true);
-        }
-        IReadOnlyList<AiUiAction> actions;
-        try
-        {
-            actions = JsonSerializer.Deserialize<List<AiUiAction>>(turn.ActionsJson, JsonOptions) ?? [];
-        }
-        catch (JsonException)
-        {
-            actions = [];
-        }
-        return new AiChatResponse(
-            turn.AssistantReply,
-            actions,
-            turn.CloseChat,
-            DeserializeState(conversation.StateJson),
-            conversation.Id,
-            conversation.Version,
-            turn.SensitiveMode == false && sensitiveMode);
-    }
+    internal async Task<bool> ResolveEffectiveSensitiveModeAsync(
+        bool forceSensitiveMode,
+        CancellationToken cancellationToken) =>
+        forceSensitiveMode || await IsSensitiveModeAsync(cancellationToken);
 
     private static AiConversationState? DeserializeState(string? json)
     {

@@ -90,6 +90,12 @@ public partial class AiAssistantService
         if (!string.IsNullOrWhiteSpace(state.LastTopic)) parts.Add($"topic={state.LastTopic}");
         if (state.LastQueryFacets is { Count: > 0 } facets) parts.Add($"operations={string.Join(",", facets)}");
         if (!string.IsNullOrWhiteSpace(state.LastRecurringStatus)) parts.Add($"recurringStatus={state.LastRecurringStatus}");
+        if (!string.IsNullOrWhiteSpace(state.LastRewardsTopic)) parts.Add($"rewards={state.LastRewardsTopic}");
+        if (state.LastSavingsGoalId is { } goalId) parts.Add($"savingsGoalId={goalId}");
+        if (!string.IsNullOrWhiteSpace(state.LastInvestmentTopic)) parts.Add($"investment={state.LastInvestmentTopic}");
+        if (!string.IsNullOrWhiteSpace(state.LastInvestmentRange)) parts.Add($"investmentRange={state.LastInvestmentRange}");
+        if (state.LastInvestmentInstrumentId is { } instrumentId) parts.Add($"instrumentId={instrumentId}");
+        if (!string.IsNullOrWhiteSpace(state.LastReportCycleKey)) parts.Add($"reportCycle={state.LastReportCycleKey}");
         return string.Join("; ", parts);
     }
 }

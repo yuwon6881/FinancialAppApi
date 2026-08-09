@@ -13,7 +13,7 @@ public sealed record PushDispatchSummary(int Sent, int Skipped, int Disabled);
 // never double-send. Runs one user at a time in its own DbContext scope (mirroring
 // ReceiptScanProcessor) so per-user tenancy invariants on AppDbContext are respected even though
 // this job itself spans every account.
-public class PushDispatchService
+public partial class PushDispatchService
 {
     // Same 5-year bound as pay-early: plenty of runway, just stops runaway scanning.
     private const int MaxCyclesToScan = 60;
@@ -138,7 +138,11 @@ public class PushDispatchService
             }
         }
 
-        return new PushDispatchSummary(sent, skipped, disabled);
+        var categorySummary = await DispatchPendingCategoryAlertsAsync(cancellationToken);
+        return new PushDispatchSummary(
+            sent + categorySummary.Sent,
+            skipped + categorySummary.Skipped,
+            disabled + categorySummary.Disabled);
     }
 
     private async Task<(string Outcome, int Sent, int Skipped, int Disabled)> TrySendOneAsync(
@@ -244,15 +248,19 @@ public class PushDispatchService
         }
 
         return new PushNotificationContent(
+            Kind: "recurring-payment",
             Title: payment.Name,
             Body: body,
             // Stable across resends for the same occurrence so the OS collapses/replaces the
             // notification instead of stacking a new one for every countdown day.
             Tag: $"payment:{payment.Id}:{occurrenceDate:yyyy-MM-dd}",
             Route: $"/recurring?subscription={Uri.EscapeDataString(payment.Id)}",
-            RecurringPaymentId: payment.Id,
-            OccurrenceDate: occurrenceDate,
-            TimeToLive: timeToLive);
+            TimeToLive: timeToLive,
+            Data: new Dictionary<string, string>
+            {
+                ["recurringPaymentId"] = payment.Id,
+                ["occurrenceDate"] = occurrenceDate.ToString("yyyy-MM-dd")
+            });
     }
 
     private async Task<(DateOnly OccurrenceDate, int OffsetDays)?> ResolveDueOccurrenceAsync(

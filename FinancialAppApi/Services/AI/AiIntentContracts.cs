@@ -45,45 +45,56 @@ public partial class AiAssistantService
         ReportReview
     }
 
-    private static readonly Dictionary<string, AiIntent> IntentByName = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["general"] = AiIntent.General,
-        ["navigation"] = AiIntent.Navigation,
-        ["ledger.activity_count"] = AiIntent.LedgerActivityCount,
-        ["ledger.merchant_search"] = AiIntent.LedgerMerchantSearch,
-        ["ledger.spending_total"] = AiIntent.LedgerSpendingTotal,
-        ["ledger.transaction_list"] = AiIntent.LedgerTransactionList,
-        ["ledger.comparison"] = AiIntent.LedgerComparison,
-        ["ledger.add"] = AiIntent.LedgerAdd,
-        ["ledger.edit"] = AiIntent.LedgerEdit,
-        ["ledger.anomaly"] = AiIntent.LedgerAnomaly,
-        ["ledger.duplicates"] = AiIntent.LedgerDuplicates,
-        ["wishlist.list"] = AiIntent.WishlistList,
-        ["wishlist.forecast"] = AiIntent.WishlistForecast,
-        ["wishlist.add"] = AiIntent.WishlistAdd,
-        ["wishlist.edit"] = AiIntent.WishlistEdit,
-        ["recurring.list"] = AiIntent.RecurringList,
-        ["recurring.upcoming"] = AiIntent.RecurringUpcoming,
-        ["recurring.add"] = AiIntent.RecurringAdd,
-        ["recurring.edit"] = AiIntent.RecurringEdit,
-        ["category_limits.analysis"] = AiIntent.CategoryLimits,
-        ["cycle.insights"] = AiIntent.CycleInsights,
-        ["allocation.balance"] = AiIntent.AllocationBalance,
-        ["allocation.performance"] = AiIntent.AllocationPerformance,
-        ["rewards.summary"] = AiIntent.RewardsSummary,
-        ["savings_goal.list"] = AiIntent.SavingsGoalList,
-        ["savings_goal.pacing"] = AiIntent.SavingsGoalPacing,
-        ["savings_goal.scenario"] = AiIntent.SavingsGoalScenario,
-        ["savings_goal.add"] = AiIntent.SavingsGoalAdd,
-        ["savings_goal.edit"] = AiIntent.SavingsGoalEdit,
-        ["investment.summary"] = AiIntent.InvestmentSummary,
-        ["investment.holding"] = AiIntent.InvestmentHolding,
-        ["investment.allocation"] = AiIntent.InvestmentAllocation,
-        ["report.review"] = AiIntent.ReportReview
-    };
+    internal sealed record AiCapabilityDefinition(
+        AiIntent Intent,
+        string Name,
+        string? Topic,
+        bool RequiresSensitiveReveal = false);
+
+    internal static readonly IReadOnlyList<AiCapabilityDefinition> AiCapabilities =
+    [
+        new(AiIntent.General, "general", null),
+        new(AiIntent.Navigation, "navigation", null),
+        new(AiIntent.LedgerActivityCount, "ledger.activity_count", "transactional"),
+        new(AiIntent.LedgerMerchantSearch, "ledger.merchant_search", "transactional"),
+        new(AiIntent.LedgerSpendingTotal, "ledger.spending_total", "transactional", true),
+        new(AiIntent.LedgerTransactionList, "ledger.transaction_list", "transactional"),
+        new(AiIntent.LedgerComparison, "ledger.comparison", "transactional", true),
+        new(AiIntent.LedgerAdd, "ledger.add", "transactional"),
+        new(AiIntent.LedgerEdit, "ledger.edit", "transactional"),
+        new(AiIntent.LedgerAnomaly, "ledger.anomaly", "transactional", true),
+        new(AiIntent.LedgerDuplicates, "ledger.duplicates", "transactional", true),
+        new(AiIntent.WishlistList, "wishlist.list", "wishlist"),
+        new(AiIntent.WishlistForecast, "wishlist.forecast", "wishlist", true),
+        new(AiIntent.WishlistAdd, "wishlist.add", "wishlist"),
+        new(AiIntent.WishlistEdit, "wishlist.edit", "wishlist"),
+        new(AiIntent.RecurringList, "recurring.list", "recurring"),
+        new(AiIntent.RecurringUpcoming, "recurring.upcoming", "recurring"),
+        new(AiIntent.RecurringAdd, "recurring.add", "recurring"),
+        new(AiIntent.RecurringEdit, "recurring.edit", "recurring"),
+        new(AiIntent.CategoryLimits, "category_limits.analysis", "transactional", true),
+        new(AiIntent.CycleInsights, "cycle.insights", "transactional", true),
+        new(AiIntent.AllocationBalance, "allocation.balance", "transactional", true),
+        new(AiIntent.AllocationPerformance, "allocation.performance", "transactional", true),
+        new(AiIntent.RewardsSummary, "rewards.summary", "rewards", true),
+        new(AiIntent.SavingsGoalList, "savings_goal.list", "rewards", true),
+        new(AiIntent.SavingsGoalPacing, "savings_goal.pacing", "rewards", true),
+        new(AiIntent.SavingsGoalScenario, "savings_goal.scenario", "rewards", true),
+        new(AiIntent.SavingsGoalAdd, "savings_goal.add", "rewards", true),
+        new(AiIntent.SavingsGoalEdit, "savings_goal.edit", "rewards", true),
+        new(AiIntent.InvestmentSummary, "investment.summary", "investment", true),
+        new(AiIntent.InvestmentHolding, "investment.holding", "investment", true),
+        new(AiIntent.InvestmentAllocation, "investment.allocation", "investment", true),
+        new(AiIntent.ReportReview, "report.review", "report", true)
+    ];
+
+    private static readonly Dictionary<string, AiIntent> IntentByName = AiCapabilities
+        .ToDictionary(capability => capability.Name, capability => capability.Intent, StringComparer.OrdinalIgnoreCase);
 
     private static readonly Dictionary<AiIntent, string> NameByIntent =
         IntentByName.ToDictionary(kvp => kvp.Value, kvp => kvp.Key);
+
+    internal static IReadOnlyList<string> KnownIntentNames => AiCapabilities.Select(capability => capability.Name).ToList();
 
     internal static AiIntent ParseIntent(string? name) =>
         name != null && IntentByName.TryGetValue(name, out var intent) ? intent : AiIntent.Unknown;

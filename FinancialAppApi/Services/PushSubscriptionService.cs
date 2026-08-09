@@ -4,7 +4,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
 
-public sealed record PushStatusResult(bool AccountEnabled, bool DeviceSubscribed);
+public sealed record PushStatusResult(bool AccountEnabled, bool DeviceSubscribed, bool CategoryAlertsEnabled);
 
 public class PushSubscriptionService
 {
@@ -32,7 +32,11 @@ public class PushSubscriptionService
                 .AnyAsync(s => s.DeviceId == deviceId && s.Enabled, cancellationToken);
         }
 
-        return new PushStatusResult(accountEnabled, deviceSubscribed);
+        var categoryAlertsEnabled = await _context.FinancialSettings
+            .Select(setting => setting.CategoryLimitAlertsEnabled)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return new PushStatusResult(accountEnabled, deviceSubscribed, categoryAlertsEnabled);
     }
 
     public async Task<bool> SetAccountEnabledAsync(bool enabled, CancellationToken cancellationToken = default)
@@ -44,6 +48,23 @@ public class PushSubscriptionService
         }
 
         setting.PushRemindersEnabled = enabled;
+        await _context.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task<bool> SetCategoryAlertsEnabledAsync(
+        bool enabled,
+        CancellationToken cancellationToken = default)
+    {
+        var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
+        if (setting == null) return false;
+
+        if (enabled && !await _context.PushSubscriptions.AnyAsync(item => item.Enabled, cancellationToken))
+        {
+            return false;
+        }
+
+        setting.CategoryLimitAlertsEnabled = enabled;
         await _context.SaveChangesAsync(cancellationToken);
         return true;
     }

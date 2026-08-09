@@ -621,7 +621,7 @@ public class AiAssistantServiceTests
     }
 
     [Fact]
-    public async Task ChatAsync_LedgerAdd_UsesDedicatedCategorySuggestionsAndExplicitLedgerHint()
+    public async Task ChatAsync_LedgerAdd_TrustsValidatedModelCategoryAndExplicitLedgerHintWithoutExtraProviderCall()
     {
         await using var context = NewContextWithSettings(hideSensitive: false);
         context.TransactionCategories.Add(new TransactionCategory { Id = "transport", Name = "Transport" });
@@ -641,6 +641,7 @@ public class AiAssistantServiceTests
         Assert.Equal("Transport", outcome.Response.Actions[1].Payload["category"]?.ToString());
         Assert.Equal("Growth", outcome.Response.Actions[1].Payload["ledgerCategory"]?.ToString());
         Assert.True(Assert.IsType<bool>(outcome.Response.Actions[1].Payload["ledgerCategorySpecified"]));
+        Assert.Equal(1, handler.CallCount);
     }
 
     [Fact]
@@ -681,17 +682,17 @@ public class AiAssistantServiceTests
     }
 
     [Fact]
-    public async Task ChatAsync_MoreThanThreeActions_AreCappedAtThree()
+    public async Task ChatAsync_MoreThanFourActions_AreCappedAtFour()
     {
         await using var context = NewContextWithSettings(hideSensitive: false);
         await context.SaveChangesAsync();
-        var four = "[" + string.Join(",", Enumerable.Repeat("{\"type\":\"openDashboard\",\"payload\":{}}", 4)) + "]";
-        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("Opening.", actionsJson: four));
+        var five = "[" + string.Join(",", Enumerable.Repeat("{\"type\":\"openDashboard\",\"payload\":{}}", 5)) + "]";
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("Opening.", actionsJson: five));
         var service = NewService(context, handler);
 
         var outcome = await service.ChatAsync(new AiChatRequest("open the dashboard", []));
 
-        Assert.True(outcome.Response.Actions.Count <= 3);
+        Assert.Equal(4, outcome.Response.Actions.Count);
     }
 
     [Fact]
@@ -1305,9 +1306,10 @@ public class AiAssistantServiceTests
         var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("Amounts are hidden."));
         var service = NewService(context, handler);
 
-        await service.ChatAsync(new AiChatRequest("which transaction exceeded 250 this month?", []));
+        var outcome = await service.ChatAsync(new AiChatRequest("which transaction exceeded 250 this month?", []));
 
-        Assert.DoesNotContain("thresholdMatches", handler.LastUserContent);
+        Assert.Equal(0, handler.CallCount);
+        Assert.Contains("Sensitive mode", outcome.Response.Reply);
     }
 
     // ---------- helpers ----------

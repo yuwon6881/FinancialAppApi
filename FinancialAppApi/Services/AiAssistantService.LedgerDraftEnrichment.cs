@@ -48,12 +48,7 @@ public partial class AiAssistantService
             if (!txType.Equals("transfer", StringComparison.OrdinalIgnoreCase))
             {
                 if (perDraftSource) ApplyExplicitLedgerCategory(sourceText, payload, txType);
-                await ApplyBestNormalCategoryAsync(
-                    sourceText,
-                    txType,
-                    normalCategories,
-                    payload,
-                    cancellationToken);
+                ApplyBestNormalCategory(sourceText, normalCategories, payload);
             }
 
             enriched.Add(action with { Payload = payload });
@@ -86,12 +81,10 @@ public partial class AiAssistantService
         payload["ledgerCategorySpecified"] = true;
     }
 
-    private async Task ApplyBestNormalCategoryAsync(
+    private static void ApplyBestNormalCategory(
         string sourceText,
-        string txType,
         IReadOnlyList<string> normalCategories,
-        Dictionary<string, object?> payload,
-        CancellationToken cancellationToken)
+        Dictionary<string, object?> payload)
     {
         var explicitCategory = normalCategories.FirstOrDefault(category => ContainsNamedValue(sourceText, category));
         if (explicitCategory != null)
@@ -100,18 +93,12 @@ public partial class AiAssistantService
             return;
         }
 
-        if (_categorySuggestionService == null) return;
-        var description = ReadPayloadString(payload, "description");
-        if (string.IsNullOrWhiteSpace(description)) return;
-
-        var result = await _categorySuggestionService.SuggestAsync(
-            description,
-            txType,
-            normalCategories,
-            cancellationToken);
-        var suggested = result.Data?.FirstOrDefault()?.Category;
+        // The structured chat schema already restricts category to this canonical list. Do not
+        // start another provider request per draft merely to second-guess a valid reviewed value.
+        // An explicit category in the user's line still wins deterministically above.
+        var current = ReadPayloadString(payload, "category");
         var canonical = normalCategories.FirstOrDefault(category =>
-            category.Equals(suggested, StringComparison.OrdinalIgnoreCase));
+            category.Equals(current, StringComparison.OrdinalIgnoreCase));
         if (canonical != null) payload["category"] = canonical;
     }
 

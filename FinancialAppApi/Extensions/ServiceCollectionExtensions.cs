@@ -459,6 +459,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGoogleIdTokenVerifier, GoogleIdTokenVerifier>();
         services.AddSingleton<IGoogleOidcTokenValidator, GoogleOidcTokenValidator>();
         services.AddHttpClient<IFcmPushSender, FcmHttpV1PushSender>(client => client.Timeout = TimeSpan.FromSeconds(10));
+        services.AddScoped<CategoryLimitAlertProcessor>();
         services.AddScoped<PushDispatchService>();
         return services;
     }

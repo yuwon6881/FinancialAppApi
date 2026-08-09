@@ -63,6 +63,59 @@ public class AiAssistantServiceUnitTests
     }
 
     [Fact]
+    public void SanitizeConversationState_PreservesEverySupportedDomainFrame()
+    {
+        var instrumentId = Guid.NewGuid();
+        var state = EmptyState() with
+        {
+            LastIntent = "investment.allocation",
+            LastIntents = ["investment.allocation", "report.review", "savings_goal.pacing"],
+            LastTopic = "investment",
+            LastRewardsTopic = "plan",
+            LastSavingsGoalId = 42,
+            LastInvestmentTopic = "portfolio",
+            LastInvestmentRange = "3m",
+            LastInvestmentInstrumentId = instrumentId,
+            LastReportCycleKey = "2026-08"
+        };
+
+        var sanitized = Services.AiAssistantService.SanitizeConversationState(state);
+
+        Assert.NotNull(sanitized);
+        Assert.Equal("investment.allocation", sanitized!.LastIntent);
+        Assert.Equal(["investment.allocation", "report.review", "savings_goal.pacing"], sanitized.LastIntents);
+        Assert.Equal("investment", sanitized.LastTopic);
+        Assert.Equal("plan", sanitized.LastRewardsTopic);
+        Assert.Equal(42, sanitized.LastSavingsGoalId);
+        Assert.Equal("portfolio", sanitized.LastInvestmentTopic);
+        Assert.Equal("3m", sanitized.LastInvestmentRange);
+        Assert.Equal(instrumentId, sanitized.LastInvestmentInstrumentId);
+        Assert.Equal("2026-08", sanitized.LastReportCycleKey);
+    }
+
+    [Fact]
+    public void SanitizeConversationState_RejectsInvalidExtendedDomainFields()
+    {
+        var state = EmptyState() with
+        {
+            LastTopic = "unknown",
+            LastRewardsTopic = new string('x', 100),
+            LastSavingsGoalId = -1,
+            LastInvestmentRange = "forever",
+            LastReportCycleKey = "not-a-cycle"
+        };
+
+        var sanitized = Services.AiAssistantService.SanitizeConversationState(state);
+
+        Assert.NotNull(sanitized);
+        Assert.Null(sanitized!.LastTopic);
+        Assert.Null(sanitized.LastRewardsTopic);
+        Assert.Null(sanitized.LastSavingsGoalId);
+        Assert.Null(sanitized.LastInvestmentRange);
+        Assert.Null(sanitized.LastReportCycleKey);
+    }
+
+    [Fact]
     public void SanitizeConversationState_RejectsInvalidTransactionType()
     {
         var state = EmptyState() with { LastTransactionType = "invalid" };
@@ -96,5 +149,56 @@ public class AiAssistantServiceUnitTests
         var sanitized = Services.AiAssistantService.SanitizeConversationState(state);
         Assert.NotNull(sanitized);
         Assert.Null(sanitized!.LastTargetAmount);
+    }
+
+    [Theory]
+    [InlineData("I prepared both transactions for review.")]
+    [InlineData("The records are ready for review.")]
+    [InlineData("I added those transactions.")]
+    public void EnforceActionBackedDraftClaims_RejectsEquivalentClaimsWithoutActions(string reply)
+    {
+        var result = Services.AiAssistantService.EnforceActionBackedDraftClaims(
+            new Services.AiChatResponse(reply, []),
+            sensitiveMode: false);
+
+        Assert.StartsWith("Nothing was added", result.Reply);
+    }
+
+    [Fact]
+    public void EnforceActionBackedDraftClaims_ReportsTheCommittedActionCount()
+    {
+        var actions = new[]
+        {
+            new Services.AiUiAction("openAddLedgerDraft", []),
+            new Services.AiUiAction("openAddLedgerDraft", [])
+        };
+
+        var result = Services.AiAssistantService.EnforceActionBackedDraftClaims(
+            new Services.AiChatResponse("I prepared three transactions.", actions),
+            sensitiveMode: false);
+
+        Assert.Equal("I prepared 2 drafts for review. Check each one before saving.", result.Reply);
+    }
+
+    [Theory]
+    [InlineData("What are my goals?")]
+    [InlineData("Can I afford badminton this month?")]
+    [InlineData("Show my bills")]
+    [InlineData("How much room do I have for Food?")]
+    [InlineData("How is my nest egg performing?")]
+    public void SemanticPlanner_ReviewsKeywordCollisions(string message)
+    {
+        var deterministic = Services.AiAssistantService.ResolveDeterministically(message);
+
+        Assert.True(Services.AiAssistantService.ShouldUseSemanticPlanner(message, deterministic, null));
+    }
+
+    [Fact]
+    public void SemanticPlanner_SkipsExactLedgerShorthand()
+    {
+        const string message = "Badminton 10";
+        var deterministic = Services.AiAssistantService.ResolveDeterministically(message);
+
+        Assert.False(Services.AiAssistantService.ShouldUseSemanticPlanner(message, deterministic, null));
     }
 }

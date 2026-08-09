@@ -13,13 +13,13 @@ public sealed record FcmSendResult(FcmSendStatus Status, string? ErrorDetail = n
 // phrase (e.g. "Due today") plus a deep link — never an amount, category, or any other financial
 // detail, since notification payloads can be visible on a locked screen or captured by the OS.
 public sealed record PushNotificationContent(
+    string Kind,
     string Title,
     string Body,
     string Tag,
     string Route,
-    string RecurringPaymentId,
-    DateOnly OccurrenceDate,
-    TimeSpan TimeToLive);
+    TimeSpan TimeToLive,
+    IReadOnlyDictionary<string, string> Data);
 
 public interface IFcmPushSender
 {

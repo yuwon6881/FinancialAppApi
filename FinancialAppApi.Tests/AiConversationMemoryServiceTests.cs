@@ -52,6 +52,99 @@ public sealed class AiConversationMemoryServiceTests
     }
 
     [Fact]
+    public async Task V2ActionBatchSurvivesHydrationUntilAccepted()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { HideSensitive = false });
+        await context.SaveChangesAsync();
+        var memory = new AiConversationMemoryService(context);
+        var request = new AiChatRequest(
+            "Add Badminton 10",
+            [],
+            ClientTurnId: "draft-turn",
+            ClientContractVersion: 2);
+        var prepared = await memory.PrepareAsync(request, CancellationToken.None);
+
+        var completed = await memory.CompleteAsync(
+            prepared,
+            request.Message,
+            new AiChatResponse(
+                "Prepared.",
+                [new AiUiAction("openAddLedgerDraft", new Dictionary<string, object?>
+                {
+                    ["description"] = "Badminton",
+                    ["amount"] = 10m
+                })]),
+            CancellationToken.None);
+
+        Assert.NotNull(completed?.ActionBatch);
+        Assert.Single(completed!.ActionBatch!.Actions);
+        Assert.NotNull(completed.ActionBatch.Actions[0].ActionId);
+
+        var hydrated = await memory.GetActiveAsync();
+        var batch = Assert.Single(hydrated.PendingActionBatches!);
+        Assert.Equal(completed.ActionBatch.BatchId, batch.BatchId);
+
+        Assert.True(await memory.ResolveActionBatchAsync(batch.BatchId, dismissed: false, CancellationToken.None));
+        hydrated = await memory.GetActiveAsync();
+        Assert.Empty(hydrated.PendingActionBatches!);
+
+        var replay = await memory.PrepareAsync(
+            request with
+            {
+                ConversationId = completed.ConversationId,
+                ConversationVersion = completed.ConversationVersion
+            },
+            CancellationToken.None);
+        Assert.NotNull(replay.Replay);
+        Assert.Empty(replay.Replay!.Actions);
+        Assert.Null(replay.Replay.ActionBatch);
+    }
+
+    [Fact]
+    public async Task DuplicatePendingClientTurnDoesNotReserveAnotherProviderTurn()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { HideSensitive = false });
+        await context.SaveChangesAsync();
+        var memory = new AiConversationMemoryService(context);
+        var request = new AiChatRequest("Explain this", [], ClientTurnId: "same-turn");
+
+        var first = await memory.PrepareAsync(request, CancellationToken.None);
+        var second = await memory.PrepareAsync(request, CancellationToken.None);
+
+        Assert.NotNull(first.PendingTurn);
+        Assert.NotNull(second.Replay);
+        Assert.Contains("still being processed", second.Replay!.Reply);
+        Assert.Single(context.AiConversationTurns);
+    }
+
+    [Fact]
+    public async Task ForcedSensitiveModeRedactsStoredUserMessageBeforePreferenceSyncs()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { HideSensitive = false });
+        await context.SaveChangesAsync();
+        var memory = new AiConversationMemoryService(context);
+        var request = new AiChatRequest(
+            "Add coffee 123.45",
+            [],
+            ClientTurnId: "protected-turn",
+            ForceSensitiveMode: true);
+
+        var prepared = await memory.PrepareAsync(request, CancellationToken.None);
+        await memory.CompleteAsync(
+            prepared,
+            request.Message,
+            new AiChatResponse("Sensitive mode prevented that change.", []),
+            CancellationToken.None);
+
+        var turn = Assert.Single(context.AiConversationTurns);
+        Assert.True(turn.SensitiveMode);
+        Assert.Equal("[Hidden request]", turn.UserMessage);
+    }
+
+    [Fact]
     public async Task VersionConflictDoesNotSelectOrPersistASecondTurn()
     {
         await using var context = TestHelpers.NewInMemoryContext();

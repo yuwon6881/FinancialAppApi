@@ -80,7 +80,9 @@ public sealed record AiChatRequest(
     Guid? ConversationId = null,
     int? ConversationVersion = null,
     string? ClientTurnId = null,
-    AiInvocationContext? Context = null);
+    AiInvocationContext? Context = null,
+    bool ForceSensitiveMode = false,
+    int ClientContractVersion = 1);
 public sealed record AiChatResponse(
     string Reply,
     IReadOnlyList<AiUiAction> Actions,
@@ -88,14 +90,20 @@ public sealed record AiChatResponse(
     AiConversationState? State = null,
     Guid? ConversationId = null,
     int? ConversationVersion = null,
-    bool HistoryRedacted = false);
-public sealed record AiUiAction(string Type, Dictionary<string, object?> Payload);
+    bool HistoryRedacted = false,
+    AiActionBatchResponse? ActionBatch = null);
+public sealed record AiUiAction(string Type, Dictionary<string, object?> Payload, Guid? ActionId = null);
+public sealed record AiActionBatchResponse(
+    Guid BatchId,
+    IReadOnlyList<AiUiAction> Actions,
+    string Status = "PendingReview");
 public sealed record AiConversationResponse(
     Guid? ConversationId,
     int ConversationVersion,
     IReadOnlyList<AiChatMessage> Messages,
     AiConversationState? State,
-    bool HistoryRedacted = false);
+    bool HistoryRedacted = false,
+    IReadOnlyList<AiActionBatchResponse>? PendingActionBatches = null);
 
 // AiChatResponse alone is the wire shape returned to the client either way (a friendly
 // message is a valid chat reply whether or not the AI provider itself succeeded) -- but the
@@ -146,7 +154,6 @@ public partial class AiAssistantService
     private readonly AiClient _aiClient;
     private readonly AppDbContext _context;
     private readonly TransactionCategoryService _categoryService;
-    private readonly CategorySuggestionService? _categorySuggestionService;
     private readonly RecurringOccurrenceService _recurringOccurrenceService;
     private readonly FinancialClock _financialClock;
     private readonly ILogger<AiAssistantService> _logger;
@@ -170,7 +177,7 @@ public partial class AiAssistantService
         _aiClient = aiClient;
         _context = context;
         _categoryService = categoryService;
-        _categorySuggestionService = categorySuggestionService;
+        _ = categorySuggestionService;
         _recurringOccurrenceService = recurringOccurrenceService ??
             new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
         _financialClock = financialClock ?? FinancialClock.Utc;
@@ -215,9 +222,19 @@ public partial class AiAssistantService
             History = prepared.History,
             State = prepared.State
         };
-        var outcome = await ChatCoreAsync(serverRequest, cancellationToken);
+        AiChatOutcome outcome;
+        try
+        {
+            outcome = await ChatCoreAsync(serverRequest, cancellationToken);
+        }
+        catch
+        {
+            await _conversationMemory.FailAsync(prepared, CancellationToken.None);
+            throw;
+        }
         if (outcome.IsProviderError)
         {
+            await _conversationMemory.FailAsync(prepared, cancellationToken);
             return outcome with
             {
                 Response = outcome.Response with
@@ -228,6 +245,21 @@ public partial class AiAssistantService
             };
         }
 
+        var effectiveSensitiveMode = await _conversationMemory.ResolveEffectiveSensitiveModeAsync(
+            request.ForceSensitiveMode,
+            cancellationToken);
+        if (effectiveSensitiveMode && !prepared.SensitiveMode)
+        {
+            prepared = prepared with { SensitiveMode = true };
+            outcome = outcome with
+            {
+                Response = new AiChatResponse(
+                    "Sensitive mode was enabled while I was answering, so I hid that response. Ask again after unhiding balances if you still need it.",
+                    [],
+                    State: outcome.Response.State)
+            };
+        }
+
         var completed = await _conversationMemory.CompleteAsync(
             prepared,
             request.Message,
@@ -235,6 +267,7 @@ public partial class AiAssistantService
             cancellationToken);
         if (completed == null)
         {
+            await _conversationMemory.FailAsync(prepared, cancellationToken);
             return new AiChatOutcome(
                 new AiChatResponse(
                     "This conversation changed on another device. Reload it and retry your message.",
@@ -291,21 +324,23 @@ public partial class AiAssistantService
         var history = SanitizeHistory(request.History);
         var resolvedMessage = ApplyInvocationMessage(message, invocationContext);
         var intentPlan = ResolveDeterministically(resolvedMessage, priorState);
-        if (intentPlan.Confidence < 0.72 || intentPlan.Intents.Contains(AiIntent.General))
+        if (ShouldUseSemanticPlanner(resolvedMessage, intentPlan, invocationContext))
         {
             var classified = await TryClassifyIntentAsync(resolvedMessage, priorState, cancellationToken);
-            if (classified != null && classified.Confidence >= intentPlan.Confidence)
+            if (classified != null &&
+                classified.Ambiguities is not { Count: > 0 } &&
+                classified.Intents.Any(intent => !intent.Equals("general", StringComparison.OrdinalIgnoreCase)))
             {
                 intentPlan = MergeResolutions(resolvedMessage, classified, priorState);
             }
         }
 
-        var contextResult = await BuildContextAsync(intentPlan, cancellationToken);
+        var contextResult = await BuildContextAsync(intentPlan, request.ForceSensitiveMode, cancellationToken);
         var context = contextResult.Context;
         if (context.SensitiveMode && RequiresSensitiveFinancialReveal(intentPlan))
         {
             return Ok(new AiChatResponse(
-                "Unhide balances before asking for a Rewards, investment, or report explanation.",
+                "Sensitive mode is on. Unhide balances before asking for exact amounts or financial analysis.",
                 [], State: contextResult.OutgoingState));
         }
         var pendingSyncWarning = invocationContext?.HasPendingLocalChanges == true
@@ -431,11 +466,37 @@ public partial class AiAssistantService
 
     private static AiChatOutcome Ok(AiChatResponse response) => new(response, IsProviderError: false);
 
+    private static readonly Regex AmbiguousRoutingSignal = new(
+        @"\b(goals?|bills?|afford|room|performance|nest egg|other one|biggest one|first finding|tell me more)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    internal static bool ShouldUseSemanticPlanner(
+        string message,
+        AiIntentPlan deterministic,
+        AiInvocationContext? invocation)
+    {
+        if (CountLedgerDraftListRecords(message) > 0) return false;
+        if (invocation?.Preset != null) return false;
+        if (deterministic.Intents.Any(intent => intent is AiIntent.LedgerAdd or AiIntent.LedgerEdit or
+                AiIntent.RecurringAdd or AiIntent.RecurringEdit or AiIntent.WishlistAdd or AiIntent.WishlistEdit or
+                AiIntent.SavingsGoalAdd or AiIntent.SavingsGoalEdit) ||
+            LooksLikeProtectedMutationCommand(message)) return false;
+        if (deterministic.Intents.Contains(AiIntent.General)) return true;
+        if (AmbiguousRoutingSignal.IsMatch(message)) return true;
+        if (deterministic.Intents.Any(intent => intent is AiIntent.RewardsSummary or AiIntent.SavingsGoalList or
+                AiIntent.SavingsGoalPacing or AiIntent.SavingsGoalScenario or AiIntent.SavingsGoalAdd or
+                AiIntent.SavingsGoalEdit or AiIntent.InvestmentSummary or AiIntent.InvestmentHolding or
+                AiIntent.InvestmentAllocation or AiIntent.ReportReview)) return true;
+        var wordCount = message.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+        return wordCount <= 5 && !Regex.IsMatch(
+            message,
+            @"^\s*(?:open|show|go to|navigate|take me)\b",
+            RegexOptions.IgnoreCase);
+    }
+
     private static bool RequiresSensitiveFinancialReveal(AiIntentPlan intentPlan) =>
-        intentPlan.Intents.Any(intent => intent is AiIntent.RewardsSummary or AiIntent.SavingsGoalList or
-            AiIntent.SavingsGoalPacing or AiIntent.SavingsGoalScenario or AiIntent.SavingsGoalAdd or
-            AiIntent.SavingsGoalEdit or AiIntent.InvestmentSummary or AiIntent.InvestmentHolding or
-            AiIntent.InvestmentAllocation or AiIntent.ReportReview);
+        intentPlan.Intents.Any(intent =>
+            AiCapabilities.Any(capability => capability.Intent == intent && capability.RequiresSensitiveReveal));
 
     private static string BuildCoverageSentence(
         AiIntentPlan intentPlan,

@@ -1,3 +1,6 @@
+using FinancialAppApi.Database;
+using Microsoft.EntityFrameworkCore;
+
 namespace FinancialAppApi.Services;
 
 public partial class AiAssistantService
@@ -68,7 +71,8 @@ public partial class AiAssistantService
         IReadOnlyList<string> IncludedLedgerCategories,
         string? RequestedTransactionType,
         bool AppliesTransactionTypeFilter,
-        bool CycleTotalRecoverable);
+        bool CycleTotalRecoverable,
+        IReadOnlyDictionary<string, bool> CycleHasAnyRows);
 
     private async Task<TransactionDomainContext> LoadTransactionDomainContextAsync(
         AiIntentPlan intentPlan,
@@ -82,6 +86,15 @@ public partial class AiAssistantService
         var transactions = new List<AiTransactionRow>();
         var scopeTruncated = false;
         int? exactMatchCount = null;
+        var cycleHasAnyRows = new Dictionary<string, bool>(StringComparer.Ordinal);
+        foreach (var cycle in targetSelection.Cycles)
+        {
+            var cycleRange = CategoryAttributionService.GetCycleRange(cycle.Year, cycle.MonthIndex, cycleDay);
+            var start = TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleRange.start));
+            var end = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleRange.end));
+            cycleHasAnyRows[FormatCycleKey(cycle)] = await ScopedTransactions(start, end, null)
+                .AnyAsync(cancellationToken);
+        }
         if (queryPlan.NeedsTransactionDetail || queryPlan.NeedsCycleSummary)
         {
             if (targetSelection.Cycles.Count > 0)
@@ -168,6 +181,13 @@ public partial class AiAssistantService
             if (exactMatchCount.HasValue) exactMatchCount = transactions.Count;
         }
 
+        var hasPostQueryFilters = exactDate.HasValue || constraints.ExcludeTransfers ||
+            excludedCategories.Count > 0 || excludedLedgerCategories.Count > 0 ||
+            includedCategories.Count > 0 || includedLedgerCategories.Count > 0 ||
+            appliesTransactionTypeFilter;
+        if (exactMatchCount.HasValue && hasPostQueryFilters)
+            exactMatchCount = scopeTruncated ? null : transactions.Count;
+
         var cycleTotalRecoverable = targetSelection.Cycles.Count > 0
             && excludedCategories.Count == 0
             && excludedLedgerCategories.Count == 0
@@ -185,7 +205,8 @@ public partial class AiAssistantService
             includedLedgerCategories,
             requestedTransactionType,
             appliesTransactionTypeFilter,
-            cycleTotalRecoverable);
+            cycleTotalRecoverable,
+            cycleHasAnyRows);
     }
 
     private sealed record LedgerDomainContext(

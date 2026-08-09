@@ -65,6 +65,7 @@ public partial class AiAssistantService
 
     private async Task<AiContextBuildResult> BuildContextAsync(
         AiIntentPlan intentPlan,
+        bool forceSensitiveMode,
         CancellationToken cancellationToken)
     {
         var queryPlan = intentPlan.QueryPlan;
@@ -75,7 +76,7 @@ public partial class AiAssistantService
         var selectedYear = frame.SelectedYear;
         var selectedMonthIndex = frame.SelectedMonthIndex;
         var categories = frame.Categories;
-        var sensitiveMode = frame.SensitiveMode;
+        var sensitiveMode = frame.SensitiveMode || forceSensitiveMode;
         var ledgerForecastRequest = frame.LedgerForecastRequest;
         var exactDate = frame.ExactDate;
         var targetSelection = frame.TargetSelection;
@@ -120,7 +121,7 @@ public partial class AiAssistantService
 
         var budgetTargets = BuildBudgetTargetsPayload(queryPlan, setting, sensitiveMode);
 
-        var requestedCycles = BuildRequestedCyclesPayload(targetSelection, allTransactions, cycleDay);
+        var requestedCycles = BuildRequestedCyclesPayload(targetSelection, transactionDomain.CycleHasAnyRows, cycleDay);
 
         var turn = ResolveConversationTurn(
             intentPlan, queryPlan, targetSelection, exactDate, sensitiveMode,
@@ -338,7 +339,7 @@ public partial class AiAssistantService
                 t.Description,
                 t.Category,
                 t.LedgerCategory,
-                txType = t.Amount < 0 ? "outflow" : t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase) ? "transfer" : "inflow"
+                txType = IsTransfer(t) ? "transfer" : t.Amount < 0 ? "outflow" : "inflow"
             }).ToList();
         }
         else
@@ -351,7 +352,7 @@ public partial class AiAssistantService
                 t.Category,
                 t.LedgerCategory,
                 t.Amount,
-                txType = t.Amount < 0 ? "outflow" : t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase) ? "transfer" : "inflow"
+                txType = IsTransfer(t) ? "transfer" : t.Amount < 0 ? "outflow" : "inflow"
             }).ToList();
         }
 
@@ -384,7 +385,7 @@ public partial class AiAssistantService
 
     private static object BuildRequestedCyclesPayload(
         TargetCycleSelection targetSelection,
-        IReadOnlyList<AiTransactionRow> allTransactions,
+        IReadOnlyDictionary<string, bool> cycleHasAnyRows,
         int cycleDay)
     {
         return targetSelection.Cycles
@@ -393,7 +394,7 @@ public partial class AiAssistantService
                 month = FinancialConstants.MonthAbbreviations[c.MonthIndex - 1],
                 year = c.Year,
                 label = CategoryAttributionService.GetCycleRange(c.Year, c.MonthIndex, cycleDay).label,
-                hasTransactions = allTransactions.Any(t => IsInCycle(t, c, cycleDay))
+                hasTransactions = cycleHasAnyRows.GetValueOrDefault(FormatCycleKey(c))
             })
             .ToList();
     }
@@ -895,7 +896,7 @@ public partial class AiAssistantService
                             t.Description,
                             t.Category,
                             t.LedgerCategory,
-                            txType = t.Amount < 0 ? "outflow" : t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase) ? "transfer" : "inflow"
+                            txType = IsTransfer(t) ? "transfer" : t.Amount < 0 ? "outflow" : "inflow"
                         })
                         .ToList()
                 });
@@ -956,7 +957,7 @@ public partial class AiAssistantService
                         t.Category,
                         t.LedgerCategory,
                         t.Amount,
-                        txType = t.Amount < 0 ? "outflow" : t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase) ? "transfer" : "inflow"
+                        txType = IsTransfer(t) ? "transfer" : t.Amount < 0 ? "outflow" : "inflow"
                     })
                     .ToList()
             });

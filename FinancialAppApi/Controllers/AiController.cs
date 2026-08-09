@@ -12,6 +12,7 @@ namespace FinancialAppApi.Controllers;
 [EnableRateLimiting("ai")]
 public class AiController : ControllerBase
 {
+    public sealed record ResolveAiActionBatchRequest(string Resolution);
     private readonly AiAssistantService _aiAssistantService;
     private readonly AiConversationMemoryService _conversationMemory;
     private readonly ILogger<AiController> _logger;
@@ -59,15 +60,35 @@ public class AiController : ControllerBase
     }
 
     [HttpGet("conversation")]
-    public async Task<ActionResult<AiConversationResponse>> GetConversation(CancellationToken cancellationToken)
+    public async Task<ActionResult<AiConversationResponse>> GetConversation(
+        [FromQuery] bool forceSensitiveMode,
+        CancellationToken cancellationToken)
     {
-        return Ok(await _conversationMemory.GetActiveAsync(cancellationToken));
+        return Ok(await _conversationMemory.GetActiveAsync(forceSensitiveMode, cancellationToken));
     }
 
     [HttpDelete("conversation")]
-    public async Task<IActionResult> DeleteConversation(CancellationToken cancellationToken)
+    public async Task<IActionResult> DeleteConversation(
+        [FromQuery] Guid? conversationId,
+        [FromQuery] int? expectedVersion,
+        CancellationToken cancellationToken)
     {
-        await _conversationMemory.DeleteActiveAsync(cancellationToken);
-        return NoContent();
+        return await _conversationMemory.DeleteActiveAsync(conversationId, expectedVersion, cancellationToken)
+            ? NoContent()
+            : Conflict(new { reply = "This conversation changed on another device. Reload it before starting a new chat." });
+    }
+
+    [HttpPost("action-batches/{batchId:guid}/resolve")]
+    public async Task<IActionResult> ResolveActionBatch(
+        Guid batchId,
+        [FromBody] ResolveAiActionBatchRequest request,
+        CancellationToken cancellationToken)
+    {
+        var dismissed = request.Resolution.Equals("dismissed", StringComparison.OrdinalIgnoreCase);
+        if (!dismissed && !request.Resolution.Equals("accepted", StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { message = "Resolution must be accepted or dismissed." });
+        return await _conversationMemory.ResolveActionBatchAsync(batchId, dismissed, cancellationToken)
+            ? NoContent()
+            : NotFound();
     }
 }

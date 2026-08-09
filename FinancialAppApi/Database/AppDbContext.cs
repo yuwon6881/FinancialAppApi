@@ -6,7 +6,15 @@ namespace FinancialAppApi.Database;
 
 public class AppDbContext : DbContext, IDataProtectionKeyContext
 {
+    private readonly HashSet<Transaction> _capturedCategoryLimitTransactions =
+        new(ReferenceEqualityComparer.Instance);
+
     public string? CurrentUserId { get; private set; }
+
+    // Category cleanup deliberately reclassifies many historical rows while the user is already
+    // looking at that operation. Its caller sets this for that save so the next ordinary ledger
+    // mutation, rather than the cleanup itself, remains the notification boundary.
+    public bool SuppressCategoryLimitAlertCapture { get; set; }
 
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options)
     {
@@ -32,6 +40,10 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<SecurityQuestionAnswer> SecurityQuestionAnswers => Set<SecurityQuestionAnswer>();
     public DbSet<PushSubscription> PushSubscriptions => Set<PushSubscription>();
     public DbSet<PushReminderDelivery> PushReminderDeliveries => Set<PushReminderDelivery>();
+    public DbSet<CategoryLimitAlertEvaluation> CategoryLimitAlertEvaluations => Set<CategoryLimitAlertEvaluation>();
+    public DbSet<CategoryLimitAlertEvent> CategoryLimitAlertEvents => Set<CategoryLimitAlertEvent>();
+    public DbSet<CategoryLimitAlertMilestone> CategoryLimitAlertMilestones => Set<CategoryLimitAlertMilestone>();
+    public DbSet<CategoryLimitAlertDelivery> CategoryLimitAlertDeliveries => Set<CategoryLimitAlertDelivery>();
     public DbSet<InvestmentAccount> InvestmentAccounts => Set<InvestmentAccount>();
     public DbSet<InvestmentInstrument> InvestmentInstruments => Set<InvestmentInstrument>();
     public DbSet<InvestmentInstrumentMarketMapping> InvestmentInstrumentMarketMappings => Set<InvestmentInstrumentMarketMapping>();
@@ -172,6 +184,43 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 e.SubscriptionId
             }).IsUnique();
             entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId, e.OccurrenceDate, e.SubscriptionId });
+        });
+
+        modelBuilder.Entity<CategoryLimitAlertEvaluation>(entity =>
+        {
+            entity.Property(e => e.PreviousAmount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.CurrentAmount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.PreviousDate).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.CurrentDate).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.UserId, e.CreatedAt });
+        });
+
+        modelBuilder.Entity<CategoryLimitAlertEvent>(entity =>
+        {
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.ExpiresAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.CompletedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.UserId, e.CompletedAt, e.ExpiresAt });
+        });
+
+        modelBuilder.Entity<CategoryLimitAlertMilestone>(entity =>
+        {
+            entity.HasIndex(e => new { e.UserId, e.CycleKey, e.CategoryName, e.Milestone }).IsUnique();
+            entity.HasOne<CategoryLimitAlertEvent>()
+                .WithMany()
+                .HasForeignKey(e => e.EventId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<CategoryLimitAlertDelivery>(entity =>
+        {
+            entity.Property(e => e.SentAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.UserId, e.EventId, e.SubscriptionId }).IsUnique();
+            entity.HasOne<CategoryLimitAlertEvent>()
+                .WithMany()
+                .HasForeignKey(e => e.EventId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<PendingTwoFactor>(entity =>
@@ -419,6 +468,10 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<AiConversationTurn>(entity =>
         {
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.CompletedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.ActionsResolvedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.ActionsDismissedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.Status).HasDefaultValue("Completed");
             entity.HasIndex(e => new { e.ConversationId, e.ClientTurnId }).IsUnique();
             entity.HasIndex(e => new { e.UserId, e.ConversationId, e.CreatedAt });
             entity.HasOne(e => e.Conversation)
@@ -445,6 +498,10 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<SecurityQuestionAnswer>(), applyQueryFilter: false);
         ConfigureUserOwnership(modelBuilder.Entity<PushSubscription>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<PushReminderDelivery>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<CategoryLimitAlertEvaluation>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<CategoryLimitAlertEvent>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<CategoryLimitAlertMilestone>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<CategoryLimitAlertDelivery>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentAccount>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentInstrument>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentInstrumentMarketMapping>(), applyQueryFilter: true);
@@ -460,16 +517,56 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
+        CaptureCategoryLimitAlertEvaluations();
         ApplyUserOwnership();
-        return base.SaveChanges(acceptAllChangesOnSuccess);
+        var result = base.SaveChanges(acceptAllChangesOnSuccess);
+        _capturedCategoryLimitTransactions.Clear();
+        return result;
     }
 
-    public override Task<int> SaveChangesAsync(
+    public override async Task<int> SaveChangesAsync(
         bool acceptAllChangesOnSuccess,
         CancellationToken cancellationToken = default)
     {
+        CaptureCategoryLimitAlertEvaluations();
         ApplyUserOwnership();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        var result = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        _capturedCategoryLimitTransactions.Clear();
+        return result;
+    }
+
+    private void CaptureCategoryLimitAlertEvaluations()
+    {
+        if (SuppressCategoryLimitAlertCapture || CurrentUserId == null) return;
+
+        var transactionEntries = ChangeTracker.Entries<Transaction>()
+            .Where(entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+            .Where(entry => entry.State != EntityState.Modified ||
+                entry.Property(nameof(Transaction.Category)).IsModified ||
+                entry.Property(nameof(Transaction.LedgerCategory)).IsModified ||
+                entry.Property(nameof(Transaction.Date)).IsModified ||
+                entry.Property(nameof(Transaction.Amount)).IsModified)
+            .Where(entry => _capturedCategoryLimitTransactions.Add(entry.Entity))
+            .ToList();
+
+        foreach (var entry in transactionEntries)
+        {
+            var hasPrevious = entry.State is EntityState.Modified or EntityState.Deleted;
+            var hasCurrent = entry.State is EntityState.Added or EntityState.Modified;
+            CategoryLimitAlertEvaluations.Add(new CategoryLimitAlertEvaluation
+            {
+                Id = $"clae-{Guid.NewGuid():N}",
+                PreviousCategory = hasPrevious ? entry.OriginalValues.GetValue<string>(nameof(Transaction.Category)) : null,
+                PreviousLedgerCategory = hasPrevious ? entry.OriginalValues.GetValue<string>(nameof(Transaction.LedgerCategory)) : null,
+                PreviousDate = hasPrevious ? entry.OriginalValues.GetValue<DateTime>(nameof(Transaction.Date)) : null,
+                PreviousAmount = hasPrevious ? entry.OriginalValues.GetValue<decimal>(nameof(Transaction.Amount)) : null,
+                CurrentCategory = hasCurrent ? entry.Entity.Category : null,
+                CurrentLedgerCategory = hasCurrent ? entry.Entity.LedgerCategory : null,
+                CurrentDate = hasCurrent ? entry.Entity.Date : null,
+                CurrentAmount = hasCurrent ? entry.Entity.Amount : null,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
     }
 
     private void ConfigureUserOwnership<TEntity>(

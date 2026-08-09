@@ -33,6 +33,18 @@ public class AiIntentContractsTests
     }
 
     [Fact]
+    public void CapabilityRegistry_CoversEverySupportedIntentExactlyOnce()
+    {
+        var supported = Enum.GetValues<Intent>().Where(intent => intent != Intent.Unknown).ToList();
+
+        Assert.Equal(supported.Count, AiAssistantService.AiCapabilities.Count);
+        Assert.Equal(supported.Order(), AiAssistantService.AiCapabilities.Select(capability => capability.Intent).Order());
+        Assert.Equal(
+            AiAssistantService.AiCapabilities.Count,
+            AiAssistantService.AiCapabilities.Select(capability => capability.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+    }
+
+    [Fact]
     public void ParseIntents_DropsUnknownAndDedupes()
     {
         var result = AiAssistantService.ParseIntents(["ledger.edit", "nope", "ledger.edit", "navigation"]);

@@ -27,7 +27,8 @@ public class PushController : ControllerBase
         return Ok(new PushStatusDto
         {
             Enabled = status.AccountEnabled,
-            DeviceRegistered = status.DeviceSubscribed
+            DeviceRegistered = status.DeviceSubscribed,
+            CategoryAlertsEnabled = status.CategoryAlertsEnabled
         });
     }
 
@@ -43,6 +44,22 @@ public class PushController : ControllerBase
         }
 
         return Ok(new PushSettingsDto { Enabled = dto.Enabled });
+    }
+
+    // PUT: api/push/category-alerts
+    [HttpPut("category-alerts")]
+    [AuthorizeToken]
+    public async Task<IActionResult> PutCategoryAlerts(PushCategoryAlertsDto dto)
+    {
+        var updated = await _subscriptionService.SetCategoryAlertsEnabledAsync(
+            dto.Enabled,
+            HttpContext.RequestAborted);
+        if (!updated)
+        {
+            return Conflict(new { message = "Enable push notifications on at least one device first." });
+        }
+
+        return Ok(new PushCategoryAlertsDto { Enabled = dto.Enabled });
     }
 
     // PUT: api/push/subscriptions
@@ -91,9 +108,15 @@ public class PushStatusDto
 {
     public bool Enabled { get; set; }
     public bool DeviceRegistered { get; set; }
+    public bool CategoryAlertsEnabled { get; set; }
 }
 
 public class PushSettingsDto
+{
+    public bool Enabled { get; set; }
+}
+
+public class PushCategoryAlertsDto
 {
     public bool Enabled { get; set; }
 }
