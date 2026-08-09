@@ -23,7 +23,7 @@ public class PushSubscriptionServiceTests
     public async Task GetStatusAsync_ReflectsAccountToggleAndDeviceSubscription()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        var setting = NewSetting(pushEnabled: true);
+        var setting = NewSetting();
         setting.CategoryLimitAlertsEnabled = true;
         context.FinancialSettings.Add(setting);
         context.PushSubscriptions.Add(NewSubscription("device-1"));
@@ -41,7 +41,7 @@ public class PushSubscriptionServiceTests
     public async Task SetCategoryAlertsEnabledAsync_RequiresAnEnabledPushDevice()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        context.FinancialSettings.Add(NewSetting(pushEnabled: false));
+        context.FinancialSettings.Add(NewSetting());
         await context.SaveChangesAsync();
         var service = new PushSubscriptionService(context);
 
@@ -55,7 +55,7 @@ public class PushSubscriptionServiceTests
     public async Task SetCategoryAlertsEnabledAsync_PersistsExplicitConsent()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        context.FinancialSettings.Add(NewSetting(pushEnabled: true));
+        context.FinancialSettings.Add(NewSetting());
         context.PushSubscriptions.Add(NewSubscription("device-1"));
         await context.SaveChangesAsync();
         var service = new PushSubscriptionService(context);
@@ -70,7 +70,7 @@ public class PushSubscriptionServiceTests
     public async Task GetStatusAsync_DeviceSubscribedFalseForDisabledSubscription()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        context.FinancialSettings.Add(NewSetting(pushEnabled: true));
+        context.FinancialSettings.Add(NewSetting());
         var subscription = NewSubscription("device-1");
         subscription.Enabled = false;
         context.PushSubscriptions.Add(subscription);
@@ -83,35 +83,10 @@ public class PushSubscriptionServiceTests
     }
 
     [Fact]
-    public async Task SetAccountEnabledAsync_UpdatesExistingSetting()
-    {
-        await using var context = TestHelpers.NewInMemoryContext();
-        context.FinancialSettings.Add(NewSetting(pushEnabled: false));
-        await context.SaveChangesAsync();
-        var service = new PushSubscriptionService(context);
-
-        var updated = await service.SetAccountEnabledAsync(true);
-
-        Assert.True(updated);
-        Assert.True((await context.FinancialSettings.FirstAsync()).PushRemindersEnabled);
-    }
-
-    [Fact]
-    public async Task SetAccountEnabledAsync_ReturnsFalseWhenNoSettingRow()
-    {
-        await using var context = TestHelpers.NewInMemoryContext();
-        var service = new PushSubscriptionService(context);
-
-        var updated = await service.SetAccountEnabledAsync(true);
-
-        Assert.False(updated);
-    }
-
-    [Fact]
     public async Task SubscribeAsync_CreatesNewSubscription()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        context.FinancialSettings.Add(NewSetting(pushEnabled: false));
+        context.FinancialSettings.Add(NewSetting());
         await context.SaveChangesAsync();
         var service = new PushSubscriptionService(context);
 
@@ -120,7 +95,7 @@ public class PushSubscriptionServiceTests
         Assert.Equal("device-1", subscription.DeviceId);
         Assert.Equal("token-abc", subscription.FcmToken);
         Assert.True(subscription.Enabled);
-        Assert.True((await context.FinancialSettings.FirstAsync()).PushRemindersEnabled);
+        Assert.True((await service.GetStatusAsync("device-1")).AccountEnabled);
         Assert.Equal(1, await context.PushSubscriptions.CountAsync());
     }
 
@@ -153,10 +128,10 @@ public class PushSubscriptionServiceTests
     }
 
     [Fact]
-    public async Task UnsubscribeAsync_RemovesExistingSubscription()
+    public async Task UnsubscribeAsync_DisablesTheRowAndKeepsItsIdForDeliveryClaims()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        context.FinancialSettings.Add(NewSetting(pushEnabled: true));
+        context.FinancialSettings.Add(NewSetting());
         context.PushSubscriptions.Add(NewSubscription("device-1"));
         await context.SaveChangesAsync();
         var service = new PushSubscriptionService(context);
@@ -164,30 +139,107 @@ public class PushSubscriptionServiceTests
         var removed = await service.UnsubscribeAsync("device-1");
 
         Assert.True(removed);
-        Assert.Empty(await context.PushSubscriptions.ToListAsync());
-        Assert.False((await context.FinancialSettings.FirstAsync()).PushRemindersEnabled);
+        var row = await context.PushSubscriptions.SingleAsync();
+        Assert.False(row.Enabled);
+        Assert.Equal(string.Empty, row.FcmToken);
+        Assert.Equal("push-device-1", row.Id);
     }
 
     [Fact]
-    public async Task UnsubscribeAsync_LeavesAccountEnabledWhenAnotherDeviceRemains()
+    public async Task SubscribeAsync_AfterUnsubscribe_KeepsTheSameSubscriptionId()
+    {
+        // Delivery claims (PushReminderDelivery/CategoryLimitAlertDelivery) are keyed on this id.
+        // A new id here would orphan every claim and re-send a reminder already delivered today.
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(NewSetting());
+        context.PushSubscriptions.Add(NewSubscription("device-1"));
+        await context.SaveChangesAsync();
+        var service = new PushSubscriptionService(context);
+
+        await service.UnsubscribeAsync("device-1");
+        var resubscribed = await service.SubscribeAsync("device-1", "token-fresh");
+
+        Assert.Equal("push-device-1", resubscribed.Id);
+        Assert.True(resubscribed.Enabled);
+        Assert.Equal("token-fresh", resubscribed.FcmToken);
+        Assert.Single(await context.PushSubscriptions.ToListAsync());
+    }
+
+    [Fact]
+    public async Task UnsubscribeAsync_ClearsCategoryAlertConsentWhenTheLastDeviceLeaves()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        context.FinancialSettings.Add(NewSetting(pushEnabled: true));
+        var setting = NewSetting();
+        setting.CategoryLimitAlertsEnabled = true;
+        context.FinancialSettings.Add(setting);
+        context.PushSubscriptions.Add(NewSubscription("device-1"));
+        await context.SaveChangesAsync();
+        var service = new PushSubscriptionService(context);
+
+        await service.UnsubscribeAsync("device-1");
+
+        Assert.False((await context.FinancialSettings.FirstAsync()).CategoryLimitAlertsEnabled);
+    }
+
+    [Fact]
+    public async Task UnsubscribeAsync_KeepsCategoryAlertConsentWhenAnotherDeviceRemains()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var setting = NewSetting();
+        setting.CategoryLimitAlertsEnabled = true;
+        context.FinancialSettings.Add(setting);
         context.PushSubscriptions.AddRange(NewSubscription("device-1"), NewSubscription("device-2"));
         await context.SaveChangesAsync();
         var service = new PushSubscriptionService(context);
 
         await service.UnsubscribeAsync("device-1");
 
-        Assert.True((await context.FinancialSettings.FirstAsync()).PushRemindersEnabled);
-        Assert.Equal("device-2", (await context.PushSubscriptions.SingleAsync()).DeviceId);
+        Assert.True((await context.FinancialSettings.FirstAsync()).CategoryLimitAlertsEnabled);
+        var status = await service.GetStatusAsync("device-2");
+        Assert.True(status.AccountEnabled);
+        Assert.True(status.DeviceSubscribed);
+    }
+
+    [Fact]
+    public async Task GetDevicesAsync_ListsEnabledDevicesAndMarksTheCurrentOne()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(NewSetting());
+        var stale = NewSubscription("device-old");
+        stale.Enabled = false;
+        context.PushSubscriptions.AddRange(NewSubscription("device-1"), NewSubscription("device-2"), stale);
+        await context.SaveChangesAsync();
+        var service = new PushSubscriptionService(context);
+
+        var devices = await service.GetDevicesAsync("device-2");
+
+        Assert.Equal(2, devices.Count);
+        Assert.Single(devices, device => device.IsCurrent);
+        Assert.Contains(devices, device => device.Id == "push-device-2" && device.IsCurrent);
+    }
+
+    [Fact]
+    public async Task RevokeDeviceAsync_DisablesAnotherDeviceById()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(NewSetting());
+        context.PushSubscriptions.AddRange(NewSubscription("device-1"), NewSubscription("device-2"));
+        await context.SaveChangesAsync();
+        var service = new PushSubscriptionService(context);
+
+        var revoked = await service.RevokeDeviceAsync("push-device-1");
+
+        Assert.True(revoked);
+        Assert.False(await service.RevokeDeviceAsync("push-missing"));
+        var devices = await service.GetDevicesAsync("device-2");
+        Assert.Equal("push-device-2", Assert.Single(devices).Id);
     }
 
     [Fact]
     public async Task GetStatusAsync_DoesNotReportEnabledElsewhereWithoutALiveSubscription()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        context.FinancialSettings.Add(NewSetting(pushEnabled: true));
+        context.FinancialSettings.Add(NewSetting());
         var disabled = NewSubscription("stale-device");
         disabled.Enabled = false;
         context.PushSubscriptions.Add(disabled);
@@ -227,12 +279,11 @@ public class PushSubscriptionServiceTests
         Assert.False(status.DeviceSubscribed);
     }
 
-    private static FinancialSetting NewSetting(bool pushEnabled)
+    private static FinancialSetting NewSetting()
     {
         return new FinancialSetting
         {
-            CycleDay = 1,
-            PushRemindersEnabled = pushEnabled
+            CycleDay = 1
         };
     }
 

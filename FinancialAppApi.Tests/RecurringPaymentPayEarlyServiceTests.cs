@@ -144,10 +144,11 @@ public class RecurringPaymentPayEarlyServiceTests
     public async Task PayEarlyAsync_SkipsAlreadySettledOccurrence_AndSettlesTheNextOne_Monthly()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        context.RecurringPayments.Add(NewPayment("rec-1", startDate: "2026-01-01", dueDate: 15));
+        var payment = NewPayment("rec-1", startDate: "2026-01-01", dueDate: 15);
+        context.RecurringPayments.Add(payment);
         // Simulate the current cycle's occurrence already having been paid (e.g. normal
         // confirmation, or a previous pay-early call).
-        context.Transactions.Add(new Transaction
+        var existing = new Transaction
         {
             Id = "tx-existing",
             Date = TransactionDate.FromInputDate(new DateOnly(2026, 7, 15)),
@@ -157,7 +158,10 @@ public class RecurringPaymentPayEarlyServiceTests
             Amount = 100m,
             RecurringPaymentId = "rec-1",
             RecurringOccurrenceDate = new DateOnly(2026, 7, 15)
-        });
+        };
+        context.Transactions.Add(existing);
+        context.RecurringPaymentOccurrences.Add(
+            PaidOccurrence(payment, new DateOnly(2026, 7, 15), existing));
         await context.SaveChangesAsync();
         var service = NewService(context, Today(2026, 7, 10));
 
@@ -255,7 +259,7 @@ public class RecurringPaymentPayEarlyServiceTests
         var service = NewService(context, Today(2026, 7, 10));
 
         Assert.Equal(new DateOnly(2026, 7, 10), await service.GetNextUnpaidOccurrenceAsync("rec-1"));
-        context.Transactions.Add(new Transaction
+        var settlement = new Transaction
         {
             Id = "tx-paid",
             Date = TransactionDate.FromInputDate(new DateOnly(2026, 7, 10)),
@@ -265,7 +269,14 @@ public class RecurringPaymentPayEarlyServiceTests
             Amount = 100m,
             RecurringPaymentId = "rec-1",
             RecurringOccurrenceDate = new DateOnly(2026, 7, 10)
-        });
+        };
+        context.Transactions.Add(settlement);
+        // The first lookup above materialised this occurrence as pending, so settle that row
+        // rather than adding a second one -- exactly what the settlement service does.
+        RecurringOccurrenceLedgerService.SettleFromTransaction(
+            await context.RecurringPaymentOccurrences.SingleAsync(
+                occurrence => occurrence.OccurrenceDate == new DateOnly(2026, 7, 10)),
+            settlement);
         await context.SaveChangesAsync();
 
         Assert.Equal(new DateOnly(2026, 8, 10), await service.GetNextUnpaidOccurrenceAsync("rec-1"));
@@ -278,13 +289,14 @@ public class RecurringPaymentPayEarlyServiceTests
     public async Task GetNextUnpaidOccurrencesAsync_MatchesThePerPaymentLookupForEveryPayment()
     {
         await using var context = TestHelpers.NewInMemoryContext();
+        var settled = NewPayment("rec-1", dueDate: 10);
         context.RecurringPayments.AddRange(
-            NewPayment("rec-1", dueDate: 10),
+            settled,
             NewPayment("rec-2", dueDate: 20),
             NewPayment("rec-3", dueDate: 5, frequency: "Annually", startDate: "2026-03-01"),
             NewPayment("rec-ended", dueDate: 10, endDate: "2026-02-01"),
             NewPayment("rec-inactive", dueDate: 10, active: false));
-        context.Transactions.Add(new Transaction
+        var settlement = new Transaction
         {
             Id = "tx-paid",
             Date = TransactionDate.FromInputDate(new DateOnly(2026, 7, 10)),
@@ -294,7 +306,10 @@ public class RecurringPaymentPayEarlyServiceTests
             Amount = 100m,
             RecurringPaymentId = "rec-1",
             RecurringOccurrenceDate = new DateOnly(2026, 7, 10)
-        });
+        };
+        context.Transactions.Add(settlement);
+        context.RecurringPaymentOccurrences.Add(
+            PaidOccurrence(settled, new DateOnly(2026, 7, 10), settlement));
         await context.SaveChangesAsync();
 
         var service = NewService(context, Today(2026, 7, 10));
@@ -350,6 +365,26 @@ public class RecurringPaymentPayEarlyServiceTests
         var timeProvider = new FixedTimeProvider(new DateTimeOffset(year, month, day, 0, 0, 0, TimeSpan.Zero));
         return new FinancialClock(configuration, timeProvider);
     }
+
+    // A settlement writes the occurrence row in the same save as its transaction. Seeding only
+    // the transaction models a state the app cannot reach, and leaves the bill still pending.
+    private static RecurringPaymentOccurrence PaidOccurrence(
+        RecurringPayment payment,
+        DateOnly date,
+        Transaction settledBy) => new()
+    {
+        Id = $"occ-{payment.Id}-{date:yyyyMMdd}",
+        RecurringPaymentId = payment.Id,
+        OccurrenceDate = date,
+        Name = payment.Name,
+        ScheduledAmount = Math.Abs(payment.Amount),
+        Category = payment.Category,
+        LedgerCategory = payment.LedgerCategory,
+        PaymentMode = payment.PaymentMode,
+        Status = RecurringOccurrenceStatus.Paid,
+        PaidDate = TransactionDate.ToDateOnly(settledBy.Date),
+        SettlementTransactionId = settledBy.Id
+    };
 
     private static RecurringPayment NewPayment(
         string id,

@@ -618,7 +618,8 @@ public class AiFollowUpFrameTests
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
         context.RecurringPayments.Add(new RecurringPayment { Id = "netflix", Name = "Netflix", Amount = 15, Frequency = "Monthly", Category = "Entertainment", LedgerCategory = "Rewards", NextDueDate = "2026-07-20", DueDate = 20, StartDate = "2026-01-01", Active = true });
-        context.Transactions.Add(new Transaction { Id = "discarded-jun", Date = new DateTime(2026, 6, 15, 12, 0, 0, DateTimeKind.Utc), Description = "Netflix", Category = "Entertainment", LedgerCategory = "Discarded", Amount = -15, RecurringPaymentId = "netflix" });
+        // Discarding writes a zero-amount row tagged with the occurrence it settles.
+        context.Transactions.Add(new Transaction { Id = "discarded-jun", Date = new DateTime(2026, 6, 15, 12, 0, 0, DateTimeKind.Utc), Description = "Netflix", Category = "Entertainment", LedgerCategory = "Discarded", Amount = 0, RecurringPaymentId = "netflix", RecurringOccurrenceDate = new DateOnly(2026, 6, 20) });
         await context.SaveChangesAsync();
         var (service, handler) = NewService(context);
 

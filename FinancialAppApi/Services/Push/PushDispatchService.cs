@@ -15,9 +15,6 @@ public sealed record PushDispatchSummary(int Sent, int Skipped, int Disabled);
 // this job itself spans every account.
 public partial class PushDispatchService
 {
-    // Same 5-year bound as pay-early: plenty of runway, just stops runaway scanning.
-    private const int MaxCyclesToScan = 60;
-
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly FinancialClock _financialClock;
     private readonly IConfiguration _configuration;
@@ -64,7 +61,7 @@ public partial class PushDispatchService
             {
                 using var userScope = _scopeFactory.CreateScope();
                 var context = userScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var occurrenceService = userScope.ServiceProvider.GetRequiredService<RecurringOccurrenceService>();
+                var occurrenceLedger = userScope.ServiceProvider.GetRequiredService<RecurringOccurrenceLedgerService>();
                 var fcmSender = userScope.ServiceProvider.GetRequiredService<IFcmPushSender>();
                 context.SetCurrentUser(userId);
 
@@ -79,7 +76,7 @@ public partial class PushDispatchService
 
                 foreach (var payment in candidate.Payments)
                 {
-                    var due = await ResolveDueOccurrenceAsync(context, occurrenceService, payment, candidate.CycleDay, today, cancellationToken);
+                    var due = await ResolveDueOccurrenceAsync(occurrenceLedger, payment, today, cancellationToken);
                     if (due == null)
                     {
                         continue;
@@ -264,58 +261,16 @@ public partial class PushDispatchService
     }
 
     private async Task<(DateOnly OccurrenceDate, int OffsetDays)?> ResolveDueOccurrenceAsync(
-        AppDbContext context,
-        RecurringOccurrenceService occurrenceService,
+        RecurringOccurrenceLedgerService occurrenceLedger,
         RecurringPayment payment,
-        int cycleDay,
         DateOnly today,
         CancellationToken cancellationToken)
     {
-        var settledOccurrences = await context.Transactions
-            .Where(t => t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate != null)
-            .Select(t => t.RecurringOccurrenceDate!.Value)
-            .ToListAsync(cancellationToken);
-        var settledSet = settledOccurrences.ToHashSet();
-
-        // Documented legacy fallback: transactions recorded before the RecurringOccurrenceDate
-        // column existed (or otherwise linked to this payment without an exact recurrence-engine
-        // match) still carry a RecurringPaymentId and a calendar Date. Treating that Date as the
-        // occurrence it settles keeps the dispatcher from re-reminding a payment a user already
-        // recorded, even though it was never tagged with an explicit occurrence date.
-        var legacySettledDates = await context.Transactions
-            .Where(t => t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate == null)
-            .Select(t => t.Date)
-            .ToListAsync(cancellationToken);
-        foreach (var legacyDate in legacySettledDates)
-        {
-            settledSet.Add(DateOnly.FromDateTime(legacyDate));
-        }
-
-        var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
-
-        for (var i = 0; i < MaxCyclesToScan; i++)
-        {
-            var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
-            foreach (var billingDate in occurrenceService.GetOccurrencesInRange(payment, cycleStart, cycleEnd, cycleDay))
-            {
-                var occurrenceDate = DateOnly.FromDateTime(billingDate);
-                if (occurrenceDate < today || settledSet.Contains(occurrenceDate))
-                {
-                    continue;
-                }
-
-                return (occurrenceDate, occurrenceDate.DayNumber - today.DayNumber);
-            }
-
-            monthIndex++;
-            if (monthIndex > 12)
-            {
-                monthIndex = 1;
-                year++;
-            }
-        }
-
-        return null;
+        var occurrence = await occurrenceLedger.GetNextPendingAsync(
+            payment, today, includeFrom: true, cancellationToken);
+        return occurrence == null
+            ? null
+            : (occurrence.OccurrenceDate, occurrence.OccurrenceDate.DayNumber - today.DayNumber);
     }
 
     private async Task<Dictionary<string, DispatchCandidateUser>> LoadCandidatesAsync(

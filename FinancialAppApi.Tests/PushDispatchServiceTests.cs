@@ -32,13 +32,14 @@ public class PushDispatchServiceTests
     }
 
     [Fact]
-    public async Task DispatchAsync_UsesLiveDeviceWhenLegacyGlobalFlagIsDisabled()
+    public async Task DispatchAsync_SendsForAnyEnabledDevice_WithNoAccountLevelFlagToConsult()
     {
+        // The legacy account flag this used to have to override no longer exists: an enabled
+        // device subscription is the whole opt-in.
         var dbName = NewDbName();
         var today = new DateOnly(2026, 7, 10);
         await SeedAsync(dbName, "user-a",
-            NewPayment("rec-1", dueDate: today.AddDays(3).Day, leadDays: 3),
-            pushRemindersEnabled: false);
+            NewPayment("rec-1", dueDate: today.AddDays(3).Day, leadDays: 3));
         var sender = new FakeFcmPushSender();
         var service = NewDispatchService(dbName, Clock(today), sender);
 
@@ -469,6 +470,11 @@ public class PushDispatchServiceTests
         services.AddDbContext<AppDbContext>(options =>
             options.UseInMemoryDatabase(dbName).ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
         services.AddScoped<RecurringOccurrenceService>();
+        // The dispatcher resolves the ledger per user scope. It must share the test's fixed
+        // clock, or "which occurrence is next" is answered against the wall clock and the
+        // seeded due dates never line up.
+        services.AddSingleton(clock);
+        services.AddScoped<RecurringOccurrenceLedgerService>();
         services.AddSingleton(sender);
         var provider = services.BuildServiceProvider();
         var scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
@@ -481,7 +487,6 @@ public class PushDispatchServiceTests
         string dbName,
         string userId,
         RecurringPayment payment,
-        bool pushRemindersEnabled = true,
         int cycleDay = 1,
         PushSubscription[]? subscriptions = null)
     {
@@ -489,8 +494,7 @@ public class PushDispatchServiceTests
         context.FinancialSettings.Add(new FinancialSetting
         {
             UserId = userId,
-            CycleDay = cycleDay,
-            PushRemindersEnabled = pushRemindersEnabled
+            CycleDay = cycleDay
         });
         payment.UserId = userId;
         context.RecurringPayments.Add(payment);

@@ -3,6 +3,7 @@ using System;
 using FinancialAppApi.Database;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace FinancialAppApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260809150005_AddRecurringPaymentOccurrenceLedger")]
+    partial class AddRecurringPaymentOccurrenceLedger
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -417,12 +420,6 @@ namespace FinancialAppApi.Migrations
                         .HasColumnType("numeric(12,2)");
 
                     b.Property<decimal>("StabilityBalance")
-                        .HasColumnType("numeric(12,2)");
-
-                    b.Property<decimal>("StabilityPeakBalance")
-                        .HasColumnType("numeric(12,2)");
-
-                    b.Property<decimal>("StabilityWithdrawnAmount")
                         .HasColumnType("numeric(12,2)");
 
                     b.HasKey("UserId", "Year", "MonthIndex");
@@ -1626,9 +1623,6 @@ namespace FinancialAppApi.Migrations
 
                     b.Property<int?>("SavingsGoalId")
                         .HasColumnType("integer");
-
-                    b.Property<decimal?>("StabilityRecoveryTopUpAmount")
-                        .HasColumnType("numeric(12,2)");
 
                     b.Property<string>("UserId")
                         .IsRequired()

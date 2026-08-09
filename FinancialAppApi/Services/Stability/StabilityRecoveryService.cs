@@ -35,7 +35,12 @@ public sealed record StabilityRecoveryDto(
     IReadOnlyList<StabilityRecoveryDrawDto> SuggestedDraws);
 
 /// <summary>The fund's live position, used by the income path to hold a split to the target.</summary>
-public sealed record StabilityState(decimal CurrentBalance, decimal Target, int Year, int MonthIndex);
+public sealed record StabilityState(
+    decimal CurrentBalance,
+    decimal Target,
+    decimal RecoverableCeiling,
+    int Year,
+    int MonthIndex);
 
 /// <summary>
 /// Loads the state <see cref="StabilityRecoveryPlanner"/> needs and packages its output for the
@@ -59,12 +64,52 @@ public class StabilityRecoveryService
         _financialClock = financialClock ?? FinancialClock.Utc;
     }
 
+    private async Task BackfillCurrentCycleRecoveryIntentAsync(
+        FinancialSetting setting,
+        int year,
+        int monthIndex,
+        IReadOnlyList<Transaction> cycleTxs,
+        CancellationToken cancellationToken)
+    {
+        var current = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+            _financialClock.Today, setting.CycleDay);
+        if (current != (year, monthIndex)) return;
+
+        var changed = false;
+        foreach (var parent in cycleTxs.Where(transaction =>
+                     transaction.StabilityRecoveryTopUpAmount == null
+                     && transaction.Amount > 0m
+                     && IsIncome(transaction)
+                     && !transaction.Id.Contains("-split-", StringComparison.Ordinal)))
+        {
+            var childPrefix = parent.Id + "-split-";
+            var stabilityCredit = cycleTxs
+                .Where(candidate => candidate.Id.StartsWith(childPrefix, StringComparison.Ordinal))
+                .Sum(candidate => Math.Max(0m,
+                    CategoryAttributionService.GetCategoryAmount(candidate, Stability)));
+            var inferred = Math.Round(
+                Math.Max(0m, stabilityCredit - parent.Amount * setting.StabilityAlloc),
+                2,
+                MidpointRounding.AwayFromZero);
+            if (inferred <= 0m) continue;
+
+            var stored = await _context.Transactions.FirstOrDefaultAsync(
+                transaction => transaction.Id == parent.Id
+                    && transaction.StabilityRecoveryTopUpAmount == null,
+                cancellationToken);
+            if (stored == null) continue;
+            stored.StabilityRecoveryTopUpAmount = inferred;
+            changed = true;
+        }
+        if (changed) await _context.SaveChangesAsync(cancellationToken);
+    }
+
     /// <summary>
     /// Builds the dashboard's recovery block for the cycle the caller is showing.
     /// <para>
     /// <c>essentialsCommitted</c> is this cycle's unpaid Essentials bills, which the caller already
     /// has. The caller also supplies unpaid recurring Rewards bills; the matching savings-goal
-    /// figure -- what active goals still need -- is loaded here rather than threaded in. Both kinds
+    /// figure -- active earmarks plus what goals still need this cycle -- is loaded here rather than threaded in. Both kinds
     /// of Rewards commitment are one floor, so refilling the buffer never spends money already
     /// promised somewhere else.
     /// </para>
@@ -80,6 +125,9 @@ public class StabilityRecoveryService
         CancellationToken cancellationToken = default,
         decimal rewardsRecurringCommitted = 0m)
     {
+        await BackfillCurrentCycleRecoveryIntentAsync(
+            setting, year, monthIndex, activeCycleTxs, cancellationToken);
+
         // Must run before the MAX below. InvalidateFromAsync deletes cached rows on every
         // transaction mutation, so reading the high-water mark off a partially-invalidated table
         // under-reports it -- and an under-reported mark makes the card silently disappear, which
@@ -91,22 +139,27 @@ public class StabilityRecoveryService
             .Where(balance => balance.Year < year || (balance.Year == year && balance.MonthIndex <= monthIndex))
             .OrderBy(balance => balance.Year)
             .ThenBy(balance => balance.MonthIndex)
-            .Select(balance => new { balance.Year, balance.MonthIndex, balance.StabilityBalance })
+            .Select(balance => new
+            {
+                balance.Year,
+                balance.MonthIndex,
+                balance.StabilityBalance,
+                balance.StabilityPeakBalance,
+                balance.StabilityWithdrawnAmount
+            })
             .ToListAsync(cancellationToken);
 
         var highWaterMark = 0m;
         string? lastDrawdownCycleKey = null;
         var lastDrawdownAmount = 0m;
-        var previous = 0m;
         foreach (var row in history)
         {
-            if (row.StabilityBalance > highWaterMark) highWaterMark = row.StabilityBalance;
-            if (row.StabilityBalance < previous)
+            highWaterMark = Math.Max(highWaterMark, Math.Max(row.StabilityBalance, row.StabilityPeakBalance));
+            if (row.StabilityWithdrawnAmount > 0m)
             {
                 lastDrawdownCycleKey = StabilityRecoveryPlanner.CycleKey(row.Year, row.MonthIndex);
-                lastDrawdownAmount = previous - row.StabilityBalance;
+                lastDrawdownAmount = row.StabilityWithdrawnAmount;
             }
-            previous = row.StabilityBalance;
         }
 
         // The cycle being viewed has no settled row of its own yet, so its withdrawals are read
@@ -132,19 +185,15 @@ public class StabilityRecoveryService
             lastDrawdownCycleKey,
             lastDrawdownAmount);
 
-        var incomeThisCycle = activeCycleTxs
-            .Where(IsIncome)
-            .Sum(transaction => transaction.Amount);
-        var stabilityCredit = activeCycleTxs
-            .Sum(transaction => Math.Max(0m, CategoryAttributionService.GetCategoryAmount(transaction, Stability)));
-        var toppedUp = StabilityRecoveryPlanner.ToppedUpThisCycle(
-            stabilityCredit, incomeThisCycle, setting.StabilityAlloc);
+        var toppedUp = ToppedUpSinceLastAttainment(
+            openingStability, activeCycleTxs, drawdown.RecoverableCeiling, setting.StabilityAlloc);
 
         var cyclesRemaining = StabilityRecoveryPlanner.CyclesRemaining(
             lastDrawdownCycleKey, currentCycleKey, FinancialConstants.StabilityRecoveryCycles);
         var pace = StabilityRecoveryPlanner.ComputePace(drawdown, cyclesRemaining, toppedUp);
 
-        var rewardsCommitted = rewardsRecurringCommitted + await GetGoalFundingDueAsync(setting.CycleDay, cancellationToken);
+        var rewardsCommitted = rewardsRecurringCommitted +
+            await GetGoalCommitmentsAsync(year, monthIndex, setting.CycleDay, cancellationToken);
 
         return new StabilityRecoveryDto(
             drawdown.IsActive,
@@ -175,11 +224,15 @@ public class StabilityRecoveryService
     /// </summary>
     public async Task<StabilityState> GetStabilityStateAsync(
         FinancialSetting setting,
+        DateOnly transactionDate,
         string? excludeTransactionId = null,
         CancellationToken cancellationToken = default)
     {
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
-            _financialClock.Today, setting.CycleDay);
+            transactionDate, setting.CycleDay);
+
+        await _cycleBalanceService.EnsureComputedThroughAsync(
+            year, monthIndex, setting.CycleDay, cancellationToken);
 
         var (_, _, openingStability, _) = await _cycleBalanceService.GetOpeningBalanceAsync(
             year, monthIndex, setting.CycleDay, cancellationToken);
@@ -202,29 +255,58 @@ public class StabilityRecoveryService
         var cycleTxs = await query.ToListAsync(cancellationToken);
         var net = cycleTxs.Sum(transaction => CategoryAttributionService.GetCategoryAmount(transaction, Stability));
 
-        return new StabilityState(openingStability + net, setting.TargetStabilityFund, year, monthIndex);
+        var currentBalance = openingStability + net;
+        var storedPeak = await _context.CycleBalances
+            .AsNoTracking()
+            .Where(balance => balance.Year < year || (balance.Year == year && balance.MonthIndex < monthIndex))
+            .MaxAsync(balance => (decimal?)balance.StabilityPeakBalance, cancellationToken) ?? 0m;
+        var livePeak = PeakWithinCycle(openingStability, cycleTxs);
+        var highWaterMark = Math.Max(currentBalance, Math.Max(storedPeak, livePeak));
+        var ceiling = setting.TargetStabilityFund > 0m
+            ? Math.Min(highWaterMark, setting.TargetStabilityFund)
+            : highWaterMark;
+
+        return new StabilityState(currentBalance, setting.TargetStabilityFund, ceiling, year, monthIndex);
     }
 
+    public Task<StabilityState> GetStabilityStateAsync(
+        FinancialSetting setting,
+        string? excludeTransactionId = null,
+        CancellationToken cancellationToken = default) =>
+        GetStabilityStateAsync(setting, _financialClock.Today, excludeTransactionId, cancellationToken);
+
     /// <summary>
-    /// What active savings goals still need this cycle. Goals are earmarks against Rewards, so a
+    /// What active savings goals already earmark plus still need this cycle. Goals claim Rewards, so a
     /// proportional top-up that ignored them would have two features quietly claiming the same
     /// money -- and the deadline-bound one would lose. Uses the goals' own pacing rather than a
     /// second implementation of it.
+    /// <para>
+    /// Answers zero for any cycle but the current one. A goal's pace is measured from today's
+    /// deadline distance and its tally is keyed to the live cycle, so asking it about a cycle that
+    /// has already closed reports a commitment that cannot still be owed. Only the current cycle
+    /// can offer a top-up in the first place, so the figure has no reader there anyway.
+    /// </para>
     /// </summary>
-    private async Task<decimal> GetGoalFundingDueAsync(int cycleDay, CancellationToken cancellationToken)
+    private async Task<decimal> GetGoalCommitmentsAsync(
+        int year,
+        int monthIndex,
+        int cycleDay,
+        CancellationToken cancellationToken)
     {
+        var (currentYear, currentMonth) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+            _financialClock.Today, cycleDay);
+        if (year != currentYear || monthIndex != currentMonth) return 0m;
+
         var active = await _context.SavingsGoals
             .AsNoTracking()
             .Where(goal => goal.Status == SavingsGoalStatus.Active)
             .ToListAsync(cancellationToken);
         if (active.Count == 0) return 0m;
 
-        var today = _financialClock.Today;
-        var (goalYear, goalMonth) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
-        var cycleKey = StabilityRecoveryPlanner.CycleKey(goalYear, goalMonth);
+        var cycleKey = StabilityRecoveryPlanner.CycleKey(currentYear, currentMonth);
 
-        return active.Sum(goal =>
-            SavingsGoals.SavingsGoalPacing.ComputePace(goal, today, cycleDay, cycleKey).OutstandingThisCycle);
+        return active.Sum(goal => goal.EarmarkedAmount + SavingsGoals.SavingsGoalPacing
+            .ComputePace(goal, _financialClock.Today, cycleDay, cycleKey).OutstandingThisCycle);
     }
 
     /// <summary>
@@ -292,6 +374,49 @@ public class StabilityRecoveryService
     private static decimal WithdrawalAmount(Transaction transaction)
     {
         return Math.Max(0m, -CategoryAttributionService.GetCategoryAmount(transaction, Stability));
+    }
+
+    private static decimal ToppedUpSinceLastAttainment(
+        decimal openingBalance,
+        IReadOnlyList<Transaction> cycleTxs,
+        decimal recoverableCeiling,
+        decimal stabilityAlloc)
+    {
+        var ordered = cycleTxs
+            .OrderBy(t => t.Date)
+            .ThenBy(t => t.PostedAt)
+            .ThenBy(t => t.Id, StringComparer.Ordinal)
+            .ToList();
+        var running = openingBalance;
+        var lastAttainment = openingBalance >= recoverableCeiling ? -1 : int.MinValue;
+        for (var index = 0; index < ordered.Count; index++)
+        {
+            running += CategoryAttributionService.GetCategoryAmount(ordered[index], Stability);
+            if (running >= recoverableCeiling) lastAttainment = index;
+        }
+
+        decimal total = 0m;
+        for (var index = Math.Max(0, lastAttainment + 1); index < ordered.Count; index++)
+        {
+            var transaction = ordered[index];
+            if (!IsIncome(transaction) || transaction.Amount <= 0m) continue;
+            if (transaction.StabilityRecoveryTopUpAmount.HasValue)
+            {
+                total += Math.Max(0m, transaction.StabilityRecoveryTopUpAmount.Value);
+                continue;
+            }
+
+            // Compatibility is intentionally narrow: only a legacy parent with its generated
+            // Stability child in the same current-cycle payload can be inferred safely.
+            var childPrefix = transaction.Id + "-split-";
+            var stabilityCredit = ordered
+                .Where(candidate => candidate.Id.StartsWith(childPrefix, StringComparison.Ordinal))
+                .Sum(candidate => Math.Max(0m,
+                    CategoryAttributionService.GetCategoryAmount(candidate, Stability)));
+            total += Math.Max(0m, stabilityCredit - transaction.Amount * stabilityAlloc);
+        }
+
+        return total;
     }
 
     private static bool IsIncome(Transaction transaction)

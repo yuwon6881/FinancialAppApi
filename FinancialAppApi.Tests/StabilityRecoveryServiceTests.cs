@@ -186,6 +186,32 @@ public class StabilityRecoveryServiceTests
         Assert.Equal(600m, Money(recovery.RewardsCommitted));
     }
 
+    /// <summary>
+    /// A goal's pace is measured from today's deadline distance and its tally is keyed to the live
+    /// cycle, so asking it about a closed cycle reports a commitment that cannot still be owed.
+    /// Only the current cycle can carry a top-up offer, so the figure has no reader there anyway.
+    /// </summary>
+    [Fact]
+    public async Task BuildAsync_LeavesGoalCommitmentsOutOfACycleThatHasAlreadyClosed()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        context.SavingsGoals.Add(new SavingsGoal
+        {
+            Name = "Car service",
+            TargetAmount = 600m,
+            EarmarkedAmount = 0m,
+            TargetDate = new DateTime(2026, 7, 20),
+            Status = SavingsGoalStatus.Active,
+            Priority = "Medium"
+        });
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 5, opening: 0m, current: 0m);
+
+        Assert.Equal(0m, Money(recovery.RewardsCommitted));
+    }
+
     [Fact]
     public async Task BuildAsync_IncludesPendingRewardsBillsInTheRecoveryFloor()
     {

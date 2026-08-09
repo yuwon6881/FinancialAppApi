@@ -34,13 +34,14 @@ public class FinancialService
     internal sealed record FinancialBootstrapSnapshot(
         FinancialCycleContext Cycle,
         List<RecurringPayment> ActiveRecurringPayments,
+        List<RecurringPaymentOccurrence> RecurringOccurrences,
         List<Transaction> CycleRelevantTransactions);
 
     private sealed record ActiveRecurringItem(
         string id,
         string? recurringPaymentId,
         string name,
-        string amount,
+        string? amount,
         string category,
         string ledgerCategory,
         string dueDate,
@@ -52,7 +53,7 @@ public class FinancialService
     private readonly AppDbContext _context;
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly RecurringPaymentAlertService _recurringPaymentAlertService;
-    private readonly RecurringOccurrenceService _recurringOccurrenceService;
+    private readonly RecurringOccurrenceLedgerService _recurringOccurrenceLedger;
     private readonly FinancialClock _financialClock;
     private readonly Stability.StabilityRecoveryService _stabilityRecoveryService;
 
@@ -62,13 +63,15 @@ public class FinancialService
         RecurringPaymentAlertService recurringPaymentAlertService,
         RecurringOccurrenceService recurringOccurrenceService,
         FinancialClock? financialClock = null,
-        Stability.StabilityRecoveryService? stabilityRecoveryService = null)
+        Stability.StabilityRecoveryService? stabilityRecoveryService = null,
+        RecurringOccurrenceLedgerService? recurringOccurrenceLedger = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _recurringPaymentAlertService = recurringPaymentAlertService;
-        _recurringOccurrenceService = recurringOccurrenceService;
         _financialClock = financialClock ?? FinancialClock.Utc;
+        _recurringOccurrenceLedger = recurringOccurrenceLedger
+            ?? new RecurringOccurrenceLedgerService(context, recurringOccurrenceService, _financialClock);
         _stabilityRecoveryService = stabilityRecoveryService
             ?? new Stability.StabilityRecoveryService(context, cycleBalanceService, _financialClock);
     }
@@ -161,9 +164,17 @@ public class FinancialService
                     && transaction.RecurringOccurrenceDate <= activeRangeEndOnly))
             .ToListAsync(cancellationToken);
 
+        var recurringOccurrences = await _recurringOccurrenceLedger.GetRangeAsync(
+            activeRecurringPayments,
+            activeRangeStartOnly,
+            activeRangeEndOnly,
+            cycleRelevantTransactions,
+            cancellationToken);
+
         return new FinancialBootstrapSnapshot(
             cycle,
             activeRecurringPayments,
+            recurringOccurrences,
             cycleRelevantTransactions);
     }
 
@@ -205,16 +216,6 @@ public class FinancialService
         var activeCycleTxs = cycleRelevantTxs
             .Where(t => t.Date >= activeRangeStartDate && t.Date < activeRangeEndExclusive)
             .ToList();
-        var occurrenceTaggedTxs = cycleRelevantTxs
-            .Where(t => t.RecurringPaymentId != null
-                        && t.RecurringOccurrenceDate != null
-                        && t.RecurringOccurrenceDate >= activeRangeStartOnly
-                        && t.RecurringOccurrenceDate <= activeRangeEndOnly)
-            .ToList();
-        var recurringMatchTxs = occurrenceTaggedTxs
-            .Concat(activeCycleTxs.Where(t => t.RecurringOccurrenceDate == null))
-            .ToList();
-
         string selectedCycleLabel = activeRange.label;
 
         var (selectedBudgetEssentials, selectedBudgetGrowth, selectedBudgetStability, selectedBudgetRewards) =
@@ -287,20 +288,17 @@ public class FinancialService
             .Where(payment => IsActiveInRange(payment, activeRange.start, activeRange.end))
             .Sum(payment => Math.Abs(MonthlyEquivalent(payment)));
         var growthPercentAchieved = selectedNetGrowth / (targetGrowth > 0 ? targetGrowth : 1m);
-        var stabilityPercentReached = selectedRemStability / (setting.TargetStabilityFund > 0 ? setting.TargetStabilityFund : 1m);
+        var stabilityPercentReached = setting.TargetStabilityFund > 0m
+            ? selectedRemStability / setting.TargetStabilityFund
+            : 0m;
 
-        var activeRecurringList = BuildActiveRecurringList(allRecurring, recurringMatchTxs, activeRange.start, activeRange.end, cycleDay, activeYear, activeMonthIndex);
+        var activeRecurringList = BuildActiveRecurringList(snapshot.RecurringOccurrences);
         var selectedMonthRecurring = activeRecurringList
             .OrderBy(item => item.status == "Pending" ? 0 : item.status == "Paid" ? 1 : 2)
             .ThenBy(item => item.dueDate)
             .ToList();
 
-        var pendingRecurring = BuildPendingRecurringItems(
-            allRecurring,
-            recurringMatchTxs,
-            activeRange.start,
-            activeRange.end,
-            cycleDay);
+        var pendingRecurring = BuildPendingRecurringItems(snapshot.RecurringOccurrences);
 
         // Hoisted out of BuildTodayPlanInsights so the recovery block can hold its proposed draw
         // above the bills this cycle has already committed to, without computing the sum twice.
@@ -748,96 +746,23 @@ public class FinancialService
             .ToList();
     }
 
-    private List<ActiveRecurringItem> BuildActiveRecurringList(
-        List<RecurringPayment> allRecurring,
-        List<Transaction> recurringMatchTxs,
-        DateTime activeRangeStart,
-        DateTime activeRangeEnd,
-        int cycleDay,
-        int activeYear,
-        int activeMonthIndex)
+    private static List<ActiveRecurringItem> BuildActiveRecurringList(
+        List<RecurringPaymentOccurrence> occurrences)
     {
-        var txsByRecurringId = recurringMatchTxs
-            .Where(t => t.RecurringPaymentId != null)
-            .GroupBy(t => t.RecurringPaymentId!)
-            .ToDictionary(g => g.Key, g => g.ToList());
-
-        var activeRecurringList = new List<ActiveRecurringItem>();
-        foreach (var rp in allRecurring)
-        {
-            foreach (var billingDate in _recurringOccurrenceService.GetOccurrencesInRange(
-                         rp,
-                         activeRangeStart,
-                         activeRangeEnd,
-                         cycleDay))
-            {
-                var instanceId = $"{rp.Id}-{activeYear}-{activeMonthIndex}";
-                var billingDateOnly = DateOnly.FromDateTime(billingDate);
-                var relatedTxs = txsByRecurringId.GetValueOrDefault(rp.Id);
-                // A transaction tagged with a *different* occurrence's RecurringOccurrenceDate (e.g.
-                // a pay-early payment posted this cycle that settles next cycle's occurrence) must
-                // never be picked here -- only an exact occurrence match, or an untagged legacy
-                // transaction (matched by posting date the old way), can settle this billingDate.
-                var paidTx = relatedTxs?
-                    .Where(t => RecurringOccurrenceService.MatchesOccurrence(t, rp.Id, billingDateOnly))
-                    .OrderBy(t => t.RecurringOccurrenceDate == billingDateOnly ? 0 : 1)
-                    .ThenBy(t => string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
-                    .ThenBy(t => t.Date)
-                    .ThenBy(t => t.Id, StringComparer.Ordinal)
-                    .FirstOrDefault();
-                var isDiscarded = paidTx != null && string.Equals(paidTx.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase);
-                var isPaid = paidTx != null && !isDiscarded;
-
-                // The recurring payment is a template for pending and future occurrences. Once an
-                // occurrence is paid, its linked ledger transaction is the historical snapshot:
-                // later subscription edits must not rewrite what the user actually recorded for
-                // this cycle. Discard markers carry no payment details, so they retain the template
-                // fields while reporting their discarded status.
-                activeRecurringList.Add(new ActiveRecurringItem(
-                    instanceId,
-                    rp.Id,
-                    isPaid ? paidTx!.Description : rp.Name,
-                    ObfuscationHelper.Obfuscate(isPaid ? Math.Abs(paidTx!.Amount) : Math.Abs(rp.Amount)),
-                    isPaid ? paidTx!.Category : rp.Category,
-                    isPaid ? paidTx!.LedgerCategory : rp.LedgerCategory,
-                    billingDate.ToString("yyyy-MM-dd"),
-                    isPaid,
-                    isDiscarded,
-                    isDiscarded ? "Discarded" : (isPaid ? "Paid" : "Pending"),
-                    isPaid && !isDiscarded
-                        ? TransactionDate.ToDateOnly(paidTx!.Date).ToString("yyyy-MM-dd")
-                        : null));
-            }
-        }
-
-        // A recurring transaction deliberately keeps its denormalized payment id after the
-        // subscription template is deleted. It is therefore the only source of truth for that
-        // paid historical occurrence and must still appear in the selected-cycle report.
-        var existingPaymentIds = allRecurring.Select(payment => payment.Id).ToHashSet(StringComparer.Ordinal);
-        foreach (var paidTx in recurringMatchTxs
-                     .Where(transaction => transaction.RecurringPaymentId != null)
-                     .Where(transaction => !existingPaymentIds.Contains(transaction.RecurringPaymentId!))
-                     .Where(transaction => !string.Equals(transaction.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase))
-                     .OrderBy(transaction => transaction.RecurringOccurrenceDate ?? TransactionDate.ToDateOnly(transaction.Date))
-                     .ThenBy(transaction => transaction.Date)
-                     .ThenBy(transaction => transaction.Id, StringComparer.Ordinal))
-        {
-            var occurrenceDate = paidTx.RecurringOccurrenceDate ?? TransactionDate.ToDateOnly(paidTx.Date);
-            activeRecurringList.Add(new ActiveRecurringItem(
-                $"{paidTx.RecurringPaymentId}-{occurrenceDate:yyyy-MM-dd}-{paidTx.Id}",
-                paidTx.RecurringPaymentId,
-                paidTx.Description,
-                ObfuscationHelper.Obfuscate(Math.Abs(paidTx.Amount)),
-                paidTx.Category,
-                paidTx.LedgerCategory,
-                occurrenceDate.ToString("yyyy-MM-dd"),
-                true,
-                false,
-                "Paid",
-                TransactionDate.ToDateOnly(paidTx.Date).ToString("yyyy-MM-dd")));
-        }
-
-        return activeRecurringList;
+        return occurrences.Select(occurrence => new ActiveRecurringItem(
+            occurrence.Id,
+            occurrence.RecurringPaymentId,
+            occurrence.Name,
+            occurrence.ScheduledAmount.HasValue
+                ? ObfuscationHelper.Obfuscate(Math.Abs(occurrence.ScheduledAmount.Value))
+                : null,
+            occurrence.Category ?? string.Empty,
+            occurrence.LedgerCategory ?? string.Empty,
+            occurrence.OccurrenceDate.ToString("yyyy-MM-dd"),
+            occurrence.Status == RecurringOccurrenceStatus.Paid,
+            occurrence.Status == RecurringOccurrenceStatus.Discarded,
+            occurrence.Status,
+            occurrence.PaidDate?.ToString("yyyy-MM-dd"))).ToList();
     }
 
     // Walks cycle boundaries backward n-1 times (pure date math, no DB access) to find the start
@@ -966,33 +891,15 @@ public class FinancialService
 
     private sealed record PendingRecurringItem(string Category, string LedgerCategory, decimal Amount);
 
-    private List<PendingRecurringItem> BuildPendingRecurringItems(
-        List<RecurringPayment> allRecurring,
-        List<Transaction> recurringMatchTxs,
-        DateTime rangeStart,
-        DateTime rangeEnd,
-        int cycleDay)
-    {
-        var pending = new List<PendingRecurringItem>();
-
-        foreach (var payment in allRecurring)
-        {
-            foreach (var occurrence in _recurringOccurrenceService.GetOccurrencesInRange(payment, rangeStart, rangeEnd, cycleDay))
-            {
-                var occurrenceDate = DateOnly.FromDateTime(occurrence);
-                var isSettled = recurringMatchTxs.Any(transaction =>
-                    RecurringOccurrenceService.MatchesOccurrence(transaction, payment.Id, occurrenceDate));
-                if (isSettled) continue;
-
-                pending.Add(new PendingRecurringItem(
-                    payment.Category,
-                    payment.LedgerCategory,
-                    Math.Abs(payment.Amount)));
-            }
-        }
-
-        return pending;
-    }
+    private static List<PendingRecurringItem> BuildPendingRecurringItems(
+        List<RecurringPaymentOccurrence> occurrences) => occurrences
+        .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.Pending
+            && occurrence.ScheduledAmount.HasValue)
+        .Select(occurrence => new PendingRecurringItem(
+            occurrence.Category ?? string.Empty,
+            occurrence.LedgerCategory ?? string.Empty,
+            Math.Abs(occurrence.ScheduledAmount!.Value)))
+        .ToList();
 
     private object BuildTodayPlanInsights(
         List<Transaction> activeCycleTxs,

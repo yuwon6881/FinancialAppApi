@@ -224,6 +224,28 @@ public class StabilityRecoveryPlannerTests
     }
 
     [Fact]
+    public void ProposeTopUp_OffersNothingWhenTheNormalShareRestoresTheShortfall()
+    {
+        var pace = new RecoveryPace(100m, 3, 100m, 0m, 100m, false);
+
+        var offer = StabilityRecoveryPlanner.ProposeTopUp(
+            pace, 1000m, Buckets(), stabilityAlloc: 0.15m);
+
+        Assert.Equal(0m, offer.ProposedTopUp);
+    }
+
+    [Fact]
+    public void ProposeTopUp_CapsExtraAtTheShortfallAfterTheNormalShare()
+    {
+        var pace = new RecoveryPace(200m, 3, 200m, 0m, 200m, false);
+
+        var offer = StabilityRecoveryPlanner.ProposeTopUp(
+            pace, 1000m, Buckets(), stabilityAlloc: 0.15m);
+
+        Assert.Equal(50m, offer.ProposedTopUp);
+    }
+
+    [Fact]
     public void ProposeTopUp_CannotDrawMoreThanTheThreeBucketsReceive()
     {
         // 100 of income only sends 85 to the other three, however much the pace wants.

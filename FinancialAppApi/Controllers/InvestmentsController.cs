@@ -526,6 +526,7 @@ public sealed class InvestmentsController(
         }
 
         var flow = existing ?? new InvestmentCashFlow();
+        if (existing is null && dto.CreatedAt.HasValue) flow.CreatedAt = dto.CreatedAt.Value.ToUniversalTime();
         flow.AccountId = dto.AccountId;
         flow.Currency = from;
         flow.Type = type;
@@ -570,6 +571,7 @@ public sealed class InvestmentsController(
         if (dto.Type == "FeeTax" && (cash ?? 0) + dto.Fees + dto.Taxes <= 0)
             return (null, "Enter a positive fee or tax charge.");
         var value = existing ?? new InvestmentTransaction();
+        if (existing is null && dto.CreatedAt.HasValue) value.CreatedAt = dto.CreatedAt.Value.ToUniversalTime();
         value.AccountId = dto.AccountId;
         value.InstrumentId = dto.InstrumentId;
         value.Instrument = instrument;
@@ -797,7 +799,8 @@ public sealed record InvestmentTransactionMutationDto(
     decimal? CashAmount,
     decimal Fees,
     decimal Taxes,
-    Guid? Id = null);
+    Guid? Id = null,
+    DateTime? CreatedAt = null);
 
 public sealed record CashFlowMutationDto(
     Guid AccountId,
@@ -807,7 +810,8 @@ public sealed record CashFlowMutationDto(
     DateOnly Date,
     Guid? Id = null,
     string? ToCurrency = null,
-    decimal? ToAmount = null);
+    decimal? ToAmount = null,
+    DateTime? CreatedAt = null);
 
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
 public sealed record DeletedTransactionsSnapshot(IReadOnlyList<InvestmentTransactionDto> Transactions);

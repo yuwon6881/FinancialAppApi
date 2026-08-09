@@ -6,6 +6,8 @@ namespace FinancialAppApi.Services;
 
 public sealed record PushStatusResult(bool AccountEnabled, bool DeviceSubscribed, bool CategoryAlertsEnabled);
 
+public sealed record PushDeviceSummary(string Id, bool IsCurrent, DateTime CreatedAt, DateTime UpdatedAt);
+
 public class PushSubscriptionService
 {
     private readonly AppDbContext _context;
@@ -19,8 +21,8 @@ public class PushSubscriptionService
 
     public async Task<PushStatusResult> GetStatusAsync(string? deviceId, CancellationToken cancellationToken = default)
     {
-        // Live device subscriptions are the source of truth. This also self-heals accounts where
-        // the legacy account-wide toggle was turned off by one device while another stayed opted in.
+        // Live device subscriptions are the single source of truth for "is this account opted in":
+        // there is no separate account-level flag to disagree with them.
         var hasEnabledSubscription = await _context.PushSubscriptions
             .AnyAsync(s => s.Enabled, cancellationToken);
         var accountEnabled = hasEnabledSubscription;
@@ -39,17 +41,28 @@ public class PushSubscriptionService
         return new PushStatusResult(accountEnabled, deviceSubscribed, categoryAlertsEnabled);
     }
 
-    public async Task<bool> SetAccountEnabledAsync(bool enabled, CancellationToken cancellationToken = default)
+    // The account's opted-in devices, so the user can see and revoke an enrolment made on a
+    // browser they no longer have in front of them. Only the opaque row id is exposed -- the
+    // device id is a client-generated correlation key and the FCM token is a send credential;
+    // neither belongs in a list rendered on screen.
+    public async Task<IReadOnlyList<PushDeviceSummary>> GetDevicesAsync(
+        string? currentDeviceId,
+        CancellationToken cancellationToken = default)
     {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
-        if (setting == null)
-        {
-            return false;
-        }
+        var rows = await _context.PushSubscriptions
+            .Where(s => s.Enabled)
+            .OrderByDescending(s => s.UpdatedAt)
+            .ThenBy(s => s.Id)
+            .Select(s => new { s.Id, s.DeviceId, s.CreatedAt, s.UpdatedAt })
+            .ToListAsync(cancellationToken);
 
-        setting.PushRemindersEnabled = enabled;
-        await _context.SaveChangesAsync(cancellationToken);
-        return true;
+        return rows
+            .Select(row => new PushDeviceSummary(
+                row.Id,
+                !string.IsNullOrWhiteSpace(currentDeviceId) && row.DeviceId == currentDeviceId,
+                row.CreatedAt,
+                row.UpdatedAt))
+            .ToList();
     }
 
     public async Task<bool> SetCategoryAlertsEnabledAsync(
@@ -81,7 +94,6 @@ public class PushSubscriptionService
             existing.FcmToken = fcmToken;
             existing.Enabled = true;
             existing.UpdatedAt = now;
-            await EnableAccountAsync(cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
             return existing;
         }
@@ -97,7 +109,6 @@ public class PushSubscriptionService
         };
 
         _context.PushSubscriptions.Add(subscription);
-        await EnableAccountAsync(cancellationToken);
         try
         {
             await _context.SaveChangesAsync(cancellationToken);
@@ -119,35 +130,49 @@ public class PushSubscriptionService
         }
     }
 
-    public async Task<bool> UnsubscribeAsync(string deviceId, CancellationToken cancellationToken = default)
+    public Task<bool> UnsubscribeAsync(string deviceId, CancellationToken cancellationToken = default) =>
+        DisableAsync(s => s.DeviceId == deviceId, cancellationToken);
+
+    public Task<bool> RevokeDeviceAsync(string subscriptionId, CancellationToken cancellationToken = default) =>
+        DisableAsync(s => s.Id == subscriptionId, cancellationToken);
+
+    // Opting a device out disables the row rather than deleting it. Both delivery ledgers
+    // (PushReminderDelivery, CategoryLimitAlertDelivery) claim their "already sent" rows against
+    // PushSubscription.Id, so deleting the row and minting a new id on re-subscribe orphaned
+    // every claim -- a reminder already delivered today would be sent again after an off/on
+    // toggle. Keeping the row keeps the claims addressable, and SubscribeAsync re-enables it.
+    private async Task<bool> DisableAsync(
+        System.Linq.Expressions.Expression<Func<PushSubscription, bool>> predicate,
+        CancellationToken cancellationToken)
     {
-        var existing = await _context.PushSubscriptions.FirstOrDefaultAsync(s => s.DeviceId == deviceId, cancellationToken);
+        var existing = await _context.PushSubscriptions.FirstOrDefaultAsync(predicate, cancellationToken);
         if (existing == null)
         {
             return false;
         }
 
-        _context.PushSubscriptions.Remove(existing);
+        existing.Enabled = false;
+        // A revoked device must not keep a live send credential on file; re-subscribing always
+        // supplies a fresh token.
+        existing.FcmToken = string.Empty;
+        existing.UpdatedAt = _timeProvider.GetUtcNow().UtcDateTime;
+
         var hasAnotherEnabledDevice = await _context.PushSubscriptions
             .AnyAsync(s => s.Id != existing.Id && s.Enabled, cancellationToken);
         if (!hasAnotherEnabledDevice)
         {
+            // Category alerts cannot be switched on without a device (SetCategoryAlertsEnabledAsync
+            // refuses), so leaving the consent on when the last device leaves creates a state the
+            // user cannot reach deliberately -- and it is the state where every once-per-cycle
+            // milestone would be spent on an alert nobody can receive.
             var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
             if (setting != null)
             {
-                setting.PushRemindersEnabled = false;
+                setting.CategoryLimitAlertsEnabled = false;
             }
         }
+
         await _context.SaveChangesAsync(cancellationToken);
         return true;
-    }
-
-    private async Task EnableAccountAsync(CancellationToken cancellationToken)
-    {
-        var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
-        if (setting != null)
-        {
-            setting.PushRemindersEnabled = true;
-        }
     }
 }

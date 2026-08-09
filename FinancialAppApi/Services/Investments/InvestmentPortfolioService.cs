@@ -257,7 +257,7 @@ public sealed class InvestmentPortfolioService(
             }
             if (previous is not null && previousFx is null)
             {
-                warnings.Add($"Previous FX is missing for {instrument.Currency}/{appCurrency}; change today is incomplete.");
+                warnings.Add($"Previous FX is missing for {instrument.Currency}/{appCurrency}; the latest value move is incomplete.");
             }
 
             holdings.Add(new InvestmentHoldingDto(

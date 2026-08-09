@@ -393,8 +393,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<CycleBalanceService>();
         services.AddScoped<Services.Stability.StabilityRecoveryService>();
         services.AddScoped<RecurringOccurrenceService>();
+        services.AddScoped<RecurringOccurrenceLedgerService>();
         services.AddScoped<RecurringPaymentAlertService>();
         services.AddScoped<RecurringPaymentService>();
+        services.AddScoped<RecurringOccurrenceSettlementService>();
         services.AddScoped<RecurringPaymentPayEarlyService>();
         services.AddScoped<TransactionCategoryService>();
         services.AddScoped<WishlistService>();

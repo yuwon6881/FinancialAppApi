@@ -446,13 +446,17 @@ public class TransactionPersistenceServiceTests
         await using var context = TestHelpers.NewInMemoryContext();
         SeedCategories(context);
         SeedSettings(context, targetStabilityFund: 10000m);
+        context.Transactions.AddRange(
+            NewTransaction("stability-peak", ledgerCategory: "Stability", amount: 1000m),
+            NewTransaction("stability-draw", ledgerCategory: "Stability", amount: -300m));
         await context.SaveChangesAsync();
 
-        await NewService(context, ClockAt(2026, 7, 9)).CreateTransactionAsync(
-            NewRequest("salary", ledgerCategory: "IncomeSplit:44.1176,22.0588,24,9.8236", amount: 1000m));
+        var result = await NewService(context, ClockAt(2026, 7, 9)).CreateTransactionAsync(
+            NewRequest("salary", ledgerCategory: "Income", amount: 1000m, recoveryTopUp: 90m));
 
         // 240 rather than the 150 the plain percentage would have delivered.
         Assert.Equal(240m, (await context.Transactions.SingleAsync(t => t.Id == "salary-split-Stability")).Amount);
+        Assert.Equal(90m, result.Transaction!.StabilityRecoveryTopUpAmount);
         var splits = await context.Transactions.Where(t => t.Id.StartsWith("salary-split-")).ToListAsync();
         Assert.Equal(1000m, splits.Sum(t => t.Amount));
     }
@@ -512,6 +516,93 @@ public class TransactionPersistenceServiceTests
         });
     }
 
+    /// <summary>
+    /// Deleting a transaction is queued and undoable, so severing its document links must be too.
+    /// Restoring the row under the same id -- the single-delete undo, and an offline replay of it
+    /// after a reload, which carries no detached-id list of its own -- re-attaches the evidence.
+    /// </summary>
+    [Fact]
+    public async Task CreateTransactionAsync_RelinksDocumentsDetachedByDeletingTheSameTransaction()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.Transactions.Add(NewTransaction("tx-1"));
+        context.VaultDocuments.Add(NewVaultDocument("tx-1"));
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        await service.DeleteTransactionAsync("tx-1");
+        var detached = await context.VaultDocuments.SingleAsync();
+        Assert.Null(detached.TransactionId);
+        Assert.Equal("tx-1", detached.DetachedFromTransactionId);
+
+        var restored = await service.CreateTransactionAsync(NewRequest("tx-1"));
+
+        Assert.Equal(TransactionMutationStatus.Created, restored.Status);
+        var relinked = await context.VaultDocuments.SingleAsync();
+        Assert.Equal("tx-1", relinked.TransactionId);
+        Assert.Null(relinked.DetachedFromTransactionId);
+    }
+
+    [Fact]
+    public async Task RestoreTransactionsAsync_RelinksDocumentsDetachedByTheBulkDelete()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.Transactions.AddRange(NewTransaction("tx-1"), NewTransaction("tx-2"));
+        context.VaultDocuments.AddRange(NewVaultDocument("tx-1"), NewVaultDocument("tx-2"));
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        await service.DeleteTransactionsAsync(["tx-1", "tx-2"]);
+        var result = await service.RestoreTransactionsAsync([NewRequest("tx-1"), NewRequest("tx-2")]);
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        var documents = await context.VaultDocuments.ToListAsync();
+        Assert.Equal(["tx-1", "tx-2"], documents.Select(document => document.TransactionId).Order());
+        Assert.All(documents, document => Assert.Null(document.DetachedFromTransactionId));
+    }
+
+    /// <summary>
+    /// A document the user re-pointed after the delete must stay where they put it, so the marker
+    /// only survives until someone states an intent of their own.
+    /// </summary>
+    [Fact]
+    public async Task CreateTransactionAsync_LeavesDocumentsThatWereReattachedElsewhere()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.Transactions.Add(NewTransaction("tx-1"));
+        context.VaultDocuments.Add(NewVaultDocument("tx-1"));
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        await service.DeleteTransactionAsync("tx-1");
+        var document = await context.VaultDocuments.SingleAsync();
+        document.TransactionId = "tx-9";
+        await context.SaveChangesAsync();
+
+        await service.CreateTransactionAsync(NewRequest("tx-1"));
+
+        Assert.Equal("tx-9", (await context.VaultDocuments.SingleAsync()).TransactionId);
+    }
+
+    private static VaultDocument NewVaultDocument(string transactionId)
+    {
+        return new VaultDocument
+        {
+            StorageObjectPath = $"test-user/2026/{transactionId}.pdf",
+            OriginalFileName = "document.pdf",
+            ContentType = "application/pdf",
+            SizeBytes = 10,
+            Sha256 = new string('a', 64),
+            TaxYear = 2026,
+            TransactionId = transactionId,
+            UploadedAt = DateTime.UtcNow,
+            RetentionUntil = new DateOnly(2033, 12, 31),
+        };
+    }
+
     private static void SeedCategories(AppDbContext context)
     {
         context.TransactionCategories.AddRange(
@@ -524,7 +615,8 @@ public class TransactionPersistenceServiceTests
         string ledgerCategory = "Rewards",
         decimal amount = -25m,
         string category = "Other",
-        string? postedAt = null)
+        string? postedAt = null,
+        decimal? recoveryTopUp = null)
     {
         return new TransactionMutationRequest(
             id,
@@ -535,7 +627,10 @@ public class TransactionPersistenceServiceTests
             ledgerCategory,
             ObfuscationHelper.Obfuscate(amount),
             null,
-            null);
+            null,
+            StabilityRecoveryTopUpAmount: recoveryTopUp.HasValue
+                ? ObfuscationHelper.Obfuscate(recoveryTopUp.Value)
+                : null);
     }
 
     private static Transaction NewTransaction(

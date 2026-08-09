@@ -27,8 +27,11 @@ public class RecurringPayment : IUserOwnedEntity
     [StringLength(200)]
     public string LedgerCategory { get; set; } = string.Empty;
 
-    [Required]
-    public string NextDueDate { get; set; } = string.Empty;
+    public string? NextDueDate { get; set; }
+
+    // Existing schedules start authoritative pending-occurrence tracking at the ledger migration;
+    // new/edited/resumed schedules move this boundary forward instead of inventing missed bills.
+    public DateOnly OccurrenceTrackingStartDate { get; set; }
 
     [Required]
     public int DueDate { get; set; } // Day of the month (e.g. 14)
@@ -49,9 +52,9 @@ public class RecurringPayment : IUserOwnedEntity
     [StringLength(20)]
     public string PaymentMode { get; set; } = RecurringPaymentMode.Manual;
 
-    // Per-payment opt-in for push reminders. Defaults to false: the account-level toggle
-    // (FinancialSetting.PushRemindersEnabled) and this payment-level toggle must both be on
-    // before any reminder is dispatched.
+    // Per-payment opt-in for push reminders. Defaults to false: this toggle and at least one
+    // enabled PushSubscription (the device opt-in) must both be present before any reminder is
+    // dispatched. There is no account-level push flag -- enabled devices are authoritative.
     [Required]
     public bool PushReminderEnabled { get; set; }
 

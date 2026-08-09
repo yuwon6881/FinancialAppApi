@@ -48,7 +48,7 @@ public sealed record RecurringPaymentProjection(
     string Frequency,
     string Category,
     string LedgerCategory,
-    string NextDueDate,
+    string? NextDueDate,
     int DueDate,
     string StartDate,
     bool Active,
@@ -56,6 +56,7 @@ public sealed record RecurringPaymentProjection(
     bool ReminderEnabled,
     string ReminderMode,
     int ReminderLeadDays,
+    DateOnly OccurrenceTrackingStartDate,
     string PaymentMode);
 
 public class RecurringPaymentService
@@ -65,10 +66,21 @@ public class RecurringPaymentService
     private static readonly int[] AllowedLeadDays = [1, 2, 3, 7];
 
     private readonly AppDbContext _context;
+    private readonly RecurringOccurrenceLedgerService _occurrences;
+    private readonly FinancialClock _clock;
 
-    public RecurringPaymentService(AppDbContext context)
+    public RecurringPaymentService(
+        AppDbContext context,
+        RecurringOccurrenceLedgerService? occurrences = null,
+        FinancialClock? clock = null)
     {
         _context = context;
+        _clock = clock ?? FinancialClock.Utc;
+        _occurrences = occurrences ?? new RecurringOccurrenceLedgerService(
+            context,
+            new RecurringOccurrenceService(
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance),
+            _clock);
     }
 
     public async Task<List<RecurringPaymentProjection>> GetRecurringPaymentsAsync(CancellationToken cancellationToken = default)
@@ -95,6 +107,7 @@ public class RecurringPaymentService
                 p.PushReminderEnabled,
                 p.PushReminderMode,
                 p.PushReminderLeadDays,
+                p.OccurrenceTrackingStartDate,
                 p.PaymentMode
             ))
             .ToListAsync(cancellationToken);
@@ -122,6 +135,13 @@ public class RecurringPaymentService
                 Message: $"Category '{payment.Category}' does not exist.");
         }
 
+        if (payment.OccurrenceTrackingStartDate == default)
+        {
+            var requestedStart = DateOnly.TryParseExact(payment.StartDate, "yyyy-MM-dd", out var start)
+                ? start
+                : _clock.Today;
+            payment.OccurrenceTrackingStartDate = requestedStart > _clock.Today ? requestedStart : _clock.Today;
+        }
         _context.RecurringPayments.Add(payment);
         await _context.SaveChangesAsync(cancellationToken);
         return new CreateRecurringPaymentResult(CreateRecurringPaymentStatus.Created, payment);
@@ -143,7 +163,12 @@ public class RecurringPaymentService
         var desired = active ?? !payment.Active;
         if (payment.Active != desired)
         {
+            await _occurrences.PreserveThroughTodayAndResetFutureAsync(
+                payment,
+                preserveThroughToday: !desired,
+                cancellationToken);
             payment.Active = desired;
+            if (desired) payment.OccurrenceTrackingStartDate = _clock.Today.AddDays(1);
             await _context.SaveChangesAsync(cancellationToken);
         }
 
@@ -165,12 +190,14 @@ public class RecurringPaymentService
                 Message: $"Category '{updated.Category}' does not exist.");
         }
 
+        await _occurrences.PreserveThroughTodayAndResetFutureAsync(existing, cancellationToken: cancellationToken);
+
         existing.Name = updated.Name;
         existing.Amount = updated.Amount;
         existing.Frequency = updated.Frequency;
         existing.Category = updated.Category;
         existing.LedgerCategory = updated.LedgerCategory;
-        existing.NextDueDate = updated.NextDueDate;
+        existing.NextDueDate = null;
         existing.DueDate = updated.DueDate;
         existing.StartDate = updated.StartDate;
         existing.EndDate = updated.EndDate;
@@ -202,6 +229,7 @@ public class RecurringPaymentService
             return false;
         }
 
+        await _occurrences.PreserveThroughTodayAndResetFutureAsync(payment, cancellationToken: cancellationToken);
         _context.RecurringPayments.Remove(payment);
         await _context.SaveChangesAsync(cancellationToken);
 

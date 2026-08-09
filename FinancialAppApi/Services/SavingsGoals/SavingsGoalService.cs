@@ -66,18 +66,22 @@ public class SavingsGoalService
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly FinancialClock _financialClock;
     private readonly RecurringOccurrenceService _recurringOccurrenceService;
+    private readonly RecurringOccurrenceLedgerService _recurringOccurrenceLedger;
 
     public SavingsGoalService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
         FinancialClock? financialClock = null,
-        RecurringOccurrenceService? recurringOccurrenceService = null)
+        RecurringOccurrenceService? recurringOccurrenceService = null,
+        RecurringOccurrenceLedgerService? recurringOccurrenceLedger = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _financialClock = financialClock ?? FinancialClock.Utc;
         _recurringOccurrenceService = recurringOccurrenceService ??
             new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
+        _recurringOccurrenceLedger = recurringOccurrenceLedger ??
+            new RecurringOccurrenceLedgerService(context, _recurringOccurrenceService, _financialClock);
     }
 
     public async Task<List<SavingsGoal>> GetGoalsAsync(CancellationToken cancellationToken = default)
@@ -552,43 +556,19 @@ public class SavingsGoalService
         var today = _financialClock.Today;
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
         var range = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
-        var startDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(range.start));
-        var endExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(range.end));
         var startOnly = DateOnly.FromDateTime(range.start);
         var endOnly = DateOnly.FromDateTime(range.end);
-
-        var recurringTransactions = await _context.Transactions
-            .AsNoTracking()
-            .Where(transaction => transaction.RecurringPaymentId != null &&
-                ((transaction.RecurringOccurrenceDate != null &&
-                  transaction.RecurringOccurrenceDate >= startOnly &&
-                  transaction.RecurringOccurrenceDate <= endOnly) ||
-                 (transaction.RecurringOccurrenceDate == null &&
-                  transaction.Date >= startDate && transaction.Date < endExclusive)))
-            .ToListAsync(cancellationToken);
         var payments = await _context.RecurringPayments
             .AsNoTracking()
             .Where(payment => payment.Active)
             .ToListAsync(cancellationToken);
 
-        var pending = 0m;
-        foreach (var payment in payments)
-        {
-            if (!string.Equals(payment.LedgerCategory, "Rewards", StringComparison.OrdinalIgnoreCase)) continue;
-            foreach (var occurrence in _recurringOccurrenceService.GetOccurrencesInRange(
-                         payment,
-                         range.start,
-                         range.end,
-                         cycleDay))
-            {
-                var occurrenceDate = DateOnly.FromDateTime(occurrence);
-                if (!recurringTransactions.Any(transaction =>
-                        RecurringOccurrenceService.MatchesOccurrence(transaction, payment.Id, occurrenceDate)))
-                {
-                    pending += Math.Abs(payment.Amount);
-                }
-            }
-        }
+        var occurrences = await _recurringOccurrenceLedger.GetRangeAsync(
+            payments, startOnly, endOnly, cancellationToken: cancellationToken);
+        var pending = occurrences
+            .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.Pending
+                && string.Equals(occurrence.LedgerCategory, "Rewards", StringComparison.OrdinalIgnoreCase))
+            .Sum(occurrence => Math.Abs(occurrence.ScheduledAmount ?? 0m));
 
         return Math.Round(pending, 2, MidpointRounding.AwayFromZero);
     }

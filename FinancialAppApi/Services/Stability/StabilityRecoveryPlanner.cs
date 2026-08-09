@@ -41,8 +41,8 @@ public sealed record StabilityDrawdown(
 /// still owes its remainder, exactly as an overdue savings goal does — <c>IsOverdue</c> is what
 /// tells those two apart, so the card can stop calling every cycle "the last one".
 /// <c>ToppedUpThisCycle</c> is
-/// Stability credit received this cycle beyond what the plain allocation percentage would have
-/// delivered, derived from the ledger rather than stored, so deleting the salary reopens the ask.
+/// Extra Stability reimbursement received this cycle. New salaries persist it explicitly; only
+/// current-cycle legacy null rows use the narrow generated-split inference fallback.
 /// </para>
 /// </summary>
 public sealed record RecoveryPace(
@@ -61,7 +61,7 @@ public sealed record BucketDraw(string Bucket, decimal Share, decimal Amount);
 /// and how much of that is already promised to something else this cycle.
 /// <para>
 /// <c>Committed</c> is money this cycle has already committed -- bills still to pay for Essentials,
-/// savings-goal funding still owed for Rewards. Growth passes zero: it has no hard per-cycle
+/// active goal earmarks plus funding still owed for Rewards. Growth passes zero: it has no hard per-cycle
 /// obligation the way the other two do.
 /// </para>
 /// </summary>
@@ -171,7 +171,8 @@ public static class StabilityRecoveryPlanner
     public static RecoveryOffer ProposeTopUp(
         RecoveryPace pace,
         decimal incomeAmount,
-        IReadOnlyList<BucketState> buckets)
+        IReadOnlyList<BucketState> buckets,
+        decimal stabilityAlloc = 0m)
     {
         var empty = new RecoveryOffer(0m, 0m, false, null, Array.Empty<BucketDraw>());
         if (incomeAmount <= 0m || pace.OutstandingThisCycle <= 0m) return empty;
@@ -180,8 +181,15 @@ public static class StabilityRecoveryPlanner
         var allocTotal = contributing.Sum(bucket => bucket.Alloc);
         if (allocTotal <= 0m) return empty;
 
-        // Cannot draw more than the three buckets are actually going to receive.
-        var requested = Math.Min(pace.OutstandingThisCycle, incomeAmount * allocTotal);
+        var remainingAfterNormal = Math.Max(
+            0m,
+            pace.Shortfall - incomeAmount * Math.Max(0m, stabilityAlloc));
+        if (remainingAfterNormal <= 0m) return empty;
+
+        // Cannot draw more than what remains after the normal Stability share, or than the three
+        // other buckets actually receive.
+        var requested = Math.Min(pace.OutstandingThisCycle,
+            Math.Min(remainingAfterNormal, incomeAmount * allocTotal));
 
         var cap = requested;
         string? limitedBy = null;
@@ -241,9 +249,9 @@ public static class StabilityRecoveryPlanner
     }
 
     /// <summary>
-    /// Stability credit this cycle beyond the plain allocation percentage. Derived rather than
-    /// stored: an accepted top-up IS a ledger row, unlike a savings-goal earmark, so a stored
-    /// marker would be a second source of truth that a transaction delete would not update.
+    /// Compatibility inference for a current-cycle legacy salary whose intent field is null.
+    /// New salaries use their persisted applied reimbursement instead, so later allocation changes
+    /// cannot rewrite recovery history.
     /// </summary>
     public static decimal ToppedUpThisCycle(decimal stabilityCredit, decimal incomeThisCycle, decimal stabilityAlloc)
     {

@@ -29,8 +29,8 @@ public class CategoryLimitAlertProcessorTests
         await processor.ProcessPendingAsync();
 
         Assert.Equal(2, sender.Sent.Count);
-        Assert.Contains(sender.Sent, item => item.Content.Body == "Dining is close to its cycle spending guide.");
-        Assert.Contains(sender.Sent, item => item.Content.Body == "Dining has reached its cycle spending guide.");
+        Assert.Contains(sender.Sent, item => item.Content.Body == "Dining is close to what you planned to spend on it this cycle.");
+        Assert.Contains(sender.Sent, item => item.Content.Body == "Dining has reached what you planned to spend on it this cycle.");
         Assert.Equal(2, await context.CategoryLimitAlertMilestones.CountAsync());
     }
 
@@ -46,7 +46,7 @@ public class CategoryLimitAlertProcessorTests
         await NewProcessor(context, sender).ProcessPendingAsync();
 
         var content = Assert.Single(sender.Sent).Content;
-        Assert.Equal("Dining has gone over its cycle spending guide.", content.Body);
+        Assert.Equal("Dining has gone past what you planned to spend on it this cycle.", content.Body);
         var milestone = Assert.Single(await context.CategoryLimitAlertMilestones.ToListAsync());
         Assert.Equal("Limit", milestone.Milestone);
     }
@@ -89,7 +89,7 @@ public class CategoryLimitAlertProcessorTests
         await NewProcessor(context, sender).ProcessPendingAsync();
 
         var content = Assert.Single(sender.Sent).Content;
-        Assert.Equal("2 categories crossed a cycle spending milestone.", content.Body);
+        Assert.Equal("2 categories reached a point you asked to be told about.", content.Body);
         Assert.Equal("category-limit", content.Kind);
         Assert.Equal(2, await context.CategoryLimitAlertMilestones.CountAsync());
     }
@@ -108,6 +108,33 @@ public class CategoryLimitAlertProcessorTests
         Assert.Empty(sender.Sent);
         Assert.Empty(await context.CategoryLimitAlertEvaluations.ToListAsync());
         Assert.Empty(await context.CategoryLimitAlertEvents.ToListAsync());
+    }
+
+    [Fact]
+    public async Task ProcessPendingAsync_DoesNotSpendMilestonesWhenNoDeviceCanReceiveThem()
+    {
+        // The milestone rows are the once-per-cycle latch. Claiming one for an alert that is
+        // immediately discarded for want of a device meant re-enabling push later in the cycle
+        // produced silence for every category that had already crossed.
+        var dbName = NewDbName();
+        await SeedAsync(dbName, [("Dining", 100m, 79m)], categoryAlertsEnabled: true);
+        await using (var setup = NewContext(dbName, authenticated: true))
+        {
+            var subscription = await setup.PushSubscriptions.SingleAsync();
+            subscription.Enabled = false;
+            await setup.SaveChangesAsync();
+        }
+
+        await using var context = NewContext(dbName, authenticated: true);
+        var sender = new FakeSender();
+
+        await AddExpenseAsync(context, "tx-cross", "Dining", 1m);
+        await NewProcessor(context, sender).ProcessPendingAsync();
+
+        Assert.Empty(sender.Sent);
+        Assert.Empty(await context.CategoryLimitAlertEvaluations.ToListAsync());
+        Assert.Empty(await context.CategoryLimitAlertEvents.ToListAsync());
+        Assert.Empty(await context.CategoryLimitAlertMilestones.ToListAsync());
     }
 
     [Fact]
@@ -166,8 +193,7 @@ public class CategoryLimitAlertProcessorTests
         {
             UserId = "user-a",
             CycleDay = 1,
-            CategoryLimitAlertsEnabled = categoryAlertsEnabled,
-            PushRemindersEnabled = true
+            CategoryLimitAlertsEnabled = categoryAlertsEnabled
         });
         context.PushSubscriptions.Add(new PushSubscription
         {

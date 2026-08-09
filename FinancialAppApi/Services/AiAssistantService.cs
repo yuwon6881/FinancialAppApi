@@ -155,6 +155,7 @@ public partial class AiAssistantService
     private readonly AppDbContext _context;
     private readonly TransactionCategoryService _categoryService;
     private readonly RecurringOccurrenceService _recurringOccurrenceService;
+    private readonly RecurringOccurrenceLedgerService _recurringOccurrenceLedger;
     private readonly FinancialClock _financialClock;
     private readonly ILogger<AiAssistantService> _logger;
     private readonly AiConversationMemoryService _conversationMemory;
@@ -171,7 +172,8 @@ public partial class AiAssistantService
         ILogger<AiAssistantService>? logger = null,
         AiConversationMemoryService? conversationMemory = null,
         SavingsGoals.SavingsGoalService? savingsGoalService = null,
-        Investments.InvestmentPortfolioService? investmentPortfolioService = null)
+        Investments.InvestmentPortfolioService? investmentPortfolioService = null,
+        RecurringOccurrenceLedgerService? recurringOccurrenceLedger = null)
     {
         _logger = logger ?? NullLogger<AiAssistantService>.Instance;
         _aiClient = aiClient;
@@ -181,6 +183,8 @@ public partial class AiAssistantService
         _recurringOccurrenceService = recurringOccurrenceService ??
             new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
         _financialClock = financialClock ?? FinancialClock.Utc;
+        _recurringOccurrenceLedger = recurringOccurrenceLedger ??
+            new RecurringOccurrenceLedgerService(context, _recurringOccurrenceService, _financialClock);
         _conversationMemory = conversationMemory ?? new AiConversationMemoryService(context);
         _savingsGoalService = savingsGoalService ?? new SavingsGoals.SavingsGoalService(
             context,

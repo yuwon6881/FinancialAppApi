@@ -80,7 +80,12 @@ public class WishlistController : ControllerBase
             customDate = TransactionDate.FromInputDate(parsedDate);
         }
 
-        var result = await _wishlistService.PurchaseWishlistItemAsync(id, customDate, HttpContext.RequestAborted);
+        var result = await _wishlistService.PurchaseWishlistItemAsync(
+            id,
+            customDate,
+            HttpContext.RequestAborted,
+            dto?.TransactionId,
+            dto?.PostedAt);
         return result.Status switch
         {
             WishlistMutationStatus.NotFound => NotFound(),
@@ -192,4 +197,6 @@ public class WishlistItemDto
 public class PurchaseWishlistRequestDto
 {
     public string? Date { get; set; }
+    public string? TransactionId { get; set; }
+    public DateTime? PostedAt { get; set; }
 }

@@ -3,6 +3,7 @@ using System;
 using FinancialAppApi.Database;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace FinancialAppApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260809144747_VaultDocumentDetachedFromTransaction")]
+    partial class VaultDocumentDetachedFromTransaction
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -419,12 +422,6 @@ namespace FinancialAppApi.Migrations
                     b.Property<decimal>("StabilityBalance")
                         .HasColumnType("numeric(12,2)");
 
-                    b.Property<decimal>("StabilityPeakBalance")
-                        .HasColumnType("numeric(12,2)");
-
-                    b.Property<decimal>("StabilityWithdrawnAmount")
-                        .HasColumnType("numeric(12,2)");
-
                     b.HasKey("UserId", "Year", "MonthIndex");
 
                     b.ToTable("CycleBalances");
@@ -466,6 +463,9 @@ namespace FinancialAppApi.Migrations
 
                     b.Property<string>("LastSummaryCycleSeen")
                         .HasColumnType("text");
+
+                    b.Property<bool>("PushRemindersEnabled")
+                        .HasColumnType("boolean");
 
                     b.Property<decimal>("RewardsAlloc")
                         .HasColumnType("numeric");
@@ -1273,10 +1273,8 @@ namespace FinancialAppApi.Migrations
                         .HasColumnType("text");
 
                     b.Property<string>("NextDueDate")
+                        .IsRequired()
                         .HasColumnType("text");
-
-                    b.Property<DateOnly>("OccurrenceTrackingStartDate")
-                        .HasColumnType("date");
 
                     b.Property<string>("PaymentMode")
                         .IsRequired()
@@ -1321,69 +1319,6 @@ namespace FinancialAppApi.Migrations
                             t.HasCheckConstraint("ck_recurringpayments_pushreminderleaddays", "\"PushReminderLeadDays\" IN (1, 2, 3, 7)");
 
                             t.HasCheckConstraint("ck_recurringpayments_pushremindermode", "\"PushReminderMode\" IN ('Once', 'Daily')");
-                        });
-                });
-
-            modelBuilder.Entity("FinancialAppApi.Models.RecurringPaymentOccurrence", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasColumnType("text");
-
-                    b.Property<string>("Category")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
-                    b.Property<string>("LedgerCategory")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<DateOnly>("OccurrenceDate")
-                        .HasColumnType("date");
-
-                    b.Property<DateOnly?>("PaidDate")
-                        .HasColumnType("date");
-
-                    b.Property<string>("PaymentMode")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)");
-
-                    b.Property<string>("RecurringPaymentId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<decimal?>("ScheduledAmount")
-                        .HasColumnType("numeric(12,2)");
-
-                    b.Property<string>("SettlementTransactionId")
-                        .HasColumnType("text");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)");
-
-                    b.Property<string>("UserId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("SettlementTransactionId");
-
-                    b.HasIndex("UserId", "RecurringPaymentId", "OccurrenceDate")
-                        .IsUnique();
-
-                    b.HasIndex("UserId", "Status", "OccurrenceDate");
-
-                    b.ToTable("RecurringPaymentOccurrences", t =>
-                        {
-                            t.HasCheckConstraint("ck_recurringpaymentoccurrences_status", "\"Status\" IN ('Pending', 'Paid', 'Discarded')");
                         });
                 });
 
@@ -1626,9 +1561,6 @@ namespace FinancialAppApi.Migrations
 
                     b.Property<int?>("SavingsGoalId")
                         .HasColumnType("integer");
-
-                    b.Property<decimal?>("StabilityRecoveryTopUpAmount")
-                        .HasColumnType("numeric(12,2)");
 
                     b.Property<string>("UserId")
                         .IsRequired()
@@ -2233,15 +2165,6 @@ namespace FinancialAppApi.Migrations
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.RecurringPayment", b =>
-                {
-                    b.HasOne("FinancialAppApi.Models.AppUser", null)
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("FinancialAppApi.Models.RecurringPaymentOccurrence", b =>
                 {
                     b.HasOne("FinancialAppApi.Models.AppUser", null)
                         .WithMany()

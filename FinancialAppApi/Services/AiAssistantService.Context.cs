@@ -234,7 +234,8 @@ public partial class AiAssistantService
             ReportReview: datasets.ReportReview,
             RecurringAdvance: await BuildRecurringAdvanceContextAsync(
                 queryPlan, recurringRows, cycleDay, cancellationToken),
-            RecurringReminderStatus: BuildRecurringReminderStatusContext(queryPlan, setting, recurringRows));
+            RecurringReminderStatus: await BuildRecurringReminderStatusContextAsync(
+                queryPlan, recurringRows, cancellationToken));
         var missing = sufficiencyResult.Missing.Select(m => m.DatasetKey).ToList();
         var sufficiency = new ContextSufficiency(
             Complete: sufficiencyResult.CanAnswer,

@@ -56,11 +56,6 @@ public class FinancialSetting : IUserOwnedEntity
     // guarantees the summary fires exactly once per cycle across all of a user's devices.
     public string? LastSummaryCycleSeen { get; set; }
 
-    // Legacy/denormalized account status retained for compatibility. Enabled device
-    // subscriptions are authoritative; subscribe/unsubscribe keeps this value in sync.
-    [Required]
-    public bool PushRemindersEnabled { get; set; }
-
     // Separate consent from payment reminders: existing users registered for bill pushes must
     // explicitly opt in before category names can appear in lock-screen notifications.
     [Required]

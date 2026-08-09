@@ -270,11 +270,29 @@ public class FinancialServiceDashboardTests
             Amount = -19m,
             Category = "Entertainment",
             LedgerCategory = "Rewards",
-            RecurringPaymentId = "streaming"
+            RecurringPaymentId = "streaming",
+            RecurringOccurrenceDate = new DateOnly(2026, 7, 10)
+        });
+        // The occurrence was snapshotted when it settled, before the template was renamed and
+        // repriced. The dashboard must read that snapshot, not the live template.
+        context.RecurringPaymentOccurrences.Add(new RecurringPaymentOccurrence
+        {
+            Id = "occ-streaming-20260710",
+            RecurringPaymentId = "streaming",
+            OccurrenceDate = new DateOnly(2026, 7, 10),
+            Name = "Original Plan",
+            ScheduledAmount = 19m,
+            Category = "Entertainment",
+            LedgerCategory = "Rewards",
+            PaymentMode = RecurringPaymentMode.Manual,
+            Status = RecurringOccurrenceStatus.Paid,
+            PaidDate = new DateOnly(2026, 7, 10),
+            SettlementTransactionId = "streaming-jul-payment"
         });
         await context.SaveChangesAsync();
 
-        var response = await NewService(context).GetDashboardDataAsync("Jul", 2026);
+        var response = await NewService(context, new DateTimeOffset(2026, 7, 20, 12, 0, 0, TimeSpan.Zero))
+            .GetDashboardDataAsync("Jul", 2026);
         var occurrence = Assert.Single(GetObjects(response, "activeRecurringPayments"));
         var occurrenceType = occurrence.GetType();
 
@@ -397,7 +415,9 @@ public class FinancialServiceDashboardTests
             RecurringOccurrenceDate = new DateOnly(2026, 7, 28)
         });
         await context.SaveChangesAsync();
-        var service = NewService(context);
+        // Fixed clock: viewing June first materialises every occurrence up to "today", so a
+        // drifting today would change which cycles this exercises.
+        var service = NewService(context, new DateTimeOffset(2026, 8, 5, 12, 0, 0, TimeSpan.Zero));
 
         var june = await service.GetDashboardDataAsync("Jun", 2026);
         var july = await service.GetDashboardDataAsync("Jul", 2026);

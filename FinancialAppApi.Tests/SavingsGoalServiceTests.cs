@@ -75,8 +75,13 @@ public class SavingsGoalServiceTests
         Assert.Equal(750m, summary.Unassigned);
     }
 
+    // The money for a legacy bill has already left the Rewards balance, so holding the same
+    // amount back a second time as "still pending" would understate free Rewards by the bill
+    // twice over. Untagged pre-ledger history is kept out of that sum by
+    // OccurrenceTrackingStartDate -- the occurrence is never materialised, so it can never be
+    // counted -- which is the guarantee the old posting-date fallback used to provide.
     [Fact]
-    public async Task GetPoolSummaryAsync_UsesLegacyUndatedTransactionForCurrentOccurrence()
+    public async Task GetPoolSummaryAsync_DoesNotHoldBackBillsSettledBeforeTrackingStarted()
     {
         await using var context = NewContext(rewardsBalance: 1150m);
         context.RecurringPayments.Add(new RecurringPayment
@@ -90,6 +95,7 @@ public class SavingsGoalServiceTests
             StartDate = "2026-01-27",
             NextDueDate = "2026-07-27",
             DueDate = 27,
+            OccurrenceTrackingStartDate = new DateOnly(2026, 8, 1),
             Active = true
         });
         context.Transactions.Add(new Transaction

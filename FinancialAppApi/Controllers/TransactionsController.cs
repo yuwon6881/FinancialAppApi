@@ -284,7 +284,8 @@ public class TransactionsController : ControllerBase
             dto.Amount,
             dto.RecurringPaymentId,
             dto.WishlistItemId,
-            dto.RecurringOccurrenceDate);
+            dto.RecurringOccurrenceDate,
+            dto.StabilityRecoveryTopUpAmount);
     }
 
     public static TransactionDto MapToDto(Transaction t)
@@ -298,6 +299,9 @@ public class TransactionsController : ControllerBase
             Category = t.Category,
             LedgerCategory = t.LedgerCategory,
             Amount = ObfuscationHelper.Obfuscate(t.Amount),
+            StabilityRecoveryTopUpAmount = t.StabilityRecoveryTopUpAmount.HasValue
+                ? ObfuscationHelper.Obfuscate(t.StabilityRecoveryTopUpAmount.Value)
+                : null,
             RecurringPaymentId = t.RecurringPaymentId,
             RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
             WishlistItemId = t.WishlistItemId,
@@ -316,6 +320,9 @@ public class TransactionsController : ControllerBase
             Category = t.Category,
             LedgerCategory = t.LedgerCategory,
             Amount = ObfuscationHelper.Obfuscate(t.Amount),
+            StabilityRecoveryTopUpAmount = t.StabilityRecoveryTopUpAmount.HasValue
+                ? ObfuscationHelper.Obfuscate(t.StabilityRecoveryTopUpAmount.Value)
+                : null,
             RecurringPaymentId = t.RecurringPaymentId,
             RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
             WishlistItemId = t.WishlistItemId,
@@ -333,6 +340,7 @@ public class TransactionDto
     public string Category { get; set; } = string.Empty;
     public string LedgerCategory { get; set; } = string.Empty;
     public string Amount { get; set; } = string.Empty;
+    public string? StabilityRecoveryTopUpAmount { get; set; }
     public string? RecurringPaymentId { get; set; }
     public string? RecurringOccurrenceDate { get; set; }
     public int? WishlistItemId { get; set; }

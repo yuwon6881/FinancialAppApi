@@ -12,8 +12,12 @@ namespace FinancialAppApi.Tests;
 
 public sealed class PerformanceQueryCountTests
 {
+    // Settings, active payments, cycle-relevant transactions, and the recurring-occurrence
+    // ledger -- four reads, each of a distinct shared table, and no repeats. The ledger's
+    // backfill deliberately reuses the transactions already loaded here rather than scanning
+    // them a second time; that reuse is what keeps this at four rather than five.
     [Fact]
-    public async Task BootstrapSnapshot_LoadsSharedCoreDataInThreeQueries()
+    public async Task BootstrapSnapshot_LoadsSharedCoreDataInFourQueries()
     {
         await using var fixture = await SqliteFixture.CreateAsync();
         fixture.Context.FinancialSettings.Add(new FinancialSetting
@@ -42,7 +46,7 @@ public sealed class PerformanceQueryCountTests
             persistSelection: false,
             CancellationToken.None);
 
-        Assert.Equal(3, fixture.Counter.CommandCount);
+        Assert.Equal(4, fixture.Counter.CommandCount);
     }
 
     // The full dashboard reuses the snapshot's settings and active recurring payments when it
@@ -87,19 +91,27 @@ public sealed class PerformanceQueryCountTests
             2026,
             persistSelection: false,
             CancellationToken.None);
-        var alertService = new RecurringPaymentAlertService(fixture.Context, occurrenceService);
+        // Warm-up. The very first read of a bill also *materialises* its occurrence rows back
+        // to the tracking start, which is a one-time write, not a per-request cost. The guard
+        // below is about the steady-state round trips every later request pays.
+        await new RecurringPaymentAlertService(fixture.Context, occurrenceService)
+            .GetSubscriptionAlertsAsync(CancellationToken.None);
 
-        // Standalone: settings + active payments + settled history.
+        // Standalone: settings + active payments + occurrence ledger.
         fixture.Counter.Reset();
-        var standaloneAlerts = await alertService.GetSubscriptionAlertsAsync(CancellationToken.None);
+        var standaloneAlerts = await new RecurringPaymentAlertService(fixture.Context, occurrenceService)
+            .GetSubscriptionAlertsAsync(CancellationToken.None);
         Assert.Equal(3, fixture.Counter.CommandCount);
 
-        // Dashboard path: settings and payments come from the snapshot, so only history is read.
+        // Dashboard path: settings and payments come from the snapshot, so only the ledger is
+        // read. One query covers the whole range -- materialising a range must never cost a
+        // lookup per occurrence date.
         fixture.Counter.Reset();
-        var snapshotAlerts = await alertService.GetSubscriptionAlertsAsync(
-            snapshot.Cycle.CycleDay,
-            snapshot.ActiveRecurringPayments,
-            CancellationToken.None);
+        var snapshotAlerts = await new RecurringPaymentAlertService(fixture.Context, occurrenceService)
+            .GetSubscriptionAlertsAsync(
+                snapshot.Cycle.CycleDay,
+                snapshot.ActiveRecurringPayments,
+                CancellationToken.None);
         Assert.Equal(1, fixture.Counter.CommandCount);
 
         // Fewer queries, same answer -- the point of the overload is the round trips, not a

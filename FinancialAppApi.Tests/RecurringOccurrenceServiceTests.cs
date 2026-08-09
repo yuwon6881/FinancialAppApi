@@ -21,6 +21,16 @@ public class RecurringOccurrenceServiceTests
     }
 
     [Fact]
+    public void Monthly_DayThirtyOne_RecoversAfterShortMonth()
+    {
+        var payment = Payment("Monthly", "2026-01-31", dueDate: 31);
+
+        var next = _service.GetNextOccurrenceOnOrAfter(payment, new DateOnly(2026, 3, 1));
+
+        Assert.Equal(new DateOnly(2026, 3, 31), next);
+    }
+
+    [Fact]
     public void Monthly_MidMonthCycle_ReturnsOneOccurrenceInCycle()
     {
         var payment = Payment("Monthly", "2026-01-31", dueDate: 31);

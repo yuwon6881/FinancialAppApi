@@ -59,13 +59,13 @@ public partial class AiAssistantService
             .Select(r => new AiRecurringRow(
                 r.Id, r.Name, r.Amount, r.Category, r.LedgerCategory,
                 r.StartDate, r.EndDate, r.DueDate, r.Active,
-                r.Frequency, r.NextDueDate, r.PushReminderEnabled,
+                r.Frequency, r.NextDueDate ?? string.Empty, r.PushReminderEnabled,
                 r.PushReminderMode, r.PushReminderLeadDays, r.PaymentMode))
             .Take(100)
             .ToListAsync(cancellationToken);
 
     private sealed record AiRecurringStatusRow(
-        string Id, string Name, string Category, string LedgerCategory, string DueDate, string Status, decimal Amount);
+        string Id, string Name, string Category, string LedgerCategory, string DueDate, string Status, decimal? Amount);
 
     // Per-cycle bill status (Paid / Pending / Discarded) for each active recurring payment whose
     // billing date lands in the requested cycle(s). Mirrors FinancialService.BuildActiveRecurringList
@@ -78,48 +78,25 @@ public partial class AiAssistantService
         int cycleDay,
         CancellationToken cancellationToken)
     {
-        var recurring = await _context.RecurringPayments.AsNoTracking().ToListAsync(cancellationToken);
+        var recurring = await _context.RecurringPayments.AsNoTracking().Where(payment => payment.Active).ToListAsync(cancellationToken);
         var results = new List<AiRecurringStatusRow>();
         foreach (var cycle in cycles.Distinct())
         {
             var range = CategoryAttributionService.GetCycleRange(cycle.Year, cycle.MonthIndex, cycleDay);
-            var startDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(range.start));
-            var endExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(range.end));
             var startOnly = DateOnly.FromDateTime(range.start);
             var endOnly = DateOnly.FromDateTime(range.end);
-            var cycleTxs = await _context.Transactions
-                .AsNoTracking()
-                .Where(t => t.RecurringPaymentId != null &&
-                    ((t.RecurringOccurrenceDate != null &&
-                      t.RecurringOccurrenceDate >= startOnly &&
-                      t.RecurringOccurrenceDate <= endOnly) ||
-                     (t.RecurringOccurrenceDate == null &&
-                      t.Date >= startDate && t.Date < endExclusive)))
-                .ToListAsync(cancellationToken);
-            foreach (var rp in recurring)
+            var occurrences = await _recurringOccurrenceLedger.GetRangeAsync(
+                recurring, startOnly, endOnly, cancellationToken: cancellationToken);
+            foreach (var occurrence in occurrences)
             {
-                if (!rp.Active) continue;
-                foreach (var billingDate in _recurringOccurrenceService.GetOccurrencesInRange(
-                             rp,
-                             range.start,
-                             range.end,
-                             cycleDay))
-                {
-                    var paidTx = cycleTxs
-                        .Where(t => RecurringOccurrenceService.MatchesOccurrence(t, rp.Id, DateOnly.FromDateTime(billingDate)))
-                        .OrderBy(t => t.RecurringOccurrenceDate == DateOnly.FromDateTime(billingDate) ? 0 : 1)
-                        .ThenBy(t => string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
-                        .ThenBy(t => t.Date)
-                        .ThenBy(t => t.Id, StringComparer.Ordinal)
-                        .FirstOrDefault();
-                    var isDiscarded = paidTx != null && string.Equals(paidTx.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase);
-                    var isPaid = paidTx != null && !isDiscarded;
-                    results.Add(new AiRecurringStatusRow(
-                        rp.Id, rp.Name, rp.Category, rp.LedgerCategory,
-                        billingDate.ToString("yyyy-MM-dd"),
-                        isDiscarded ? "Discarded" : isPaid ? "Paid" : "Pending",
-                        Math.Abs(rp.Amount)));
-                }
+                results.Add(new AiRecurringStatusRow(
+                    occurrence.RecurringPaymentId,
+                    occurrence.Name,
+                    occurrence.Category ?? string.Empty,
+                    occurrence.LedgerCategory ?? string.Empty,
+                    occurrence.OccurrenceDate.ToString("yyyy-MM-dd"),
+                    occurrence.Status,
+                    occurrence.ScheduledAmount.HasValue ? Math.Abs(occurrence.ScheduledAmount.Value) : null));
             }
         }
         return results;

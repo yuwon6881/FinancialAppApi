@@ -74,7 +74,7 @@ public partial class AiAssistantService
                     .Where(item => item.Status == "Pending" &&
                         DateOnly.TryParse(item.DueDate, out var dueDate) && dueDate >= start && dueDate <= end &&
                         string.Equals(item.Category, guide.CategoryName, StringComparison.OrdinalIgnoreCase))
-                    .Sum(item => item.Amount);
+                    .Sum(item => item.Amount ?? 0m);
                 var nonRecurringSpent = Math.Max(0, spent - recurringSpent);
                 var limit = guide.LimitAmount!.Value;
                 var projected = isComplete
@@ -183,13 +183,6 @@ public partial class AiAssistantService
         var models = await _context.RecurringPayments.AsNoTracking()
             .Where(payment => recurringIds.Contains(payment.Id))
             .ToListAsync(cancellationToken);
-        var settled = await _context.Transactions.AsNoTracking()
-            .Where(transaction => transaction.RecurringPaymentId != null && transaction.RecurringOccurrenceDate != null)
-            .Select(transaction => new { transaction.RecurringPaymentId, transaction.RecurringOccurrenceDate })
-            .ToListAsync(cancellationToken);
-        var settledByPayment = settled
-            .GroupBy(row => row.RecurringPaymentId!)
-            .ToDictionary(group => group.Key, group => group.Select(row => row.RecurringOccurrenceDate!.Value).ToHashSet());
         var today = _financialClock.Today;
         var result = new List<object>();
 
@@ -201,19 +194,8 @@ public partial class AiAssistantService
             DateOnly? next = null;
             if (payment.Active && !isAutoDeducted)
             {
-                var paid = settledByPayment.GetValueOrDefault(payment.Id) ?? [];
-                var (year, month) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
-                for (var offset = 0; offset < 60 && next == null; offset++)
-                {
-                    var targetMonth = month + offset;
-                    var targetYear = year + (targetMonth - 1) / 12;
-                    targetMonth = (targetMonth - 1) % 12 + 1;
-                    var cycle = CategoryAttributionService.GetCycleRange(targetYear, targetMonth, cycleDay);
-                    next = _recurringOccurrenceService.GetOccurrencesInRange(payment, cycle.start, cycle.end, cycleDay)
-                        .Select(DateOnly.FromDateTime)
-                        .FirstOrDefault(date => date > today && !paid.Contains(date));
-                    if (next == default) next = null;
-                }
+                next = (await _recurringOccurrenceLedger.GetNextPendingAsync(
+                    payment, today, includeFrom: false, cancellationToken))?.OccurrenceDate;
             }
             result.Add(new
             {
@@ -228,23 +210,29 @@ public partial class AiAssistantService
         return result;
     }
 
-    private static object? BuildRecurringReminderStatusContext(
+    // Whether a reminder actually reaches the user is decided by the device opt-in, not by any
+    // account-level flag -- reading a stored flag here used to let the assistant report reminders
+    // as off while they were being delivered. The subscription query runs only after the
+    // intent gate, so an unrelated turn still costs nothing.
+    private async Task<object?> BuildRecurringReminderStatusContextAsync(
         AiQueryPlan queryPlan,
-        Models.FinancialSetting? setting,
-        IReadOnlyList<AiRecurringRow> recurring)
+        IReadOnlyList<AiRecurringRow> recurring,
+        CancellationToken cancellationToken)
     {
         if (!queryPlan.NeedsRecurring ||
             !Regex.IsMatch(queryPlan.QueryText, @"\b(push|notification|notify|remind|reminder)\b", RegexOptions.IgnoreCase))
             return null;
 
+        var hasEnabledDevice = await _context.PushSubscriptions.AnyAsync(s => s.Enabled, cancellationToken);
+
         return new
         {
-            accountRemindersEnabled = setting?.PushRemindersEnabled ?? false,
+            accountRemindersEnabled = hasEnabledDevice,
             payments = recurring.Select(row => new
             {
                 row.Id, row.Name,
                 enabled = row.PushReminderEnabled,
-                effective = (setting?.PushRemindersEnabled ?? false) && row.PushReminderEnabled,
+                effective = hasEnabledDevice && row.PushReminderEnabled,
                 mode = row.PushReminderMode,
                 leadDays = row.PushReminderLeadDays
             }).ToList()

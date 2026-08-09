@@ -57,29 +57,70 @@ public class RecurringOccurrenceService
             return [];
         }
 
-        var dueDay = Math.Clamp(payment.DueDate, 1, 31);
-        var billingDate = CategoryAttributionService.GetBillingDateForCycle(
-            cycleStart,
-            cycleEnd,
-            cycleDay,
-            dueDay);
+        var cursor = DateOnly.FromDateTime(cycleStart);
+        var rangeEnd = DateOnly.FromDateTime(cycleEnd);
+        var result = new List<DateTime>();
+        var paymentStart = DateOnly.FromDateTime(startDate);
+        var paymentEnd = endDate.HasValue ? DateOnly.FromDateTime(endDate.Value) : (DateOnly?)null;
+        var annual = string.Equals(frequency, "Annually", StringComparison.OrdinalIgnoreCase);
 
-        if (string.Equals(frequency, "Annually", StringComparison.OrdinalIgnoreCase) &&
-            billingDate.Month != startDate.Month)
+        var next = FindOccurrenceOnOrAfter(paymentStart, Math.Clamp(payment.DueDate, 1, 31), annual, cursor);
+        while (next <= rangeEnd && (!paymentEnd.HasValue || next <= paymentEnd.Value))
         {
-            return [];
+            if (next >= paymentStart) result.Add(next.ToDateTime(TimeOnly.MinValue));
+            next = AddAnchoredPeriod(next, paymentStart.Month, Math.Clamp(payment.DueDate, 1, 31), annual);
         }
 
-        if (billingDate < cycleStart ||
-            billingDate > cycleEnd ||
-            billingDate < startDate ||
-            (endDate.HasValue && billingDate > endDate.Value))
-        {
-            return [];
-        }
-
-        return [billingDate];
+        return result;
     }
+
+    public DateOnly? GetNextOccurrenceOnOrAfter(RecurringPayment payment, DateOnly date)
+    {
+        if (!TryParseDate(payment.StartDate, out var parsedStart)) return null;
+        var start = DateOnly.FromDateTime(parsedStart);
+        var annual = string.Equals(payment.Frequency, "Annually", StringComparison.OrdinalIgnoreCase);
+        if (!annual && !string.Equals(payment.Frequency, "Monthly", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(payment.Frequency, "Weekly", StringComparison.OrdinalIgnoreCase)) return null;
+
+        var next = FindOccurrenceOnOrAfter(start, Math.Clamp(payment.DueDate, 1, 31), annual, date);
+        if (!string.IsNullOrWhiteSpace(payment.EndDate) &&
+            DateOnly.TryParseExact(payment.EndDate, "yyyy-MM-dd", out var end) && next > end) return null;
+        return next;
+    }
+
+    private static DateOnly FindOccurrenceOnOrAfter(DateOnly start, int dueDay, bool annual, DateOnly date)
+    {
+        if (annual)
+        {
+            var annualYear = Math.Max(start.Year, date.Year);
+            var annualCandidate = AnchoredDate(annualYear, start.Month, dueDay);
+            if (annualCandidate < start || annualCandidate < date) annualCandidate = AnchoredDate(annualYear + 1, start.Month, dueDay);
+            return annualCandidate;
+        }
+
+        var year = Math.Max(start.Year, date.Year);
+        var month = year == start.Year ? Math.Max(start.Month, date.Month) : date.Month;
+        var candidate = AnchoredDate(year, month, dueDay);
+        if (candidate < start || candidate < date)
+        {
+            month++;
+            if (month == 13) { month = 1; year++; }
+            candidate = AnchoredDate(year, month, dueDay);
+        }
+        return candidate;
+    }
+
+    private static DateOnly AddAnchoredPeriod(DateOnly current, int annualMonth, int dueDay, bool annual)
+    {
+        if (annual) return AnchoredDate(current.Year + 1, annualMonth, dueDay);
+        var year = current.Year;
+        var month = current.Month + 1;
+        if (month == 13) { month = 1; year++; }
+        return AnchoredDate(year, month, dueDay);
+    }
+
+    private static DateOnly AnchoredDate(int year, int month, int dueDay) =>
+        new(year, month, Math.Min(dueDay, DateTime.DaysInMonth(year, month)));
 
     /// <summary>
     /// Returns whether a transaction settles a particular occurrence. Callers must first scope

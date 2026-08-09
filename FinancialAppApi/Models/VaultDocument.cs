@@ -57,6 +57,17 @@ public class VaultDocument : IUserOwnedEntity
     // Not a foreign key. Deleting a transaction should leave its documents intact.
     public string? TransactionId { get; set; }
 
+    // Set when a transaction delete detaches this document, cleared the moment the link is
+    // restored or the user re-points the document by hand. It is what makes deletion undoable:
+    // a transaction delete is queued and reversible, so severing the link irreversibly made the
+    // Undo on that toast quietly return the row with no evidence attached. Recreating a
+    // transaction under the same id — the single-delete undo, bulk restore, or an offline replay
+    // of either, including one queued before a reload — re-links every document that still
+    // remembers it. Ids are client-minted (`tx-<ms>-<random>`), so an unrelated transaction
+    // cannot collide with a remembered one.
+    [StringLength(64)]
+    public string? DetachedFromTransactionId { get; set; }
+
     [Required]
     public DateTime UploadedAt { get; set; }
 

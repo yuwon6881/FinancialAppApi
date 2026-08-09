@@ -435,6 +435,10 @@ public sealed class DocumentVaultService
         if (updateTransactionId)
         {
             doc.TransactionId = string.IsNullOrWhiteSpace(transactionId) ? null : transactionId;
+            // An explicit re-point (including the transaction form's Detach) is the user's final
+            // word on where this document belongs, so it must not be re-linked later by a restore
+            // of the transaction it happened to be attached to before.
+            doc.DetachedFromTransactionId = null;
         }
         if (updateReliefCategory)
         {

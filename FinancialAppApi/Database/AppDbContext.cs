@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using FinancialAppApi.Models;
 
@@ -16,12 +17,19 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     // mutation, rather than the cleanup itself, remains the notification boundary.
     public bool SuppressCategoryLimitAlertCapture { get; set; }
 
+    // Set the moment this context writes an evaluation row, and read by CategoryLimitAlertMiddleware
+    // to decide whether the post-response callback has anything to do at all. Without it every
+    // authenticated response -- including plain GETs -- paid a scope plus two or three queries to
+    // discover there was no work.
+    public bool HasCapturedCategoryLimitEvaluations { get; private set; }
+
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options)
     {
     }
 
     public DbSet<Transaction> Transactions => Set<Transaction>();
     public DbSet<RecurringPayment> RecurringPayments => Set<RecurringPayment>();
+    public DbSet<RecurringPaymentOccurrence> RecurringPaymentOccurrences => Set<RecurringPaymentOccurrence>();
     public DbSet<FinancialSetting> FinancialSettings => Set<FinancialSetting>();
     public DbSet<TransactionCategory> TransactionCategories => Set<TransactionCategory>();
     public DbSet<CategorySpendingGuide> CategorySpendingGuides => Set<CategorySpendingGuide>();
@@ -80,6 +88,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             // Bounded numeric(12,2) instead of unbounded numeric: exact for money, but
             // fixed/smaller on-disk, which matters against the 500MB free storage ceiling.
             entity.Property(e => e.Amount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.StabilityRecoveryTopUpAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.Date).HasColumnType("timestamp with time zone");
             entity.Property(e => e.PostedAt).HasColumnType("timestamp with time zone");
             // Calendar date is primary; PostedAt resolves the order of records on that date.
@@ -117,6 +126,17 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 t.HasCheckConstraint("ck_recurringpayments_pushreminderleaddays", "\"PushReminderLeadDays\" IN (1, 2, 3, 7)");
                 t.HasCheckConstraint("ck_recurringpayments_paymentmode", "\"PaymentMode\" IN ('AutoDeduct', 'Manual')");
             });
+        });
+
+        modelBuilder.Entity<RecurringPaymentOccurrence>(entity =>
+        {
+            entity.Property(e => e.ScheduledAmount).HasColumnType("numeric(12,2)");
+            entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId, e.OccurrenceDate }).IsUnique();
+            entity.HasIndex(e => new { e.UserId, e.Status, e.OccurrenceDate });
+            entity.HasIndex(e => e.SettlementTransactionId);
+            entity.ToTable(t => t.HasCheckConstraint(
+                "ck_recurringpaymentoccurrences_status",
+                "\"Status\" IN ('Pending', 'Paid', 'Discarded')"));
         });
 
         modelBuilder.Entity<FinancialSetting>(entity =>
@@ -295,6 +315,8 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.EssentialsBalance).HasColumnType("numeric(12,2)");
             entity.Property(e => e.GrowthBalance).HasColumnType("numeric(12,2)");
             entity.Property(e => e.StabilityBalance).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.StabilityPeakBalance).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.StabilityWithdrawnAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.RewardsBalance).HasColumnType("numeric(12,2)");
         });
 
@@ -482,6 +504,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
 
         ConfigureUserOwnership(modelBuilder.Entity<Transaction>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<RecurringPayment>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<RecurringPaymentOccurrence>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<FinancialSetting>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<TransactionCategory>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<CategorySpendingGuide>(), applyQueryFilter: true);
@@ -539,6 +562,15 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     {
         if (SuppressCategoryLimitAlertCapture || CurrentUserId == null) return;
 
+        // Capturing is a write per changed transaction row, so it is worth not doing for the
+        // users and rows that provably cannot produce an alert. Two cheap tests, no extra query:
+        // a FinancialSetting already tracked by this save answers the consent question (every
+        // ledger write path loads one), and a row that is not an outflow can never cross a
+        // spending guide on either side of the change. When no setting is tracked the capture
+        // still happens -- failing towards a redundant row beats dropping a real crossing.
+        var trackedSetting = ChangeTracker.Entries<FinancialSetting>().FirstOrDefault();
+        if (trackedSetting != null && !trackedSetting.Entity.CategoryLimitAlertsEnabled) return;
+
         var transactionEntries = ChangeTracker.Entries<Transaction>()
             .Where(entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
             .Where(entry => entry.State != EntityState.Modified ||
@@ -546,11 +578,13 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 entry.Property(nameof(Transaction.LedgerCategory)).IsModified ||
                 entry.Property(nameof(Transaction.Date)).IsModified ||
                 entry.Property(nameof(Transaction.Amount)).IsModified)
+            .Where(entry => TouchesAnOutflow(entry))
             .Where(entry => _capturedCategoryLimitTransactions.Add(entry.Entity))
             .ToList();
 
         foreach (var entry in transactionEntries)
         {
+            HasCapturedCategoryLimitEvaluations = true;
             var hasPrevious = entry.State is EntityState.Modified or EntityState.Deleted;
             var hasCurrent = entry.State is EntityState.Added or EntityState.Modified;
             CategoryLimitAlertEvaluations.Add(new CategoryLimitAlertEvaluation
@@ -567,6 +601,18 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 CreatedAt = DateTime.UtcNow
             });
         }
+    }
+
+    // Mirrors the processor's own filter (AddContribution ignores anything that is not a negative
+    // amount): if neither side of this change is an outflow, no delta it could produce would ever
+    // move a category's spending total.
+    private static bool TouchesAnOutflow(EntityEntry<Transaction> entry)
+    {
+        var currentIsOutflow = entry.State is EntityState.Added or EntityState.Modified &&
+            entry.Entity.Amount < 0;
+        var previousIsOutflow = entry.State is EntityState.Modified or EntityState.Deleted &&
+            entry.OriginalValues.GetValue<decimal>(nameof(Transaction.Amount)) < 0;
+        return currentIsOutflow || previousIsOutflow;
     }
 
     private void ConfigureUserOwnership<TEntity>(

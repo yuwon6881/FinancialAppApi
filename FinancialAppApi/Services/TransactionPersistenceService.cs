@@ -29,7 +29,8 @@ public sealed record TransactionMutationRequest(
     string Amount,
     string? RecurringPaymentId,
     int? WishlistItemId,
-    string? RecurringOccurrenceDate = null);
+    string? RecurringOccurrenceDate = null,
+    string? StabilityRecoveryTopUpAmount = null);
 
 public sealed record TransactionMutationResult(
     TransactionMutationStatus Status,
@@ -42,17 +43,23 @@ public class TransactionPersistenceService
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly RecurringOccurrenceService _occurrenceService;
     private readonly Stability.StabilityRecoveryService _stabilityRecoveryService;
+    private readonly RecurringOccurrenceLedgerService _occurrenceLedger;
+    private readonly FinancialClock _clock;
 
     public TransactionPersistenceService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
         RecurringOccurrenceService occurrenceService,
-        Stability.StabilityRecoveryService stabilityRecoveryService)
+        Stability.StabilityRecoveryService stabilityRecoveryService,
+        RecurringOccurrenceLedgerService? occurrenceLedger = null,
+        FinancialClock? clock = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _occurrenceService = occurrenceService;
         _stabilityRecoveryService = stabilityRecoveryService;
+        _clock = clock ?? FinancialClock.Utc;
+        _occurrenceLedger = occurrenceLedger ?? new RecurringOccurrenceLedgerService(context, occurrenceService, _clock);
     }
 
     public async Task<TransactionMutationResult> CreateTransactionAsync(
@@ -81,6 +88,8 @@ public class TransactionPersistenceService
 
         if (!ObfuscationHelper.TryDeobfuscate(request.Amount, out var decodedAmount)) return InvalidAmount();
         var amount = Math.Round(decodedAmount, 2, MidpointRounding.AwayFromZero);
+        if (!TryDecodeRecoveryTopUp(request.StabilityRecoveryTopUpAmount, out var requestedRecoveryTopUp))
+            return InvalidAmount("The Stability reimbursement amount is invalid.");
         var ledgerValidation = ValidateAndNormalizeLedgerCategory(request.Category, request.LedgerCategory, amount);
         if (!ledgerValidation.IsValid)
         {
@@ -96,6 +105,7 @@ public class TransactionPersistenceService
             Category = ledgerValidation.Category,
             LedgerCategory = ledgerValidation.LedgerCategory,
             Amount = amount,
+            StabilityRecoveryTopUpAmount = requestedRecoveryTopUp,
             RecurringPaymentId = request.RecurringPaymentId,
             WishlistItemId = request.WishlistItemId
         };
@@ -108,12 +118,60 @@ public class TransactionPersistenceService
             return new TransactionMutationResult(TransactionMutationStatus.InvalidRecurringOccurrence, Message: occurrence.Message);
         }
         transaction.RecurringOccurrenceDate = occurrence.Date;
+        RecurringPaymentOccurrence? occurrenceRow = null;
+        if (occurrence.Date.HasValue)
+        {
+            if (postDate > _clock.Today)
+            {
+                return new TransactionMutationResult(
+                    TransactionMutationStatus.InvalidDate,
+                    Message: "A recurring payment date cannot be in the future.");
+            }
+            var payment = await _context.RecurringPayments.FirstAsync(
+                candidate => candidate.Id == transaction.RecurringPaymentId,
+                cancellationToken);
+            if (occurrence.Date.Value > _clock.Today && payment.PaymentMode == RecurringPaymentMode.AutoDeduct)
+            {
+                return new TransactionMutationResult(
+                    TransactionMutationStatus.InvalidRecurringOccurrence,
+                    Message: "An automatically deducted bill cannot be settled before its due date.");
+            }
+            try
+            {
+                occurrenceRow = await _occurrenceLedger.EnsureOccurrenceAsync(payment, occurrence.Date.Value, cancellationToken);
+            }
+            catch (InvalidOperationException exception)
+            {
+                return new TransactionMutationResult(
+                    TransactionMutationStatus.InvalidRecurringOccurrence,
+                    Message: exception.Message);
+            }
+            if (occurrenceRow.Status != RecurringOccurrenceStatus.Pending)
+            {
+                return new TransactionMutationResult(
+                    TransactionMutationStatus.Conflict,
+                    Message: "This recurring occurrence has already been settled.");
+            }
+        }
 
         var splitContext = await LoadIncomeSplitContextAsync(
-            transaction.LedgerCategory, transaction.Id, cancellationToken);
+            transaction.LedgerCategory, TransactionDate.ToDateOnly(transaction.Date), transaction.Id,
+            preserveHistoricalRecovery: false, cancellationToken: cancellationToken);
         var splitSpec = ResolveIncomeSplitSpec(transaction, splitContext);
 
+        // Read before anything is staged, for the same reason LoadIncomeSplitContextAsync is.
+        var documentsToRelink = await _context.VaultDocuments
+            .Where(document => document.DetachedFromTransactionId == transaction.Id
+                && document.TransactionId == null)
+            .ToListAsync(cancellationToken);
+
         _context.Transactions.Add(transaction);
+        if (occurrenceRow != null) RecurringOccurrenceLedgerService.SettleFromTransaction(occurrenceRow, transaction);
+        foreach (var document in documentsToRelink)
+        {
+            document.TransactionId = transaction.Id;
+            document.DetachedFromTransactionId = null;
+        }
         AddIncomeSplitTransactions(transaction, splitSpec);
         await ApplyWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
@@ -163,6 +221,8 @@ public class TransactionPersistenceService
 
         if (!ObfuscationHelper.TryDeobfuscate(request.Amount, out var decodedAmount)) return InvalidAmount();
         var amount = Math.Round(decodedAmount, 2, MidpointRounding.AwayFromZero);
+        if (!TryDecodeRecoveryTopUp(request.StabilityRecoveryTopUpAmount, out var requestedRecoveryTopUp))
+            return InvalidAmount("The Stability reimbursement amount is invalid.");
         var ledgerValidation = ValidateAndNormalizeLedgerCategory(request.Category, request.LedgerCategory, amount);
         if (!ledgerValidation.IsValid)
         {
@@ -170,11 +230,44 @@ public class TransactionPersistenceService
         }
 
         var originalDate = transaction.Date;
+        var originalAmount = transaction.Amount;
+        var originalRecoveryTopUp = transaction.StabilityRecoveryTopUpAmount;
+        var nextRecoveryTopUp = request.StabilityRecoveryTopUpAmount == null
+            ? originalRecoveryTopUp
+            : requestedRecoveryTopUp;
+        var settingForCycle = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
+        if (originalRecoveryTopUp > 0m && nextRecoveryTopUp > 0m && settingForCycle != null)
+        {
+            var originalCycle = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+                TransactionDate.ToDateOnly(originalDate), settingForCycle.CycleDay);
+            var nextCycle = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(putDate, settingForCycle.CycleDay);
+            if (originalCycle != nextCycle)
+            {
+                return new TransactionMutationResult(
+                    TransactionMutationStatus.Conflict,
+                    transaction,
+                    "Remove the Stability reimbursement before moving this salary to another cycle.");
+            }
+        }
 
         // Before any staging below: see LoadIncomeSplitContextAsync on why its I/O cannot run once
         // the change tracker is dirty.
+        var currentCycle = settingForCycle == null
+            ? default
+            : CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+                _clock.Today, settingForCycle.CycleDay);
+        var originalTransactionCycle = settingForCycle == null
+            ? default
+            : CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+                TransactionDate.ToDateOnly(originalDate), settingForCycle.CycleDay);
+        var preserveHistoricalRecovery = settingForCycle != null
+            && originalRecoveryTopUp > 0m
+            && nextRecoveryTopUp > 0m
+            && originalAmount == amount
+            && originalTransactionCycle != currentCycle;
         var splitContext = await LoadIncomeSplitContextAsync(
-            ledgerValidation.LedgerCategory, transaction.Id, cancellationToken);
+            ledgerValidation.LedgerCategory, putDate, transaction.Id,
+            preserveHistoricalRecovery, cancellationToken: cancellationToken);
 
         var existingSplits = await _context.Transactions
             .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
@@ -186,8 +279,16 @@ public class TransactionPersistenceService
         transaction.Category = ledgerValidation.Category;
         transaction.LedgerCategory = ledgerValidation.LedgerCategory;
         transaction.Amount = amount;
+        transaction.StabilityRecoveryTopUpAmount = nextRecoveryTopUp;
         transaction.RecurringPaymentId = request.RecurringPaymentId ?? transaction.RecurringPaymentId;
         transaction.WishlistItemId = request.WishlistItemId ?? transaction.WishlistItemId;
+
+        if (transaction.RecurringOccurrenceDate.HasValue)
+        {
+            if (putDate > _clock.Today) return InvalidDate("A recurring payment date cannot be in the future.");
+            var occurrenceRow = await _occurrenceLedger.FindByTransactionAsync(transaction, cancellationToken);
+            if (occurrenceRow != null) RecurringOccurrenceLedgerService.SettleFromTransaction(occurrenceRow, transaction);
+        }
 
         var splitSpec = ResolveIncomeSplitSpec(transaction, splitContext);
         AddIncomeSplitTransactions(transaction, splitSpec);
@@ -217,12 +318,19 @@ public class TransactionPersistenceService
 
         await ClearWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
+        var recurringOccurrence = await _occurrenceLedger.FindByTransactionAsync(transaction, cancellationToken);
+        if (recurringOccurrence != null && recurringOccurrence.SettlementTransactionId == transaction.Id)
+        {
+            RecurringOccurrenceLedgerService.Reopen(recurringOccurrence);
+        }
+
         var attachedDocuments = await _context.VaultDocuments
             .Where(document => document.TransactionId == id)
             .ToListAsync(cancellationToken);
         foreach (var document in attachedDocuments)
         {
             document.TransactionId = null;
+            document.DetachedFromTransactionId = id;
         }
 
         var splits = await _context.Transactions
@@ -283,10 +391,20 @@ public class TransactionPersistenceService
         {
             await ClearWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
+            var recurringOccurrence = await _occurrenceLedger.FindByTransactionAsync(transaction, cancellationToken);
+            if (recurringOccurrence != null && recurringOccurrence.SettlementTransactionId == transaction.Id)
+            {
+                RecurringOccurrenceLedgerService.Reopen(recurringOccurrence);
+            }
+
             var attachedDocuments = await _context.VaultDocuments
                 .Where(document => document.TransactionId == transaction.Id)
                 .ToListAsync(cancellationToken);
-            foreach (var document in attachedDocuments) document.TransactionId = null;
+            foreach (var document in attachedDocuments)
+            {
+                document.TransactionId = null;
+                document.DetachedFromTransactionId = transaction.Id;
+            }
 
             var splits = await _context.Transactions
                 .Where(candidate => candidate.Id.StartsWith(transaction.Id + "-split-"))
@@ -384,14 +502,16 @@ public class TransactionPersistenceService
         && string.Equals(left.Amount, right.Amount, StringComparison.Ordinal)
         && string.Equals(left.RecurringPaymentId, right.RecurringPaymentId, StringComparison.Ordinal)
         && left.WishlistItemId == right.WishlistItemId
-        && string.Equals(left.RecurringOccurrenceDate, right.RecurringOccurrenceDate, StringComparison.Ordinal);
+        && string.Equals(left.RecurringOccurrenceDate, right.RecurringOccurrenceDate, StringComparison.Ordinal)
+        && string.Equals(left.StabilityRecoveryTopUpAmount, right.StabilityRecoveryTopUpAmount, StringComparison.Ordinal);
 
     private static bool MatchesRestoreRequest(
         Transaction existing,
         TransactionMutationRequest request)
     {
         if (!TransactionDate.TryParseInputDate(request.Date, out var requestDate)
-            || !ObfuscationHelper.TryDeobfuscate(request.Amount, out var decodedAmount))
+            || !ObfuscationHelper.TryDeobfuscate(request.Amount, out var decodedAmount)
+            || !TryDecodeRecoveryTopUp(request.StabilityRecoveryTopUpAmount, out var recoveryTopUp))
         {
             return false;
         }
@@ -417,7 +537,8 @@ public class TransactionPersistenceService
             && existing.Amount == Math.Round(decodedAmount, 2, MidpointRounding.AwayFromZero)
             && string.Equals(existing.RecurringPaymentId, request.RecurringPaymentId, StringComparison.Ordinal)
             && existing.WishlistItemId == request.WishlistItemId
-            && existing.RecurringOccurrenceDate == requestOccurrence;
+            && existing.RecurringOccurrenceDate == requestOccurrence
+            && existing.StabilityRecoveryTopUpAmount == recoveryTopUp;
     }
 
     // Tags a new transaction with the exact recurrence-engine billing date it settles, when it
@@ -523,7 +644,10 @@ public class TransactionPersistenceService
     /// <summary>
     /// The settings and fund balance an income split is resolved against.
     /// </summary>
-    private sealed record IncomeSplitContext(FinancialSetting? Setting, Stability.StabilityState? State);
+    private sealed record IncomeSplitContext(
+        FinancialSetting? Setting,
+        Stability.StabilityState? State,
+        bool PreserveHistoricalRecovery = false);
 
     private static bool IsIncomeLedgerCategory(string? ledgerCategory) =>
         string.Equals(ledgerCategory, "Income", StringComparison.OrdinalIgnoreCase)
@@ -541,7 +665,9 @@ public class TransactionPersistenceService
     /// </summary>
     private async Task<IncomeSplitContext> LoadIncomeSplitContextAsync(
         string? ledgerCategory,
+        DateOnly transactionDate,
         string transactionId,
+        bool preserveHistoricalRecovery,
         CancellationToken cancellationToken)
     {
         if (!IsIncomeLedgerCategory(ledgerCategory)) return new IncomeSplitContext(null, null);
@@ -552,8 +678,8 @@ public class TransactionPersistenceService
         // Excludes this transaction's own earlier contribution, so re-saving a salary is measured
         // against the fund without itself rather than on top of it.
         var state = await _stabilityRecoveryService.GetStabilityStateAsync(
-            setting, transactionId, cancellationToken);
-        return new IncomeSplitContext(setting, state);
+            setting, transactionDate, transactionId, cancellationToken);
+        return new IncomeSplitContext(setting, state, preserveHistoricalRecovery);
     }
 
     private static string ResolveIncomeSplitSpec(Transaction transaction, IncomeSplitContext context)
@@ -563,7 +689,8 @@ public class TransactionPersistenceService
             && transaction.LedgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase);
         if (!isPlainIncome && !isProposedSplit) return "";
 
-        var (setting, state) = context;
+        var setting = context.Setting;
+        var state = context.State;
 
         // Plain "Income" is the only branch that needs settings -- it has no percentages of its own
         // to fall back on. A proposed split carries its own and must still save without a settings
@@ -575,6 +702,25 @@ public class TransactionPersistenceService
             // Every caller gets the target cap here, not just the web form. It used to be enforced
             // client-side only, so AI ledger drafts, recurring settlement and any outbox replay
             // whose balance had gone stale applied raw percentages and sailed past the target.
+            var requestedTopUp = Math.Max(0m, transaction.StabilityRecoveryTopUpAmount ?? 0m);
+            if (context.PreserveHistoricalRecovery && requestedTopUp > 0m)
+            {
+                return Stability.IncomeSplitPlanner.Resolve(
+                    transaction.Amount,
+                    setting!.EssentialsAlloc,
+                    setting.GrowthAlloc,
+                    setting.StabilityAlloc,
+                    setting.RewardsAlloc,
+                    stabilityBalance: 0m,
+                    stabilityTarget: 0m,
+                    stabilityOverflowRedirect: setting.StabilityOverflowRedirect,
+                    requestedTopUp: requestedTopUp).ToSpecString();
+            }
+            var maximumTopUp = MaximumRecoveryTopUp(transaction.Amount, setting!, state!);
+            var appliedTopUp = Math.Min(requestedTopUp, maximumTopUp);
+            transaction.StabilityRecoveryTopUpAmount = transaction.StabilityRecoveryTopUpAmount.HasValue
+                ? appliedTopUp
+                : null;
             return Stability.IncomeSplitPlanner.Resolve(
                 transaction.Amount,
                 setting!.EssentialsAlloc,
@@ -584,7 +730,7 @@ public class TransactionPersistenceService
                 state!.CurrentBalance,
                 state.Target,
                 setting.StabilityOverflowRedirect,
-                requestedTopUp: 0m).ToSpecString();
+                requestedTopUp: appliedTopUp).ToSpecString();
         }
 
         var proposedSpec = transaction.LedgerCategory!["IncomeSplit:".Length..];
@@ -597,13 +743,51 @@ public class TransactionPersistenceService
         // Clamped, never rejected: a proposal can arrive from an offline replay whose balance moved
         // before the queue drained, and rejecting it would fail a salary the user cannot re-enter.
         // The excess lands wherever StabilityOverflowRedirect points, which is that setting's job.
-        var (spec, _) = Stability.IncomeSplitPlanner.ClampProposed(
-            proposed,
+        if (setting == null || state == null)
+        {
+            var (fallback, _) = Stability.IncomeSplitPlanner.ClampProposed(
+                proposed, transaction.Amount, 0m, 0m, setting?.StabilityOverflowRedirect);
+            return fallback.ToSpecString();
+        }
+
+        var baselineStability = Math.Max(0m, setting.StabilityAlloc);
+        var proposedTopUp = transaction.StabilityRecoveryTopUpAmount
+            ?? Math.Max(0m, transaction.Amount * (proposed.Stability - baselineStability));
+        var applied = Math.Min(proposedTopUp, MaximumRecoveryTopUp(transaction.Amount, setting, state));
+        transaction.StabilityRecoveryTopUpAmount = applied;
+        return Stability.IncomeSplitPlanner.Resolve(
             transaction.Amount,
-            state?.CurrentBalance ?? 0m,
-            state?.Target ?? 0m,
-            setting?.StabilityOverflowRedirect);
-        return spec.ToSpecString();
+            setting.EssentialsAlloc,
+            setting.GrowthAlloc,
+            setting.StabilityAlloc,
+            setting.RewardsAlloc,
+            state.CurrentBalance,
+            state.Target,
+            setting.StabilityOverflowRedirect,
+            applied).ToSpecString();
+    }
+
+    private static decimal MaximumRecoveryTopUp(
+        decimal incomeAmount,
+        FinancialSetting setting,
+        Stability.StabilityState state)
+    {
+        if (incomeAmount <= 0m) return 0m;
+        var normalStability = incomeAmount * Math.Max(0m, setting.StabilityAlloc);
+        var remainingAfterNormal = Math.Max(0m,
+            state.RecoverableCeiling - state.CurrentBalance - normalStability);
+        var otherShare = Math.Max(0m,
+            setting.EssentialsAlloc + setting.GrowthAlloc + setting.RewardsAlloc);
+        return Math.Floor(Math.Min(remainingAfterNormal, incomeAmount * otherShare) * 100m) / 100m;
+    }
+
+    private static bool TryDecodeRecoveryTopUp(string? encoded, out decimal? value)
+    {
+        value = null;
+        if (encoded == null) return true;
+        if (!ObfuscationHelper.TryDeobfuscate(encoded, out var decoded) || decoded < 0m) return false;
+        value = Math.Round(decoded, 2, MidpointRounding.AwayFromZero);
+        return true;
     }
 
     private void AddIncomeSplitTransactions(Transaction transaction, string splitSpec)
@@ -764,11 +948,11 @@ public class TransactionPersistenceService
         return null;
     }
 
-    private static TransactionMutationResult InvalidDate()
+    private static TransactionMutationResult InvalidDate(string? message = null)
     {
         return new TransactionMutationResult(
             TransactionMutationStatus.InvalidDate,
-            Message: "Date must be in yyyy-MM-dd format.");
+            Message: message ?? "Date must be in yyyy-MM-dd format.");
     }
 
     private static DateTime ResolvePostedAt(string? value)
@@ -789,9 +973,9 @@ public class TransactionPersistenceService
         return DateTime.UtcNow;
     }
 
-    private static TransactionMutationResult InvalidAmount() => new(
+    private static TransactionMutationResult InvalidAmount(string message = "Amount is malformed.") => new(
         TransactionMutationStatus.InvalidAmount,
-        Message: "Amount is malformed.");
+        Message: message);
 
     private async Task<bool> TransactionCategoryExistsAsync(
         string category,

@@ -13,13 +13,16 @@ public class RecurringPaymentsController : ControllerBase
 {
     private readonly RecurringPaymentService _recurringPaymentService;
     private readonly RecurringPaymentPayEarlyService _payEarlyService;
+    private readonly RecurringOccurrenceSettlementService? _settlementService;
 
     public RecurringPaymentsController(
         RecurringPaymentService recurringPaymentService,
-        RecurringPaymentPayEarlyService payEarlyService)
+        RecurringPaymentPayEarlyService payEarlyService,
+        RecurringOccurrenceSettlementService? settlementService = null)
     {
         _recurringPaymentService = recurringPaymentService;
         _payEarlyService = payEarlyService;
+        _settlementService = settlementService;
     }
 
     // GET: api/recurring-payments
@@ -228,6 +231,68 @@ public class RecurringPaymentsController : ControllerBase
         };
     }
 
+    [HttpPost("{id}/occurrences/{occurrenceDate}/settle")]
+    public async Task<IActionResult> PostSettlement(
+        string id,
+        string occurrenceDate,
+        RecurringOccurrenceSettlementDto dto)
+    {
+        if (_settlementService == null) return StatusCode(StatusCodes.Status503ServiceUnavailable);
+        if (!DateOnly.TryParseExact(occurrenceDate, "yyyy-MM-dd", out var parsedOccurrence))
+        {
+            return BadRequest(new { message = "occurrenceDate must use yyyy-MM-dd format." });
+        }
+        DateOnly? paidDate = null;
+        if (!string.IsNullOrWhiteSpace(dto.PaidDate))
+        {
+            if (!DateOnly.TryParseExact(dto.PaidDate, "yyyy-MM-dd", out var parsedPaidDate))
+            {
+                return BadRequest(new { message = "paidDate must use yyyy-MM-dd format." });
+            }
+            paidDate = parsedPaidDate;
+        }
+
+        var result = await _settlementService.SettleAsync(
+            id,
+            parsedOccurrence,
+            dto.Status,
+            paidDate,
+            dto.ClientKey,
+            HttpContext.RequestAborted,
+            dto.TransactionId,
+            dto.PostedAt);
+        return result.Status switch
+        {
+            RecurringSettlementStatus.NotFound => NotFound(),
+            RecurringSettlementStatus.Invalid => BadRequest(new { message = result.Message }),
+            RecurringSettlementStatus.AutomaticPayment => BadRequest(new { message = result.Message }),
+            RecurringSettlementStatus.Conflict => Conflict(new { message = result.Message }),
+            _ => Ok(new
+            {
+                occurrence = MapOccurrence(result.Occurrence!),
+                transaction = result.Transaction == null ? null : TransactionsController.MapToDto(result.Transaction),
+                nextOccurrenceDate = result.NextOccurrenceDate?.ToString("yyyy-MM-dd")
+            })
+        };
+    }
+
+    private static object MapOccurrence(RecurringPaymentOccurrence occurrence) => new
+    {
+        id = occurrence.Id,
+        recurringPaymentId = occurrence.RecurringPaymentId,
+        name = occurrence.Name,
+        amount = occurrence.ScheduledAmount.HasValue
+            ? ObfuscationHelper.Obfuscate(occurrence.ScheduledAmount.Value)
+            : null,
+        category = occurrence.Category,
+        ledgerCategory = occurrence.LedgerCategory,
+        dueDate = occurrence.OccurrenceDate.ToString("yyyy-MM-dd"),
+        isPaid = occurrence.Status == RecurringOccurrenceStatus.Paid,
+        isDiscarded = occurrence.Status == RecurringOccurrenceStatus.Discarded,
+        status = occurrence.Status,
+        paidDate = occurrence.PaidDate?.ToString("yyyy-MM-dd")
+    };
+
     internal static RecurringPaymentDto MapToDto(RecurringPayment rp)
     {
         return new RecurringPaymentDto
@@ -325,6 +390,15 @@ public class PayEarlyRequestDto
     public string? ClientKey { get; set; }
 }
 
+public class RecurringOccurrenceSettlementDto
+{
+    public string Status { get; set; } = string.Empty;
+    public string? PaidDate { get; set; }
+    public string? ClientKey { get; set; }
+    public string? TransactionId { get; set; }
+    public DateTime? PostedAt { get; set; }
+}
+
 public class RecurringPaymentDto
 {
     public string Id { get; set; } = string.Empty;
@@ -333,7 +407,7 @@ public class RecurringPaymentDto
     public string Frequency { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
     public string LedgerCategory { get; set; } = string.Empty;
-    public string NextDueDate { get; set; } = string.Empty;
+    public string? NextDueDate { get; set; }
     public int DueDate { get; set; }
     public string StartDate { get; set; } = string.Empty;
     public bool Active { get; set; }

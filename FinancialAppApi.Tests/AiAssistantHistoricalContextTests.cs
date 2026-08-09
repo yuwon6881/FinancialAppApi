@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Text;
 using System.Text.Json;
 using FinancialAppApi.Models;
@@ -645,7 +645,8 @@ public class AiAssistantHistoricalContextTests
             DueDate = 15,
             Active = true
         });
-        // The bill's charge this cycle was discarded (LedgerCategory "Discarded", linked by id).
+        // The bill's charge this cycle was discarded: a zero-amount row tagged with the
+        // occurrence it settles, which is what discarding actually writes.
         context.Transactions.Add(new Transaction
         {
             Id = "netflix-jul",
@@ -653,8 +654,9 @@ public class AiAssistantHistoricalContextTests
             Description = "Netflix",
             Category = "Entertainment",
             LedgerCategory = "Discarded",
-            Amount = -15,
-            RecurringPaymentId = "netflix"
+            Amount = 0,
+            RecurringPaymentId = "netflix",
+            RecurringOccurrenceDate = new DateOnly(2026, 7, 15)
         });
         await context.SaveChangesAsync();
 
@@ -740,8 +742,11 @@ public class AiAssistantHistoricalContextTests
         Assert.True(handler.UserContent.IndexOf("Spotify", StringComparison.Ordinal) < handler.UserContent.IndexOf("Domain Renewal", StringComparison.Ordinal));
     }
 
+    // Status follows the occurrence a transaction *tags*, not the cycle it posted in. Both bills
+    // here were paid on the same July day; the one whose payment settles August's occurrence is
+    // still pending for July, and the one settling July's is paid.
     [Fact]
-    public async Task ChatAsync_RecurringStatusUsesExactOccurrenceAndLegacyFallback()
+    public async Task ChatAsync_RecurringStatusFollowsTheOccurrenceTheTransactionTags()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false });
@@ -761,8 +766,8 @@ public class AiAssistantHistoricalContextTests
             },
             new RecurringPayment
             {
-                Id = "legacy-rewards",
-                Name = "Legacy Rewards bill",
+                Id = "music-pass",
+                Name = "Music Pass",
                 Amount = 20,
                 Frequency = "Monthly",
                 Category = "Entertainment",
@@ -786,13 +791,14 @@ public class AiAssistantHistoricalContextTests
             },
             new Transaction
             {
-                Id = "legacy-rewards-payment",
+                Id = "music-pass-payment",
                 Date = new DateTime(2026, 7, 5, 12, 0, 0, DateTimeKind.Utc),
-                Description = "Legacy Rewards bill",
+                Description = "Music Pass",
                 Category = "Entertainment",
                 LedgerCategory = "Rewards",
                 Amount = -20,
-                RecurringPaymentId = "legacy-rewards"
+                RecurringPaymentId = "music-pass",
+                RecurringOccurrenceDate = new DateOnly(2026, 7, 21)
             });
         await context.SaveChangesAsync();
 
@@ -803,7 +809,7 @@ public class AiAssistantHistoricalContextTests
         await service.ChatAsync(new AiChatRequest("which recurring bills are pending this cycle?", []));
 
         Assert.Contains("ChatGPT Plus", handler.UserContent);
-        Assert.Contains("Legacy Rewards bill", handler.UserContent);
+        Assert.Contains("Music Pass", handler.UserContent);
         Assert.Contains("\"status\":\"Pending\"", handler.UserContent);
         Assert.Contains("\"status\":\"Paid\"", handler.UserContent);
     }
@@ -1026,8 +1032,7 @@ public class AiAssistantHistoricalContextTests
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting
         {
-            CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false,
-            PushRemindersEnabled = true
+            CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false
         });
         context.TransactionCategories.Add(new TransactionCategory { Id = "software", Name = "Software" });
         context.RecurringPayments.Add(new RecurringPayment
@@ -1036,6 +1041,15 @@ public class AiAssistantHistoricalContextTests
             Category = "Software", LedgerCategory = "Rewards", NextDueDate = "2026-07-20",
             DueDate = 20, StartDate = "2026-01-20", Active = true,
             PushReminderEnabled = true, PushReminderMode = "Daily", PushReminderLeadDays = 3
+        });
+        // A reminder is only "effective" if some device can actually receive it. Enabled
+        // subscription rows are the whole account-level opt-in -- there is no flag beside them.
+        context.PushSubscriptions.Add(new PushSubscription
+        {
+            Id = "push-1",
+            DeviceId = "device-1",
+            FcmToken = "token-1",
+            Enabled = true
         });
         await context.SaveChangesAsync();
 
@@ -1107,3 +1121,4 @@ public class AiAssistantHistoricalContextTests
         }
     }
 }
+

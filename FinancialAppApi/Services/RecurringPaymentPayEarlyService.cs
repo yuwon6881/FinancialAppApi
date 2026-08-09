@@ -31,7 +31,6 @@ public class RecurringPaymentPayEarlyService
 {
     // 5 years of monthly cycles is far more runway than any real recurring payment needs; it
     // just bounds the scan so a misconfigured/expired payment can't loop forever.
-    private const int MaxCyclesToScan = 60;
 
     // An auto-deducted bill leaves the account on the bank's schedule, so there is nothing to bring
     // forward: settling it here would post a ledger row for money that is still going to be taken on
@@ -46,20 +45,21 @@ public class RecurringPaymentPayEarlyService
     }
 
     private readonly AppDbContext _context;
-    private readonly RecurringOccurrenceService _occurrenceService;
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly FinancialClock _financialClock;
+    private readonly RecurringOccurrenceLedgerService _occurrenceLedger;
 
     public RecurringPaymentPayEarlyService(
         AppDbContext context,
         RecurringOccurrenceService occurrenceService,
         CycleBalanceService cycleBalanceService,
-        FinancialClock? financialClock = null)
+        FinancialClock? financialClock = null,
+        RecurringOccurrenceLedgerService? occurrenceLedger = null)
     {
         _context = context;
-        _occurrenceService = occurrenceService;
         _cycleBalanceService = cycleBalanceService;
         _financialClock = financialClock ?? FinancialClock.Utc;
+        _occurrenceLedger = occurrenceLedger ?? new RecurringOccurrenceLedgerService(context, occurrenceService, _financialClock);
     }
 
     public async Task<PayEarlyResult> PayEarlyAsync(
@@ -80,7 +80,9 @@ public class RecurringPaymentPayEarlyService
         string recurringPaymentId,
         DateOnly expectedOccurrenceDate,
         CancellationToken cancellationToken = default,
-        string? clientKey = null)
+        string? clientKey = null,
+        string? transactionId = null,
+        DateTime? postedAt = null)
     {
         var payment = await _context.RecurringPayments
             .FirstOrDefaultAsync(p => p.Id == recurringPaymentId, cancellationToken);
@@ -106,10 +108,13 @@ public class RecurringPaymentPayEarlyService
         // successful POST was lost, replaying the queued operation must return the original row
         // rather than attempting to settle a later occurrence. The key is hashed into a bounded,
         // opaque transaction id so arbitrary client input never becomes a database key.
-        if (!string.IsNullOrWhiteSpace(clientKey))
+        var resolvedTransactionId = !string.IsNullOrWhiteSpace(transactionId)
+            ? transactionId
+            : !string.IsNullOrWhiteSpace(clientKey) ? BuildClientTransactionId(clientKey) : null;
+        if (resolvedTransactionId != null)
         {
             var existing = await _context.Transactions.FirstOrDefaultAsync(
-                transaction => transaction.Id == BuildClientTransactionId(clientKey),
+                transaction => transaction.Id == resolvedTransactionId,
                 cancellationToken);
             if (existing != null)
             {
@@ -118,8 +123,8 @@ public class RecurringPaymentPayEarlyService
                     return new PayEarlyResult(PayEarlyStatus.Conflict, Message: "This pay-early request key was already used.");
                 }
 
-                var nextAfterReplay = await FindNextUnpaidOccurrenceAsync(
-                    payment, cycleDay, today, includeToday: false, cancellationToken);
+                var nextAfterReplay = (await _occurrenceLedger.GetNextPendingAsync(
+                    payment, today, includeFrom: false, cancellationToken))?.OccurrenceDate;
                 return new PayEarlyResult(
                     PayEarlyStatus.Success,
                     existing,
@@ -128,7 +133,9 @@ public class RecurringPaymentPayEarlyService
             }
         }
 
-        var occurrence = await FindNextUnpaidOccurrenceAsync(payment, cycleDay, today, includeToday: false, cancellationToken);
+        var occurrenceRow = await _occurrenceLedger.GetNextPendingAsync(
+            payment, today, includeFrom: false, cancellationToken);
+        var occurrence = occurrenceRow?.OccurrenceDate;
         if (occurrence == null)
         {
             return new PayEarlyResult(
@@ -156,11 +163,11 @@ public class RecurringPaymentPayEarlyService
 
         var transaction = new Transaction
         {
-            Id = string.IsNullOrWhiteSpace(clientKey)
+            Id = resolvedTransactionId ?? (string.IsNullOrWhiteSpace(clientKey)
                 ? $"tx-payearly-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}"
-                : BuildClientTransactionId(clientKey),
+                : BuildClientTransactionId(clientKey)),
             Date = TransactionDate.FromInputDate(today),
-            PostedAt = DateTime.UtcNow,
+            PostedAt = postedAt?.ToUniversalTime() ?? DateTime.UtcNow,
             Description = payment.Name,
             Category = payment.Category,
             LedgerCategory = payment.LedgerCategory,
@@ -173,6 +180,7 @@ public class RecurringPaymentPayEarlyService
         };
 
         _context.Transactions.Add(transaction);
+        RecurringOccurrenceLedgerService.SettleFromTransaction(occurrenceRow!, transaction);
 
         try
         {
@@ -193,7 +201,8 @@ public class RecurringPaymentPayEarlyService
             return new PayEarlyResult(PayEarlyStatus.Conflict, Message: "This occurrence has already been paid.");
         }
 
-        var nextOccurrence = await FindNextUnpaidOccurrenceAsync(payment, cycleDay, today, includeToday: false, cancellationToken);
+        var nextOccurrence = (await _occurrenceLedger.GetNextPendingAsync(
+            payment, today, includeFrom: false, cancellationToken))?.OccurrenceDate;
         return new PayEarlyResult(PayEarlyStatus.Success, transaction, occurrence.Value, nextOccurrence);
     }
 
@@ -220,13 +229,8 @@ public class RecurringPaymentPayEarlyService
             return (null, automaticRejection);
         }
 
-        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
-        var occurrence = await FindNextUnpaidOccurrenceAsync(
-            payment,
-            setting?.CycleDay ?? FinancialConstants.DefaultCycleDay,
-            _financialClock.Today,
-            includeToday: false,
-            cancellationToken);
+        var occurrence = (await _occurrenceLedger.GetNextPendingAsync(
+            payment, _financialClock.Today, includeFrom: false, cancellationToken))?.OccurrenceDate;
         return occurrence == null
             ? (null, new PayEarlyResult(PayEarlyStatus.NoUpcomingOccurrence, Message: "No upcoming occurrence was found for this recurring payment."))
             : (occurrence, null);
@@ -239,13 +243,8 @@ public class RecurringPaymentPayEarlyService
         var payment = await _context.RecurringPayments.AsNoTracking()
             .FirstOrDefaultAsync(p => p.Id == recurringPaymentId, cancellationToken);
         if (payment == null || !payment.Active) return null;
-        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
-        return await FindNextUnpaidOccurrenceAsync(
-            payment,
-            setting?.CycleDay ?? FinancialConstants.DefaultCycleDay,
-            _financialClock.Today,
-            includeToday: true,
-            cancellationToken);
+        return (await _occurrenceLedger.GetNextPendingAsync(
+            payment, _financialClock.Today, includeFrom: true, cancellationToken))?.OccurrenceDate;
     }
 
     /// <summary>
@@ -270,85 +269,31 @@ public class RecurringPaymentPayEarlyService
             .Select(p => new RecurringPayment
             {
                 Id = p.Id,
+                Name = p.Name,
+                Amount = p.Amount,
                 StartDate = p.StartDate,
                 EndDate = p.EndDate,
                 Frequency = p.Frequency,
                 DueDate = p.DueDate,
                 Active = p.Active,
+                Category = p.Category,
+                LedgerCategory = p.LedgerCategory,
+                PaymentMode = p.PaymentMode,
+                OccurrenceTrackingStartDate = p.OccurrenceTrackingStartDate,
             })
             .ToList();
         if (active.Count == 0) return [];
 
-        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
-        var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
         var today = _financialClock.Today;
-
-        var ids = active.Select(p => p.Id).ToList();
-        var settledRows = await _context.Transactions
-            .Where(t => t.RecurringPaymentId != null
-                        && ids.Contains(t.RecurringPaymentId)
-                        && t.RecurringOccurrenceDate != null)
-            .Select(t => new { t.RecurringPaymentId, Date = t.RecurringOccurrenceDate!.Value })
-            .ToListAsync(cancellationToken);
-        var settledByPayment = settledRows
-            .GroupBy(row => row.RecurringPaymentId!)
-            .ToDictionary(group => group.Key, group => group.Select(row => row.Date).ToHashSet());
 
         var result = new Dictionary<string, DateOnly>(active.Count);
         foreach (var payment in active)
         {
-            var settled = settledByPayment.GetValueOrDefault(payment.Id) ?? [];
-            var occurrence = FindNextUnpaidOccurrence(payment, cycleDay, today, includeToday: true, settled);
-            if (occurrence != null) result[payment.Id] = occurrence.Value;
+            var occurrence = await _occurrenceLedger.GetNextPendingAsync(
+                payment, today, includeFrom: true, cancellationToken);
+            if (occurrence != null) result[payment.Id] = occurrence.OccurrenceDate;
         }
         return result;
-    }
-
-    private async Task<DateOnly?> FindNextUnpaidOccurrenceAsync(
-        RecurringPayment payment,
-        int cycleDay,
-        DateOnly today,
-        bool includeToday,
-        CancellationToken cancellationToken)
-    {
-        var settledOccurrences = await _context.Transactions
-            .Where(t => t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate != null)
-            .Select(t => t.RecurringOccurrenceDate!.Value)
-            .ToListAsync(cancellationToken);
-
-        return FindNextUnpaidOccurrence(payment, cycleDay, today, includeToday, settledOccurrences.ToHashSet());
-    }
-
-    private DateOnly? FindNextUnpaidOccurrence(
-        RecurringPayment payment,
-        int cycleDay,
-        DateOnly today,
-        bool includeToday,
-        HashSet<DateOnly> settledSet)
-    {
-        var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
-
-        for (var i = 0; i < MaxCyclesToScan; i++)
-        {
-            var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
-            foreach (var billingDate in _occurrenceService.GetOccurrencesInRange(payment, cycleStart, cycleEnd, cycleDay))
-            {
-                var occurrenceDate = DateOnly.FromDateTime(billingDate);
-                if ((includeToday ? occurrenceDate >= today : occurrenceDate > today) && !settledSet.Contains(occurrenceDate))
-                {
-                    return occurrenceDate;
-                }
-            }
-
-            monthIndex++;
-            if (monthIndex > 12)
-            {
-                monthIndex = 1;
-                year++;
-            }
-        }
-
-        return null;
     }
 
     private static string BuildClientTransactionId(string clientKey)

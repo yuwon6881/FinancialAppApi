@@ -44,7 +44,13 @@ public sealed class CategoryLimitAlertProcessor
         if (evaluations.Count == 0) return;
 
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
-        if (setting == null || !setting.CategoryLimitAlertsEnabled)
+        // The milestone rows written below are the once-per-cycle latch, and they are claimed
+        // here rather than at delivery. So this must also refuse to run when there is no device
+        // that could receive the alert: otherwise every crossing silently spends its milestone
+        // against an event the dispatcher will immediately discard, and a user who turns push on
+        // later in the cycle never hears about a category that already crossed.
+        var canDeliver = await _context.PushSubscriptions.AnyAsync(item => item.Enabled, cancellationToken);
+        if (setting == null || !setting.CategoryLimitAlertsEnabled || !canDeliver)
         {
             _context.CategoryLimitAlertEvaluations.RemoveRange(evaluations);
             await _context.SaveChangesAsync(cancellationToken);
@@ -146,6 +152,11 @@ public sealed class CategoryLimitAlertProcessor
         var now = DateTime.UtcNow;
         var eventId = $"clae-{Guid.NewGuid():N}";
         var content = BuildEventContent(crossings, cycleKey);
+        // Expire at the end of the local day the crossing happened on, the same rule the
+        // recurring reminder TTL uses. A flat 24h window let an alert about "this cycle so far"
+        // arrive the following day, after the figure it described had already moved on.
+        var endOfLocalDay = _financialClock.Today.ToDateTime(TimeOnly.MinValue).AddDays(1);
+        var expiresAt = now.AddMinutes(Math.Max(1d, (endOfLocalDay - _financialClock.LocalNow).TotalMinutes));
         _context.CategoryLimitAlertEvents.Add(new CategoryLimitAlertEvent
         {
             Id = eventId,
@@ -155,7 +166,7 @@ public sealed class CategoryLimitAlertProcessor
             Tag = content.Tag,
             CategoryName = content.CategoryName,
             CreatedAt = now,
-            ExpiresAt = now.AddHours(24)
+            ExpiresAt = expiresAt
         });
         foreach (var crossing in crossings)
         {
@@ -376,21 +387,23 @@ public sealed class CategoryLimitAlertProcessor
         {
             return (
                 "Spending guides need attention",
-                $"{crossings.Count} categories crossed a cycle spending milestone.",
+                $"{crossings.Count} categories reached a point you asked to be told about.",
                 $"category-limits:{cycleKey}",
                 null);
         }
 
         var crossing = crossings[0];
         var body = crossing.Milestone == "Near"
-            ? $"{crossing.CategoryName} is close to its cycle spending guide."
+            ? $"{crossing.CategoryName} is close to what you planned to spend on it this cycle."
             : crossing.Exceeded
-                ? $"{crossing.CategoryName} has gone over its cycle spending guide."
-                : $"{crossing.CategoryName} has reached its cycle spending guide.";
+                ? $"{crossing.CategoryName} has gone past what you planned to spend on it this cycle."
+                : $"{crossing.CategoryName} has reached what you planned to spend on it this cycle.";
         return (
             "Category spending alert",
             body,
-            $"category-limit:{cycleKey}:{crossing.CategoryName}",
+            // Same cycle-only tag as the multi-category case (and as the client's
+            // buildNotificationTag): later alerts replace earlier ones rather than stacking.
+            $"category-limits:{cycleKey}",
             crossing.CategoryName);
     }
 

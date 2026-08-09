@@ -32,18 +32,28 @@ public class PushController : ControllerBase
         });
     }
 
-    // PUT: api/push/settings
-    [HttpPut("settings")]
+    // GET: api/push/devices?deviceId=...
+    [HttpGet("devices")]
     [AuthorizeToken]
-    public async Task<IActionResult> PutSettings(PushSettingsDto dto)
+    public async Task<ActionResult<IReadOnlyList<PushDeviceDto>>> GetDevices([FromQuery] string? deviceId)
     {
-        var updated = await _subscriptionService.SetAccountEnabledAsync(dto.Enabled, HttpContext.RequestAborted);
-        if (!updated)
+        var devices = await _subscriptionService.GetDevicesAsync(deviceId, HttpContext.RequestAborted);
+        return Ok(devices.Select(device => new PushDeviceDto
         {
-            return NotFound();
-        }
+            Id = device.Id,
+            IsCurrent = device.IsCurrent,
+            EnrolledAt = device.CreatedAt,
+            LastUpdatedAt = device.UpdatedAt
+        }).ToList());
+    }
 
-        return Ok(new PushSettingsDto { Enabled = dto.Enabled });
+    // DELETE: api/push/devices/{id}
+    [HttpDelete("devices/{id}")]
+    [AuthorizeToken]
+    public async Task<IActionResult> RevokeDevice(string id)
+    {
+        var revoked = await _subscriptionService.RevokeDeviceAsync(id, HttpContext.RequestAborted);
+        return revoked ? NoContent() : NotFound();
     }
 
     // PUT: api/push/category-alerts
@@ -111,9 +121,12 @@ public class PushStatusDto
     public bool CategoryAlertsEnabled { get; set; }
 }
 
-public class PushSettingsDto
+public class PushDeviceDto
 {
-    public bool Enabled { get; set; }
+    public string Id { get; set; } = string.Empty;
+    public bool IsCurrent { get; set; }
+    public DateTime EnrolledAt { get; set; }
+    public DateTime LastUpdatedAt { get; set; }
 }
 
 public class PushCategoryAlertsDto

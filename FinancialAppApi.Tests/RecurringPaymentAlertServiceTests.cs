@@ -12,8 +12,9 @@ public class RecurringPaymentAlertServiceTests
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { CycleDay = 28 });
-        context.RecurringPayments.Add(MonthlyHousehold());
-        context.Transactions.Add(new Transaction
+        var payment = MonthlyHousehold();
+        context.RecurringPayments.Add(payment);
+        var settlement = new Transaction
         {
             Id = "household-payearly",
             Date = new DateTime(2026, 7, 25),
@@ -23,7 +24,10 @@ public class RecurringPaymentAlertServiceTests
             LedgerCategory = "Stability",
             RecurringPaymentId = "household",
             RecurringOccurrenceDate = new DateOnly(2026, 7, 28)
-        });
+        };
+        context.Transactions.Add(settlement);
+        context.RecurringPaymentOccurrences.Add(
+            PaidOccurrence(payment, new DateOnly(2026, 7, 28), settlement));
         await context.SaveChangesAsync();
 
         var alerts = await NewService(context, new DateTimeOffset(2026, 7, 28, 12, 0, 0, TimeSpan.Zero))
@@ -32,12 +36,19 @@ public class RecurringPaymentAlertServiceTests
         Assert.Empty(alerts);
     }
 
+    // Untagged pre-ledger history is fenced off by OccurrenceTrackingStartDate, not matched by
+    // posting date. Occurrences before that date are never materialised at all, so a bill the
+    // user settled long before the occurrence ledger existed cannot be nagged about now -- which
+    // is the invariant the old posting-date fallback existed to protect.
     [Fact]
-    public async Task GetSubscriptionAlertsAsync_UntaggedLegacyTransactionStillSettlesItsPostingCycle()
+    public async Task GetSubscriptionAlertsAsync_DoesNotAlertForOccurrencesBeforeTrackingStarted()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { CycleDay = 28 });
-        context.RecurringPayments.Add(MonthlyHousehold());
+        var payment = MonthlyHousehold();
+        payment.StartDate = "2026-01-28";
+        payment.OccurrenceTrackingStartDate = new DateOnly(2026, 7, 29);
+        context.RecurringPayments.Add(payment);
         context.Transactions.Add(new Transaction
         {
             Id = "household-legacy",
@@ -92,8 +103,9 @@ public class RecurringPaymentAlertServiceTests
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
-        context.RecurringPayments.Add(AnnualInsurance("2029-05-15"));
-        context.Transactions.Add(new Transaction
+        var payment = AnnualInsurance("2029-05-15");
+        context.RecurringPayments.Add(payment);
+        var settlement = new Transaction
         {
             Id = "insurance-payearly",
             Date = new DateTime(2029, 5, 10),
@@ -103,7 +115,10 @@ public class RecurringPaymentAlertServiceTests
             LedgerCategory = "Stability",
             RecurringPaymentId = "insurance",
             RecurringOccurrenceDate = new DateOnly(2029, 5, 15)
-        });
+        };
+        context.Transactions.Add(settlement);
+        context.RecurringPaymentOccurrences.Add(
+            PaidOccurrence(payment, new DateOnly(2029, 5, 15), settlement));
         await context.SaveChangesAsync();
 
         var alerts = await NewService(context, new DateTimeOffset(2029, 5, 15, 12, 0, 0, TimeSpan.Zero))
@@ -111,6 +126,27 @@ public class RecurringPaymentAlertServiceTests
 
         Assert.Empty(alerts);
     }
+
+    // Settling a bill writes the occurrence row in the same save as the transaction
+    // (TransactionPersistenceService does both). Seeding only the transaction models a state the
+    // app cannot reach, and the ledger would rightly report the occurrence as still pending.
+    private static RecurringPaymentOccurrence PaidOccurrence(
+        RecurringPayment payment,
+        DateOnly date,
+        Transaction settledBy) => new()
+    {
+        Id = $"occ-{payment.Id}-{date:yyyyMMdd}",
+        RecurringPaymentId = payment.Id,
+        OccurrenceDate = date,
+        Name = payment.Name,
+        ScheduledAmount = Math.Abs(payment.Amount),
+        Category = payment.Category,
+        LedgerCategory = payment.LedgerCategory,
+        PaymentMode = payment.PaymentMode,
+        Status = RecurringOccurrenceStatus.Paid,
+        PaidDate = DateOnly.FromDateTime(settledBy.Date),
+        SettlementTransactionId = settledBy.Id
+    };
 
     private static RecurringPayment MonthlyHousehold() => new()
     {

@@ -24,9 +24,23 @@ public sealed class CategoryLimitAlertMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
+        // Resolved here, while the request scope is certainly alive, so the callback can read the
+        // flag without touching request services after completion. Instantiating a DbContext does
+        // not open a connection, and every request this middleware can act on resolves one anyway.
+        var requestDbContext = context.RequestServices.GetRequiredService<AppDbContext>();
+
         context.Response.OnCompleted(async () =>
         {
             if (!context.Items.TryGetValue("UserId", out var value) || value is not string userId)
+            {
+                return;
+            }
+
+            // Nothing this request wrote can have produced a crossing. An event left incomplete by
+            // an earlier interrupted request is not chased here -- the scheduled dispatch is the
+            // documented recovery path, and querying for one on every response is what this skip
+            // exists to avoid.
+            if (!requestDbContext.HasCapturedCategoryLimitEvaluations)
             {
                 return;
             }

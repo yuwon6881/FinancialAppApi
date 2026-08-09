@@ -28,6 +28,11 @@ public class Transaction : IUserOwnedEntity
     [Required]
     public decimal Amount { get; set; }
 
+    // Null is a legacy salary whose recovery intent was never recorded; zero is explicitly
+    // ordinary income; a positive value is the extra Stability reimbursement the server actually
+    // applied after clamping the request against the live shortfall.
+    public decimal? StabilityRecoveryTopUpAmount { get; set; }
+
     // Denormalized reference to the RecurringPayment this transaction was generated from, if any.
     // Intentionally not a real FK: it must survive the parent RecurringPayment being deleted so
     // historical cycles can still be identified as subscription payments.

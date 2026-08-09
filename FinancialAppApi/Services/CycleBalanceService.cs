@@ -102,9 +102,24 @@ public class CycleBalanceService
                         transaction.Date < cycleEndExclusive)
                     .ToList();
 
+                var stabilityOpening = stability;
+                var stabilityRunning = stabilityOpening;
+                var stabilityPeak = stabilityOpening;
+                var stabilityWithdrawn = 0m;
+                foreach (var transaction in cycleTxs
+                             .OrderBy(t => t.Date)
+                             .ThenBy(t => t.PostedAt)
+                             .ThenBy(t => t.Id, StringComparer.Ordinal))
+                {
+                    var change = CategoryAttributionService.GetCategoryAmount(transaction, "Stability");
+                    stabilityRunning += change;
+                    stabilityPeak = Math.Max(stabilityPeak, stabilityRunning);
+                    stabilityWithdrawn += Math.Max(0m, -change);
+                }
+
                 essentials += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Essentials"));
                 growth += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Growth"));
-                stability += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Stability"));
+                stability = stabilityRunning;
                 rewards += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Rewards"));
 
                 current = new CycleBalance
@@ -114,6 +129,8 @@ public class CycleBalanceService
                     EssentialsBalance = essentials,
                     GrowthBalance = growth,
                     StabilityBalance = stability,
+                    StabilityPeakBalance = stabilityPeak,
+                    StabilityWithdrawnAmount = stabilityWithdrawn,
                     RewardsBalance = rewards
                 };
                 _context.CycleBalances.Add(current);
