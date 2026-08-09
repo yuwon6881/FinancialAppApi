@@ -368,26 +368,6 @@ public sealed class DocumentVaultService
             .ToListAsync(ct);
     }
 
-    public async Task<(byte[] Data, string ContentType, string FileName)?> GetContentAsync(
-        int id,
-        CancellationToken ct = default)
-    {
-        var doc = await _context.VaultDocuments.FirstOrDefaultAsync(d => d.Id == id, ct);
-        if (doc == null) return null;
-
-        try
-        {
-            var data = await _store.DownloadAsync(doc.StorageObjectPath, ct);
-            if (data == null) return null;
-            return (data, doc.ContentType, doc.OriginalFileName);
-        }
-        catch (DocumentVaultStoreException ex)
-        {
-            _logger.LogError(ex, "Failed to download GCS object {ObjectPath} for VaultDocument {Id}.", doc.StorageObjectPath, doc.Id);
-            return null;
-        }
-    }
-
     public async Task<VaultDocumentDto?> UpdateAsync(
         int id,
         int? taxYear,
@@ -782,15 +762,13 @@ public sealed class DocumentVaultService
         {
             foreach (var document in documents)
             {
-                var data = await _store.DownloadAsync(document.StorageObjectPath, ct);
-                if (data == null)
-                {
-                    throw new DocumentVaultStoreException($"The stored document {document.Id} could not be found.");
-                }
                 var safeName = Path.GetFileName(document.OriginalFileName);
                 var entry = archive.CreateEntry($"{document.TaxYear}/{document.Id}-{safeName}", CompressionLevel.Fastest);
                 await using var entryStream = entry.Open();
-                await entryStream.WriteAsync(data, ct);
+                if (!await _store.DownloadToAsync(document.StorageObjectPath, entryStream, ct))
+                {
+                    throw new DocumentVaultStoreException($"The stored document {document.Id} could not be found.");
+                }
             }
         }
     }

@@ -286,14 +286,12 @@ public class RecurringPaymentPayEarlyService
 
         var today = _financialClock.Today;
 
-        var result = new Dictionary<string, DateOnly>(active.Count);
-        foreach (var payment in active)
-        {
-            var occurrence = await _occurrenceLedger.GetNextPendingAsync(
-                payment, today, includeFrom: true, cancellationToken);
-            if (occurrence != null) result[payment.Id] = occurrence.OccurrenceDate;
-        }
-        return result;
+        var occurrences = await _occurrenceLedger.GetNextPendingAsync(
+            active, today, includeFrom: true, cancellationToken);
+        return occurrences.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.OccurrenceDate,
+            StringComparer.Ordinal);
     }
 
     private static string BuildClientTransactionId(string clientKey)

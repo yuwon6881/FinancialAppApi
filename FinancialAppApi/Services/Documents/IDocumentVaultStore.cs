@@ -9,6 +9,7 @@ public interface IDocumentVaultStore
 {
     Task UploadAsync(string objectPath, byte[] data, string contentType, CancellationToken ct = default);
     Task<byte[]?> DownloadAsync(string objectPath, CancellationToken ct = default);
+    Task<bool> DownloadToAsync(string objectPath, Stream destination, CancellationToken ct = default);
     Task DeleteIfExistsAsync(string objectPath, CancellationToken ct = default);
     bool IsConfigured { get; }
 }

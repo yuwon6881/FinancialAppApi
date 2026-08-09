@@ -109,6 +109,14 @@ public sealed class ConditionalGetMiddleware
         {
             return false;
         }
+        var path = context.Request.Path.Value;
+        if (path != null &&
+            (path.Equals("/api/documents/export", StringComparison.OrdinalIgnoreCase)
+             || (path.StartsWith("/api/documents/", StringComparison.OrdinalIgnoreCase)
+                 && path.EndsWith("/content", StringComparison.OrdinalIgnoreCase))))
+        {
+            return false;
+        }
         return context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase);
     }
 

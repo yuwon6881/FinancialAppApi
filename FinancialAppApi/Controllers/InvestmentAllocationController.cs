@@ -16,7 +16,7 @@ public sealed class InvestmentAllocationController(
 {
     [HttpGet("allocation")]
     public async Task<ActionResult<InvestmentAllocationOverviewDto>> GetAllocation()
-        => Ok((await portfolioService.GetPortfolioAsync("1m", HttpContext.RequestAborted)).Allocation);
+        => Ok(await portfolioService.GetAllocationAsync(HttpContext.RequestAborted));
 
     [HttpPut("allocation/plan")]
     public async Task<ActionResult<InvestmentPlanDto>> UpdatePlan(InvestmentPlanMutationDto dto)

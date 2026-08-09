@@ -1,10 +1,45 @@
 using FinancialAppApi.Models;
 using FinancialAppApi.Services.Investments;
+using System.Text.Json;
 
 namespace FinancialAppApi.Tests;
 
 public sealed class InvestmentPortfolioServiceTests
 {
+    [Fact]
+    public async Task GetAllocationAsync_MatchesTheFullPortfolioAllocation()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "MYR" };
+        var instrument = new InvestmentInstrument
+        {
+            Symbol = "FUND", Name = "Fund", Type = "ETF", Currency = "MYR", IsCustom = true,
+            AllocationSleeve = "USEquity"
+        };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+        context.InvestmentCashFlows.Add(new InvestmentCashFlow
+        {
+            AccountId = account.Id, Currency = "MYR", Type = "Deposit",
+            Amount = 100m, Date = new DateOnly(2026, 7, 1)
+        });
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+            Type = "Buy", TradeDate = new DateOnly(2026, 7, 2), Units = 5m,
+            UnitPrice = 10m, CashAmount = 50m
+        });
+        await context.SaveChangesAsync();
+
+        var service = NewService(context);
+        var portfolio = await service.GetPortfolioAsync("1m", CancellationToken.None);
+        var allocation = await service.GetAllocationAsync(CancellationToken.None);
+
+        Assert.Equal(JsonSerializer.Serialize(portfolio.Allocation), JsonSerializer.Serialize(allocation));
+    }
+
     [Fact]
     public async Task EndOfDayClose_ConvertsHoldingAndAddsSettlementCashWithoutEarlyRounding()
     {

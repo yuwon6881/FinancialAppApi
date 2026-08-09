@@ -134,7 +134,7 @@ public sealed record InvestmentTransactionDto(
     decimal Taxes,
     DateTime CreatedAt);
 
-public sealed class InvestmentPortfolioService(
+public sealed partial class InvestmentPortfolioService(
     AppDbContext context,
     InvestmentAccountingService accounting,
     IMarketDataProvider provider,
@@ -142,9 +142,8 @@ public sealed class InvestmentPortfolioService(
 {
     private readonly MarketDataSeriesResolver seriesResolver = new(provider.Descriptor);
 
-    public async Task<InvestmentPortfolioDto> GetPortfolioAsync(
-        string range,
-        CancellationToken cancellationToken)
+    private async Task<InvestmentPortfolioDto> BuildPortfolioAsync(
+        string range, bool includeChart, CancellationToken cancellationToken)
     {
         var appCurrency = (await context.FinancialSettings.AsNoTracking()
                 .Select(value => value.Currency)
@@ -407,7 +406,8 @@ public sealed class InvestmentPortfolioService(
             returnFlows.Add(new DatedInvestmentFlow(flow.Date, -amountApp));
         }
 
-        var chart = BuildChart(range, transactions, cashFlows, instruments, references, priceBars, fxBars, appCurrency);
+        var chart = BuildChartIfRequested(
+            includeChart, range, transactions, cashFlows, instruments, references, priceBars, fxBars, appCurrency);
         var latestFetchedAt = holdings.Where(value => value.PriceFetchedAt is not null)
             .Select(value => value.PriceFetchedAt)
             .Max();

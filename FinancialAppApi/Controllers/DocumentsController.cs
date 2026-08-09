@@ -17,10 +17,12 @@ namespace FinancialAppApi.Controllers;
 public class DocumentsController : ControllerBase
 {
     private readonly DocumentVaultService _service;
+    private readonly DocumentContentService _contentService;
 
-    public DocumentsController(DocumentVaultService service)
+    public DocumentsController(DocumentVaultService service, DocumentContentService contentService)
     {
         _service = service;
+        _contentService = contentService;
     }
 
 
@@ -168,16 +170,35 @@ public class DocumentsController : ControllerBase
     [HttpGet("{id}/content")]
     public async Task<IActionResult> GetContent(int id, CancellationToken ct)
     {
-        var result = await _service.GetContentAsync(id, ct);
-        if (result == null) return NotFound();
+        var document = await _contentService.GetMetadataAsync(id, ct);
+        if (document == null) return NotFound();
+
+        var etag = $"\"{document.Sha256}\"";
+        Response.Headers.ETag = etag;
+        Response.Headers.CacheControl = "private, no-cache";
+        if (MatchesIfNoneMatch(Request.Headers.IfNoneMatch, etag))
+            return StatusCode(StatusCodes.Status304NotModified);
+
+        var data = await _contentService.DownloadAsync(document, ct);
+        if (data == null) return NotFound();
 
         // The browser PWA opens this endpoint directly in its PDF/image viewer. Mark the
         // response inline so mobile Chrome does not treat the authenticated preview as a
         // download or fail while opening a blob-backed viewer. The filename is still exposed
         // for the download helper, which reads Content-Disposition before saving the file.
-        var safeFileName = result.Value.FileName.Replace("\"", string.Empty, StringComparison.Ordinal);
-        Response.Headers.ContentDisposition = $"inline; filename=\"{safeFileName}\"; filename*=UTF-8''{Uri.EscapeDataString(result.Value.FileName)}";
-        return File(result.Value.Data, result.Value.ContentType, enableRangeProcessing: true);
+        var safeFileName = document.FileName.Replace("\"", string.Empty, StringComparison.Ordinal);
+        Response.Headers.ContentDisposition = $"inline; filename=\"{safeFileName}\"; filename*=UTF-8''{Uri.EscapeDataString(document.FileName)}";
+        return File(data, document.ContentType, enableRangeProcessing: true);
+    }
+
+    private static bool MatchesIfNoneMatch(IEnumerable<string> values, string etag)
+    {
+        static string StripWeak(string value) => value.StartsWith("W/", StringComparison.Ordinal)
+            ? value[2..]
+            : value;
+        return values
+            .SelectMany(value => value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            .Any(candidate => candidate == "*" || StripWeak(candidate) == StripWeak(etag));
     }
 
     [HttpPost("export-selected")]

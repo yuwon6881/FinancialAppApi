@@ -8,6 +8,27 @@ namespace FinancialAppApi.Tests;
 public class TransactionQueryServiceTests
 {
     [Fact]
+    public void ProjectCycleTransactions_MatchesCycleFilteringAndCanonicalOrdering()
+    {
+        var transactions = new List<Transaction>
+        {
+            NewTransaction("older", "Older", "Food", "Essentials", -1m,
+                postedAt: new DateTime(2026, 7, 3, 8, 0, 0, DateTimeKind.Utc), date: new DateOnly(2026, 7, 3)),
+            NewTransaction("newer", "Newer", "Food", "Essentials", -2m,
+                postedAt: new DateTime(2026, 7, 3, 9, 0, 0, DateTimeKind.Utc), date: new DateOnly(2026, 7, 3)),
+            NewTransaction("discarded", "Discarded", "Other", "Discarded", 0m,
+                date: new DateOnly(2026, 7, 4)),
+            NewTransaction("outside", "Outside", "Food", "Essentials", -3m,
+                date: new DateOnly(2026, 8, 3)),
+        };
+
+        var projected = TransactionQueryService.ProjectCycleTransactions(
+            transactions, 2026, 7, cycleDay: 1);
+
+        Assert.Equal(["newer", "older"], projected.Items.Select(item => item.Id));
+    }
+
+    [Fact]
     public async Task GetTransactionsAsync_AllModeReturnsPagedFilteredResults()
     {
         await using var context = TestHelpers.NewInMemoryContext();

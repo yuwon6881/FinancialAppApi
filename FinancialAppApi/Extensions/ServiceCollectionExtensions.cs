@@ -7,6 +7,7 @@ using FinancialAppApi.Services;
 using FinancialAppApi.Services.Push;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.ResponseCompression;
+using Microsoft.Net.Http.Headers;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using OpenTelemetry.Trace;
@@ -95,7 +96,8 @@ public static class ServiceCollectionExtensions
                 policy.WithOrigins(corsOrigins)
                       .AllowAnyHeader()
                       .AllowAnyMethod()
-                      .WithExposedHeaders(AuthCookieService.CsrfHeaderName)
+                      .WithExposedHeaders(AuthCookieService.CsrfHeaderName, HeaderNames.ETag)
+                      .SetPreflightMaxAge(TimeSpan.FromMinutes(10))
                       .AllowCredentials();
             }
             else if (environment.IsDevelopment())
@@ -105,7 +107,8 @@ public static class ServiceCollectionExtensions
                 policy.SetIsOriginAllowed(origin => true)
                       .AllowAnyHeader()
                       .AllowAnyMethod()
-                      .WithExposedHeaders(AuthCookieService.CsrfHeaderName)
+                      .WithExposedHeaders(AuthCookieService.CsrfHeaderName, HeaderNames.ETag)
+                      .SetPreflightMaxAge(TimeSpan.FromMinutes(10))
                       .AllowCredentials();
             }
             else
@@ -243,6 +246,7 @@ public static class ServiceCollectionExtensions
         });
         services.AddSingleton<IDocumentVaultStore, GcsDocumentVaultStore>();
         services.AddScoped<DocumentVaultService>();
+        services.AddScoped<DocumentContentService>();
         services.AddScoped<VaultAmountExtractor>();
         services.Configure<DocumentVaultOptions>(configuration.GetSection("DocumentVault"));
 

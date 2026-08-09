@@ -1,6 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
 using FinancialAppApi.Database;
+using FinancialAppApi.Models;
+using FinancialAppApi.Services.Documents;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace FinancialAppApi.Tests.Integration;
 
@@ -119,6 +122,47 @@ public class ConditionalGetIntegrationTests : IntegrationTestBase
         var second = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.NotModified, second.StatusCode);
+    }
+
+    [Fact]
+    public async Task DocumentContent_UsesStoredHashAndSkipsStorageForA304()
+    {
+        var client = await CreateSignedInClientAsync();
+        var documentId = 0;
+        await Factory.WithDbContextAsync(async db =>
+        {
+            var document = new VaultDocument
+            {
+                OriginalFileName = "receipt.txt",
+                ContentType = "text/plain",
+                SizeBytes = 7,
+                TaxYear = 2026,
+                ReliefCategory = "other",
+                AmountCurrency = "MYR",
+                AmountStatus = "Confirmed",
+                StorageObjectPath = "vault/receipt.txt",
+                Sha256 = "stored-sha256",
+                UploadedAt = DateTime.UtcNow,
+                RetentionUntil = new DateOnly(2033, 12, 31)
+            };
+            db.VaultDocuments.Add(document);
+            await db.SaveChangesAsync();
+            documentId = document.Id;
+        });
+        var store = (FakeDocumentVaultStore)Factory.Services.GetRequiredService<IDocumentVaultStore>();
+        store.Objects["vault/receipt.txt"] = "content"u8.ToArray();
+
+        var first = await client.GetAsync($"/api/documents/{documentId}/content");
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal("\"stored-sha256\"", first.Headers.ETag?.ToString());
+        Assert.Equal(1, store.DownloadCalls);
+
+        var request = new HttpRequestMessage(HttpMethod.Get, $"/api/documents/{documentId}/content");
+        request.Headers.TryAddWithoutValidation("If-None-Match", "\"stored-sha256\"");
+        var second = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.NotModified, second.StatusCode);
+        Assert.Equal(1, store.DownloadCalls);
     }
 
     [Fact]

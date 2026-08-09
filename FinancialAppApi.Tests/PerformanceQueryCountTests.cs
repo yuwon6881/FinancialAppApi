@@ -122,6 +122,68 @@ public sealed class PerformanceQueryCountTests
 
     [Theory]
     [InlineData(1)]
+    [InlineData(50)]
+    public async Task RecurringList_NextOccurrenceQueryCountIsConstant(int paymentCount)
+    {
+        await using var fixture = await SqliteFixture.CreateAsync();
+        var today = new DateOnly(2026, 7, 10);
+        for (var index = 0; index < paymentCount; index++)
+        {
+            var id = $"rp-{index}";
+            fixture.Context.RecurringPayments.Add(new RecurringPayment
+            {
+                Id = id,
+                UserId = TestHelpers.DefaultUserId,
+                Name = $"Payment {index}",
+                Amount = 10m,
+                Category = "Bills",
+                LedgerCategory = "Essentials",
+                Frequency = "Monthly",
+                StartDate = "2026-01-01",
+                DueDate = 15,
+                PaymentMode = RecurringPaymentMode.Manual,
+                OccurrenceTrackingStartDate = today,
+                Active = true
+            });
+            fixture.Context.RecurringPaymentOccurrences.Add(new RecurringPaymentOccurrence
+            {
+                Id = $"occ-{id}-20260715",
+                UserId = TestHelpers.DefaultUserId,
+                RecurringPaymentId = id,
+                OccurrenceDate = new DateOnly(2026, 7, 15),
+                Name = $"Payment {index}",
+                ScheduledAmount = 10m,
+                Category = "Bills",
+                LedgerCategory = "Essentials",
+                PaymentMode = RecurringPaymentMode.Manual,
+                Status = RecurringOccurrenceStatus.Pending
+            });
+        }
+        await fixture.Context.SaveChangesAsync();
+        fixture.Context.ChangeTracker.Clear();
+        fixture.Counter.Reset();
+
+        var clock = new FinancialClock(
+            TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+            new FixedTimeProvider(new DateTimeOffset(2026, 7, 10, 0, 0, 0, TimeSpan.Zero)));
+        var occurrenceDates = new RecurringOccurrenceService(
+            NullLogger<RecurringOccurrenceService>.Instance);
+        var projections = await new RecurringPaymentService(fixture.Context)
+            .GetRecurringPaymentsAsync();
+        var service = new RecurringPaymentPayEarlyService(
+            fixture.Context,
+            occurrenceDates,
+            new CycleBalanceService(fixture.Context),
+            clock);
+
+        var result = await service.GetNextUnpaidOccurrencesAsync(projections);
+
+        Assert.Equal(paymentCount, result.Count);
+        Assert.Equal(2, fixture.Counter.CommandCount);
+    }
+
+    [Theory]
+    [InlineData(1)]
     [InlineData(2_000)]
     public async Task InvestmentTransactionValidation_ReusesThreeQuerySnapshotAtAnyHistorySize(
         int historySize)
@@ -248,5 +310,10 @@ public sealed class PerformanceQueryCountTests
             CommandCount++;
             return ValueTask.FromResult(result);
         }
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
     }
 }

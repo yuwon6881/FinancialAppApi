@@ -130,6 +130,57 @@ public sealed class RecurringOccurrenceLedgerService
         return null;
     }
 
+    public async Task<Dictionary<string, RecurringPaymentOccurrence>> GetNextPendingAsync(
+        IReadOnlyCollection<RecurringPayment> payments,
+        DateOnly from,
+        bool includeFrom,
+        CancellationToken cancellationToken = default)
+    {
+        var active = payments.Where(payment => payment.Active).ToList();
+        if (active.Count == 0) return [];
+
+        var firstCursor = includeFrom ? from : from.AddDays(1);
+        var earliest = active.Min(payment => firstCursor < TrackingStart(payment)
+            ? TrackingStart(payment)
+            : firstCursor);
+        var ids = active.Select(payment => payment.Id).ToList();
+        foreach (var occurrence in await _context.RecurringPaymentOccurrences
+                     .Where(occurrence => ids.Contains(occurrence.RecurringPaymentId)
+                         && occurrence.OccurrenceDate >= earliest)
+                     .ToListAsync(cancellationToken))
+        {
+            Remember(occurrence);
+        }
+        foreach (var payment in active)
+        {
+            var cursor = firstCursor < TrackingStart(payment) ? TrackingStart(payment) : firstCursor;
+            _loaded.Add((payment.Id, cursor, DateOnly.MaxValue));
+        }
+
+        var result = new Dictionary<string, RecurringPaymentOccurrence>(active.Count);
+        foreach (var payment in active)
+        {
+            var cursor = firstCursor < TrackingStart(payment) ? TrackingStart(payment) : firstCursor;
+            for (var index = 0; index < MaxOccurrencesToScan; index++)
+            {
+                var date = _dates.GetNextOccurrenceOnOrAfter(payment, cursor);
+                if (date == null) break;
+                var key = (payment.Id, date.Value);
+                var occurrence = _known.TryGetValue(key, out var known)
+                    ? known
+                    : Materialize(payment, date.Value);
+                if (occurrence.Status == RecurringOccurrenceStatus.Pending)
+                {
+                    result[payment.Id] = occurrence;
+                    break;
+                }
+                cursor = date.Value.AddDays(1);
+            }
+        }
+        await SaveIfChangedAsync(cancellationToken);
+        return result;
+    }
+
     public async Task PreserveThroughTodayAndResetFutureAsync(
         RecurringPayment payment,
         bool preserveThroughToday = true,

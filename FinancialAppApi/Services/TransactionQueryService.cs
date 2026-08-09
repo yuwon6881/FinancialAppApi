@@ -28,7 +28,7 @@ public sealed record TransactionListResult(
 
 public sealed record CsvExportResult(byte[] Bytes, string FileName);
 
-public class TransactionQueryService
+public partial class TransactionQueryService
 {
     private readonly AppDbContext _context;
     private readonly FinancialClock _financialClock;

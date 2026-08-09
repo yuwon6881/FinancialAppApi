@@ -62,6 +62,14 @@ public sealed class GcsDocumentVaultStore : IDocumentVaultStore
 
     public async Task<byte[]?> DownloadAsync(string objectPath, CancellationToken ct = default)
     {
+        await using var destination = new MemoryStream();
+        return await DownloadToAsync(objectPath, destination, ct)
+            ? destination.ToArray()
+            : null;
+    }
+
+    public async Task<bool> DownloadToAsync(string objectPath, Stream destination, CancellationToken ct = default)
+    {
         if (!IsConfigured)
         {
             throw new DocumentVaultStoreException("Document vault is not configured.");
@@ -76,11 +84,12 @@ public sealed class GcsDocumentVaultStore : IDocumentVaultStore
 
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
-            return null;
+            return false;
         }
 
         await EnsureSuccessAsync(response, "download document", ct);
-        return await response.Content.ReadAsByteArrayAsync(ct);
+        await response.Content.CopyToAsync(destination, ct);
+        return true;
     }
 
     public async Task DeleteIfExistsAsync(string objectPath, CancellationToken ct = default)
