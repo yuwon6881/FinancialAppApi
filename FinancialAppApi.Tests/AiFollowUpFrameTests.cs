@@ -652,11 +652,17 @@ public class AiFollowUpFrameTests
     public async Task FreshShortFinancialQuestionDoesNotInheritStaleTransactionFilters()
     {
         await using var context = SeededContext();
-        context.Transactions.Add(new Transaction
-        {
-            Id = "salary", Date = new DateTime(2026, 7, 2, 12, 0, 0, DateTimeKind.Utc),
-            Description = "Salary", Category = "Income", LedgerCategory = "Income", Amount = 1000
-        });
+        context.Transactions.AddRange(
+            new Transaction
+            {
+                Id = "salary", Date = new DateTime(2026, 7, 2, 12, 0, 0, DateTimeKind.Utc),
+                Description = "Salary", Category = "Income", LedgerCategory = "Income", Amount = 1000
+            },
+            new Transaction
+            {
+                Id = "reimbursement", Date = new DateTime(2026, 7, 3, 12, 0, 0, DateTimeKind.Utc),
+                Description = "Road tax reimbursement", Category = "Reimbursement", LedgerCategory = "Stability", Amount = 520
+            });
         await context.SaveChangesAsync();
         var (service, handler) = NewService(context);
 
@@ -664,10 +670,11 @@ public class AiFollowUpFrameTests
         var fresh = await service.ChatAsync(new AiChatRequest("show my income", [], filtered.Response.State));
 
         Assert.Contains("Salary", handler.UserContent);
+        Assert.DoesNotContain("Road tax reimbursement", handler.UserContent);
         Assert.DoesNotContain("Jul Big", handler.UserContent);
         Assert.Null(fresh.Response.State!.LastSearchText);
         Assert.Null(fresh.Response.State.LastAmountThreshold);
-        Assert.Equal("inflow", fresh.Response.State.LastTransactionType);
+        Assert.Equal("income", fresh.Response.State.LastTransactionType);
     }
 
     [Fact]

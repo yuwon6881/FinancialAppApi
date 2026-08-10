@@ -30,7 +30,8 @@ public sealed record TransactionMutationRequest(
     string? RecurringPaymentId,
     int? WishlistItemId,
     string? RecurringOccurrenceDate = null,
-    string? StabilityRecoveryTopUpAmount = null);
+    string? StabilityRecoveryTopUpAmount = null,
+    string? StabilityReloadIntent = null);
 
 public sealed record TransactionMutationResult(
     TransactionMutationStatus Status,
@@ -106,6 +107,7 @@ public class TransactionPersistenceService
             LedgerCategory = ledgerValidation.LedgerCategory,
             Amount = amount,
             StabilityRecoveryTopUpAmount = requestedRecoveryTopUp,
+            StabilityReloadIntent = StabilityReloadIntent.Normalize(request.StabilityReloadIntent),
             RecurringPaymentId = request.RecurringPaymentId,
             WishlistItemId = request.WishlistItemId
         };
@@ -280,6 +282,7 @@ public class TransactionPersistenceService
         transaction.LedgerCategory = ledgerValidation.LedgerCategory;
         transaction.Amount = amount;
         transaction.StabilityRecoveryTopUpAmount = nextRecoveryTopUp;
+        transaction.StabilityReloadIntent = StabilityReloadIntent.Normalize(request.StabilityReloadIntent);
         transaction.RecurringPaymentId = request.RecurringPaymentId ?? transaction.RecurringPaymentId;
         transaction.WishlistItemId = request.WishlistItemId ?? transaction.WishlistItemId;
 
@@ -503,7 +506,11 @@ public class TransactionPersistenceService
         && string.Equals(left.RecurringPaymentId, right.RecurringPaymentId, StringComparison.Ordinal)
         && left.WishlistItemId == right.WishlistItemId
         && string.Equals(left.RecurringOccurrenceDate, right.RecurringOccurrenceDate, StringComparison.Ordinal)
-        && string.Equals(left.StabilityRecoveryTopUpAmount, right.StabilityRecoveryTopUpAmount, StringComparison.Ordinal);
+        && string.Equals(left.StabilityRecoveryTopUpAmount, right.StabilityRecoveryTopUpAmount, StringComparison.Ordinal)
+        && string.Equals(
+            StabilityReloadIntent.Normalize(left.StabilityReloadIntent),
+            StabilityReloadIntent.Normalize(right.StabilityReloadIntent),
+            StringComparison.Ordinal);
 
     private static bool MatchesRestoreRequest(
         Transaction existing,
@@ -538,7 +545,11 @@ public class TransactionPersistenceService
             && string.Equals(existing.RecurringPaymentId, request.RecurringPaymentId, StringComparison.Ordinal)
             && existing.WishlistItemId == request.WishlistItemId
             && existing.RecurringOccurrenceDate == requestOccurrence
-            && existing.StabilityRecoveryTopUpAmount == recoveryTopUp;
+            && existing.StabilityRecoveryTopUpAmount == recoveryTopUp
+            && string.Equals(
+                existing.StabilityReloadIntent,
+                StabilityReloadIntent.Normalize(request.StabilityReloadIntent),
+                StringComparison.Ordinal);
     }
 
     // Tags a new transaction with the exact recurrence-engine billing date it settles, when it
@@ -775,7 +786,7 @@ public class TransactionPersistenceService
         if (incomeAmount <= 0m) return 0m;
         var normalStability = incomeAmount * Math.Max(0m, setting.StabilityAlloc);
         var remainingAfterNormal = Math.Max(0m,
-            state.RecoverableCeiling - state.CurrentBalance - normalStability);
+            state.OutstandingObligation - normalStability);
         var otherShare = Math.Max(0m,
             setting.EssentialsAlloc + setting.GrowthAlloc + setting.RewardsAlloc);
         return Math.Floor(Math.Min(remainingAfterNormal, incomeAmount * otherShare) * 100m) / 100m;

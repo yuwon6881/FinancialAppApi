@@ -216,9 +216,10 @@ public partial class AiAssistantService
         CancellationToken cancellationToken) =>
         await ScopedTransactions(start, end, searchText, transactionIds).CountAsync(cancellationToken);
 
-    // Exact outflow total (absolute value of negative amounts, transfers excluded) over the full
-    // result set. The recovery loop uses this to replace a truncated approximate cycle total with
-    // a precise SUM computed in the database.
+    // Exact reportable outflow total over the full result set. The recovery loop uses this to
+    // replace a truncated approximate cycle total with a precise SUM computed in the database;
+    // keep the SQL predicates aligned with TransactionReportSemantics, including adjustments and
+    // discarded markers that must not affect report cash flow.
     private async Task<decimal> SumOutflowAsync(
         DateTime start,
         DateTime end,
@@ -227,7 +228,11 @@ public partial class AiAssistantService
         CancellationToken cancellationToken)
     {
         var total = await ScopedTransactions(start, end, searchText, transactionIds)
-            .Where(t => t.Amount < 0 && t.Category != "Transfer" && !t.LedgerCategory.StartsWith("Transfer:"))
+            .Where(t => t.Amount < 0 &&
+                t.Category.ToLower() != "transfer" &&
+                t.Category.ToLower() != "adjustment" &&
+                t.LedgerCategory.ToLower() != "discarded" &&
+                !t.LedgerCategory.ToLower().StartsWith("transfer:"))
             .SumAsync(t => (decimal?)t.Amount, cancellationToken);
         return Math.Abs(total ?? 0m);
     }

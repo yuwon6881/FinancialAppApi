@@ -749,10 +749,10 @@ public partial class AiAssistantService
                 transactions, threshold, sampleWasComplete: transactions.Count < MaxTransactionsPerRange);
         }
         // Superlative single-record ranking ("biggest transaction", "largest spending", "smallest
-        // purchase", "biggest deposit"). Exact over the loaded rows, transfers excluded, spending
-        // and income ranked separately -- so the model never has to eyeball a mixed sample (which
-        // let a transfer or inflow surface as the "biggest spending"). Amount-based, so suppressed
-        // in sensitive mode like the other magnitude metrics.
+        // purchase", "biggest deposit"). Exact over the loaded rows, transfers excluded, spending,
+        // all cash inflows, and ordinary income ranked separately -- so the model never has to
+        // eyeball a mixed sample. Amount-based, so suppressed in sensitive mode like the other
+        // magnitude metrics.
         if (!sensitiveMode
             && (queryPlan.NeedsTransactionDetail || queryPlan.NeedsCycleSummary)
             && WantsTopTransactions(queryPlan.QueryText))
@@ -767,11 +767,13 @@ public partial class AiAssistantService
                 {
                     date = g.Key,
                     inflow = g.Where(t => t.Amount > 0).Sum(t => t.Amount),
-                    outflow = Math.Abs(g.Where(t => t.Amount < 0).Sum(t => t.Amount))
+                    outflow = Math.Abs(g.Where(t => t.Amount < 0).Sum(t => t.Amount)),
+                    income = g.Where(t => TransactionReportSemantics.IsReportableIncome(t.Amount, t.Category, t.LedgerCategory)).Sum(t => t.Amount)
                 }).ToList();
             metrics["dailyExtremes"] = sensitiveMode || daily.Count == 0 ? null : new
             {
                 highestInflowDay = daily.OrderByDescending(d => d.inflow).First(),
+                highestIncomeDay = daily.OrderByDescending(d => d.income).First(),
                 highestOutflowDay = daily.OrderByDescending(d => d.outflow).First()
             };
         }
@@ -836,13 +838,19 @@ public partial class AiAssistantService
             // truncated; otherwise the in-memory sample sum is already complete.
             var recovered = perCycleRecoveredOutflow != null && perCycleRecoveredOutflow.ContainsKey(cycle);
             var outflow = recovered ? perCycleRecoveredOutflow![cycle] : Math.Abs(txs.Where(t => t.Amount < 0).Sum(t => t.Amount));
+            var inflow = txs.Where(t => t.Amount > 0).Sum(t => t.Amount);
+            var income = txs
+                .Where(t => TransactionReportSemantics.IsReportableIncome(t.Amount, t.Category, t.LedgerCategory))
+                .Sum(t => t.Amount);
             return new
             {
                 month = FinancialConstants.MonthAbbreviations[cycle.MonthIndex - 1],
                 year = cycle.Year,
-                inflow = txs.Where(t => t.Amount > 0).Sum(t => t.Amount),
+                income,
+                inflow,
+                otherInflow = inflow - income,
                 outflow,
-                net = txs.Where(t => t.Amount > 0).Sum(t => t.Amount) - outflow,
+                net = inflow - outflow,
                 exactOutflow = recovered
             };
         }).ToList();
@@ -931,7 +939,17 @@ public partial class AiAssistantService
                 .ToList();
 
             var recoveredExact = perCycleRecoveredOutflow != null && perCycleRecoveredOutflow.ContainsKey(cycle);
-            var income = nonTransferTxs.Where(t => t.Amount > 0).Sum(t => t.Amount);
+            var inflow = nonTransferTxs.Where(t => t.Amount > 0).Sum(t => t.Amount);
+            var income = nonTransferTxs
+                .Where(t => TransactionReportSemantics.IsReportableIncome(t.Amount, t.Category, t.LedgerCategory))
+                .Sum(t => t.Amount);
+            var otherInflowByCategory = nonTransferTxs
+                .Where(t => t.Amount > 0 && !TransactionReportSemantics.IsReportableIncome(t.Amount, t.Category, t.LedgerCategory))
+                .GroupBy(t => t.Category)
+                .Select(g => new { category = g.Key, amount = g.Sum(t => t.Amount) })
+                .OrderByDescending(x => x.amount)
+                .Take(8)
+                .ToList();
             var outflow = recoveredExact ? perCycleRecoveredOutflow![cycle] : Math.Abs(nonTransferTxs.Where(t => t.Amount < 0).Sum(t => t.Amount));
             summaries.Add(new
             {
@@ -940,8 +958,11 @@ public partial class AiAssistantService
                 label = range.label,
                 transactionCount = txs.Count,
                 income,
+                inflow,
+                otherInflow = inflow - income,
+                otherInflowByCategory,
                 outflow,
-                netChange = income - outflow,
+                netChange = inflow - outflow,
                 // True when this cycle's outflow/netChange came from an exact database SUM
                 // rather than the (possibly truncated) in-memory sample.
                 exactOutflow = recoveredExact,

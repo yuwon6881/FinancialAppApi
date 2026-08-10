@@ -25,6 +25,16 @@ public class AiAssistantHistoricalContextTests
         context.TransactionCategories.Add(new TransactionCategory { Id = "food", Name = "Food" });
         context.Transactions.AddRange(
             Transaction("old", new DateTime(2023, 3, 15, 12, 0, 0, DateTimeKind.Utc), "Old Cycle Coffee", -42),
+            new Transaction
+            {
+                Id = "old-salary", Date = new DateTime(2023, 3, 2, 12, 0, 0, DateTimeKind.Utc),
+                Description = "Old Cycle Salary", Category = "Salary", LedgerCategory = "Income", Amount = 100
+            },
+            new Transaction
+            {
+                Id = "old-reimbursement", Date = new DateTime(2023, 3, 3, 12, 0, 0, DateTimeKind.Utc),
+                Description = "Old Cycle Reimbursement", Category = "Reimbursement", LedgerCategory = "Stability", Amount = 25
+            },
             Transaction("new", new DateTime(2026, 7, 2, 12, 0, 0, DateTimeKind.Utc), "Newest Lunch", -99));
         await context.SaveChangesAsync();
 
@@ -42,6 +52,9 @@ public class AiAssistantHistoricalContextTests
         Assert.Contains("Old Cycle Coffee", handler.UserContent);
         Assert.DoesNotContain("Newest Lunch", handler.UserContent);
         Assert.Contains("\"month\":\"Mar\"", handler.UserContent);
+        Assert.Contains("\"income\":100", handler.UserContent);
+        Assert.Contains("\"inflow\":125", handler.UserContent);
+        Assert.Contains("\"otherInflow\":25", handler.UserContent);
         Assert.Contains("\"outflow\":42", handler.UserContent);
         Assert.Contains("\"aggregatesCoverAllTransactionsInRequestedCycles\":true", handler.UserContent);
         Assert.DoesNotContain("\"categoryLimits\"", handler.UserContent);

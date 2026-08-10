@@ -49,7 +49,8 @@ public sealed class CategoryLimitAlertProcessor
         // that could receive the alert: otherwise every crossing silently spends its milestone
         // against an event the dispatcher will immediately discard, and a user who turns push on
         // later in the cycle never hears about a category that already crossed.
-        var canDeliver = await _context.PushSubscriptions.AnyAsync(item => item.Enabled, cancellationToken);
+        var canDeliver = await _context.PushSubscriptions
+            .AnyAsync(item => item.Enabled && item.CategoryAlertsEnabled, cancellationToken);
         if (setting == null || !setting.CategoryLimitAlertsEnabled || !canDeliver)
         {
             _context.CategoryLimitAlertEvaluations.RemoveRange(evaluations);
@@ -210,8 +211,10 @@ public sealed class CategoryLimitAlertProcessor
             return new CategoryLimitAlertDispatchSummary(0, events.Count, 0);
         }
 
+        // Only the devices that asked for spending alerts. A phone opted into these while the
+        // desktop asked for bill reminders only means exactly one device receives this.
         var subscriptions = await _context.PushSubscriptions
-            .Where(subscription => subscription.Enabled)
+            .Where(subscription => subscription.Enabled && subscription.CategoryAlertsEnabled)
             .ToListAsync(cancellationToken);
         if (subscriptions.Count == 0)
         {
@@ -232,7 +235,8 @@ public sealed class CategoryLimitAlertProcessor
                 continue;
             }
 
-            foreach (var subscription in subscriptions.Where(item => item.Enabled))
+            // Re-tested per event because a send below can retire a token mid-loop.
+            foreach (var subscription in subscriptions.Where(item => item.Enabled && item.CategoryAlertsEnabled))
             {
                 if (await _context.CategoryLimitAlertDeliveries.AnyAsync(
                         item => item.EventId == alertEvent.Id && item.SubscriptionId == subscription.Id,
@@ -287,7 +291,12 @@ public sealed class CategoryLimitAlertProcessor
                 }
                 else if (result.Status == FcmSendStatus.InvalidOrUnregistered)
                 {
+                    // Retired token: off for every kind, so the invariant holds and no switch
+                    // keeps claiming this device receives something.
                     subscription.Enabled = false;
+                    subscription.BillRemindersEnabled = false;
+                    subscription.CategoryAlertsEnabled = false;
+                    subscription.FcmToken = string.Empty;
                     disabled++;
                     await _context.SaveChangesAsync(cancellationToken);
                 }

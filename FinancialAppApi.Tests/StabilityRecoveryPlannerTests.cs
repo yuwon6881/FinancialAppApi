@@ -3,105 +3,11 @@ using FinancialAppApi.Services.Stability;
 namespace FinancialAppApi.Tests;
 
 /// <summary>
-/// The emergency-fund recovery math. The two rules worth defending are that recovery aims at the
-/// fund's own high-water mark rather than the target (so it only ever asks back money that was
-/// really in there), and that the per-cycle requirement is anchored on the shortfall before this
-/// cycle's repayments (so it holds still while being funded, and still counts a drawdown made
-/// during the current cycle).
+/// The emergency-fund recovery math. The per-cycle requirement is anchored on the outstanding
+/// obligation before this cycle's repayments, so it holds still while being funded.
 /// </summary>
 public class StabilityRecoveryPlannerTests
 {
-    [Fact]
-    public void ComputeDrawdown_ReportsWhatWasSpentOutOfAFullyFundedPot()
-    {
-        var drawdown = StabilityRecoveryPlanner.ComputeDrawdown(
-            highWaterMark: 10000m, target: 10000m, currentBalance: 7000m,
-            lastDrawdownCycleKey: "2026-06", lastDrawdownAmount: 3000m);
-
-        Assert.True(drawdown.IsActive);
-        Assert.Equal(10000m, drawdown.RecoverableCeiling);
-        Assert.Equal(3000m, drawdown.OutstandingShortfall);
-    }
-
-    /// <summary>
-    /// Someone still filling the fund for the first time is at their own high-water mark, so there
-    /// is nothing to "put back" -- the ordinary Stability share is already doing that job.
-    /// </summary>
-    [Fact]
-    public void ComputeDrawdown_AsksNothingOfAFundThatHasOnlyEverGoneUp()
-    {
-        var drawdown = StabilityRecoveryPlanner.ComputeDrawdown(
-            highWaterMark: 2000m, target: 10000m, currentBalance: 2000m,
-            lastDrawdownCycleKey: null, lastDrawdownAmount: 0m);
-
-        Assert.False(drawdown.IsActive);
-        Assert.Equal(0m, drawdown.OutstandingShortfall);
-    }
-
-    [Fact]
-    public void ComputeDrawdown_RaisesTheMarkToTheLiveBalanceAtAnAllTimeHigh()
-    {
-        var drawdown = StabilityRecoveryPlanner.ComputeDrawdown(
-            highWaterMark: 4000m, target: 10000m, currentBalance: 4500m,
-            lastDrawdownCycleKey: null, lastDrawdownAmount: 0m);
-
-        Assert.Equal(4500m, drawdown.HighWaterMark);
-        Assert.Equal(0m, drawdown.OutstandingShortfall);
-    }
-
-    /// <summary>
-    /// Raising the target is a new savings ambition, not a drawdown. Without the min() against the
-    /// high-water mark, moving the target from 5,000 to 20,000 would immediately claim the user had
-    /// spent 15,000 they never had.
-    /// </summary>
-    [Fact]
-    public void ComputeDrawdown_DoesNotInventADrawdownWhenTheTargetIsRaised()
-    {
-        var drawdown = StabilityRecoveryPlanner.ComputeDrawdown(
-            highWaterMark: 5000m, target: 20000m, currentBalance: 5000m,
-            lastDrawdownCycleKey: null, lastDrawdownAmount: 0m);
-
-        Assert.Equal(5000m, drawdown.RecoverableCeiling);
-        Assert.False(drawdown.IsActive);
-    }
-
-    /// <summary>
-    /// An unset target must not switch recovery off. Taking the min against zero would silently
-    /// disable the whole feature for anyone who never picked a figure -- the same trap the income
-    /// split guards on the cap side.
-    /// </summary>
-    [Fact]
-    public void ComputeDrawdown_AimsAtTheHighWaterMarkWhenNoTargetIsSet()
-    {
-        var drawdown = StabilityRecoveryPlanner.ComputeDrawdown(
-            highWaterMark: 5000m, target: 0m, currentBalance: 3000m,
-            lastDrawdownCycleKey: "2026-06", lastDrawdownAmount: 2000m);
-
-        Assert.True(drawdown.IsActive);
-        Assert.Equal(5000m, drawdown.RecoverableCeiling);
-        Assert.Equal(2000m, drawdown.OutstandingShortfall);
-    }
-
-    [Fact]
-    public void ComputeDrawdown_StillAsksNothingOfAnUnfilledFundWithNoTarget()
-    {
-        var drawdown = StabilityRecoveryPlanner.ComputeDrawdown(
-            highWaterMark: 3000m, target: 0m, currentBalance: 3000m,
-            lastDrawdownCycleKey: null, lastDrawdownAmount: 0m);
-
-        Assert.False(drawdown.IsActive);
-    }
-
-    [Fact]
-    public void ComputeDrawdown_ClosesTheAskWhenTheTargetDropsBelowTheBalance()
-    {
-        var drawdown = StabilityRecoveryPlanner.ComputeDrawdown(
-            highWaterMark: 10000m, target: 3000m, currentBalance: 7000m,
-            lastDrawdownCycleKey: "2026-06", lastDrawdownAmount: 3000m);
-
-        Assert.False(drawdown.IsActive);
-    }
-
     [Theory]
     [InlineData("2026-06", "2026-06", 3)]
     [InlineData("2026-06", "2026-07", 2)]
@@ -119,7 +25,7 @@ public class StabilityRecoveryPlannerTests
     [Fact]
     public void ComputePace_FlagsAnElapsedWindowAsOverdueAndStillAsksForTheRemainder()
     {
-        var pace = StabilityRecoveryPlanner.ComputePace(Drawdown(800m), cyclesRemaining: -2, toppedUpThisCycle: 0m);
+        var pace = StabilityRecoveryPlanner.ComputePace(800m, cyclesRemaining: -2, toppedUpThisCycle: 0m);
 
         Assert.True(pace.IsOverdue);
         Assert.Equal(1, pace.CyclesRemaining);
@@ -129,13 +35,13 @@ public class StabilityRecoveryPlannerTests
     [Fact]
     public void ComputePace_DoesNotCallTheFinalCycleOverdue()
     {
-        Assert.False(StabilityRecoveryPlanner.ComputePace(Drawdown(800m), 1, 0m).IsOverdue);
+        Assert.False(StabilityRecoveryPlanner.ComputePace(800m, 1, 0m).IsOverdue);
     }
 
     [Fact]
     public void ComputePace_SpreadsTheShortfallAcrossTheWindow()
     {
-        var pace = StabilityRecoveryPlanner.ComputePace(Drawdown(3000m), cyclesRemaining: 3, toppedUpThisCycle: 0m);
+        var pace = StabilityRecoveryPlanner.ComputePace(3000m, cyclesRemaining: 3, toppedUpThisCycle: 0m);
 
         Assert.Equal(1000m, pace.RequiredThisCycle);
         Assert.Equal(1000m, pace.OutstandingThisCycle);
@@ -145,7 +51,7 @@ public class StabilityRecoveryPlannerTests
     public void ComputePace_RoundsTheRequirementUpSoTheWindowActuallyArrives()
     {
         // 100.00 / 3 = 33.333...; three cycles of 33.33 lands a cent short.
-        var pace = StabilityRecoveryPlanner.ComputePace(Drawdown(100m), cyclesRemaining: 3, toppedUpThisCycle: 0m);
+        var pace = StabilityRecoveryPlanner.ComputePace(100m, cyclesRemaining: 3, toppedUpThisCycle: 0m);
 
         Assert.Equal(33.34m, pace.RequiredThisCycle);
     }
@@ -157,8 +63,8 @@ public class StabilityRecoveryPlannerTests
     [Fact]
     public void ComputePace_HoldsTheRequirementStillAsItIsFunded()
     {
-        var beforeFunding = StabilityRecoveryPlanner.ComputePace(Drawdown(3000m), 3, toppedUpThisCycle: 0m);
-        var afterFunding = StabilityRecoveryPlanner.ComputePace(Drawdown(2000m), 3, toppedUpThisCycle: 1000m);
+        var beforeFunding = StabilityRecoveryPlanner.ComputePace(3000m, 3, toppedUpThisCycle: 0m);
+        var afterFunding = StabilityRecoveryPlanner.ComputePace(2000m, 3, toppedUpThisCycle: 1000m);
 
         Assert.Equal(beforeFunding.RequiredThisCycle, afterFunding.RequiredThisCycle);
         Assert.Equal(0m, afterFunding.OutstandingThisCycle);
@@ -167,7 +73,7 @@ public class StabilityRecoveryPlannerTests
     [Fact]
     public void ComputePace_AsksForTheWholeRemainderOnTheFinalCycle()
     {
-        var pace = StabilityRecoveryPlanner.ComputePace(Drawdown(1400m), cyclesRemaining: 1, toppedUpThisCycle: 0m);
+        var pace = StabilityRecoveryPlanner.ComputePace(1400m, cyclesRemaining: 1, toppedUpThisCycle: 0m);
 
         Assert.Equal(1400m, pace.RequiredThisCycle);
     }
@@ -175,7 +81,7 @@ public class StabilityRecoveryPlannerTests
     [Fact]
     public void ComputePace_NeverAsksForMoreThanIsActuallyMissing()
     {
-        var pace = StabilityRecoveryPlanner.ComputePace(Drawdown(200m), cyclesRemaining: 1, toppedUpThisCycle: 0m);
+        var pace = StabilityRecoveryPlanner.ComputePace(200m, cyclesRemaining: 1, toppedUpThisCycle: 0m);
 
         Assert.Equal(200m, pace.OutstandingThisCycle);
     }
@@ -189,7 +95,7 @@ public class StabilityRecoveryPlannerTests
     [Fact]
     public void ComputePace_AsksForMoneySpentDuringTheCurrentCycle()
     {
-        var pace = StabilityRecoveryPlanner.ComputePace(Drawdown(2453.20m), cyclesRemaining: 3, toppedUpThisCycle: 0m);
+        var pace = StabilityRecoveryPlanner.ComputePace(2453.20m, cyclesRemaining: 3, toppedUpThisCycle: 0m);
 
         Assert.Equal(817.74m, pace.RequiredThisCycle);
         Assert.True(pace.OutstandingThisCycle > 0m);
@@ -202,7 +108,7 @@ public class StabilityRecoveryPlannerTests
     [Fact]
     public void ComputePace_StillAsksWhenThisCyclesRepaymentsFallShort()
     {
-        var pace = StabilityRecoveryPlanner.ComputePace(Drawdown(2453.20m), cyclesRemaining: 3, toppedUpThisCycle: 1048m);
+        var pace = StabilityRecoveryPlanner.ComputePace(2453.20m, cyclesRemaining: 3, toppedUpThisCycle: 1048m);
 
         // Anchored on 3,501.20 (what was missing before the repayments), a third of which is
         // 1,167.07 -- so 119.07 of this cycle's share is still owed.
@@ -359,14 +265,6 @@ public class StabilityRecoveryPlannerTests
         Assert.Equal(0m, StabilityRecoveryPlanner.ToppedUpThisCycle(150m, 1000m, 0.15m));
         Assert.Equal(90m, StabilityRecoveryPlanner.ToppedUpThisCycle(240m, 1000m, 0.15m));
         Assert.Equal(0m, StabilityRecoveryPlanner.ToppedUpThisCycle(20m, 1000m, 0.15m));
-    }
-
-    private static StabilityDrawdown Drawdown(decimal outstanding)
-    {
-        return StabilityRecoveryPlanner.ComputeDrawdown(
-            highWaterMark: 10000m, target: 10000m,
-            currentBalance: 10000m - outstanding,
-            lastDrawdownCycleKey: "2026-06", lastDrawdownAmount: outstanding);
     }
 
     private static RecoveryPace Pace(decimal outstandingThisCycle)

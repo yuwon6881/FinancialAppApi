@@ -344,7 +344,7 @@ public partial class AiAssistantService
             && LedgerCategories.Contains(state.LastLedgerCategory, StringComparer.OrdinalIgnoreCase)
             ? LedgerCategories.First(c => c.Equals(state.LastLedgerCategory, StringComparison.OrdinalIgnoreCase))
             : null;
-        var transactionType = state.LastTransactionType is "inflow" or "outflow" or "transfer"
+        var transactionType = state.LastTransactionType is "income" or "inflow" or "outflow" or "transfer"
             ? state.LastTransactionType
             : null;
         var exactDate = DateOnly.TryParseExact(state.LastExactDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _)
@@ -433,9 +433,10 @@ public partial class AiAssistantService
             ? new CycleKey(int.Parse(key![..4], CultureInfo.InvariantCulture), int.Parse(key[5..], CultureInfo.InvariantCulture))
             : null;
 
-    // Coarse inflow/outflow/transfer classification of a request, stored on the frame so a
+    // Coarse income/inflow/outflow/transfer classification of a request, stored on the frame so a
     // follow-up keeps the same money-direction filter. Best-effort keyword match; null when the
-    // request doesn't lean one way.
+    // request doesn't lean one way. Income is narrower than inflow: it means positive rows assigned
+    // to the Income ledger, while inflow includes direct bucket credits such as reimbursements.
     private static string? DetectTransactionType(string queryText)
     {
         // Mentioning transfers in an exclusion ("spending without transfers") describes the
@@ -444,7 +445,8 @@ public partial class AiAssistantService
         if (!ExcludeTransfersSignal.IsMatch(queryText) &&
             Regex.IsMatch(queryText, @"\b(?:show|list|find|only|just|my|all)?\s*transfers?\b|\btransfer transactions?\b", RegexOptions.IgnoreCase))
             return "transfer";
-        if (Regex.IsMatch(queryText, @"\b(income|inflow|inflows|earnings?|salary|paychecks?|deposits?|received|credited?)\b", RegexOptions.IgnoreCase)) return "inflow";
+        if (Regex.IsMatch(queryText, @"\b(income|incomes|earning|earnings|earned|salary|salaries|paycheck|paychecks|revenue)\b", RegexOptions.IgnoreCase)) return "income";
+        if (Regex.IsMatch(queryText, @"\b(inflow|inflows|deposits?|received|credited?)\b", RegexOptions.IgnoreCase)) return "inflow";
         if (Regex.IsMatch(queryText, @"\b(outflow|outflows|expenses?|spending|spent|spend|withdrawals?|debited?)\b", RegexOptions.IgnoreCase)) return "outflow";
         return null;
     }

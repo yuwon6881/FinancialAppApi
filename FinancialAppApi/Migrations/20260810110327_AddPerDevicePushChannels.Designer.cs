@@ -3,6 +3,7 @@ using System;
 using FinancialAppApi.Database;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace FinancialAppApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260810110327_AddPerDevicePushChannels")]
+    partial class AddPerDevicePushChannels
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -419,13 +422,10 @@ namespace FinancialAppApi.Migrations
                     b.Property<decimal>("StabilityBalance")
                         .HasColumnType("numeric(12,2)");
 
-                    b.Property<decimal>("StabilityReloadMarkedAmount")
+                    b.Property<decimal>("StabilityPeakBalance")
                         .HasColumnType("numeric(12,2)");
 
-                    b.Property<DateOnly?>("StabilityReloadOldestDate")
-                        .HasColumnType("date");
-
-                    b.Property<decimal>("StabilityReloadOutstanding")
+                    b.Property<decimal>("StabilityWithdrawnAmount")
                         .HasColumnType("numeric(12,2)");
 
                     b.HasKey("UserId", "Year", "MonthIndex");
@@ -1643,13 +1643,6 @@ namespace FinancialAppApi.Migrations
                     b.Property<decimal?>("StabilityRecoveryTopUpAmount")
                         .HasColumnType("numeric(12,2)");
 
-                    b.Property<string>("StabilityReloadIntent")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasDefaultValue("Unanswered");
-
                     b.Property<string>("UserId")
                         .IsRequired()
                         .HasColumnType("text");
@@ -1672,10 +1665,7 @@ namespace FinancialAppApi.Migrations
                     b.HasIndex("UserId", "Date", "PostedAt", "LedgerCategory")
                         .IsDescending(false, true, true, false);
 
-                    b.ToTable("Transactions", t =>
-                        {
-                            t.HasCheckConstraint("ck_transactions_stabilityreloadintent", "\"StabilityReloadIntent\" IN ('Unanswered', 'Required', 'NotRequired')");
-                        });
+                    b.ToTable("Transactions");
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.TransactionCategory", b =>

@@ -64,6 +64,21 @@ public class AiTopTransactionsTests
 
         var inflows = result.GetProperty("inflows");
         Assert.Equal("in", inflows[0].GetProperty("Id").GetString());
+        Assert.Equal("in", result.GetProperty("income")[0].GetProperty("Id").GetString());
+    }
+
+    [Fact]
+    public void IncomeRanking_ExcludesDirectBucketReimbursements()
+    {
+        var result = Build(
+        [
+            Row("salary", "Salary", 4000, category: "Salary", ledger: "Income"),
+            Row("reimbursement", "Road tax reimbursement", 5000, category: "Reimbursement", ledger: "Stability")
+        ], "what was my biggest income");
+
+        Assert.Equal("income", result.GetProperty("direction").GetString());
+        Assert.Equal("salary", result.GetProperty("income")[0].GetProperty("Id").GetString());
+        Assert.Equal("reimbursement", result.GetProperty("inflows")[0].GetProperty("Id").GetString());
     }
 
     [Fact]
@@ -91,6 +106,7 @@ public class AiTopTransactionsTests
 
         Assert.Equal("inflow", result.GetProperty("direction").GetString());
         Assert.Equal("in", result.GetProperty("inflows")[0].GetProperty("Id").GetString());
+        Assert.Equal("in", result.GetProperty("income")[0].GetProperty("Id").GetString());
     }
 
     [Fact]

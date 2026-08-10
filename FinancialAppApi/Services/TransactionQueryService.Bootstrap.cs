@@ -30,6 +30,7 @@ public partial class TransactionQueryService
                 transaction.LedgerCategory,
                 transaction.Amount,
                 transaction.StabilityRecoveryTopUpAmount,
+                transaction.StabilityReloadIntent,
                 transaction.RecurringPaymentId,
                 transaction.RecurringOccurrenceDate,
                 transaction.WishlistItemId,

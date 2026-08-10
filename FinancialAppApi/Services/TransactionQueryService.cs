@@ -15,6 +15,7 @@ public sealed record TransactionProjection(
     string LedgerCategory,
     decimal Amount,
     decimal? StabilityRecoveryTopUpAmount,
+    string StabilityReloadIntent,
     string? RecurringPaymentId,
     DateOnly? RecurringOccurrenceDate,
     int? WishlistItemId,
@@ -56,6 +57,8 @@ public partial class TransactionQueryService
         bool recurringOnly = false,
         bool wishlistOnly = false,
         string? sort = null,
+        string? recurringFilter = null,
+        string? wishlistFilter = null,
         CancellationToken cancellationToken = default)
     {
         page = Math.Max(1, page);
@@ -75,7 +78,9 @@ public partial class TransactionQueryService
                 minAmount,
                 maxAmount,
                 recurringOnly,
-                wishlistOnly);
+                wishlistOnly,
+                recurringFilter,
+                wishlistFilter);
             var total = await query.CountAsync(cancellationToken);
 
             var txs = await ApplySort(query, sort)
@@ -90,6 +95,7 @@ public partial class TransactionQueryService
                     t.LedgerCategory,
                     t.Amount,
                     t.StabilityRecoveryTopUpAmount,
+                    t.StabilityReloadIntent,
                     t.RecurringPaymentId,
                     t.RecurringOccurrenceDate,
                     t.WishlistItemId,
@@ -120,6 +126,7 @@ public partial class TransactionQueryService
                     t.LedgerCategory,
                     t.Amount,
                     t.StabilityRecoveryTopUpAmount,
+                    t.StabilityReloadIntent,
                     t.RecurringPaymentId,
                     t.RecurringOccurrenceDate,
                     t.WishlistItemId,
@@ -154,6 +161,7 @@ public partial class TransactionQueryService
                 t.LedgerCategory,
                 t.Amount,
                 t.StabilityRecoveryTopUpAmount,
+                t.StabilityReloadIntent,
                 t.RecurringPaymentId,
                 t.RecurringOccurrenceDate,
                 t.WishlistItemId,
@@ -223,6 +231,8 @@ public partial class TransactionQueryService
         decimal? maxAmount = null,
         bool recurringOnly = false,
         bool wishlistOnly = false,
+        string? recurringFilter = null,
+        string? wishlistFilter = null,
         CancellationToken cancellationToken = default)
     {
         await using var output = new MemoryStream();
@@ -238,6 +248,8 @@ public partial class TransactionQueryService
             maxAmount,
             recurringOnly,
             wishlistOnly,
+            recurringFilter,
+            wishlistFilter,
             cancellationToken);
         return new CsvExportResult(output.ToArray(), GetTransactionsExportFileName());
     }
@@ -254,6 +266,8 @@ public partial class TransactionQueryService
         decimal? maxAmount = null,
         bool recurringOnly = false,
         bool wishlistOnly = false,
+        string? recurringFilter = null,
+        string? wishlistFilter = null,
         CancellationToken cancellationToken = default)
     {
         var query = ApplyAllFilters(
@@ -268,7 +282,9 @@ public partial class TransactionQueryService
             minAmount,
             maxAmount,
             recurringOnly,
-            wishlistOnly);
+            wishlistOnly,
+            recurringFilter,
+            wishlistFilter);
         var rows = query
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.PostedAt)
@@ -322,7 +338,9 @@ public partial class TransactionQueryService
         decimal? minAmount,
         decimal? maxAmount,
         bool recurringOnly,
-        bool wishlistOnly)
+        bool wishlistOnly,
+        string? recurringFilter,
+        string? wishlistFilter)
     {
         query = query.Where(t => t.LedgerCategory != "Discarded");
 
@@ -350,14 +368,24 @@ public partial class TransactionQueryService
             query = query.Where(t => t.Amount <= max && t.Amount >= -max);
         }
 
-        if (recurringOnly)
+        var recurringMode = NormalizeLinkFilter(recurringFilter, recurringOnly);
+        if (recurringMode == "only")
         {
             query = query.Where(t => t.RecurringPaymentId != null && t.RecurringPaymentId != "");
         }
+        else if (recurringMode == "exclude")
+        {
+            query = query.Where(t => t.RecurringPaymentId == null || t.RecurringPaymentId == "");
+        }
 
-        if (wishlistOnly)
+        var wishlistMode = NormalizeLinkFilter(wishlistFilter, wishlistOnly);
+        if (wishlistMode == "only")
         {
             query = query.Where(t => t.WishlistItemId != null);
+        }
+        else if (wishlistMode == "exclude")
+        {
+            query = query.Where(t => t.WishlistItemId == null);
         }
 
         if (!string.IsNullOrWhiteSpace(search))
@@ -430,6 +458,14 @@ public partial class TransactionQueryService
 
         return query;
     }
+
+    private static string NormalizeLinkFilter(string? filter, bool legacyOnly) =>
+        filter?.Trim().ToLowerInvariant() switch
+        {
+            "only" => "only",
+            "exclude" => "exclude",
+            _ => legacyOnly ? "only" : "all"
+        };
 
     private static IOrderedQueryable<Transaction> ApplySort(
         IQueryable<Transaction> query,

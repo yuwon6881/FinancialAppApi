@@ -1116,6 +1116,15 @@ public class AiAssistantServiceTests
         {
             context.Transactions.Add(Txn($"rent-{i}", new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc).AddMinutes(i), "Rent", -1));
         }
+        context.Transactions.Add(new Transaction
+        {
+            Id = "adjustment",
+            Date = new DateTime(2026, 7, 3, 12, 0, 0, DateTimeKind.Utc),
+            Description = "Balance correction",
+            Category = "Adjustment",
+            LedgerCategory = "Essentials",
+            Amount = -100
+        });
         await context.SaveChangesAsync();
         var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("You spent 2001 this month."));
         var service = NewService(context, handler);

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Stability;
 
 namespace FinancialAppApi.Services;
 
@@ -15,8 +16,10 @@ namespace FinancialAppApi.Services;
 // can change the ending balance of every cycle from X onward. Callers must invoke
 // InvalidateFromAsync(X) whenever a transaction dated at or before a cached cycle changes, and
 // InvalidateAllAsync() whenever the CycleDay setting changes (that shifts every cycle's date
-// boundaries retroactively). Invalidated cycles are simply deleted; the next dashboard read that
-// needs them recomputes and re-caches on the fly via EnsureComputedThroughAsync.
+// boundaries retroactively), or whenever a Stability reload setting changes (the replay target
+// and normal Stability share affect cached obligations). Invalidated cycles are simply deleted;
+// the next dashboard read that needs them recomputes and re-caches on the fly via
+// EnsureComputedThroughAsync.
 public class CycleBalanceService
 {
     // Matches the hardcoded roll-forward start year FinancialController used before snapshots
@@ -61,7 +64,21 @@ public class CycleBalanceService
             return last;
         }
 
+        var setting = await _context.FinancialSettings
+            .AsNoTracking()
+            .Select(value => new { value.TargetStabilityFund, value.StabilityAlloc })
+            .FirstOrDefaultAsync(cancellationToken);
+        var stabilityTarget = setting?.TargetStabilityFund ?? 0m;
+        var stabilityAlloc = setting?.StabilityAlloc ?? 0m;
+
         decimal essentials = 0m, growth = 0m, stability = 0m, rewards = 0m;
+        var reloadState = last == null
+            ? new ReloadState(0m, null, 0m, 0m)
+            : new ReloadState(
+                last.StabilityReloadOutstanding,
+                last.StabilityReloadOldestDate,
+                0m,
+                0m);
         int fromYear = startYear, fromMonth = 1;
 
         if (last != null)
@@ -103,23 +120,16 @@ public class CycleBalanceService
                     .ToList();
 
                 var stabilityOpening = stability;
-                var stabilityRunning = stabilityOpening;
-                var stabilityPeak = stabilityOpening;
-                var stabilityWithdrawn = 0m;
-                foreach (var transaction in cycleTxs
-                             .OrderBy(t => t.Date)
-                             .ThenBy(t => t.PostedAt)
-                             .ThenBy(t => t.Id, StringComparer.Ordinal))
-                {
-                    var change = CategoryAttributionService.GetCategoryAmount(transaction, "Stability");
-                    stabilityRunning += change;
-                    stabilityPeak = Math.Max(stabilityPeak, stabilityRunning);
-                    stabilityWithdrawn += Math.Max(0m, -change);
-                }
+                var reloaded = StabilityReloadLedger.Replay(
+                    reloadState,
+                    stabilityOpening,
+                    stabilityTarget,
+                    StabilityReloadLedger.DescribeAll(cycleTxs, stabilityAlloc));
+                reloadState = reloaded;
 
                 essentials += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Essentials"));
                 growth += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Growth"));
-                stability = stabilityRunning;
+                stability += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Stability"));
                 rewards += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Rewards"));
 
                 current = new CycleBalance
@@ -129,8 +139,9 @@ public class CycleBalanceService
                     EssentialsBalance = essentials,
                     GrowthBalance = growth,
                     StabilityBalance = stability,
-                    StabilityPeakBalance = stabilityPeak,
-                    StabilityWithdrawnAmount = stabilityWithdrawn,
+                    StabilityReloadOutstanding = reloaded.Outstanding,
+                    StabilityReloadMarkedAmount = reloaded.MarkedThisRun,
+                    StabilityReloadOldestDate = reloaded.OldestOutstandingDate,
                     RewardsBalance = rewards
                 };
                 _context.CycleBalances.Add(current);

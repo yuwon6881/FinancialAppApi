@@ -17,7 +17,8 @@ public class CycleBalance : IUserOwnedEntity
     public decimal EssentialsBalance { get; set; }
     public decimal GrowthBalance { get; set; }
     public decimal StabilityBalance { get; set; }
-    public decimal StabilityPeakBalance { get; set; }
-    public decimal StabilityWithdrawnAmount { get; set; }
+    public decimal StabilityReloadOutstanding { get; set; }
+    public decimal StabilityReloadMarkedAmount { get; set; }
+    public DateOnly? StabilityReloadOldestDate { get; set; }
     public decimal RewardsBalance { get; set; }
 }

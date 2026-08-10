@@ -256,7 +256,8 @@ public partial class AiAssistantService
 
     private static string CanonicalTransactionType(string transactionType) => transactionType switch
     {
-        "inflow" => "income inflow transactions",
+        "income" => "ordinary income transactions",
+        "inflow" => "cash inflow transactions",
         "outflow" => "outflow spending transactions",
         "transfer" => "transfer transactions",
         _ => string.Empty

@@ -665,8 +665,8 @@ public class FinancialServiceDashboardTests
     }
 
     /// <summary>
-    /// summaryOnly skips EnsureComputedThroughAsync, and the high-water mark is only trustworthy
-    /// once the cycle-balance cache is complete -- so that path reports nothing rather than a
+    /// summaryOnly skips EnsureComputedThroughAsync, and reload state is only trustworthy once the
+    /// cycle-balance cache is complete -- so that path reports nothing rather than a
     /// figure derived from a half-built cache.
     /// </summary>
     [Fact]

@@ -7,9 +7,9 @@ using Microsoft.EntityFrameworkCore;
 namespace FinancialAppApi.Tests;
 
 /// <summary>
-/// The EF half of emergency-fund recovery: reading the high-water mark off the cycle-balance cache,
-/// spotting the cycle the fund last fell in, and keeping the income path's view of the balance
-/// honest when a salary is being re-saved.
+/// The EF half of emergency-fund recovery: carrying the explicit reload obligation through the
+/// cycle-balance cache and keeping the income path's view of the balance honest when a salary is
+/// being re-saved.
 /// </summary>
 public class StabilityRecoveryServiceTests
 {
@@ -42,20 +42,17 @@ public class StabilityRecoveryServiceTests
         var recovery = await Build(context, setting, 2026, 7, opening: 2100m, current: 2100m);
 
         Assert.True(recovery.IsActive);
-        Assert.Equal(3000m, Money(recovery.HighWaterMark));
         Assert.Equal(900m, Money(recovery.OutstandingShortfall));
         Assert.Equal("2026-06", recovery.LastDrawdownCycleKey);
-        Assert.Equal(900m, Money(recovery.LastDrawdownAmount));
+        Assert.Equal(900m, Money(recovery.MarkedTotal));
         // One cycle of the three-cycle window has already elapsed.
         Assert.Equal(2, recovery.CyclesRemaining);
         Assert.Equal(450m, Money(recovery.RequiredThisCycle));
     }
 
     /// <summary>
-    /// The window the client filters the ledger by. It opens with the cycle *after* the last one
-    /// that stood at the ceiling -- May closed at 3,000 with the fund untouched, so nothing before
-    /// June can still be outstanding, and starting at the drawdown itself would have excluded any
-    /// money put back earlier in that same cycle.
+    /// The window the client filters the ledger by starts at the exact oldest marked drawdown that
+    /// is still outstanding, including any repayment made earlier in that same cycle.
     /// </summary>
     [Fact]
     public async Task BuildAsync_OpensTheWindowAfterTheFundWasLastFull()
@@ -68,7 +65,7 @@ public class StabilityRecoveryServiceTests
 
         var recovery = await Build(context, setting, 2026, 7, opening: 2100m, current: 2100m);
 
-        Assert.Equal("2026-06-01", recovery.RecoveryFromDate);
+        Assert.Equal("2026-06-04", recovery.RecoveryFromDate);
     }
 
     /// <summary>
@@ -99,8 +96,7 @@ public class StabilityRecoveryServiceTests
 
     /// <summary>
     /// Cached rows only record where the fund stood at a cycle boundary. A bonus paid into the fund
-    /// and then dipped into within the same cycle looked like it had never been there, so the dip
-    /// registered as no drawdown at all.
+    /// and then dipped into within the same cycle must still create a marked obligation.
     /// </summary>
     [Fact]
     public async Task BuildAsync_CountsAPeakReachedAndSpentInsideOneCycle()
@@ -116,7 +112,6 @@ public class StabilityRecoveryServiceTests
         // no fall. The fund really did reach 4,000 and really did lose 1,200 of it.
         var recovery = await Build(context, setting, 2026, 7, opening: 1000m, current: 2800m, bonus, spend);
 
-        Assert.Equal(4000m, Money(recovery.HighWaterMark));
         Assert.Equal(1200m, Money(recovery.OutstandingShortfall));
         Assert.True(recovery.IsActive);
     }
@@ -140,7 +135,52 @@ public class StabilityRecoveryServiceTests
         var recovery = await Build(context, setting, 2026, 7, opening: 2000m, current: 1600m, withdrawal);
 
         Assert.True(recovery.IsActive);
-        Assert.Equal(400m, Money(recovery.LastDrawdownAmount));
+        Assert.Equal(400m, Money(recovery.MarkedTotal));
+    }
+
+    [Fact]
+    public async Task BuildAsync_DoesNotAskForADrawdownMarkedSpentForGood()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 5, 4), "Stability", 2000m);
+        Add(
+            context,
+            "out-1",
+            new DateTime(2026, 7, 4),
+            "Stability",
+            -400m,
+            intent: StabilityReloadIntent.NotRequired);
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 2000m, current: 1600m);
+
+        Assert.False(recovery.IsActive);
+        Assert.Equal(0m, Money(recovery.OutstandingShortfall));
+    }
+
+    [Fact]
+    public async Task BuildAsync_KeepsMarkedAndRepaidTotalsAcrossCycles()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 5, 4), "Stability", 1000m);
+        Add(context, "out-1", new DateTime(2026, 6, 4), "Stability", -500m);
+        var repayment = Add(
+            context,
+            "in-2",
+            new DateTime(2026, 7, 4),
+            "Transfer:Rewards->Stability",
+            200m,
+            "Transfer");
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 500m, current: 700m, repayment);
+
+        Assert.Equal(500m, Money(recovery.MarkedTotal));
+        Assert.Equal(200m, Money(recovery.RepaidTotal));
+        Assert.Equal(300m, Money(recovery.OutstandingShortfall));
+        Assert.Equal("2026-06-04", recovery.RecoveryFromDate);
     }
 
     [Fact]
@@ -160,11 +200,10 @@ public class StabilityRecoveryServiceTests
 
     /// <summary>
     /// The ordering trap. InvalidateFromAsync deletes cached rows on every transaction mutation, so
-    /// reading the high-water mark before rebuilding the cache under-reports it -- and an
-    /// under-reported mark makes the card vanish silently rather than fail loudly.
+    /// reading reload state before rebuilding the cache under-reports the obligation.
     /// </summary>
     [Fact]
-    public async Task BuildAsync_RebuildsTheCacheBeforeReadingTheHighWaterMark()
+    public async Task BuildAsync_RebuildsTheCacheBeforeReadingReloadState()
     {
         await using var context = NewContext();
         var setting = SeedSetting(context, target: 10000m);
@@ -180,7 +219,6 @@ public class StabilityRecoveryServiceTests
 
         var recovery = await Build(context, setting, 2026, 7, opening: 2100m, current: 2100m);
 
-        Assert.Equal(3000m, Money(recovery.HighWaterMark));
         Assert.Equal(900m, Money(recovery.OutstandingShortfall));
     }
 
@@ -366,7 +404,8 @@ public class StabilityRecoveryServiceTests
         DateTime date,
         string ledgerCategory,
         decimal amount,
-        string category = "Other")
+        string category = "Other",
+        string intent = StabilityReloadIntent.Unanswered)
     {
         var transaction = new Transaction
         {
@@ -375,7 +414,8 @@ public class StabilityRecoveryServiceTests
             Description = id,
             Category = category,
             LedgerCategory = ledgerCategory,
-            Amount = amount
+            Amount = amount,
+            StabilityReloadIntent = intent
         };
         context.Transactions.Add(transaction);
         return transaction;

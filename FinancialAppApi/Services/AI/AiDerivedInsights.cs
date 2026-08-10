@@ -163,11 +163,16 @@ public partial class AiAssistantService
         @"\b(smallest|cheapest|lowest|least expensive)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    // Words that make the question about income rather than spending, so the primary direction hint
-    // is "inflow". Absent these, a bare "biggest transaction" defaults to spending (outflow), which
-    // is what users almost always mean.
+    // Ordinary-income words select the Income-ledger ranking. Deposit/received words select the
+    // broader cash-inflow ranking, because a direct reimbursement or refund is money received but
+    // is not ordinary income. Absent either signal, a bare "biggest transaction" defaults to
+    // spending (outflow), which is what users almost always mean.
+    private static readonly Regex IncomeDirectionSignal = new(
+        @"\b(income|incomes|earning|earnings|earned|paycheck|paychecks|salary|salaries|revenue)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex InflowDirectionSignal = new(
-        @"\b(income|incomes|earning|earnings|earned|deposit|deposits|deposited|paycheck|paychecks|salary|salaries|inflow|inflows|received|revenue)\b",
+        @"\b(deposit|deposits|deposited|inflow|inflows|received|credited)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     internal static bool WantsTopTransactions(string? text) =>
@@ -175,7 +180,7 @@ public partial class AiAssistantService
 
     // Exact server-side ranking of the loaded rows so a superlative question is answered from a
     // single authoritative record rather than the model eyeballing a mixed sample. Transfers are
-    // excluded (they are neither spending nor income); outflows (spending) and inflows (income) are
+    // excluded; outflows (spending), all positive cash inflows, and ordinary Income-ledger rows are
     // ranked separately so "biggest spending" can never surface an inflow or a transfer, and amount
     // is the magnitude. Suppressed in sensitive mode by the caller, like every other amount metric.
     internal static object BuildTopTransactions(IReadOnlyList<AiTransactionRow> transactions, string queryText)
@@ -207,13 +212,18 @@ public partial class AiAssistantService
 
         return new
         {
-            direction = InflowDirectionSignal.IsMatch(queryText) ? "inflow" : "outflow",
+            direction = IncomeDirectionSignal.IsMatch(queryText)
+                ? "income"
+                : InflowDirectionSignal.IsMatch(queryText) ? "inflow" : "outflow",
             order = smallest ? "smallest" : "largest",
-            note = "Transfers excluded. outflows are spending, inflows are income, amount is the magnitude. " +
+            note = "Transfers excluded. outflows are spending, inflows are all reportable positive cash movements, " +
+                "and income contains only positive Income-ledger rows; amount is the magnitude. " +
                 "Use outflows for spending/expense/purchase/\"most expensive\" questions (outflows[0] is the answer) " +
-                "and inflows for income/deposit questions. Never report an inflow or a transfer as spending.",
+                "use income for income/salary/earnings questions, and inflows for deposit/received questions. " +
+                "Never report an inflow or a transfer as spending.",
             outflows = Rank(t => t.Amount < 0),
-            inflows = Rank(t => t.Amount > 0)
+            inflows = Rank(t => t.Amount > 0),
+            income = Rank(t => t.Amount > 0 && TransactionReportSemantics.IsReportableIncome(t.Amount, t.Category, t.LedgerCategory))
         };
     }
 

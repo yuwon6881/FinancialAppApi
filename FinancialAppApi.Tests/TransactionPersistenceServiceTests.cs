@@ -461,6 +461,66 @@ public class TransactionPersistenceServiceTests
         Assert.Equal(1000m, splits.Sum(t => t.Amount));
     }
 
+    [Fact]
+    public async Task CreateAndUpdateTransactionAsync_RoundTripTheReloadIntent()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var created = await service.CreateTransactionAsync(
+            NewRequest("reload-intent", ledgerCategory: "Stability", reloadIntent: StabilityReloadIntent.Required));
+
+        Assert.Equal(TransactionMutationStatus.Created, created.Status);
+        Assert.Equal(StabilityReloadIntent.Required, created.Transaction!.StabilityReloadIntent);
+
+        var updated = await service.UpdateTransactionAsync(
+            "reload-intent",
+            NewRequest("reload-intent", ledgerCategory: "Stability", reloadIntent: StabilityReloadIntent.NotRequired));
+
+        Assert.Equal(TransactionMutationStatus.Updated, updated.Status);
+        Assert.Equal(StabilityReloadIntent.NotRequired, updated.Transaction!.StabilityReloadIntent);
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_DegradesUnknownReloadIntentToUnanswered()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).CreateTransactionAsync(
+            NewRequest("unknown-reload-intent", ledgerCategory: "Stability", reloadIntent: "MaybeLater"));
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal(StabilityReloadIntent.Unanswered, result.Transaction!.StabilityReloadIntent);
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_CapsTopUpByTheOutstandingObligationNotTheBalanceGap()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedSettings(context, targetStabilityFund: 1000m);
+        context.Transactions.AddRange(
+            NewTransaction("stability-full", ledgerCategory: "Stability", amount: 1000m),
+            NewTransaction("marked-drawdown", ledgerCategory: "Stability", amount: -300m),
+            NewTransaction("spent-for-good", ledgerCategory: "Stability", amount: -200m));
+        var spent = context.Transactions.Local.Single(t => t.Id == "spent-for-good");
+        spent.StabilityReloadIntent = StabilityReloadIntent.NotRequired;
+        var marked = context.Transactions.Local.Single(t => t.Id == "marked-drawdown");
+        marked.StabilityReloadIntent = StabilityReloadIntent.Required;
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context, ClockAt(2026, 7, 9)).CreateTransactionAsync(
+            NewRequest("salary-cap", ledgerCategory: "Income", amount: 1000m, recoveryTopUp: 300m));
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal(150m, result.Transaction!.StabilityRecoveryTopUpAmount);
+        Assert.Equal(300m, (await context.Transactions.SingleAsync(t => t.Id == "salary-cap-split-Stability")).Amount);
+    }
+
     /// <summary>
     /// Re-saving a salary is measured against the fund WITHOUT its own earlier contribution.
     /// Counting the old split rows would make the edit look like it had already used up the
@@ -616,7 +676,8 @@ public class TransactionPersistenceServiceTests
         decimal amount = -25m,
         string category = "Other",
         string? postedAt = null,
-        decimal? recoveryTopUp = null)
+        decimal? recoveryTopUp = null,
+        string? reloadIntent = null)
     {
         return new TransactionMutationRequest(
             id,
@@ -630,7 +691,8 @@ public class TransactionPersistenceServiceTests
             null,
             StabilityRecoveryTopUpAmount: recoveryTopUp.HasValue
                 ? ObfuscationHelper.Obfuscate(recoveryTopUp.Value)
-                : null);
+                : null,
+            StabilityReloadIntent: reloadIntent);
     }
 
     private static Transaction NewTransaction(

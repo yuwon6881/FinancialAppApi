@@ -40,7 +40,9 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "maxAmount")] decimal? maxAmount = null,
         [FromQuery(Name = "recurringOnly")] bool recurringOnly = false,
         [FromQuery(Name = "wishlistOnly")] bool wishlistOnly = false,
-        [FromQuery(Name = "sort")] string? sort = null)
+        [FromQuery(Name = "sort")] string? sort = null,
+        [FromQuery(Name = "recurringFilter")] string? recurringFilter = null,
+        [FromQuery(Name = "wishlistFilter")] string? wishlistFilter = null)
     {
         if (queryMonth != null && !FinancialConstants.MonthAbbreviations.Contains(queryMonth, StringComparer.Ordinal))
             return BadRequest(new { message = "Month must be a valid three-letter abbreviation." });
@@ -62,6 +64,8 @@ public class TransactionsController : ControllerBase
             recurringOnly,
             wishlistOnly,
             sort,
+            recurringFilter,
+            wishlistFilter,
             HttpContext.RequestAborted);
 
         if (result.Total.HasValue)
@@ -110,7 +114,9 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "minAmount")] decimal? minAmount = null,
         [FromQuery(Name = "maxAmount")] decimal? maxAmount = null,
         [FromQuery(Name = "recurringOnly")] bool recurringOnly = false,
-        [FromQuery(Name = "wishlistOnly")] bool wishlistOnly = false)
+        [FromQuery(Name = "wishlistOnly")] bool wishlistOnly = false,
+        [FromQuery(Name = "recurringFilter")] string? recurringFilter = null,
+        [FromQuery(Name = "wishlistFilter")] string? wishlistFilter = null)
     {
         Response.ContentType = "text/csv; charset=utf-8";
         Response.Headers.ContentDisposition =
@@ -127,6 +133,8 @@ public class TransactionsController : ControllerBase
             maxAmount,
             recurringOnly,
             wishlistOnly,
+            recurringFilter,
+            wishlistFilter,
             HttpContext.RequestAborted);
         return new EmptyResult();
     }
@@ -285,7 +293,8 @@ public class TransactionsController : ControllerBase
             dto.RecurringPaymentId,
             dto.WishlistItemId,
             dto.RecurringOccurrenceDate,
-            dto.StabilityRecoveryTopUpAmount);
+            dto.StabilityRecoveryTopUpAmount,
+            dto.StabilityReloadIntent);
     }
 
     public static TransactionDto MapToDto(Transaction t)
@@ -302,6 +311,7 @@ public class TransactionsController : ControllerBase
             StabilityRecoveryTopUpAmount = t.StabilityRecoveryTopUpAmount.HasValue
                 ? ObfuscationHelper.Obfuscate(t.StabilityRecoveryTopUpAmount.Value)
                 : null,
+            StabilityReloadIntent = t.StabilityReloadIntent,
             RecurringPaymentId = t.RecurringPaymentId,
             RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
             WishlistItemId = t.WishlistItemId,
@@ -323,6 +333,7 @@ public class TransactionsController : ControllerBase
             StabilityRecoveryTopUpAmount = t.StabilityRecoveryTopUpAmount.HasValue
                 ? ObfuscationHelper.Obfuscate(t.StabilityRecoveryTopUpAmount.Value)
                 : null,
+            StabilityReloadIntent = t.StabilityReloadIntent,
             RecurringPaymentId = t.RecurringPaymentId,
             RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
             WishlistItemId = t.WishlistItemId,
@@ -341,6 +352,7 @@ public class TransactionDto
     public string LedgerCategory { get; set; } = string.Empty;
     public string Amount { get; set; } = string.Empty;
     public string? StabilityRecoveryTopUpAmount { get; set; }
+    public string? StabilityReloadIntent { get; set; }
     public string? RecurringPaymentId { get; set; }
     public string? RecurringOccurrenceDate { get; set; }
     public int? WishlistItemId { get; set; }

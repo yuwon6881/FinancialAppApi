@@ -223,7 +223,11 @@ public partial class AiAssistantService
             !Regex.IsMatch(queryPlan.QueryText, @"\b(push|notification|notify|remind|reminder)\b", RegexOptions.IgnoreCase))
             return null;
 
-        var hasEnabledDevice = await _context.PushSubscriptions.AnyAsync(s => s.Enabled, cancellationToken);
+        // Specifically a device opted into *bill reminders*: a device that only asked for spending
+        // alerts is enabled but would never deliver the reminder being asked about, and saying
+        // "effective" there is the false reassurance this context exists to prevent.
+        var hasEnabledDevice = await _context.PushSubscriptions
+            .AnyAsync(s => s.Enabled && s.BillRemindersEnabled, cancellationToken);
 
         return new
         {

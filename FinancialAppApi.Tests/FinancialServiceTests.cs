@@ -68,6 +68,52 @@ public class FinancialServiceTests
     }
 
     [Fact]
+    public async Task UpdateSettingsAsync_TargetChangeInvalidatesCycleBalanceCache()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 28,
+            TargetStabilityFund = 10000m,
+            EssentialsAlloc = .5m,
+            GrowthAlloc = .25m,
+            StabilityAlloc = .15m,
+            RewardsAlloc = .1m
+        });
+        context.CycleBalances.Add(new CycleBalance { Year = 2026, MonthIndex = 7 });
+        await context.SaveChangesAsync();
+
+        await NewService(context).UpdateSettingsAsync(new FinancialSettingsUpdate(
+            ObfuscationHelper.Obfuscate(5000m), .5m, .25m, .15m, .1m, 28,
+            null, null, null, "USD", null));
+
+        Assert.Empty(context.CycleBalances);
+    }
+
+    [Fact]
+    public async Task UpdateSettingsAsync_StabilityAllocationChangeInvalidatesCycleBalanceCache()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 28,
+            TargetStabilityFund = 10000m,
+            EssentialsAlloc = .5m,
+            GrowthAlloc = .25m,
+            StabilityAlloc = .15m,
+            RewardsAlloc = .1m
+        });
+        context.CycleBalances.Add(new CycleBalance { Year = 2026, MonthIndex = 7 });
+        await context.SaveChangesAsync();
+
+        await NewService(context).UpdateSettingsAsync(new FinancialSettingsUpdate(
+            ObfuscationHelper.Obfuscate(10000m), .45m, .25m, .2m, .1m, 28,
+            null, null, null, "USD", null));
+
+        Assert.Empty(context.CycleBalances);
+    }
+
+    [Fact]
     public async Task UpdateSettingsAsync_RejectsAllocationsThatDoNotTotalOneHundredPercent()
     {
         await using var context = TestHelpers.NewInMemoryContext();

@@ -294,7 +294,7 @@ public class FinancialService
         }
 
         var selectedCycleIncome = activeCycleTxs
-            .Where(t => t.LedgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase) || string.Equals(t.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
+            .Where(TransactionReportSemantics.IsReportableIncome)
             .Sum(t => t.Amount);
 
         var targetEssentials = selectedCycleIncome * setting.EssentialsAlloc;
@@ -352,7 +352,7 @@ public class FinancialService
             activeRange.end);
 
         // Null under summaryOnly: that path deliberately skips EnsureComputedThroughAsync, and the
-        // high-water mark is only trustworthy once the cache is complete.
+        // reload obligation is only trustworthy once the cache is complete.
         var stabilityRecovery = summaryOnly
             ? null
             : await _stabilityRecoveryService.BuildAsync(
@@ -566,6 +566,8 @@ public class FinancialService
 
         var setting = await GetOrCreateSettingAsync(cancellationToken);
 
+        var targetStabilityFundChanged = targetStabilityFund != setting.TargetStabilityFund;
+        var stabilityAllocChanged = update.StabilityAlloc != setting.StabilityAlloc;
         setting.TargetStabilityFund = targetStabilityFund;
         setting.EssentialsAlloc = update.EssentialsAlloc;
         setting.GrowthAlloc = update.GrowthAlloc;
@@ -596,7 +598,7 @@ public class FinancialService
         await strategy.ExecuteAsync(async () =>
         {
             await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
-            if (cycleDayChanged)
+            if (cycleDayChanged || targetStabilityFundChanged || stabilityAllocChanged)
             {
                 await _cycleBalanceService.InvalidateAllAsync(cancellationToken);
             }

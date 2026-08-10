@@ -65,9 +65,11 @@ public partial class PushDispatchService
                 var fcmSender = userScope.ServiceProvider.GetRequiredService<IFcmPushSender>();
                 context.SetCurrentUser(userId);
 
-                // Subscription gating: no enabled device, nothing to send for this account at all.
+                // Subscription gating: no device opted into *bill reminders*, nothing to send for
+                // this account at all. A device that only asked for spending alerts is enabled
+                // but is deliberately not in this fan-out.
                 var subscriptions = await context.PushSubscriptions
-                    .Where(s => s.Enabled)
+                    .Where(s => s.Enabled && s.BillRemindersEnabled)
                     .ToListAsync(cancellationToken);
                 if (subscriptions.Count == 0)
                 {
@@ -205,7 +207,13 @@ public partial class PushDispatchService
             case FcmSendStatus.Sent:
                 return ("Sent", 1, 0, 0);
             case FcmSendStatus.InvalidOrUnregistered:
+                // FCM has retired this token, so the device is off for every kind at once
+                // regardless of what its user asked for — keeping a channel flag on would leave
+                // the Enabled == (bills || alerts) invariant broken and the switch showing "on".
                 subscription.Enabled = false;
+                subscription.BillRemindersEnabled = false;
+                subscription.CategoryAlertsEnabled = false;
+                subscription.FcmToken = string.Empty;
                 await context.SaveChangesAsync(cancellationToken);
                 return ("Disabled", 0, 0, 1);
             default:
@@ -281,7 +289,7 @@ public partial class PushDispatchService
         // (there is no "current user" yet) purely to discover who is opted in.
         var subscribedUserIds = await context.PushSubscriptions
             .IgnoreQueryFilters()
-            .Where(s => s.Enabled)
+            .Where(s => s.Enabled && s.BillRemindersEnabled)
             .Select(s => s.UserId)
             .Distinct()
             .ToListAsync(cancellationToken);

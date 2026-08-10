@@ -106,6 +106,24 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
+    public async Task GetTransactionsAsync_SupportsExcludingRecurringAndWishlistLinks()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("recurring", "Rent", "Housing", "Essentials", -100m, recurringPaymentId: "rent-plan"),
+            NewTransaction("wishlist", "Purchased: Headphones", "Other", "Rewards", -80m, wishlistItemId: 12),
+            NewTransaction("ordinary", "Coffee", "Food", "Rewards", -10m));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var withoutRecurring = await service.GetTransactionsAsync(all: true, recurringFilter: "exclude");
+        Assert.Equal(["wishlist", "ordinary"], withoutRecurring.Items.Select(item => item.Id));
+
+        var wishlistOnly = await service.GetTransactionsAsync(all: true, wishlistFilter: "only");
+        Assert.Equal("wishlist", Assert.Single(wishlistOnly.Items).Id);
+    }
+
+    [Fact]
     public async Task GetTransactionsAsync_OrdersSameDayRowsByCreationTimestamp()
     {
         await using var context = TestHelpers.NewInMemoryContext();

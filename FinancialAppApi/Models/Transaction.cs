@@ -33,6 +33,10 @@ public class Transaction : IUserOwnedEntity
     // applied after clamping the request against the live shortfall.
     public decimal? StabilityRecoveryTopUpAmount { get; set; }
 
+    [Required]
+    [StringLength(20)]
+    public string StabilityReloadIntent { get; set; } = Models.StabilityReloadIntent.Unanswered;
+
     // Denormalized reference to the RecurringPayment this transaction was generated from, if any.
     // Intentionally not a real FK: it must survive the parent RecurringPayment being deleted so
     // historical cycles can still be identified as subscription payments.

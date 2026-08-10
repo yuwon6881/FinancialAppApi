@@ -359,6 +359,49 @@ public class PushDispatchServiceTests
     }
 
     [Fact]
+    public async Task DispatchAsync_SkipsADeviceThatOnlyAskedForSpendingAlerts()
+    {
+        // The reported multi-device failure mode in the other direction: a phone opted into
+        // spending alerts must not start receiving bill reminders it never asked for, and the
+        // desktop that did ask still gets exactly one.
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        var alertsOnly = NewSubscription("sub-alerts", "token-alerts");
+        alertsOnly.BillRemindersEnabled = false;
+        alertsOnly.CategoryAlertsEnabled = true;
+        await SeedAsync(dbName, "user-a",
+            NewPayment("rec-1", dueDate: today.Day, leadDays: 3, mode: "Daily"),
+            subscriptions: [alertsOnly, NewSubscription("sub-bills", "token-bills")]);
+        var sender = new FakeFcmPushSender();
+        var service = NewDispatchService(dbName, Clock(today), sender);
+
+        var summary = await service.DispatchAsync();
+
+        Assert.Equal(1, summary.Sent);
+        Assert.Equal("token-bills", Assert.Single(sender.Sent).Token);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_SendsNothingWhenNoDeviceWantsBillReminders()
+    {
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        var alertsOnly = NewSubscription("sub-alerts", "token-alerts");
+        alertsOnly.BillRemindersEnabled = false;
+        alertsOnly.CategoryAlertsEnabled = true;
+        await SeedAsync(dbName, "user-a",
+            NewPayment("rec-1", dueDate: today.Day, leadDays: 3, mode: "Daily"),
+            subscriptions: [alertsOnly]);
+        var sender = new FakeFcmPushSender();
+        var service = NewDispatchService(dbName, Clock(today), sender);
+
+        var summary = await service.DispatchAsync();
+
+        Assert.Equal(0, summary.Sent);
+        Assert.Empty(sender.Sent);
+    }
+
+    [Fact]
     public async Task DispatchAsync_TransientFailure_ReleasesClaimForSameDayRetry()
     {
         var dbName = NewDbName();

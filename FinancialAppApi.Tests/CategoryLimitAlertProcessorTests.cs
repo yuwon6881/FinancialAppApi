@@ -111,6 +111,39 @@ public class CategoryLimitAlertProcessorTests
     }
 
     [Fact]
+    public async Task ProcessPendingAsync_SendsOnlyToDevicesOptedIntoSpendingAlerts()
+    {
+        // The reported multi-device failure: alerts turned on from a phone must not arrive on a
+        // desktop that only asked for bill reminders.
+        var dbName = NewDbName();
+        await SeedAsync(dbName, [("Dining", 100m, 79m)], categoryAlertsEnabled: true);
+        await using (var setup = NewContext(dbName, authenticated: true))
+        {
+            setup.PushSubscriptions.Add(new PushSubscription
+            {
+                Id = "push-2",
+                UserId = "user-a",
+                DeviceId = "device-2",
+                FcmToken = "token-2",
+                Enabled = true,
+                BillRemindersEnabled = true,
+                CategoryAlertsEnabled = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            });
+            await setup.SaveChangesAsync();
+        }
+
+        await using var context = NewContext(dbName, authenticated: true);
+        var sender = new FakeSender();
+
+        await AddExpenseAsync(context, "tx-cross", "Dining", 1m);
+        await NewProcessor(context, sender).ProcessPendingAsync();
+
+        Assert.Equal("token-1", Assert.Single(sender.Sent).Token);
+    }
+
+    [Fact]
     public async Task ProcessPendingAsync_DoesNotSpendMilestonesWhenNoDeviceCanReceiveThem()
     {
         // The milestone rows are the once-per-cycle latch. Claiming one for an alert that is
@@ -202,6 +235,9 @@ public class CategoryLimitAlertProcessorTests
             DeviceId = "device-1",
             FcmToken = "token-1",
             Enabled = true,
+            // Spending alerts are opted into per device now, so the device flag has to agree with
+            // the account mirror or nothing is deliverable.
+            CategoryAlertsEnabled = categoryAlertsEnabled,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         });

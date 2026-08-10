@@ -94,6 +94,11 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             // Calendar date is primary; PostedAt resolves the order of records on that date.
             entity.HasIndex(e => new { e.UserId, e.Date, e.PostedAt, e.LedgerCategory })
                 .IsDescending(false, true, true, false);
+            entity.Property(e => e.StabilityReloadIntent)
+                .HasDefaultValue(StabilityReloadIntent.Unanswered);
+            entity.ToTable(t => t.HasCheckConstraint(
+                "ck_transactions_stabilityreloadintent",
+                "\"StabilityReloadIntent\" IN ('Unanswered', 'Required', 'NotRequired')"));
             entity.HasIndex(e => new { e.UserId, e.WishlistItemId })
                 .IsUnique()
                 .HasFilter("\"WishlistItemId\" IS NOT NULL");
@@ -189,6 +194,11 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             // One live subscription per (user, device): re-registering a device upserts the
             // stored FCM token in place instead of accumulating stale duplicate rows.
             entity.HasIndex(e => new { e.UserId, e.DeviceId }).IsUnique();
+            // Defaults match the historical single-switch behaviour for any writer that does not
+            // name the channels: a registered device received bill reminders, and spending alerts
+            // were a separate deliberate opt-in.
+            entity.Property(e => e.BillRemindersEnabled).HasDefaultValue(true);
+            entity.Property(e => e.CategoryAlertsEnabled).HasDefaultValue(false);
         });
 
         modelBuilder.Entity<PushReminderDelivery>(entity =>
@@ -315,8 +325,9 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.EssentialsBalance).HasColumnType("numeric(12,2)");
             entity.Property(e => e.GrowthBalance).HasColumnType("numeric(12,2)");
             entity.Property(e => e.StabilityBalance).HasColumnType("numeric(12,2)");
-            entity.Property(e => e.StabilityPeakBalance).HasColumnType("numeric(12,2)");
-            entity.Property(e => e.StabilityWithdrawnAmount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.StabilityReloadOutstanding).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.StabilityReloadMarkedAmount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.StabilityReloadOldestDate).HasColumnType("date");
             entity.Property(e => e.RewardsBalance).HasColumnType("numeric(12,2)");
         });
 

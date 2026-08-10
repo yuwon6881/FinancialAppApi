@@ -20,8 +20,24 @@ public class PushSubscription : IUserOwnedEntity
     [StringLength(4096)]
     public string FcmToken { get; set; } = string.Empty;
 
+    // "This device holds a live send credential and wants at least one kind of notification."
+    // Invariant, maintained by PushSubscriptionService: Enabled == (BillRemindersEnabled ||
+    // CategoryAlertsEnabled). Kept as its own column rather than derived in every query because
+    // the dispatcher, both delivery ledgers, and the FCM "unregistered token" path all key off
+    // one cheap boolean, and a device whose token FCM has rejected is off for every channel at
+    // once regardless of what the user asked for.
     [Required]
     public bool Enabled { get; set; } = true;
+
+    // The two notification kinds are opted into separately, and per device. A phone that asked
+    // for spending alerts must not start receiving bill reminders, and a desktop that asked for
+    // neither must not be told it is receiving either -- which is what a single account-wide
+    // consent flag could not express.
+    [Required]
+    public bool BillRemindersEnabled { get; set; } = true;
+
+    [Required]
+    public bool CategoryAlertsEnabled { get; set; }
 
     [Required]
     public DateTime CreatedAt { get; set; }
