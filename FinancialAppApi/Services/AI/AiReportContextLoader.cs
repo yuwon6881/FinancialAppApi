@@ -59,7 +59,13 @@ public partial class AiAssistantService
                 var range = CategoryAttributionService.GetCycleRange(cycle.Year, cycle.MonthIndex, cycleDay);
                 var start = TransactionDate.StartOfDate(DateOnly.FromDateTime(range.start));
                 var end = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(range.end));
-                var inCycle = transactions.Where(item => item.Timestamp >= start && item.Timestamp < end && !IsTransfer(item)).ToList();
+                var inCycle = transactions.Where(item =>
+                    item.Timestamp >= start &&
+                    item.Timestamp < end &&
+                    TransactionReportSemantics.IsReportableCashMovement(
+                        item.Amount,
+                        item.Category,
+                        item.LedgerCategory)).ToList();
                 return new
                 {
                     key = ToCycleKey(cycle),

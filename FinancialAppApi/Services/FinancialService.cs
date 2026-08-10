@@ -50,6 +50,9 @@ public class FinancialService
         string status,
         string? paidDate);
 
+    private sealed record ReportTrendPoint(string CycleKey, string Month, decimal Balance);
+    private sealed record ReportCategoryTotal(string Category, decimal Total);
+
     private readonly AppDbContext _context;
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly RecurringPaymentAlertService _recurringPaymentAlertService;
@@ -234,7 +237,7 @@ public class FinancialService
         // proxy for "spent" in cycle reports. Report true purchase/payment outflows separately;
         // transfers only move money between envelopes and are intentionally excluded.
         var spentByCategory = activeCycleTxs
-            .Where(t => t.Amount < 0 && !IsTransfer(t))
+            .Where(TransactionReportSemantics.IsReportableOutflow)
             .GroupBy(t => t.LedgerCategory, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => Math.Abs(g.Sum(t => t.Amount)), StringComparer.OrdinalIgnoreCase);
 
@@ -248,20 +251,46 @@ public class FinancialService
         var selectedRemStability = selectedBudgetStability + selectedNetStability;
         var selectedRemRewards = selectedBudgetRewards + selectedNetRewards;
 
-        var trendPoints = new List<(string month, decimal balance)>();
+        var trendPoints = new List<ReportTrendPoint>();
+        var last3TrendPoints = new List<ReportTrendPoint>();
+        var last6TrendPoints = new List<ReportTrendPoint>();
         if (!summaryOnly)
         {
-            await _cycleBalanceService.EnsureComputedThroughAsync(
-                year,
-                activeMonthIndex,
-                cycleDay,
-                cancellationToken);
-            var trendRows = await _context.CycleBalances
-                .AsNoTracking()
-                .Where(b => b.Year == activeYear && b.MonthIndex <= activeMonthIndex)
-                .OrderBy(b => b.MonthIndex)
-                .ToListAsync(cancellationToken);
-            trendPoints = trendRows.Select(r => (Months[r.MonthIndex - 1], r.GrowthBalance)).ToList();
+            var (currentCycleYear, currentCycleMonthIndex) = CategoryAttributionService
+                .GetCycleYearAndMonthIndexForDate(_financialClock.Today, cycleDay);
+            var yearEndMonth = activeYear < currentCycleYear
+                ? 12
+                : activeYear == currentCycleYear
+                    ? currentCycleMonthIndex
+                    : 0;
+            if (yearEndMonth > 0)
+            {
+                await _cycleBalanceService.EnsureComputedThroughAsync(
+                    activeYear,
+                    yearEndMonth,
+                    cycleDay,
+                    cancellationToken);
+                var yearRows = await _context.CycleBalances
+                    .AsNoTracking()
+                    .Where(balance => balance.Year == activeYear && balance.MonthIndex <= yearEndMonth)
+                    .OrderBy(balance => balance.MonthIndex)
+                    .ToListAsync(cancellationToken);
+                trendPoints = yearRows.Select(ToTrendPoint).ToList();
+                var rollingEndMonth = activeYear == currentCycleYear
+                    ? Math.Min(activeMonthIndex, currentCycleMonthIndex)
+                    : activeMonthIndex;
+                var selectedOrdinal = (activeYear * 12) + rollingEndMonth;
+                var rollingRows = await _context.CycleBalances
+                    .AsNoTracking()
+                    .Where(balance =>
+                        (balance.Year * 12) + balance.MonthIndex <= selectedOrdinal &&
+                        (balance.Year * 12) + balance.MonthIndex > selectedOrdinal - 6)
+                    .OrderBy(balance => balance.Year)
+                    .ThenBy(balance => balance.MonthIndex)
+                    .ToListAsync(cancellationToken);
+                last6TrendPoints = rollingRows.Select(ToTrendPoint).ToList();
+                last3TrendPoints = last6TrendPoints.TakeLast(3).ToList();
+            }
         }
 
         var selectedCycleIncome = activeCycleTxs
@@ -273,17 +302,22 @@ public class FinancialService
         var targetStability = selectedCycleIncome * setting.StabilityAlloc;
         var targetRewards = selectedCycleIncome * setting.RewardsAlloc;
 
+        var incomeAllocatedEssentials = ReportMetricsCalculator.IncomeAllocatedTo(activeCycleTxs, "Essentials");
+        var incomeAllocatedGrowth = ReportMetricsCalculator.IncomeAllocatedTo(activeCycleTxs, "Growth");
+        var incomeAllocatedStability = ReportMetricsCalculator.IncomeAllocatedTo(activeCycleTxs, "Stability");
+        var incomeAllocatedRewards = ReportMetricsCalculator.IncomeAllocatedTo(activeCycleTxs, "Rewards");
+
         var categories = new[]
         {
-            new { name = "Essentials", allocation = setting.EssentialsAlloc, target = ObfuscationHelper.Obfuscate(targetEssentials), budget = ObfuscationHelper.Obfuscate(selectedBudgetEssentials), netChange = ObfuscationHelper.Obfuscate(selectedNetEssentials), spent = ObfuscationHelper.Obfuscate(selectedSpentEssentials), remaining = ObfuscationHelper.Obfuscate(selectedRemEssentials) },
-            new { name = "Growth", allocation = setting.GrowthAlloc, target = ObfuscationHelper.Obfuscate(targetGrowth), budget = ObfuscationHelper.Obfuscate(selectedBudgetGrowth), netChange = ObfuscationHelper.Obfuscate(selectedNetGrowth), spent = ObfuscationHelper.Obfuscate(selectedSpentGrowth), remaining = ObfuscationHelper.Obfuscate(selectedRemGrowth) },
-            new { name = "Stability", allocation = setting.StabilityAlloc, target = ObfuscationHelper.Obfuscate(targetStability), budget = ObfuscationHelper.Obfuscate(selectedBudgetStability), netChange = ObfuscationHelper.Obfuscate(selectedNetStability), spent = ObfuscationHelper.Obfuscate(selectedSpentStability), remaining = ObfuscationHelper.Obfuscate(selectedRemStability) },
-            new { name = "Rewards", allocation = setting.RewardsAlloc, target = ObfuscationHelper.Obfuscate(targetRewards), budget = ObfuscationHelper.Obfuscate(selectedBudgetRewards), netChange = ObfuscationHelper.Obfuscate(selectedNetRewards), spent = ObfuscationHelper.Obfuscate(selectedSpentRewards), remaining = ObfuscationHelper.Obfuscate(selectedRemRewards) }
+            new { name = "Essentials", allocation = setting.EssentialsAlloc, target = ObfuscationHelper.Obfuscate(targetEssentials), incomeAllocated = ObfuscationHelper.Obfuscate(incomeAllocatedEssentials), budget = ObfuscationHelper.Obfuscate(selectedBudgetEssentials), netChange = ObfuscationHelper.Obfuscate(selectedNetEssentials), spent = ObfuscationHelper.Obfuscate(selectedSpentEssentials), remaining = ObfuscationHelper.Obfuscate(selectedRemEssentials) },
+            new { name = "Growth", allocation = setting.GrowthAlloc, target = ObfuscationHelper.Obfuscate(targetGrowth), incomeAllocated = ObfuscationHelper.Obfuscate(incomeAllocatedGrowth), budget = ObfuscationHelper.Obfuscate(selectedBudgetGrowth), netChange = ObfuscationHelper.Obfuscate(selectedNetGrowth), spent = ObfuscationHelper.Obfuscate(selectedSpentGrowth), remaining = ObfuscationHelper.Obfuscate(selectedRemGrowth) },
+            new { name = "Stability", allocation = setting.StabilityAlloc, target = ObfuscationHelper.Obfuscate(targetStability), incomeAllocated = ObfuscationHelper.Obfuscate(incomeAllocatedStability), budget = ObfuscationHelper.Obfuscate(selectedBudgetStability), netChange = ObfuscationHelper.Obfuscate(selectedNetStability), spent = ObfuscationHelper.Obfuscate(selectedSpentStability), remaining = ObfuscationHelper.Obfuscate(selectedRemStability) },
+            new { name = "Rewards", allocation = setting.RewardsAlloc, target = ObfuscationHelper.Obfuscate(targetRewards), incomeAllocated = ObfuscationHelper.Obfuscate(incomeAllocatedRewards), budget = ObfuscationHelper.Obfuscate(selectedBudgetRewards), netChange = ObfuscationHelper.Obfuscate(selectedNetRewards), spent = ObfuscationHelper.Obfuscate(selectedSpentRewards), remaining = ObfuscationHelper.Obfuscate(selectedRemRewards) }
         };
 
         var totalBalance = selectedRemEssentials + selectedRemStability + selectedRemRewards;
-        var monthlyInflow = activeCycleTxs.Where(t => t.Amount > 0 && !IsTransfer(t)).Sum(t => t.Amount);
-        var monthlyOutflow = Math.Abs(activeCycleTxs.Where(t => t.Amount < 0 && !IsTransfer(t)).Sum(t => t.Amount));
+        var monthlyInflow = activeCycleTxs.Where(TransactionReportSemantics.IsReportableInflow).Sum(t => t.Amount);
+        var monthlyOutflow = Math.Abs(activeCycleTxs.Where(TransactionReportSemantics.IsReportableOutflow).Sum(t => t.Amount));
         var activeRecurringTotal = allRecurring
             .Where(payment => IsActiveInRange(payment, activeRange.start, activeRange.end))
             .Sum(payment => Math.Abs(MonthlyEquivalent(payment)));
@@ -349,17 +383,10 @@ public class FinancialService
                 allRecurring,
                 cancellationToken);
 
-        var monthlyCategoryBreakdown = BuildBreakdown(activeCycleTxs);
+        var monthlyCategoryBreakdown = ReportMetricsCalculator.BuildBreakdown(activeCycleTxs);
 
-        var trendPointsList = trendPoints.ToList();
-        var last6TrendPoints = trendPointsList.Count >= 6
-            ? trendPointsList.GetRange(trendPointsList.Count - 6, 6)
-            : trendPointsList.ToList();
-        var last3TrendPoints = trendPointsList.Count >= 3
-            ? trendPointsList.GetRange(trendPointsList.Count - 3, 3)
-            : trendPointsList.ToList();
-
-        var cycleSummaryInsights = BuildSummaryInsights(activeCycleTxs, activeRangeStartDate, activeRangeEndExclusive);
+        var cycleSummaryInsights = ReportResponseMapper.ObfuscateSummaryInsights(
+            ReportMetricsCalculator.BuildSummaryInsights(activeCycleTxs, activeRangeStartDate, activeRangeEndExclusive));
 
         var result = new
         {
@@ -443,21 +470,32 @@ public class FinancialService
         // in the database, instead of materializing every yearly transaction just to group it in
         // memory. The projection mirrors BuildBreakdown's semantics exactly (exclude transfers,
         // sum outflows by category, abs, order by amount desc).
-        var yearStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(CategoryAttributionService.GetCycleRange(activeYear, 1, cycleDay).start));
-        var yearEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(CategoryAttributionService.GetCycleRange(activeYear, 12, cycleDay).end));
-        var yearlyGroups = await _context.Transactions
-            .AsNoTracking()
-            .Where(t => t.Date >= yearStartDate && t.Date < yearEndExclusive)
-            .Where(t => t.Amount < 0)
-            .Where(t => t.Category.ToLower() != "transfer")
-            .Where(t => !t.LedgerCategory.ToLower().StartsWith("transfer:"))
-            .GroupBy(t => t.Category)
-            .Select(g => new { Category = g.Key, Total = g.Sum(t => t.Amount) })
-            .ToListAsync(cancellationToken);
+        var (currentCycleYear, currentCycleMonthIndex) = CategoryAttributionService
+            .GetCycleYearAndMonthIndexForDate(_financialClock.Today, cycleDay);
+        var yearEndMonth = activeYear < currentCycleYear
+            ? 12
+            : activeYear == currentCycleYear ? currentCycleMonthIndex : 0;
+        var yearlyGroups = new List<ReportCategoryTotal>();
+        if (yearEndMonth > 0)
+        {
+            var yearStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(CategoryAttributionService.GetCycleRange(activeYear, 1, cycleDay).start));
+            var yearEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(CategoryAttributionService.GetCycleRange(activeYear, yearEndMonth, cycleDay).end));
+            yearlyGroups = (await _context.Transactions
+                .AsNoTracking()
+                .Where(t => t.Date >= yearStartDate && t.Date < yearEndExclusive)
+                .Where(t => t.Amount < 0)
+                .Where(t => t.Category.ToLower() != "transfer")
+                .Where(t => t.Category.ToLower() != "adjustment")
+                .Where(t => !t.LedgerCategory.ToLower().StartsWith("transfer:"))
+                .Where(t => t.LedgerCategory.ToLower() != "discarded")
+                .GroupBy(t => t.Category)
+                .Select(g => new ReportCategoryTotal(g.Key, g.Sum(t => t.Amount)))
+                .ToListAsync(cancellationToken));
+        }
         var yearlyCategoryBreakdown = yearlyGroups
-            .GroupBy(g => string.IsNullOrWhiteSpace(g.Category) ? "Other" : g.Category)
-            .Select(g => (category: g.Key, amount: Math.Abs(g.Sum(x => x.Total))))
-            .OrderByDescending(b => b.amount)
+            .GroupBy(g => string.IsNullOrWhiteSpace(g.Category) ? "Other" : g.Category.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => new ReportBreakdownItem(g.Key, Math.Abs(g.Sum(x => x.Total))))
+            .OrderByDescending(item => item.Amount)
             .ToList();
 
         // Last-6 is one range query; last-3 is a strict subset of that same range, sliced in
@@ -482,10 +520,10 @@ public class FinancialService
                 LedgerCategory = r.LedgerCategory
             })
             .ToList();
-        var last6CategoryBreakdown = BuildBreakdown(last6Txs);
+        var last6CategoryBreakdown = ReportMetricsCalculator.BuildBreakdown(last6Txs);
 
         var last3Txs = last6Txs.Where(t => t.Date >= last3StartDate).ToList();
-        var last3CategoryBreakdown = BuildBreakdown(last3Txs);
+        var last3CategoryBreakdown = ReportMetricsCalculator.BuildBreakdown(last3Txs);
 
         // Use the three completed cycles before the active cycle; the current partial cycle would
         // otherwise depress the savings-rate average early in the month.
@@ -853,17 +891,6 @@ public class FinancialService
         return Enumerable.Range(minYear, maxYear - minYear + 1).ToList();
     }
 
-    private static List<(string category, decimal amount)> BuildBreakdown(List<Transaction> txs) => txs
-        .Where(t => t.Amount < 0 && !IsTransfer(t))
-        .GroupBy(t => string.IsNullOrWhiteSpace(t.Category) ? "Other" : t.Category)
-        .Select(g => (category: g.Key, amount: Math.Abs(g.Sum(t => t.Amount))))
-        .OrderByDescending(b => b.amount)
-        .ToList();
-
-    private static bool IsTransfer(Transaction transaction) =>
-        string.Equals(transaction.Category, "Transfer", StringComparison.OrdinalIgnoreCase) ||
-        transaction.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase);
-
     private static bool IsActiveInRange(RecurringPayment payment, DateTime rangeStart, DateTime rangeEnd)
     {
         if (!payment.Active ||
@@ -883,11 +910,25 @@ public class FinancialService
             ? payment.Amount / 12m
             : payment.Amount;
 
-    private static List<object> ObfuscateTrendPoints(List<(string month, decimal balance)> points) =>
-        points.Select(p => (object)new { month = p.month, balance = ObfuscationHelper.Obfuscate(p.balance) }).ToList();
+    private static ReportTrendPoint ToTrendPoint(CycleBalance balance) => new(
+        $"{balance.Year:D4}-{balance.MonthIndex:D2}",
+        Months[balance.MonthIndex - 1],
+        balance.GrowthBalance);
 
-    private static List<object> ObfuscateBreakdown(List<(string category, decimal amount)> breakdown) =>
-        breakdown.Select(b => (object)new { category = b.category, amount = ObfuscationHelper.Obfuscate(b.amount) }).ToList();
+    private static List<object> ObfuscateTrendPoints(IEnumerable<ReportTrendPoint> points) =>
+        points.Select(point => (object)new
+        {
+            cycleKey = point.CycleKey,
+            month = point.Month,
+            balance = ObfuscationHelper.Obfuscate(point.Balance)
+        }).ToList();
+
+    private static List<object> ObfuscateBreakdown(IEnumerable<ReportBreakdownItem> breakdown) =>
+        breakdown.Select(item => (object)new
+        {
+            category = item.Category,
+            amount = ObfuscationHelper.Obfuscate(item.Amount)
+        }).ToList();
 
     private sealed record PendingRecurringItem(string Category, string LedgerCategory, decimal Amount);
 
@@ -912,7 +953,7 @@ public class FinancialService
         var nonRecurringEssentialsSpent = Math.Abs(activeCycleTxs
             .Where(transaction =>
                 transaction.Amount < 0 &&
-                !IsTransfer(transaction) &&
+                TransactionReportSemantics.IsReportableOutflow(transaction) &&
                 string.IsNullOrWhiteSpace(transaction.RecurringPaymentId) &&
                 !string.Equals(transaction.Category, "Adjustment", StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(transaction.LedgerCategory, "Essentials", StringComparison.OrdinalIgnoreCase))
@@ -991,8 +1032,7 @@ public class FinancialService
         var expenseTransactions = activeCycleTxs
             .Where(transaction =>
                 transaction.Amount < 0 &&
-                !IsTransfer(transaction) &&
-                !string.Equals(transaction.Category, "Adjustment", StringComparison.OrdinalIgnoreCase))
+                TransactionReportSemantics.IsReportableOutflow(transaction))
             .ToList();
         var spentByCategory = expenseTransactions
             .GroupBy(transaction => transaction.Category, StringComparer.OrdinalIgnoreCase)
@@ -1050,61 +1090,4 @@ public class FinancialService
         }).ToList();
     }
 
-    private static object? BuildSummaryInsights(List<Transaction> activeCycleTxs, DateTime start, DateTime endExclusive)
-    {
-        var cycleExpenseTxs = activeCycleTxs.Where(t => t.Amount < 0 && !IsTransfer(t)).ToList();
-        
-        var largestTxn = cycleExpenseTxs.OrderBy(t => t.Amount).FirstOrDefault(); // Amount is negative, so smallest value is largest absolute amount
-        
-        var biggestDay = cycleExpenseTxs
-            .GroupBy(t => TransactionDate.ToDateOnly(t.Date))
-            .Select(g => new { Date = g.Key, Total = Math.Abs(g.Sum(t => t.Amount)) })
-            .OrderByDescending(g => g.Total)
-            .FirstOrDefault();
-            
-        var startMid = DateOnly.FromDateTime(start);
-        var endMid = DateOnly.FromDateTime(endExclusive);
-        var cycleLengthDays = endMid.DayNumber - startMid.DayNumber;
-        
-        var avgDailySpend = cycleExpenseTxs.Count > 0 && cycleLengthDays > 0
-            ? Math.Abs(cycleExpenseTxs.Sum(t => t.Amount)) / cycleLengthDays
-            : (decimal?)null;
-            
-        var startDateTime = start;
-        var endDateTime = endExclusive;
-        var midMs = startDateTime.Ticks + (endDateTime.Ticks - startDateTime.Ticks) / 2;
-        
-        decimal velocityFirstHalf = 0;
-        decimal velocitySecondHalf = 0;
-        
-        foreach (var t in cycleExpenseTxs)
-        {
-            if (t.Date.Ticks <= midMs) velocityFirstHalf += Math.Abs(t.Amount);
-            else velocitySecondHalf += Math.Abs(t.Amount);
-        }
-        
-        var distinctExpenseDays = cycleExpenseTxs.Select(t => TransactionDate.ToDateOnly(t.Date)).Distinct().Count();
-        var noSpendDays = Math.Max(0, cycleLengthDays - distinctExpenseDays);
-        
-        var transactionCount = cycleExpenseTxs.Count;
-        
-        var committedSpend = Math.Abs(cycleExpenseTxs.Where(t => !string.IsNullOrEmpty(t.RecurringPaymentId)).Sum(t => t.Amount));
-        var discretionarySpend = Math.Abs(cycleExpenseTxs.Where(t => string.IsNullOrEmpty(t.RecurringPaymentId)).Sum(t => t.Amount));
-        
-        return new
-        {
-            largestExpenseDescription = largestTxn?.Description,
-            largestExpenseAmount = largestTxn != null ? ObfuscationHelper.Obfuscate(Math.Abs(largestTxn.Amount)) : null,
-            biggestDayDate = biggestDay?.Date.ToString("yyyy-MM-dd"),
-            biggestDayTotal = biggestDay != null ? ObfuscationHelper.Obfuscate(biggestDay.Total) : null,
-            avgDailySpend = avgDailySpend != null ? ObfuscationHelper.Obfuscate(avgDailySpend.Value) : null,
-            cycleLengthDays,
-            velocityFirstHalf = cycleExpenseTxs.Count > 0 ? ObfuscationHelper.Obfuscate(velocityFirstHalf) : null,
-            velocitySecondHalf = cycleExpenseTxs.Count > 0 ? ObfuscationHelper.Obfuscate(velocitySecondHalf) : null,
-            noSpendDays,
-            transactionCount,
-            committedSpend = ObfuscationHelper.Obfuscate(committedSpend),
-            discretionarySpend = ObfuscationHelper.Obfuscate(discretionarySpend)
-        };
-    }
 }

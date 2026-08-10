@@ -52,6 +52,26 @@ public class StabilityRecoveryServiceTests
     }
 
     /// <summary>
+    /// The window the client filters the ledger by. It opens with the cycle *after* the last one
+    /// that stood at the ceiling -- May closed at 3,000 with the fund untouched, so nothing before
+    /// June can still be outstanding, and starting at the drawdown itself would have excluded any
+    /// money put back earlier in that same cycle.
+    /// </summary>
+    [Fact]
+    public async Task BuildAsync_OpensTheWindowAfterTheFundWasLastFull()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 4, 4), "Stability", 3000m);
+        Add(context, "out-1", new DateTime(2026, 6, 4), "Stability", -900m);
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 2100m, current: 2100m);
+
+        Assert.Equal("2026-06-01", recovery.RecoveryFromDate);
+    }
+
+    /// <summary>
     /// A withdrawal in the cycle being viewed has no settled row of its own yet, so it has to be
     /// read straight off the ledger or the card would not appear until the cycle turned over.
     /// </summary>

@@ -51,7 +51,14 @@ public sealed record TaxYearReliefSummary(
     decimal PendingReviewAmount,
     int DocumentCount,
     IReadOnlyList<TaxReliefCategorySummary> Categories);
-public sealed record ExpiredTaxYearSummary(int TaxYear, int DocumentCount, long TotalBytes, DateOnly RetentionUntil);
+
+/// <summary>What a delete attempt actually did. Only <see cref="StorageFailed"/> is a failure.</summary>
+public enum DocumentDeleteOutcome
+{
+    Deleted,
+    AlreadyGone,
+    StorageFailed
+}
 
 public enum TaxReliefCategoryMutationStatus
 {
@@ -65,10 +72,6 @@ public enum TaxReliefCategoryMutationStatus
 public sealed record TaxReliefCategoryMutationResult(
     TaxReliefCategoryMutationStatus Status,
     TaxReliefCategoryDefinition? Category = null);
-
-public sealed record ReliefCategoryDocumentUpdate(int Id, string? ReliefCategory);
-public sealed record ReliefCategoryDocumentUpdateResult(int Id, bool Updated, string? Message = null);
-
 
 /// <summary>
 /// Outcome codes for a vault document upload attempt.
@@ -92,9 +95,12 @@ public sealed record DocumentVaultCreateResult(
     string? Message = null);
 
 /// <summary>
-/// Manages the lifecycle of user-uploaded vault documents, including upload, metadata updates, download, and deletion.
+/// Manages the lifecycle of user-uploaded vault documents: upload, download, deletion, listing and
+/// tax-relief category configuration. The two metadata write paths live in
+/// <c>DocumentVaultService.Update.cs</c>; how long records are kept lives in
+/// <see cref="DocumentRetentionService"/>.
 /// </summary>
-public sealed class DocumentVaultService
+public sealed partial class DocumentVaultService
 {
     private readonly AppDbContext _context;
     private readonly IDocumentVaultStore _store;
@@ -189,9 +195,11 @@ public sealed class DocumentVaultService
         }
 
         var mimeType = FileSignatureInspector.DetectMimeType(fileData);
-        if (mimeType == null)
+        if (mimeType == null || !AcceptedUploadTypes.Contains(mimeType))
         {
-            return new DocumentVaultCreateResult(DocumentVaultCreateStatus.UnsupportedType, Message: "Unsupported file type.");
+            return new DocumentVaultCreateResult(
+                DocumentVaultCreateStatus.UnsupportedType,
+                Message: "Upload a photo or a PDF. Other kinds of file cannot be kept as tax evidence.");
         }
 
         var sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fileData))
@@ -203,6 +211,12 @@ public sealed class DocumentVaultService
                 ? new VaultAmountExtraction(null, "MYR", null, "Unavailable", "AI amount extraction is unavailable.")
                 : await _amountExtractor.ExtractAsync(originalFileName, mimeType, fileData, ct);
 
+        // INVARIANT: StorageObjectPath is an immutable opaque key. The tax year appears in it only
+        // because it was convenient when the object was written, and re-filing a document to another
+        // year deliberately does not move the object — so the prefix and VaultDocument.TaxYear
+        // legitimately disagree from then on. Never parse a tax year out of this path, and never key
+        // a storage-side lifecycle rule off the prefix; read the column instead. (The ZIP export
+        // groups by the column, which is why its folders are right even when the prefix is not.)
         var documentGuid = Guid.NewGuid().ToString("N");
         var ext = FileSignatureInspector.ExtensionForMimeType(mimeType);
         var objectPath = $"{userId}/{taxYear}/{documentGuid}{ext}";
@@ -217,7 +231,7 @@ public sealed class DocumentVaultService
             return new DocumentVaultCreateResult(DocumentVaultCreateStatus.StorageUnavailable, Message: "Document storage is temporarily unavailable.");
         }
 
-        var retentionUntil = new DateOnly(taxYear, 12, 31).AddYears(TaxYearLookbackYears);
+        var retentionUntil = DocumentRetentionService.RetentionUntilFor(taxYear);
 
         var doc = new VaultDocument
         {
@@ -235,6 +249,8 @@ public sealed class DocumentVaultService
             AmountConfidence = extraction.Confidence,
             AmountExtractionMessage = extraction.Message,
             TransactionId = transactionId,
+            // Stays a UTC instant, deliberately: FinancialClock is for date-based financial behaviour
+            // (which cycle, which tax year), and this is a point in time that is ordered and compared.
             UploadedAt = DateTime.UtcNow,
             RetentionUntil = retentionUntil,
             ClientKey = clientKey
@@ -262,12 +278,17 @@ public sealed class DocumentVaultService
         return new DocumentVaultCreateResult(DocumentVaultCreateStatus.Created, doc.Id);
     }
 
-    public async Task<bool> DeleteAsync(int id, CancellationToken ct = default)
+    /// <summary>
+    /// Deleting a document, reporting which of the three things happened. <see cref="DocumentDeleteOutcome.AlreadyGone"/>
+    /// is not an error — a replayed request must still succeed — but it is not a deletion either, and
+    /// collapsing the two into `true` meant a bulk result counted rows nobody had just removed.
+    /// </summary>
+    public async Task<DocumentDeleteOutcome> DeleteAsync(int id, CancellationToken ct = default)
     {
         var doc = await _context.VaultDocuments.FirstOrDefaultAsync(d => d.Id == id, ct);
         if (doc == null)
         {
-            return true;
+            return DocumentDeleteOutcome.AlreadyGone;
         }
 
         try
@@ -277,12 +298,12 @@ public sealed class DocumentVaultService
         catch (DocumentVaultStoreException ex)
         {
             _logger.LogError(ex, "Failed to delete GCS object {ObjectPath} for VaultDocument {Id}.", doc.StorageObjectPath, doc.Id);
-            return false;
+            return DocumentDeleteOutcome.StorageFailed;
         }
 
         _context.VaultDocuments.Remove(doc);
         await _context.SaveChangesAsync(ct);
-        return true;
+        return DocumentDeleteOutcome.Deleted;
     }
 
     public async Task<(List<VaultDocumentDto> Items, int TotalCount)> ListAsync(
@@ -368,160 +389,6 @@ public sealed class DocumentVaultService
             .ToListAsync(ct);
     }
 
-    public async Task<VaultDocumentDto?> UpdateAsync(
-        int id,
-        int? taxYear,
-        string? transactionId,
-        bool updateTransactionId,
-        string? reliefCategory,
-        bool updateReliefCategory,
-        decimal? amount,
-        bool updateAmount,
-        string? amountCurrency,
-        string? amountStatus,
-        CancellationToken ct = default)
-    {
-        var doc = await _context.VaultDocuments.FirstOrDefaultAsync(d => d.Id == id, ct);
-        if (doc == null) return null;
-
-        if (taxYear.HasValue && !IsAllowedTaxYear(taxYear.Value))
-        {
-            return null;
-        }
-        reliefCategory = string.IsNullOrWhiteSpace(reliefCategory) ? null : reliefCategory.Trim();
-        var targetTaxYear = taxYear ?? doc.TaxYear;
-        if (updateReliefCategory &&
-            (reliefCategory == null || !await IsReliefCategoryConfiguredAsync(targetTaxYear, reliefCategory, ct)))
-        {
-            return null;
-        }
-        if (updateAmount && amount is < 0)
-        {
-            return null;
-        }
-        if (amountCurrency != null && amountCurrency is not ("MYR" or "OTHER"))
-        {
-            return null;
-        }
-        if (amountStatus != null && amountStatus is not ("Confirmed" or "NeedsReview"))
-        {
-            return null;
-        }
-        if (taxYear.HasValue && taxYear.Value != doc.TaxYear)
-        {
-            doc.TaxYear = taxYear.Value;
-            doc.RetentionUntil = new DateOnly(taxYear.Value, 12, 31).AddYears(TaxYearLookbackYears);
-        }
-        if (updateTransactionId)
-        {
-            doc.TransactionId = string.IsNullOrWhiteSpace(transactionId) ? null : transactionId;
-            // An explicit re-point (including the transaction form's Detach) is the user's final
-            // word on where this document belongs, so it must not be re-linked later by a restore
-            // of the transaction it happened to be attached to before.
-            doc.DetachedFromTransactionId = null;
-        }
-        if (updateReliefCategory)
-        {
-            doc.ReliefCategory = reliefCategory;
-        }
-        if (updateAmount)
-        {
-            doc.Amount = amount;
-            doc.AmountCurrency = amountCurrency ?? doc.AmountCurrency;
-            doc.AmountStatus = amount.HasValue ? amountStatus ?? "Confirmed" : "NotFound";
-            doc.AmountConfidence = amountStatus == "Confirmed" ? null : doc.AmountConfidence;
-            doc.AmountExtractionMessage = null;
-        }
-
-        await _context.SaveChangesAsync(ct);
-
-        return new VaultDocumentDto(
-            doc.Id,
-            doc.OriginalFileName,
-            doc.ContentType,
-            doc.SizeBytes,
-            doc.TaxYear,
-            doc.ReliefCategory,
-            doc.Amount,
-            doc.AmountCurrency,
-            doc.AmountStatus,
-            doc.AmountConfidence,
-            doc.AmountExtractionMessage,
-            doc.TransactionId,
-            doc.UploadedAt,
-            doc.RetentionUntil);
-    }
-
-    public async Task<IReadOnlyList<ReliefCategoryDocumentUpdateResult>> UpdateReliefCategoriesAsync(
-        IReadOnlyCollection<ReliefCategoryDocumentUpdate> updates,
-        CancellationToken ct = default)
-    {
-        var requested = updates
-            .GroupBy(update => update.Id)
-            .Select(group => group.Last())
-            .ToList();
-
-        if (requested.Count == 0) return [];
-
-        var ids = requested
-            .Where(update => update.Id > 0)
-            .Select(update => update.Id)
-            .ToArray();
-        var documents = await _context.VaultDocuments
-            .Where(document => ids.Contains(document.Id))
-            .ToListAsync(ct);
-        var documentsById = documents.ToDictionary(document => document.Id);
-        var validCategoriesByTaxYear = new Dictionary<int, HashSet<string>>();
-        var results = new List<ReliefCategoryDocumentUpdateResult>(requested.Count);
-        var hasChanges = false;
-
-        foreach (var update in requested)
-        {
-            if (!documentsById.TryGetValue(update.Id, out var document))
-            {
-                results.Add(new(update.Id, false, "The document was not found."));
-                continue;
-            }
-
-            var reliefCategory = update.ReliefCategory?.Trim();
-            if (string.IsNullOrWhiteSpace(reliefCategory) || reliefCategory.Length > 80)
-            {
-                results.Add(new(update.Id, false, "A valid tax relief category is required."));
-                continue;
-            }
-
-            if (!validCategoriesByTaxYear.TryGetValue(document.TaxYear, out var validCategories))
-            {
-                var (rows, _) = await GetEffectiveCategoryRowsAsync(document.TaxYear, ct);
-                validCategories = rows
-                    .Select(row => row.CategoryId)
-                    .ToHashSet(StringComparer.Ordinal);
-                validCategoriesByTaxYear[document.TaxYear] = validCategories;
-            }
-
-            if (!validCategories.Contains(reliefCategory))
-            {
-                results.Add(new(update.Id, false, "The category is not configured for this document's tax year."));
-                continue;
-            }
-
-            if (!string.Equals(document.ReliefCategory, reliefCategory, StringComparison.Ordinal))
-            {
-                document.ReliefCategory = reliefCategory;
-                hasChanges = true;
-            }
-
-            results.Add(new(update.Id, true));
-        }
-
-        if (hasChanges)
-        {
-            await _context.SaveChangesAsync(ct);
-        }
-
-        return results;
-    }
-
     public async Task<DocumentVaultUsage> GetUsageAsync(CancellationToken ct = default)
     {
         var aggregate = await _context.VaultDocuments
@@ -542,69 +409,60 @@ public sealed class DocumentVaultService
         return new(options.MaxDocumentBytes, options.MaxBulkDocuments, options.MaxTotalBytesPerUser);
     }
 
-    public async Task<List<ExpiredTaxYearSummary>> GetExpiredTaxYearsAsync(CancellationToken ct = default)
-    {
-        var today = _financialClock.Today;
-        var expired = await _context.VaultDocuments
-            .AsNoTracking()
-            .Where(document => document.RetentionUntil < today)
-            .Select(document => new { document.TaxYear, document.SizeBytes, document.RetentionUntil })
-            .ToListAsync(ct);
-        return expired
-            .GroupBy(document => new { document.TaxYear, document.RetentionUntil })
-            .Select(group => new ExpiredTaxYearSummary(
-                group.Key.TaxYear,
-                group.Count(),
-                group.Sum(document => document.SizeBytes),
-                group.Key.RetentionUntil))
-            .OrderBy(summary => summary.TaxYear)
-            .ToList();
-    }
-
     public async Task<TaxYearReliefSummary?> GetTaxYearSummaryAsync(int taxYear, CancellationToken ct = default)
     {
         if (!IsAllowedTaxYear(taxYear)) return null;
 
-        var documents = await _context.VaultDocuments
+        // Aggregated per category in SQL rather than by pulling every document for the year back and
+        // summing in memory. Only Confirmed MYR amounts count towards a relief limit, which is why
+        // the currency and status appear inside each sum rather than as a filter over the whole set.
+        var perCategory = await _context.VaultDocuments
             .AsNoTracking()
             .Where(document => document.TaxYear == taxYear)
-            .Select(document => new
+            .GroupBy(document => document.ReliefCategory)
+            .Select(group => new
             {
-                document.ReliefCategory,
-                document.Amount,
-                document.AmountCurrency,
-                document.AmountStatus
+                ReliefCategory = group.Key,
+                DocumentCount = group.Count(),
+                Confirmed = group.Sum(document =>
+                    document.AmountStatus == "Confirmed" && document.AmountCurrency == "MYR"
+                        ? document.Amount ?? 0
+                        : 0),
+                Pending = group.Sum(document =>
+                    document.AmountStatus == "NeedsReview" && document.AmountCurrency == "MYR"
+                        ? document.Amount ?? 0
+                        : 0),
+                PendingReviewCount = group.Count(document => document.AmountStatus == "NeedsReview"),
             })
             .ToListAsync(ct);
+
         var definitions = await GetReliefCategoriesAsync(taxYear, ct);
-        if (documents.Count == 0 && definitions.Count == 0) return null;
+        if (perCategory.Count == 0 && definitions.Count == 0) return null;
+
+        var totalsByCategory = perCategory
+            .Where(entry => entry.ReliefCategory != null)
+            .ToDictionary(entry => entry.ReliefCategory!, StringComparer.Ordinal);
 
         var summaries = definitions.Select(definition =>
         {
-            var categoryDocuments = documents
-                .Where(document => document.ReliefCategory == definition.Id)
-                .ToList();
-            var confirmed = categoryDocuments
-                .Where(document => document.AmountStatus == "Confirmed" && document.AmountCurrency == "MYR")
-                .Sum(document => document.Amount ?? 0);
-            var pending = categoryDocuments
-                .Where(document => document.AmountStatus == "NeedsReview" && document.AmountCurrency == "MYR")
-                .Sum(document => document.Amount ?? 0);
+            totalsByCategory.TryGetValue(definition.Id, out var totals);
             return new TaxReliefCategorySummary(
                 definition.Id,
                 definition.Name,
                 definition.Limit,
-                confirmed,
-                pending,
-                categoryDocuments.Count,
-                categoryDocuments.Count(document => document.AmountStatus == "NeedsReview"));
+                totals?.Confirmed ?? 0,
+                totals?.Pending ?? 0,
+                totals?.DocumentCount ?? 0,
+                totals?.PendingReviewCount ?? 0);
         }).ToList();
 
         return new TaxYearReliefSummary(
             taxYear,
             summaries.Sum(summary => summary.ConfirmedAmount),
             summaries.Sum(summary => summary.PendingReviewAmount),
-            documents.Count,
+            // Every document for the year, including any whose category is unset or no longer
+            // configured — those are exactly the ones needing repair, so they must still be counted.
+            perCategory.Sum(entry => entry.DocumentCount),
             summaries);
     }
 
@@ -621,6 +479,9 @@ public sealed class DocumentVaultService
     }
 
     public bool IsTaxYearAllowed(int taxYear) => IsAllowedTaxYear(taxYear);
+
+    /// <summary>The wording every caller uses when a tax year is out of range, so they cannot differ.</summary>
+    public string TaxYearValidationMessage => GetTaxYearValidationMessage();
 
     public async Task<TaxReliefCategoryMutationResult> AddReliefCategoryAsync(
         int taxYear,
@@ -651,7 +512,19 @@ public sealed class DocumentVaultService
             TaxYear = taxYear
         };
         _context.TaxReliefCategoryLimits.Add(category);
-        await _context.SaveChangesAsync(ct);
+        try
+        {
+            await _context.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // The duplicate check above reads rows loaded before this insert, so two adds of the same
+            // name race to the same generated CategoryId and one of them loses on the unique index.
+            // That is the same conflict the check reports, and it must read the same way rather than
+            // escaping as a 500.
+            _context.Entry(category).State = EntityState.Detached;
+            return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.Duplicate);
+        }
 
         return new TaxReliefCategoryMutationResult(
             TaxReliefCategoryMutationStatus.Saved,
@@ -738,11 +611,6 @@ public sealed class DocumentVaultService
         await WriteZipAsync(ExportQuery(taxYear, null), output, ct);
     }
 
-    public Task<bool> HasDocumentsForExportAsync(IReadOnlyCollection<int> ids, CancellationToken ct = default)
-    {
-        return ExportQuery(null, ids).AnyAsync(ct);
-    }
-
     public async Task<bool> HasAllDocumentsForExportAsync(IReadOnlyCollection<int> ids, CancellationToken ct = default)
     {
         var distinctIds = ids.Distinct().ToArray();
@@ -781,7 +649,26 @@ public sealed class DocumentVaultService
         return query;
     }
 
-    private const int TaxYearLookbackYears = 7;
+    // How far back a new upload may be filed. It is the same span records are worth keeping for, so
+    // it reads from one place: a year that can still be filed is a year still worth keeping.
+    private const int TaxYearLookbackYears = DocumentRetentionService.KeepYears;
+
+    /// <summary>
+    /// What a tax vault will accept: a photo of a receipt, or a PDF. `FileSignatureInspector` also
+    /// recognises XML and JSON, and those are deliberately excluded here — a tax record is never one
+    /// of them, and they are the only detected types a browser will both render and execute, which
+    /// matters because <c>/documents/{id}/content</c> is served from the origin holding the auth
+    /// cookie. Existing rows of those types stay listed and downloadable; only new uploads are refused.
+    /// </summary>
+    private static readonly HashSet<string> AcceptedUploadTypes = new(StringComparer.Ordinal)
+    {
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/heic",
+        "image/heif",
+        "application/pdf",
+    };
 
     private async Task<bool> IsReliefCategoryConfiguredAsync(
         int taxYear,

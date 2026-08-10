@@ -40,7 +40,7 @@ public partial class AiAssistantService
     {
         var candidates = new List<DuplicateCandidate>();
         var groups = transactions
-            .Where(t => !IsTransfer(t))
+            .Where(t => TransactionReportSemantics.IsReportableCashMovement(t.Amount, t.Category, t.LedgerCategory))
             .GroupBy(t => (Merchant: NormalizeMerchant(t.Description), Sign: Math.Sign(t.Amount)));
 
         foreach (var group in groups)
@@ -88,7 +88,7 @@ public partial class AiAssistantService
     {
         var anomalies = new List<AnomalyResult>();
         var outflowsByCategory = transactions
-            .Where(t => !IsTransfer(t) && t.Amount < 0)
+            .Where(t => t.Amount < 0 && TransactionReportSemantics.IsReportableCashMovement(t.Amount, t.Category, t.LedgerCategory))
             .GroupBy(t => t.Category);
 
         foreach (var group in outflowsByCategory)

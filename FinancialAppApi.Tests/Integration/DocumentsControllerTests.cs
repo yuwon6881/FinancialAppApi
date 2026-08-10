@@ -68,6 +68,17 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
             reliefCategorySpecified = true,
         });
         Assert.Equal(HttpStatusCode.BadRequest, missingCategoryUpdate.StatusCode);
+        await AssertCarriesAReason(missingCategoryUpdate);
+
+        // A change the server will not make must say so as a 400 with a reason. This used to be a
+        // bare 404, i.e. "that document does not exist", for a document sitting on screen.
+        var badYearUpdate = await client.PatchAsJsonAsync($"/api/documents/{documentId}", new { taxYear = 1990 });
+        Assert.Equal(HttpStatusCode.BadRequest, badYearUpdate.StatusCode);
+        await AssertCarriesAReason(badYearUpdate);
+
+        var missingDocumentUpdate = await client.PatchAsJsonAsync($"/api/documents/{documentId + 100000}", new { taxYear = 2025 });
+        Assert.Equal(HttpStatusCode.NotFound, missingDocumentUpdate.StatusCode);
+        await AssertCarriesAReason(missingDocumentUpdate);
 
         var updateResponse = await client.PatchAsJsonAsync($"/api/documents/{documentId}", new
         {
@@ -220,6 +231,31 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
 
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/documents")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/documents/usage")).StatusCode);
+    }
+
+    [Fact]
+    public async Task RetentionReview_ReportsTheKeepPeriodAndItsNoticeWindow()
+    {
+        var client = await CreateSignedInClientAsync();
+
+        var response = await client.GetAsync("/api/documents/retention");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var review = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(JsonValueKind.Array, review.GetProperty("taxYears").ValueKind);
+        Assert.True(review.GetProperty("noticeWindowDays").GetInt32() > 0);
+        Assert.Equal(7, review.GetProperty("keepYears").GetInt32());
+    }
+
+    /// <summary>
+    /// A refusal with an empty body leaves the client nothing to show but its own generic fallback,
+    /// which is the regression these assertions exist to catch.
+    /// </summary>
+    private static async Task AssertCarriesAReason(HttpResponseMessage response)
+    {
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.TryGetProperty("message", out var message));
+        Assert.False(string.IsNullOrWhiteSpace(message.GetString()));
     }
 
     private static async Task<string> AddCategoryAsync(HttpClient client, int taxYear)

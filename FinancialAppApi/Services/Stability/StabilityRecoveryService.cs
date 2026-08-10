@@ -32,7 +32,18 @@ public sealed record StabilityRecoveryDto(
     string LastDrawdownAmount,
     string EssentialsCommitted,
     string RewardsCommitted,
-    IReadOnlyList<StabilityRecoveryDrawDto> SuggestedDraws);
+    IReadOnlyList<StabilityRecoveryDrawDto> SuggestedDraws,
+    // RecoveryFromDate: first day of the window the shortfall accumulated over -- the start of the
+    // cycle after the last one in which the fund stood at its recoverable ceiling. "yyyy-MM-dd", or
+    // null when there is no ceiling to have fallen from.
+    //
+    // A date rather than an amount because the client's only use for it is a ledger date filter:
+    // the shortfall is a difference between two balances, and the transactions that produced it are
+    // every Stability-attributed row since the fund was last full. Cycle-boundary granularity is
+    // deliberate -- an intra-cycle attainment cannot be expressed as a ledger filter at all, and
+    // opening the window early can only include movement the user genuinely made, never exclude
+    // movement they did not.
+    string? RecoveryFromDate);
 
 /// <summary>The fund's live position, used by the income path to hold a split to the target.</summary>
 public sealed record StabilityState(
@@ -161,6 +172,12 @@ public class StabilityRecoveryService
                 lastDrawdownAmount = row.StabilityWithdrawnAmount;
             }
         }
+        // Closing balances, deliberately not peaks. StabilityPeakBalance includes the balance the
+        // cycle *opened* on, so the very cycle a withdrawal happened in reports a peak at the
+        // ceiling -- which would place that withdrawal outside the window it created.
+        var closingByCycle = history
+            .Select(row => (row.Year, row.MonthIndex, Closing: row.StabilityBalance))
+            .ToList();
 
         // The cycle being viewed has no settled row of its own yet, so its withdrawals are read
         // straight off the ledger with the same rule that produces the balance.
@@ -211,7 +228,51 @@ public class StabilityRecoveryService
             ObfuscationHelper.Obfuscate(drawdown.LastDrawdownAmount),
             ObfuscationHelper.Obfuscate(essentialsCommitted),
             ObfuscationHelper.Obfuscate(rewardsCommitted),
-            BuildSuggestedDraws(setting));
+            BuildSuggestedDraws(setting),
+            ResolveRecoveryFromDate(
+                closingByCycle, drawdown.RecoverableCeiling, year, monthIndex, setting.CycleDay));
+    }
+
+    /// <summary>
+    /// The start of the window the shortfall accumulated over. Walks the cycle history backwards to
+    /// the last cycle that *closed* at or above <paramref name="recoverableCeiling"/> and returns
+    /// the day the following cycle opened.
+    /// <para>
+    /// When no cycle ever closed there -- the mark was set and lost inside one cycle -- it falls
+    /// back to the earliest cycle on record rather than guessing a boundary. Opening the window too
+    /// early can only include movement the user genuinely made; opening it too late would hide the
+    /// withdrawal the card is asking about.
+    /// </para>
+    /// </summary>
+    private static string? ResolveRecoveryFromDate(
+        IReadOnlyList<(int Year, int MonthIndex, decimal Closing)> closingByCycle,
+        decimal recoverableCeiling,
+        int year,
+        int monthIndex,
+        int cycleDay)
+    {
+        if (recoverableCeiling <= 0m) return null;
+
+        var start = (Year: year, MonthIndex: monthIndex);
+        var attained = false;
+        for (var index = closingByCycle.Count - 1; index >= 0; index--)
+        {
+            if (closingByCycle[index].Closing < recoverableCeiling) continue;
+            attained = true;
+            // The attainment cycle itself is excluded: it ended at or above the ceiling, so nothing
+            // inside it is still outstanding. The window opens with the cycle after it.
+            start = index + 1 < closingByCycle.Count
+                ? (closingByCycle[index + 1].Year, closingByCycle[index + 1].MonthIndex)
+                : (year, monthIndex);
+            break;
+        }
+        if (!attained && closingByCycle.Count > 0)
+        {
+            start = (closingByCycle[0].Year, closingByCycle[0].MonthIndex);
+        }
+
+        var (rangeStart, _, _) = CategoryAttributionService.GetCycleRange(start.Year, start.MonthIndex, cycleDay);
+        return rangeStart.ToString("yyyy-MM-dd");
     }
 
     /// <summary>

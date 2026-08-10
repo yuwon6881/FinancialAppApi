@@ -28,6 +28,25 @@ public class DocumentVaultServiceTests
         Assert.Equal(DocumentVaultCreateStatus.UnsupportedType, result.Status);
     }
 
+    [Theory]
+    [InlineData("<?xml version=\"1.0\"?><receipt/>")]
+    [InlineData("{\"total\": 12.30}")]
+    public async Task CreateAsync_RefusesMarkupAndDataFilesEvenThoughTheirTypeIsRecognised(string content)
+    {
+        // These are the only detected types a browser will both render and execute, and the content
+        // endpoint serves from the origin holding the auth cookie. A tax record is never one of them.
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        AddTestCategory(context);
+        await context.SaveChangesAsync();
+
+        var service = NewService(context, new FakeDocumentVaultStore());
+
+        var result = await service.CreateAsync("receipt.xml", System.Text.Encoding.UTF8.GetBytes(content), 2026, null, null, "test-category");
+
+        Assert.Equal(DocumentVaultCreateStatus.UnsupportedType, result.Status);
+    }
+
     [Fact]
     public async Task CreateAsync_RequiresTaxReliefCategory()
     {
@@ -104,8 +123,10 @@ public class DocumentVaultServiceTests
     }
 
     [Fact]
-    public async Task ExistingExpiredDocumentsRemainReadableAndAreReportedForManualReview()
+    public async Task ExistingExpiredDocumentsRemainReadable()
     {
+        // Nothing is ever purged, so a record past its keep-until date must still list and open.
+        // That it is also *reported* for review is DocumentRetentionServiceTests' subject.
         await using var context = TestHelpers.NewInMemoryContext("test-user");
         context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
         context.VaultDocuments.Add(VaultDocumentForYear(2018, 1));
@@ -114,11 +135,8 @@ public class DocumentVaultServiceTests
         var store = new FakeDocumentVaultStore();
         var service = NewService(context, store);
 
-        var expired = await service.GetExpiredTaxYearsAsync();
         var listed = await service.ListAsync(2018, null, null, "uploaded-desc", 0, 10);
 
-        Assert.Single(expired);
-        Assert.Equal(2018, expired[0].TaxYear);
         Assert.Single(listed.Items);
         Assert.Equal(2018, listed.Items[0].TaxYear);
     }
@@ -384,8 +402,25 @@ public class DocumentVaultServiceTests
 
         var result = await service.DeleteAsync(1);
 
-        Assert.False(result);
+        Assert.Equal(DocumentDeleteOutcome.StorageFailed, result);
         Assert.NotNull(await context.VaultDocuments.FirstOrDefaultAsync(d => d.Id == 1));
+    }
+
+    [Fact]
+    public async Task DeleteAsync_SeparatesAnAlreadyGoneDocumentFromOneItJustRemoved()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        context.VaultDocuments.Add(VaultDocumentForYear(2026, 1));
+        await context.SaveChangesAsync();
+
+        var service = NewService(context, new FakeDocumentVaultStore());
+
+        Assert.Equal(DocumentDeleteOutcome.Deleted, await service.DeleteAsync(1));
+        // Deleting again still succeeds — a replayed delete must not fail — but it is reported as a
+        // different outcome, so a bulk result cannot count rows nobody actually removed.
+        Assert.Equal(DocumentDeleteOutcome.AlreadyGone, await service.DeleteAsync(1));
+        Assert.Equal(DocumentDeleteOutcome.AlreadyGone, await service.DeleteAsync(999));
     }
 
     [Fact]
@@ -400,6 +435,62 @@ public class DocumentVaultServiceTests
 
         await Assert.ThrowsAsync<DocumentVaultStoreException>(() =>
             service.WriteZipAsync(new[] { 1 }, new MemoryStream()));
+    }
+
+    [Fact]
+    public async Task UpdateAsync_SaysWhyAMetadataEditWasRefused()
+    {
+        // Every one of these used to return null, which the controller reported as "not found" — so a
+        // refused category or tax year told the user their document had vanished.
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        AddTestCategory(context);
+        context.VaultDocuments.Add(VaultDocumentForYear(DateTime.UtcNow.Year, 1));
+        await context.SaveChangesAsync();
+
+        var service = NewService(context, new FakeDocumentVaultStore());
+
+        var missing = await service.UpdateAsync(999, null, null, false, null, false, null, false, null, null);
+        Assert.Equal(DocumentVaultUpdateStatus.NotFound, missing.Status);
+        Assert.False(string.IsNullOrWhiteSpace(missing.Message));
+
+        var badYear = await service.UpdateAsync(1, 1990, null, false, null, false, null, false, null, null);
+        Assert.Equal(DocumentVaultUpdateStatus.InvalidMetadata, badYear.Status);
+        Assert.Contains("Tax year must be between", badYear.Message);
+
+        var blankCategory = await service.UpdateAsync(1, null, null, false, "  ", true, null, false, null, null);
+        Assert.Equal(DocumentVaultUpdateStatus.InvalidMetadata, blankCategory.Status);
+        Assert.Contains("required", blankCategory.Message);
+
+        var unknownCategory = await service.UpdateAsync(1, null, null, false, "not-configured", true, null, false, null, null);
+        Assert.Equal(DocumentVaultUpdateStatus.InvalidMetadata, unknownCategory.Status);
+        Assert.Contains("not configured", unknownCategory.Message);
+
+        var negativeAmount = await service.UpdateAsync(1, null, null, false, null, false, -1m, true, null, null);
+        Assert.Equal(DocumentVaultUpdateStatus.InvalidMetadata, negativeAmount.Status);
+        Assert.Contains("zero or more", negativeAmount.Message);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_DropsExtractorConfidenceWhenAPersonEntersTheAmount()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        var document = VaultDocumentForYear(DateTime.UtcNow.Year, 1);
+        document.Amount = 12m;
+        document.AmountConfidence = 0.42m;
+        document.AmountStatus = "NeedsReview";
+        context.VaultDocuments.Add(document);
+        await context.SaveChangesAsync();
+
+        var service = NewService(context, new FakeDocumentVaultStore());
+
+        var result = await service.UpdateAsync(1, null, null, false, null, false, 99m, true, "MYR", "NeedsReview");
+
+        Assert.Equal(DocumentVaultUpdateStatus.Updated, result.Status);
+        Assert.Equal(99m, result.Document!.Amount);
+        // A hand-typed figure has no model confidence, whatever status it is filed under.
+        Assert.Null(result.Document.AmountConfidence);
     }
 
     private static DocumentVaultService NewService(AppDbContext context, IDocumentVaultStore store, long maxBytes = 10 * 1024 * 1024, long maxTotalBytes = 100 * 1024 * 1024)

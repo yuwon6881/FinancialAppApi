@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FinancialAppApi.Filters;
+using FinancialAppApi.Services;
 using FinancialAppApi.Services.Documents;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -18,11 +19,19 @@ public class DocumentsController : ControllerBase
 {
     private readonly DocumentVaultService _service;
     private readonly DocumentContentService _contentService;
+    private readonly DocumentRetentionService _retentionService;
+    private readonly ILogger<DocumentsController> _logger;
 
-    public DocumentsController(DocumentVaultService service, DocumentContentService contentService)
+    public DocumentsController(
+        DocumentVaultService service,
+        DocumentContentService contentService,
+        DocumentRetentionService retentionService,
+        ILogger<DocumentsController> logger)
     {
         _service = service;
         _contentService = contentService;
+        _retentionService = retentionService;
+        _logger = logger;
     }
 
 
@@ -51,6 +60,12 @@ public class DocumentsController : ControllerBase
         if (file.Length > _service.GetConstraints().MaxDocumentBytes)
         {
             return BadRequest(new { message = "The document exceeds the maximum allowed size." });
+        }
+        // Checked before the copy below, not after: buffering up to 20 MiB into memory and *then*
+        // refusing on a number in the form is work an unauthorised-shaped request should never buy.
+        if (!_service.IsTaxYearAllowed(taxYear))
+        {
+            return BadRequest(new { message = _service.TaxYearValidationMessage });
         }
 
         byte[] data;
@@ -99,7 +114,12 @@ public class DocumentsController : ControllerBase
         if (string.IsNullOrWhiteSpace(reliefCategory))
             return BadRequest(new { message = "A tax relief category is required." });
 
+        if (!_service.IsTaxYearAllowed(taxYear))
+            return BadRequest(new { message = _service.TaxYearValidationMessage });
+
         var results = new List<object>();
+        var storageUnavailable = false;
+        var uploadedCount = 0;
         foreach (var file in files)
         {
             if (file.Length == 0 || file.Length > constraints.MaxDocumentBytes)
@@ -122,6 +142,8 @@ public class DocumentsController : ControllerBase
 
             var result = await _service.CreateAsync(
                 file.FileName, data, taxYear, null, null, reliefCategory, ct);
+            if (result.Status == DocumentVaultCreateStatus.StorageUnavailable) storageUnavailable = true;
+            if (result.Status == DocumentVaultCreateStatus.Created) uploadedCount++;
             results.Add(new
             {
                 fileName = file.FileName,
@@ -130,6 +152,12 @@ public class DocumentsController : ControllerBase
                 message = result.Message
             });
         }
+
+        // A batch where nothing landed because storage was down is not a successful request with
+        // unlucky rows — reported as 200 it looked to the client exactly like files the user had
+        // chosen badly, and it is the one failure that is worth retrying unchanged.
+        if (storageUnavailable && uploadedCount == 0)
+            return StatusCode(503, new { message = "Document storage is temporarily unavailable.", results });
 
         return Ok(new { results });
     }
@@ -182,12 +210,21 @@ public class DocumentsController : ControllerBase
         var data = await _contentService.DownloadAsync(document, ct);
         if (data == null) return NotFound();
 
-        // The browser PWA opens this endpoint directly in its PDF/image viewer. Mark the
-        // response inline so mobile Chrome does not treat the authenticated preview as a
-        // download or fail while opening a blob-backed viewer. The filename is still exposed
-        // for the download helper, which reads Content-Disposition before saving the file.
+        // This response carries bytes the user uploaded, from the origin that holds their auth
+        // cookie, so the browser must never be allowed to decide the type for itself.
+        Response.Headers.XContentTypeOptions = "nosniff";
+
+        // The browser PWA opens this endpoint directly in its PDF/image viewer. Mark those inline so
+        // mobile Chrome does not treat the authenticated preview as a download or fail while opening
+        // a blob-backed viewer. Anything else is an attachment: only images and PDFs are opened by a
+        // viewer, and an inline-rendered document is the one shape that could run in this origin.
+        // Nothing is lost — the preview sheet fetches XML/JSON itself and renders them as escaped
+        // text, so it never depended on the browser opening them. The filename stays exposed either
+        // way for the download helper, which reads Content-Disposition before saving the file.
+        var isViewable = FileSignatureInspector.IsImage(document.ContentType) || document.ContentType == "application/pdf";
         var safeFileName = document.FileName.Replace("\"", string.Empty, StringComparison.Ordinal);
-        Response.Headers.ContentDisposition = $"inline; filename=\"{safeFileName}\"; filename*=UTF-8''{Uri.EscapeDataString(document.FileName)}";
+        var disposition = isViewable ? "inline" : "attachment";
+        Response.Headers.ContentDisposition = $"{disposition}; filename=\"{safeFileName}\"; filename*=UTF-8''{Uri.EscapeDataString(document.FileName)}";
         return File(data, document.ContentType, enableRangeProcessing: true);
     }
 
@@ -217,7 +254,27 @@ public class DocumentsController : ControllerBase
         Response.ContentType = "application/zip";
         Response.Headers.ContentDisposition = "attachment; filename=\"tax-vault-selected.zip\"";
         HttpContext.Features.Get<IHttpBodyControlFeature>()?.AllowSynchronousIO = true;
-        await _service.WriteZipAsync(ids, Response.Body, ct);
+        return await StreamZipAsync(output => _service.WriteZipAsync(ids, output, ct));
+    }
+
+    /// <summary>
+    /// Streams a ZIP, making a mid-stream failure visible. The 200 and the archive headers are
+    /// already committed by the time the first object is fetched, so a stored object that has gone
+    /// missing cannot be reported as a status code — left alone it produced a **truncated archive
+    /// under HTTP 200**, which the client cannot tell from a complete one. Aborting the connection
+    /// makes the transfer fail, which is what `downloadDocumentArchive` already reports as an error.
+    /// </summary>
+    private async Task<IActionResult> StreamZipAsync(Func<Stream, Task> write)
+    {
+        try
+        {
+            await write(Response.Body);
+        }
+        catch (DocumentVaultStoreException ex)
+        {
+            _logger.LogError(ex, "Aborting a vault ZIP export part-way through; the archive would have been incomplete.");
+            HttpContext.Abort();
+        }
         return new EmptyResult();
     }
 
@@ -275,13 +332,23 @@ public class DocumentsController : ControllerBase
     [HttpGet("summary/{taxYear:int}")]
     public async Task<IActionResult> GetTaxYearSummary(int taxYear, CancellationToken ct)
     {
+        // An out-of-range year is a bad request, not a missing resource — the same answer
+        // /relief-categories already gives for the same input.
+        if (!_service.IsTaxYearAllowed(taxYear))
+            return BadRequest(new { message = _service.TaxYearValidationMessage });
+
         var summary = await _service.GetTaxYearSummaryAsync(taxYear, ct);
         return summary == null ? NotFound() : Ok(summary);
     }
 
-    [HttpGet("expired")]
-    public async Task<IActionResult> GetExpiredTaxYears(CancellationToken ct) =>
-        Ok(await _service.GetExpiredTaxYearsAsync(ct));
+    /// <summary>
+    /// Tax years at or near the end of the period they are worth keeping. Replaces the old
+    /// <c>/expired</c> route, whose name stopped being true once the payload also carried years that
+    /// have not expired yet.
+    /// </summary>
+    [HttpGet("retention")]
+    public async Task<IActionResult> GetRetentionReview(CancellationToken ct) =>
+        Ok(await _retentionService.GetReviewAsync(ct));
 
     [HttpGet("export")]
     public async Task<IActionResult> Export([FromQuery] int? taxYear, CancellationToken ct)
@@ -293,8 +360,7 @@ public class DocumentsController : ControllerBase
         Response.ContentType = "application/zip";
         Response.Headers.ContentDisposition = $"attachment; filename=\"tax-vault-{suffix}.zip\"";
         HttpContext.Features.Get<IHttpBodyControlFeature>()?.AllowSynchronousIO = true;
-        await _service.WriteZipAsync(taxYear, Response.Body, ct);
-        return new EmptyResult();
+        return await StreamZipAsync(output => _service.WriteZipAsync(taxYear, output, ct));
     }
 
     [HttpPatch("{id}")]
@@ -309,13 +375,10 @@ public class DocumentsController : ControllerBase
         {
             return BadRequest(new { message = "Document metadata is invalid." });
         }
-        if (request.ReliefCategorySpecified && string.IsNullOrWhiteSpace(request.ReliefCategory))
-        {
-            return BadRequest(new { message = "A tax relief category is required." });
-        }
-
-        var doc = await _service.UpdateAsync(
-            id, 
+        // The blank-category refusal is the service's rule, not this controller's — it applies to
+        // every caller and it has to phrase itself the same way the bulk path does.
+        var result = await _service.UpdateAsync(
+            id,
             request.TaxYear,
             transactionId,
             request.TransactionId.ValueKind != JsonValueKind.Undefined,
@@ -326,10 +389,21 @@ public class DocumentsController : ControllerBase
             request.AmountCurrency,
             request.AmountStatus,
             ct);
-            
-        if (doc == null) return NotFound();
-        return Ok(doc);
+
+        return DocumentUpdateResult(result);
     }
+
+    /// <summary>
+    /// Maps an update outcome to a status code. Only a genuinely absent row is a 404; every other
+    /// refusal is a 400, because the document exists and it is the requested change that is not
+    /// allowed. Both carry the reason, which is what the user is shown.
+    /// </summary>
+    private IActionResult DocumentUpdateResult(DocumentVaultUpdateResult result) => result.Status switch
+    {
+        DocumentVaultUpdateStatus.Updated => Ok(result.Document),
+        DocumentVaultUpdateStatus.NotFound => NotFound(new { message = result.Message }),
+        _ => BadRequest(new { message = result.Message })
+    };
 
     [HttpPost("bulk-delete")]
     public async Task<IActionResult> BulkDelete([FromBody] BulkDeleteDocumentsRequest? request, CancellationToken ct)
@@ -341,8 +415,21 @@ public class DocumentsController : ControllerBase
         var results = new List<object>();
         foreach (var id in ids)
         {
-            var deleted = await _service.DeleteAsync(id, ct);
-            results.Add(new { id, deleted, message = deleted ? null : "The document could not be deleted from storage." });
+            var outcome = await _service.DeleteAsync(id, ct);
+            // `deleted` stays true for an id that was already gone, so a replay still reads as
+            // success and the client clears the row — but the message says which it was, so the
+            // count in the toast is not quietly inflated by rows nobody removed.
+            results.Add(new
+            {
+                id,
+                deleted = outcome != DocumentDeleteOutcome.StorageFailed,
+                message = outcome switch
+                {
+                    DocumentDeleteOutcome.AlreadyGone => "That document had already been removed.",
+                    DocumentDeleteOutcome.StorageFailed => "The document could not be deleted from storage.",
+                    _ => (string?)null
+                }
+            });
         }
         return Ok(new { results });
     }
@@ -350,8 +437,11 @@ public class DocumentsController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(int id, CancellationToken ct)
     {
-        var success = await _service.DeleteAsync(id, ct);
-        if (!success) return StatusCode(500, new { message = "Failed to delete document from storage." });
+        // Deliberately 204 for an id that was already gone: deleting twice must not fail, and an
+        // offline replay of a delete is a normal event rather than an error to report.
+        var outcome = await _service.DeleteAsync(id, ct);
+        if (outcome == DocumentDeleteOutcome.StorageFailed)
+            return StatusCode(500, new { message = "Failed to delete document from storage." });
         return NoContent();
     }
 

@@ -173,8 +173,8 @@ public partial class AiAssistantService
         {
             transactions = transactions.Where(row => requestedTransactionType switch
             {
-                "inflow" => row.Amount > 0 && !IsTransfer(row),
-                "outflow" => row.Amount < 0 && !IsTransfer(row),
+                "inflow" => row.Amount > 0 && TransactionReportSemantics.IsReportableCashMovement(row.Amount, row.Category, row.LedgerCategory),
+                "outflow" => row.Amount < 0 && TransactionReportSemantics.IsReportableCashMovement(row.Amount, row.Category, row.LedgerCategory),
                 "transfer" => IsTransfer(row),
                 _ => true
             }).ToList();

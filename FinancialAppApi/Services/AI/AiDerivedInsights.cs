@@ -123,7 +123,7 @@ public partial class AiAssistantService
         bool sampleWasComplete)
     {
         var matched = transactions
-            .Where(t => t.Amount < 0 && !IsTransfer(t))
+            .Where(t => t.Amount < 0 && TransactionReportSemantics.IsReportableCashMovement(t.Amount, t.Category, t.LedgerCategory))
             .Select(t => new { Row = t, Magnitude = Math.Abs(t.Amount) })
             .Where(x => MatchesThreshold(x.Magnitude, threshold))
             .OrderByDescending(x => x.Magnitude)
@@ -185,7 +185,7 @@ public partial class AiAssistantService
         List<object> Rank(Func<AiTransactionRow, bool> filter)
         {
             var ranked = transactions
-                .Where(t => !IsTransfer(t))
+                .Where(t => TransactionReportSemantics.IsReportableCashMovement(t.Amount, t.Category, t.LedgerCategory))
                 .Where(filter)
                 .Select(t => new { Row = t, Magnitude = Math.Abs(t.Amount) });
             ranked = smallest

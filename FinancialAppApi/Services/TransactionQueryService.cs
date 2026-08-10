@@ -409,11 +409,23 @@ public partial class TransactionQueryService
         if (!string.IsNullOrWhiteSpace(txType))
         {
             if (txType == "inflow")
-                query = query.Where(t => t.Amount > 0 && t.Category != "Transfer" && !t.LedgerCategory.StartsWith("Transfer:"));
+                query = query.Where(t =>
+                    t.Amount > 0 &&
+                    t.Category.ToLower() != "transfer" &&
+                    t.Category.ToLower() != "adjustment" &&
+                    !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
+                    t.LedgerCategory.ToLower() != "discarded");
             else if (txType == "outflow")
-                query = query.Where(t => t.Amount < 0 && t.Category != "Transfer" && !t.LedgerCategory.StartsWith("Transfer:"));
+                query = query.Where(t =>
+                    t.Amount < 0 &&
+                    t.Category.ToLower() != "transfer" &&
+                    t.Category.ToLower() != "adjustment" &&
+                    !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
+                    t.LedgerCategory.ToLower() != "discarded");
             else if (txType == "transfer")
-                query = query.Where(t => t.Category == "Transfer" || t.LedgerCategory.StartsWith("Transfer:"));
+                query = query.Where(t =>
+                    t.Category.ToLower() == "transfer" ||
+                    t.LedgerCategory.ToLower().StartsWith("transfer:"));
         }
 
         return query;

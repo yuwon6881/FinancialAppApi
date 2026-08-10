@@ -46,7 +46,7 @@ public class FinancialServiceDashboardTests
 
         var yearly = GetBreakdown(response, "yearlyCategoryBreakdown");
         Assert.Equal(
-            new[] { ("Growth", 1000000m), ("Food", 350m), ("Entertainment", 20m), ("Software", 15m), ("Stability", 7m), ("Hobbies", 5m) },
+            new[] { ("Growth", 1000000m), ("Food", 350m), ("Entertainment", 20m), ("Software", 15m), ("Hobbies", 5m) },
             yearly);
 
         var last6 = GetBreakdown(response, "last6CategoryBreakdown");
@@ -164,6 +164,89 @@ public class FinancialServiceDashboardTests
         var stats = response.GetType().GetProperty("stats")!.GetValue(response)!;
         var expensesRaw = (string)stats.GetType().GetProperty("monthlyExpenses")!.GetValue(stats)!;
         Assert.Equal(100m, ObfuscationHelper.Deobfuscate(expensesRaw));
+    }
+
+    [Fact]
+    public async Task GetDashboardDataAsync_ExcludesAdjustmentsAndMergesCategoryCasingEverywhere()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.Transactions.AddRange(
+            Tx("food-1", 2026, 7, 2, "Food", -40m),
+            Tx("food-2", 2026, 7, 3, "food", -10m),
+            Tx("refund", 2026, 7, 4, "Food", 5m),
+            Tx("adjust-down", 2026, 7, 5, "adjustment", -200m),
+            Tx("adjust-up", 2026, 7, 6, "Adjustment", 300m),
+            Tx("zero", 2026, 7, 7, "Food", 0m),
+            Tx("discarded", 2026, 7, 8, "Food", -500m, "Discarded"));
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context).GetDashboardDataAsync("Jul", 2026);
+
+        Assert.Equal(5m, GetStat(response, "monthlyInflow"));
+        Assert.Equal(50m, GetStat(response, "monthlyExpenses"));
+        Assert.Equal(new[] { ("Food", 50m) }, GetBreakdown(response, "monthlyCategoryBreakdown"));
+        Assert.Equal(50m, GetCategoryAmount(GetObjects(response, "categories"), "Essentials", "spent"));
+    }
+
+    [Fact]
+    public async Task GetDashboardDataAsync_SeparatesPlannedTargetFromActualRecoveryAllocation()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 1,
+            EssentialsAlloc = .5m,
+            GrowthAlloc = .2m,
+            StabilityAlloc = .2m,
+            RewardsAlloc = .1m
+        });
+        context.Transactions.Add(Tx("salary", 2026, 7, 2, "Salary", 1000m, "IncomeSplit:40,20,30,10"));
+        await context.SaveChangesAsync();
+
+        var categories = GetObjects(await NewService(context).GetDashboardDataAsync("Jul", 2026), "categories");
+
+        Assert.Equal(500m, GetCategoryAmount(categories, "Essentials", "target"));
+        Assert.Equal(400m, GetCategoryAmount(categories, "Essentials", "incomeAllocated"));
+        Assert.Equal(300m, GetCategoryAmount(categories, "Stability", "incomeAllocated"));
+    }
+
+    [Fact]
+    public async Task GetDashboardDataAsync_RollingGrowthTrendCrossesYearAndCarriesStableKeys()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        for (var month = 8; month <= 12; month++)
+        {
+            context.Transactions.Add(Tx($"growth-2026-{month}", 2026, month, 2, "Deposit", 10m, "Growth"));
+        }
+        context.Transactions.Add(Tx("growth-2027-1", 2027, 1, 2, "Deposit", 10m, "Growth"));
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context, new DateTimeOffset(2027, 1, 15, 0, 0, 0, TimeSpan.Zero))
+            .GetDashboardDataAsync("Jan", 2027);
+
+        var points = GetObjects(response, "last6TrendPoints");
+        Assert.Equal(
+            new[] { "2026-08", "2026-09", "2026-10", "2026-11", "2026-12", "2027-01" },
+            points.Select(point => (string)point.GetType().GetProperty("cycleKey")!.GetValue(point)!).ToArray());
+    }
+
+    [Fact]
+    public async Task GetDashboardDataAsync_SplitsOddCycleVelocityWithExtraDayInFirstHalf()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.Transactions.AddRange(
+            Tx("day-16", 2026, 7, 16, "Food", -10m),
+            Tx("day-17", 2026, 7, 17, "Food", -20m));
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context).GetDashboardDataAsync("Jul", 2026);
+        var insights = response.GetType().GetProperty("cycleSummaryInsights")!.GetValue(response)!;
+
+        Assert.Equal(10m, GetAmount(insights, "velocityFirstHalf"));
+        Assert.Equal(20m, GetAmount(insights, "velocitySecondHalf"));
     }
 
     [Fact]

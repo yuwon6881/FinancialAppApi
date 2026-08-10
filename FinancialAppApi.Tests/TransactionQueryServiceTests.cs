@@ -46,12 +46,13 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
-    public async Task GetTransactionsAsync_OutflowFilterExcludesTransfersEvenIfAmountIsNegative()
+    public async Task GetTransactionsAsync_OutflowFilterExcludesTransfersAndAdjustmentsCaseInsensitively()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.Transactions.AddRange(
             NewTransaction("expense", "Coffee", "Food", "Rewards", -10m),
-            NewTransaction("transfer", "Legacy transfer", "Transfer", "Transfer:Rewards->Growth", -10m));
+            NewTransaction("transfer", "Legacy transfer", "transfer", "transfer:Rewards->Growth", -10m),
+            NewTransaction("adjustment", "Balance correction", "ADJUSTMENT", "Rewards", -20m));
         await context.SaveChangesAsync();
         var service = new TransactionQueryService(context);
 

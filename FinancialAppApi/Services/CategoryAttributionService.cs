@@ -27,7 +27,9 @@ public static class CategoryAttributionService
             var nextMonth = new DateTime(year, monthIndex, 1).AddMonths(1);
             var nextStartDay = Math.Min(cycleDay, DateTime.DaysInMonth(nextMonth.Year, nextMonth.Month));
             var endDate = new DateTime(nextMonth.Year, nextMonth.Month, nextStartDay).AddDays(-1);
-            var lbl = $"{startDate:MMM} {GetDayWithSuffix(startDate.Day)} ~ {endDate:MMM} {GetDayWithSuffix(endDate.Day)}, {startDate.Year}";
+            var lbl = startDate.Year == endDate.Year
+                ? $"{startDate:MMM} {GetDayWithSuffix(startDate.Day)} ~ {endDate:MMM} {GetDayWithSuffix(endDate.Day)}, {startDate.Year}"
+                : $"{startDate:MMM} {GetDayWithSuffix(startDate.Day)}, {startDate.Year} ~ {endDate:MMM} {GetDayWithSuffix(endDate.Day)}, {endDate.Year}";
             return (startDate, endDate, lbl);
         }
     }

@@ -63,7 +63,7 @@ public partial class AiAssistantService
             foreach (var guide in effectiveGuides)
             {
                 var categoryRows = cycleTransactions
-                    .Where(row => row.Amount < 0 && !IsTransfer(row) &&
+                    .Where(row => row.Amount < 0 && TransactionReportSemantics.IsReportableCashMovement(row.Amount, row.Category, row.LedgerCategory) &&
                         string.Equals(row.Category, guide.CategoryName, StringComparison.OrdinalIgnoreCase))
                     .ToList();
                 var spent = Math.Abs(categoryRows.Sum(row => row.Amount));
@@ -120,7 +120,7 @@ public partial class AiAssistantService
             var elapsedDays = today < start ? 0 : today > end ? totalDays : today.DayNumber - start.DayNumber + 1;
             var isComplete = today > end;
             var expenses = transactions
-                .Where(row => IsInCycle(row, cycle, cycleDay) && row.Amount < 0 && !IsTransfer(row))
+                .Where(row => IsInCycle(row, cycle, cycleDay) && row.Amount < 0 && TransactionReportSemantics.IsReportableCashMovement(row.Amount, row.Category, row.LedgerCategory))
                 .ToList();
             var largest = expenses.OrderBy(row => row.Amount).FirstOrDefault();
             var biggestDay = expenses.GroupBy(row => row.Date)

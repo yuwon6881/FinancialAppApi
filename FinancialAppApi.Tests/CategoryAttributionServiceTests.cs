@@ -6,6 +6,14 @@ namespace FinancialAppApi.Tests;
 public class CategoryAttributionServiceTests
 {
     [Fact]
+    public void GetCycleRange_LabelsBothYearsWhenCycleCrossesNewYear()
+    {
+        var (_, _, label) = CategoryAttributionService.GetCycleRange(2026, 12, 28);
+
+        Assert.Equal("Dec 28th, 2026 ~ Jan 27th, 2027", label);
+    }
+
+    [Fact]
     public void GetCycleRange_ClampsAdjacentStartsWithoutLeavingGaps()
     {
         var february = CategoryAttributionService.GetCycleRange(2026, 2, 31);

@@ -466,7 +466,7 @@ public partial class AiAssistantService
         // ("which of those was the biggest?") can resolve against them.
         var thresholdMatchedIds = matchedIds == null && !sensitiveMode && ToInternalThreshold(turnThreshold) is { } activeThreshold
             ? allTransactions
-                .Where(t => t.Amount < 0 && !IsTransfer(t) && MatchesThreshold(Math.Abs(t.Amount), activeThreshold))
+                .Where(t => t.Amount < 0 && TransactionReportSemantics.IsReportableCashMovement(t.Amount, t.Category, t.LedgerCategory) && MatchesThreshold(Math.Abs(t.Amount), activeThreshold))
                 .Take(MaxStateMatchedIds).Select(t => t.Id).ToList()
             : null;
         if (thresholdMatchedIds is { Count: 0 }) thresholdMatchedIds = null;
@@ -731,7 +731,7 @@ public partial class AiAssistantService
             {
                 query = queryPlan.SearchText,
                 count = exactMatchCount ?? transactions.Count,
-                totalOutflow = sensitiveMode ? (decimal?)null : Math.Abs(transactions.Where(t => t.Amount < 0 && !IsTransfer(t)).Sum(t => t.Amount)),
+                totalOutflow = sensitiveMode ? (decimal?)null : Math.Abs(transactions.Where(t => t.Amount < 0 && TransactionReportSemantics.IsReportableCashMovement(t.Amount, t.Category, t.LedgerCategory)).Sum(t => t.Amount)),
                 complete = queryPlan.TransactionData == TransactionDataLevel.MatchingRows && (exactMatchCount.HasValue || transactions.Count < MaxTransactionsPerRange),
                     rows = sensitiveMode
                         ? transactions.Take(120).Select(t => (object)new { t.Id, t.Date, t.Description, t.Category }).ToList()
@@ -761,7 +761,7 @@ public partial class AiAssistantService
         }
         if (Regex.IsMatch(queryPlan.QueryText, @"\b(which|what) day\b.*\b(most|highest|largest)\b|\bmost\b.*\b(day|daily)\b", RegexOptions.IgnoreCase))
         {
-            var daily = transactions.Where(t => !IsTransfer(t))
+            var daily = transactions.Where(t => TransactionReportSemantics.IsReportableCashMovement(t.Amount, t.Category, t.LedgerCategory))
                 .GroupBy(t => t.Date)
                 .Select(g => new
                 {
@@ -780,7 +780,7 @@ public partial class AiAssistantService
             var referenced = transactions
                 .Where(t => queryPlan.TransactionIds.Contains(t.Id, StringComparer.Ordinal))
                 .ToList();
-            var outflows = referenced.Where(t => t.Amount < 0 && !IsTransfer(t)).ToList();
+            var outflows = referenced.Where(t => t.Amount < 0 && TransactionReportSemantics.IsReportableCashMovement(t.Amount, t.Category, t.LedgerCategory)).ToList();
             var highest = outflows.OrderByDescending(t => Math.Abs(t.Amount)).FirstOrDefault();
             metrics["referencedTransactions"] = new
             {
@@ -831,7 +831,7 @@ public partial class AiAssistantService
             var range = CategoryAttributionService.GetCycleRange(cycle.Year, cycle.MonthIndex, cycleDay);
             var start = TransactionDate.StartOfDate(DateOnly.FromDateTime(range.start));
             var end = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(range.end));
-            var txs = transactions.Where(t => t.Timestamp >= start && t.Timestamp < end && !IsTransfer(t)).ToList();
+            var txs = transactions.Where(t => t.Timestamp >= start && t.Timestamp < end && TransactionReportSemantics.IsReportableCashMovement(t.Amount, t.Category, t.LedgerCategory)).ToList();
             // Prefer the recovered exact SUM for this specific cycle when the sample was
             // truncated; otherwise the in-memory sample sum is already complete.
             var recovered = perCycleRecoveredOutflow != null && perCycleRecoveredOutflow.ContainsKey(cycle);
@@ -864,7 +864,7 @@ public partial class AiAssistantService
             var txs = transactions
                 .Where(t => t.Timestamp >= start && t.Timestamp < end)
                 .ToList();
-            var nonTransferTxs = txs.Where(t => !IsTransfer(t)).ToList();
+            var nonTransferTxs = txs.Where(t => TransactionReportSemantics.IsReportableCashMovement(t.Amount, t.Category, t.LedgerCategory)).ToList();
 
             if (!includeAmounts)
             {
