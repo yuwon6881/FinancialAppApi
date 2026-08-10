@@ -70,6 +70,21 @@ public class StabilityRecoveryPlannerTests
         Assert.Equal(0m, afterFunding.OutstandingThisCycle);
     }
 
+    /// <summary>
+    /// Overfunding one cycle zeroes that cycle's ask while leaving the obligation itself intact.
+    /// Pinned because the Today card used to treat this as "nothing owed" and disappear: 871.77
+    /// marked with 520 put back still owes 351.77, but the pace only asks ceil(871.77 / 3) = 290.59.
+    /// </summary>
+    [Fact]
+    public void ComputePace_ZeroesThisCyclesAskWithoutClearingTheShortfall()
+    {
+        var pace = StabilityRecoveryPlanner.ComputePace(351.77m, cyclesRemaining: 3, toppedUpThisCycle: 520m);
+
+        Assert.Equal(290.59m, pace.RequiredThisCycle);
+        Assert.Equal(0m, pace.OutstandingThisCycle);
+        Assert.Equal(351.77m, pace.Shortfall);
+    }
+
     [Fact]
     public void ComputePace_AsksForTheWholeRemainderOnTheFinalCycle()
     {
