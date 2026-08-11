@@ -145,25 +145,35 @@ public class StabilityRecoveryPlannerTests
     }
 
     [Fact]
-    public void ProposeTopUp_OffersNothingWhenTheNormalShareRestoresTheShortfall()
+    public void ProposeTopUp_DoesNotLetTheNormalShareReduceTheReloadBelowTarget()
     {
         var pace = new RecoveryPace(100m, 3, 100m, 0m, 100m, false);
 
         var offer = StabilityRecoveryPlanner.ProposeTopUp(
             pace, 1000m, Buckets(), stabilityAlloc: 0.15m);
 
-        Assert.Equal(0m, offer.ProposedTopUp);
+        Assert.Equal(100m, offer.ProposedTopUp);
     }
 
     [Fact]
-    public void ProposeTopUp_CapsExtraAtTheShortfallAfterTheNormalShare()
+    public void ProposeTopUp_CapsExtraAtTheExplicitShortfall()
     {
         var pace = new RecoveryPace(200m, 3, 200m, 0m, 200m, false);
 
         var offer = StabilityRecoveryPlanner.ProposeTopUp(
             pace, 1000m, Buckets(), stabilityAlloc: 0.15m);
 
-        Assert.Equal(50m, offer.ProposedTopUp);
+        Assert.Equal(200m, offer.ProposedTopUp);
+    }
+
+    [Fact]
+    public void ProposeTopUp_OffersNothingWhenTheNormalShareActuallyReachesTarget()
+    {
+        var offer = StabilityRecoveryPlanner.ProposeTopUp(
+            Pace(100m), incomeAmount: 1000m, Buckets(), stabilityAlloc: 0.15m,
+            currentBalance: 9900m, target: 10000m);
+
+        Assert.Equal(0m, offer.ProposedTopUp);
     }
 
     [Fact]

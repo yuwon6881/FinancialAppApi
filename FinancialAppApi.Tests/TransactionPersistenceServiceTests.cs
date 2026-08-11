@@ -517,8 +517,39 @@ public class TransactionPersistenceServiceTests
             NewRequest("salary-cap", ledgerCategory: "Income", amount: 1000m, recoveryTopUp: 300m));
 
         Assert.Equal(TransactionMutationStatus.Created, result.Status);
-        Assert.Equal(150m, result.Transaction!.StabilityRecoveryTopUpAmount);
-        Assert.Equal(300m, (await context.Transactions.SingleAsync(t => t.Id == "salary-cap-split-Stability")).Amount);
+        Assert.Equal(300m, result.Transaction!.StabilityRecoveryTopUpAmount);
+        Assert.Equal(450m, (await context.Transactions.SingleAsync(t => t.Id == "salary-cap-split-Stability")).Amount);
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_PersistsZeroForOrdinarySalary()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedSettings(context, targetStabilityFund: 10000m);
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context, ClockAt(2026, 7, 9)).CreateTransactionAsync(
+            NewRequest("ordinary-salary", ledgerCategory: "Income", amount: 1000m));
+
+        Assert.Equal(0m, result.Transaction!.StabilityRecoveryTopUpAmount);
+    }
+
+    [Fact]
+    public async Task UpdateTransactionAsync_OmittedReloadIntentPreservesSpentForGood()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        var transaction = NewTransaction("spent", ledgerCategory: "Stability", amount: -300m);
+        transaction.StabilityReloadIntent = StabilityReloadIntent.NotRequired;
+        context.Transactions.Add(transaction);
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).UpdateTransactionAsync(
+            "spent",
+            NewRequest("spent", ledgerCategory: "Stability", amount: -250m));
+
+        Assert.Equal(StabilityReloadIntent.NotRequired, result.Transaction!.StabilityReloadIntent);
     }
 
     /// <summary>

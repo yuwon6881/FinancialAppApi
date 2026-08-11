@@ -106,7 +106,9 @@ public class TransactionPersistenceService
             Category = ledgerValidation.Category,
             LedgerCategory = ledgerValidation.LedgerCategory,
             Amount = amount,
-            StabilityRecoveryTopUpAmount = requestedRecoveryTopUp,
+            StabilityRecoveryTopUpAmount = IsIncomeLedgerCategory(ledgerValidation.LedgerCategory)
+                ? requestedRecoveryTopUp
+                : null,
             StabilityReloadIntent = StabilityReloadIntent.Normalize(request.StabilityReloadIntent),
             RecurringPaymentId = request.RecurringPaymentId,
             WishlistItemId = request.WishlistItemId
@@ -234,9 +236,11 @@ public class TransactionPersistenceService
         var originalDate = transaction.Date;
         var originalAmount = transaction.Amount;
         var originalRecoveryTopUp = transaction.StabilityRecoveryTopUpAmount;
+        var originalReloadIntent = transaction.StabilityReloadIntent;
         var nextRecoveryTopUp = request.StabilityRecoveryTopUpAmount == null
             ? originalRecoveryTopUp
             : requestedRecoveryTopUp;
+        if (!IsIncomeLedgerCategory(ledgerValidation.LedgerCategory)) nextRecoveryTopUp = null;
         var settingForCycle = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync(cancellationToken);
         if (originalRecoveryTopUp > 0m && nextRecoveryTopUp > 0m && settingForCycle != null)
         {
@@ -282,7 +286,9 @@ public class TransactionPersistenceService
         transaction.LedgerCategory = ledgerValidation.LedgerCategory;
         transaction.Amount = amount;
         transaction.StabilityRecoveryTopUpAmount = nextRecoveryTopUp;
-        transaction.StabilityReloadIntent = StabilityReloadIntent.Normalize(request.StabilityReloadIntent);
+        transaction.StabilityReloadIntent = request.StabilityReloadIntent == null
+            ? originalReloadIntent
+            : StabilityReloadIntent.Normalize(request.StabilityReloadIntent);
         transaction.RecurringPaymentId = request.RecurringPaymentId ?? transaction.RecurringPaymentId;
         transaction.WishlistItemId = request.WishlistItemId ?? transaction.WishlistItemId;
 
@@ -536,6 +542,14 @@ public class TransactionPersistenceService
         var postedAtMatches = string.IsNullOrWhiteSpace(request.PostedAt)
             || (DateTimeOffset.TryParse(request.PostedAt, out var postedAt)
                 && existing.PostedAt.ToUniversalTime() == postedAt.UtcDateTime);
+        var comparableRecoveryTopUp = recoveryTopUp;
+        if (comparableRecoveryTopUp == null
+            && string.Equals(request.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase))
+        {
+            // New ordinary salaries persist explicit zero, while an older Undo snapshot can omit
+            // the field. They describe the same unticked choice and must remain idempotent.
+            comparableRecoveryTopUp = 0m;
+        }
         return TransactionDate.ToDateOnly(existing.Date) == requestDate
             && postedAtMatches
             && string.Equals(existing.Description, request.Description, StringComparison.Ordinal)
@@ -545,7 +559,7 @@ public class TransactionPersistenceService
             && string.Equals(existing.RecurringPaymentId, request.RecurringPaymentId, StringComparison.Ordinal)
             && existing.WishlistItemId == request.WishlistItemId
             && existing.RecurringOccurrenceDate == requestOccurrence
-            && existing.StabilityRecoveryTopUpAmount == recoveryTopUp
+            && existing.StabilityRecoveryTopUpAmount == comparableRecoveryTopUp
             && string.Equals(
                 existing.StabilityReloadIntent,
                 StabilityReloadIntent.Normalize(request.StabilityReloadIntent),
@@ -729,9 +743,9 @@ public class TransactionPersistenceService
             }
             var maximumTopUp = MaximumRecoveryTopUp(transaction.Amount, setting!, state!);
             var appliedTopUp = Math.Min(requestedTopUp, maximumTopUp);
-            transaction.StabilityRecoveryTopUpAmount = transaction.StabilityRecoveryTopUpAmount.HasValue
-                ? appliedTopUp
-                : null;
+            // New salaries always record the explicit answer, including zero. Leaving ordinary
+            // salary as legacy-null lets a later allocation change reinterpret it as repayment.
+            transaction.StabilityRecoveryTopUpAmount = appliedTopUp;
             return Stability.IncomeSplitPlanner.Resolve(
                 transaction.Amount,
                 setting!.EssentialsAlloc,
@@ -785,11 +799,15 @@ public class TransactionPersistenceService
     {
         if (incomeAmount <= 0m) return 0m;
         var normalStability = incomeAmount * Math.Max(0m, setting.StabilityAlloc);
-        var remainingAfterNormal = Math.Max(0m,
-            state.OutstandingObligation - normalStability);
+        var targetRoomAfterNormal = state.Target > 0m
+            ? Math.Max(0m, state.Target - state.CurrentBalance - normalStability)
+            : decimal.MaxValue;
         var otherShare = Math.Max(0m,
             setting.EssentialsAlloc + setting.GrowthAlloc + setting.RewardsAlloc);
-        return Math.Floor(Math.Min(remainingAfterNormal, incomeAmount * otherShare) * 100m) / 100m;
+        var capacity = Math.Min(
+            state.OutstandingObligation,
+            Math.Min(targetRoomAfterNormal, incomeAmount * otherShare));
+        return Math.Floor(Math.Max(0m, capacity) * 100m) / 100m;
     }
 
     private static bool TryDecodeRecoveryTopUp(string? encoded, out decimal? value)

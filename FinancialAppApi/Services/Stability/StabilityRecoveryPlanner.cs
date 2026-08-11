@@ -117,7 +117,9 @@ public static class StabilityRecoveryPlanner
         RecoveryPace pace,
         decimal incomeAmount,
         IReadOnlyList<BucketState> buckets,
-        decimal stabilityAlloc = 0m)
+        decimal stabilityAlloc = 0m,
+        decimal currentBalance = 0m,
+        decimal target = 0m)
     {
         var empty = new RecoveryOffer(0m, 0m, false, null, Array.Empty<BucketDraw>());
         if (incomeAmount <= 0m || pace.OutstandingThisCycle <= 0m) return empty;
@@ -126,15 +128,20 @@ public static class StabilityRecoveryPlanner
         var allocTotal = contributing.Sum(bucket => bucket.Alloc);
         if (allocTotal <= 0m) return empty;
 
-        var remainingAfterNormal = Math.Max(
-            0m,
-            pace.Shortfall - incomeAmount * Math.Max(0m, stabilityAlloc));
-        if (remainingAfterNormal <= 0m) return empty;
+        var normalStability = incomeAmount * Math.Max(0m, stabilityAlloc);
+        var roomAfterNormal = target > 0m
+            ? Math.Max(0m, target - currentBalance - normalStability)
+            : decimal.MaxValue;
+        if (target > 0m && roomAfterNormal <= 0m) return empty;
+        var reloadCapacity = Math.Min(
+            pace.Shortfall,
+            Math.Min(incomeAmount * allocTotal, roomAfterNormal));
+        if (reloadCapacity <= 0m) return empty;
 
-        // Cannot draw more than what remains after the normal Stability share, or than the three
-        // other buckets actually receive.
+        // Ordinary salary does not repay the explicit obligation below target. The opted-in extra
+        // is bounded by that obligation, target room, and what the other buckets actually receive.
         var requested = Math.Min(pace.OutstandingThisCycle,
-            Math.Min(remainingAfterNormal, incomeAmount * allocTotal));
+            reloadCapacity);
 
         var cap = requested;
         string? limitedBy = null;

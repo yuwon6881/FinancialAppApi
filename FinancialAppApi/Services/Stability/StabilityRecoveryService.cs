@@ -22,6 +22,8 @@ public sealed record StabilityRecoveryDto(
     string Target,
     string CurrentBalance,
     string OutstandingShortfall,
+    string OpeningOutstanding,
+    string? OpeningOldestDate,
     int CyclesRemaining,
     string RequiredThisCycle,
     string ToppedUpThisCycle,
@@ -110,7 +112,13 @@ public class StabilityRecoveryService
             stored.StabilityRecoveryTopUpAmount = inferred;
             changed = true;
         }
-        if (changed) await _context.SaveChangesAsync(cancellationToken);
+        if (changed)
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            // The inferred value changes replay, so a cache built before this compatibility
+            // repair must not carry the old obligation into later cycles.
+            await _cycleBalanceService.InvalidateFromAsync(year, monthIndex, cancellationToken);
+        }
     }
 
     /// <summary>
@@ -218,6 +226,8 @@ public class StabilityRecoveryService
             ObfuscationHelper.Obfuscate(setting.TargetStabilityFund),
             ObfuscationHelper.Obfuscate(currentStability),
             ObfuscationHelper.Obfuscate(replay.Outstanding),
+            ObfuscationHelper.Obfuscate(openingReload.Outstanding),
+            openingReload.OldestOutstandingDate?.ToString("yyyy-MM-dd"),
             pace.CyclesRemaining,
             ObfuscationHelper.Obfuscate(pace.RequiredThisCycle),
             ObfuscationHelper.Obfuscate(pace.ToppedUpThisCycle),
