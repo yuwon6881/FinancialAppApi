@@ -72,6 +72,38 @@ public class StabilityRecoveryServiceTests
     /// A withdrawal in the cycle being viewed has no settled row of its own yet, so it has to be
     /// read straight off the ledger or the card would not appear until the cycle turned over.
     /// </summary>
+    /// <summary>
+    /// Marked and repaid must account for the same money the shortfall does. FIFO repayment retires
+    /// the oldest drawdown first, so the 70 on 08-06 was cleared outright and left the queue; a
+    /// window anchored on the outstanding head then started at 08-09 and reported 801.77 marked
+    /// with 450 back, next to a reimbursement of 520 the user could see on the same card.
+    /// </summary>
+    [Fact]
+    public async Task BuildAsync_CountsADrawdownThisCycleRepaidInFull()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        var opening = Add(context, "in-1", new DateTime(2026, 5, 4), "Stability", 4706.75m);
+        var medical = Add(context, "out-1", new DateTime(2026, 8, 6), "Stability", -70m);
+        var roadTax = Add(context, "out-2", new DateTime(2026, 8, 9), "Stability", -125m);
+        var insurance = Add(context, "out-3", new DateTime(2026, 8, 9), "Stability", -676.77m);
+        var reimburse = Add(context, "in-2", new DateTime(2026, 8, 9), "Stability", 520m, "Reimbursement");
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(
+            context, setting, 2026, 8,
+            opening: 4706.75m, current: 4354.98m,
+            medical, roadTax, insurance, reimburse);
+
+        Assert.Equal(351.77m, Money(recovery.OutstandingShortfall));
+        Assert.Equal(871.77m, Money(recovery.MarkedTotal));
+        Assert.Equal(520m, Money(recovery.RepaidTotal));
+        Assert.Equal(520m, Money(recovery.ToppedUpThisCycle));
+        // The jump lands on the oldest row the figures were measured over, not on the 09th.
+        Assert.Equal("2026-08-06", recovery.RecoveryFromDate);
+        Assert.NotNull(opening);
+    }
+
     [Fact]
     public async Task BuildAsync_SeesADrawdownMadeInTheCycleOnScreen()
     {

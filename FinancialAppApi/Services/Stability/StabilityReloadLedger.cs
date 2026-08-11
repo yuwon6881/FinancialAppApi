@@ -13,7 +13,14 @@ public sealed record ReloadState(
     decimal Outstanding,
     DateOnly? OldestOutstandingDate,
     decimal MarkedThisRun,
-    decimal RepaidThisRun);
+    decimal RepaidThisRun,
+    // The oldest drawdown marked during this run, still outstanding or not. The reporting window
+    // needs it because FIFO repayment retires the oldest entries first, so a drawdown this cycle
+    // paid off in full leaves the queue entirely -- and a window anchored only on what is still
+    // outstanding then excludes it, understating both what was marked and what went back by the
+    // same amount. Deliberately confined to this run so the window never reaches into a prior
+    // cycle whose drawdowns were already settled.
+    DateOnly? OldestMarkedThisRunDate = null);
 
 /// <summary>
 /// Replays the user's explicit emergency-fund reload choices. Balance movement and reload intent
@@ -49,11 +56,14 @@ public static class StabilityReloadLedger
         var running = openingBalance;
         var markedThisRun = 0m;
         var repaidThisRun = 0m;
+        DateOnly? oldestMarkedThisRun = null;
 
         void ClearAtTarget()
         {
             queue.Clear();
             repaidThisRun = 0m;
+            // Attainment starts a fresh window, so drawdowns before it stop being reportable.
+            oldestMarkedThisRun = null;
         }
 
         // A setting change can lower the target without adding a movement to this cycle. The
@@ -72,6 +82,10 @@ public static class StabilityReloadLedger
                 var marked = -movement.Change;
                 markedThisRun += marked;
                 queue.AddLast((movement.Date, marked));
+                if (!oldestMarkedThisRun.HasValue || movement.Date < oldestMarkedThisRun.Value)
+                {
+                    oldestMarkedThisRun = movement.Date;
+                }
             }
 
             var repayment = Math.Min(Outstanding(), Math.Max(0m, movement.Repayment));
@@ -104,7 +118,8 @@ public static class StabilityReloadLedger
             Outstanding(),
             queue.First?.Value.Date,
             markedThisRun,
-            repaidThisRun);
+            repaidThisRun,
+            oldestMarkedThisRun);
     }
 
     /// <summary>Describes one raw transaction when it is already a logical Stability movement.</summary>

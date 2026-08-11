@@ -235,6 +235,10 @@ public class StabilityReloadLedgerTests
         // Transfers arriving before anything was marked repay nothing -- there was no obligation
         // for them to discharge yet.
         Assert.Equal(new DateOnly(2026, 8, 9), state.OldestOutstandingDate);
+        // FIFO retired the 08-06 drawdown outright, so it is no longer outstanding -- but it is
+        // still what this cycle marked and put back, and the reporting window has to reach it or
+        // marked and repaid both lose the same 70.
+        Assert.Equal(new DateOnly(2026, 8, 6), state.OldestMarkedThisRunDate);
     }
 
     private static ReloadState Opening() => new(0m, null, 0m, 0m);

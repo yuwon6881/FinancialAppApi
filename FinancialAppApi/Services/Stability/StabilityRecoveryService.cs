@@ -187,9 +187,20 @@ public class StabilityRecoveryService
             cyclesRemaining,
             replay.RepaidThisRun);
 
-        var reloadTotals = replay.Outstanding > 0m && replay.OldestOutstandingDate.HasValue
+        // The reporting window is the earlier of what is still outstanding and what this run marked.
+        // FIFO repayment retires the oldest entries first, so a drawdown fully paid off this cycle
+        // leaves the queue: anchoring only on the outstanding head dropped that row from the window
+        // and understated both totals by it. Reading 801.77 marked and 450 back beside a 520 that
+        // had visibly gone in is the same 70 missing twice.
+        var windowStart = replay.OldestMarkedThisRunDate.HasValue
+            && (!replay.OldestOutstandingDate.HasValue
+                || replay.OldestMarkedThisRunDate.Value < replay.OldestOutstandingDate.Value)
+            ? replay.OldestMarkedThisRunDate
+            : replay.OldestOutstandingDate;
+
+        var reloadTotals = replay.Outstanding > 0m && windowStart.HasValue
             ? await GetReloadTotalsAsync(
-                replay.OldestOutstandingDate.Value,
+                windowStart.Value,
                 year,
                 monthIndex,
                 setting.CycleDay,
@@ -217,7 +228,9 @@ public class StabilityRecoveryService
             ObfuscationHelper.Obfuscate(essentialsCommitted),
             ObfuscationHelper.Obfuscate(rewardsCommitted),
             BuildSuggestedDraws(setting),
-            replay.OldestOutstandingDate?.ToString("yyyy-MM-dd"));
+            // The same window the totals were measured over, so "see every movement since then"
+            // lands on exactly the rows those figures came from.
+            windowStart?.ToString("yyyy-MM-dd"));
     }
 
     private async Task<(decimal MarkedTotal, decimal RepaidTotal)> GetReloadTotalsAsync(
