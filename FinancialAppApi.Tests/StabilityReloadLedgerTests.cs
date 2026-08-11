@@ -174,6 +174,83 @@ public class StabilityReloadLedgerTests
         Assert.Equal(500m, state.Outstanding);
     }
 
+    [Fact]
+    public void Replay_RetainsPerWithdrawalOriginalAndRemainingAmountsInFifoOrder()
+    {
+        var state = StabilityReloadLedger.Replay(
+            Opening(),
+            openingBalance: 0m,
+            target: 0m,
+            [
+                new ReloadMovement(new DateOnly(2026, 7, 1), -100m, 0m, true, "first"),
+                new ReloadMovement(new DateOnly(2026, 7, 2), -80m, 0m, true, "second"),
+                new ReloadMovement(new DateOnly(2026, 7, 3), 50m, 50m, false, "repayment"),
+            ]);
+
+        var obligations = state.Obligations!.ToDictionary(item => item.TransactionId);
+        Assert.Equal((100m, 50m), (obligations["first"].OriginalAmount, obligations["first"].RemainingAmount));
+        Assert.Equal((80m, 80m), (obligations["second"].OriginalAmount, obligations["second"].RemainingAmount));
+        Assert.Equal(130m, state.Outstanding);
+    }
+
+    [Fact]
+    public void Replay_ExactRepaymentMarksOnlyTheOldestWithdrawalComplete()
+    {
+        var state = StabilityReloadLedger.Replay(
+            Opening(),
+            0m,
+            0m,
+            [
+                new ReloadMovement(new DateOnly(2026, 7, 1), -100m, 0m, true, "first"),
+                new ReloadMovement(new DateOnly(2026, 7, 2), -80m, 0m, true, "second"),
+                new ReloadMovement(new DateOnly(2026, 7, 3), 100m, 100m, false, "repayment"),
+            ]);
+
+        var obligations = state.Obligations!.ToDictionary(item => item.TransactionId);
+        Assert.Equal(0m, obligations["first"].RemainingAmount);
+        Assert.Equal(80m, obligations["second"].RemainingAmount);
+        Assert.Equal(80m, state.Outstanding);
+    }
+
+    [Fact]
+    public void Replay_RaisingTheTargetDoesNotReopenAnAttainedWithdrawal()
+    {
+        var state = StabilityReloadLedger.Replay(
+            Opening(),
+            openingBalance: 9000m,
+            planPoints:
+            [
+                new ReloadPlanPoint(new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc), 10000m),
+                new ReloadPlanPoint(new DateTime(2026, 7, 3, 0, 0, 0, DateTimeKind.Utc), 12000m),
+            ],
+            movements:
+            [
+                new ReloadMovement(new DateOnly(2026, 7, 1), -500m, 0m, true, "withdrawal",
+                    new DateTime(2026, 7, 1, 1, 0, 0, DateTimeKind.Utc)),
+                new ReloadMovement(new DateOnly(2026, 7, 2), 1500m, 0m, false, "salary",
+                    new DateTime(2026, 7, 2, 1, 0, 0, DateTimeKind.Utc)),
+            ]);
+
+        Assert.Equal(0m, state.Outstanding);
+        Assert.Equal(0m, state.Obligations!.Single(item => item.TransactionId == "withdrawal").RemainingAmount);
+    }
+
+    [Fact]
+    public void Replay_LoweringTheTargetClearsOnlyWhatIsOutstandingAtThatRevision()
+    {
+        var state = StabilityReloadLedger.Replay(
+            new ReloadState(200m, new DateOnly(2026, 6, 1), 0m, 0m),
+            openingBalance: 9000m,
+            planPoints:
+            [new ReloadPlanPoint(new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc), 5000m)],
+            movements:
+            [new ReloadMovement(new DateOnly(2026, 7, 2), -5000m, 0m, true, "new-withdrawal",
+                new DateTime(2026, 7, 2, 1, 0, 0, DateTimeKind.Utc))]);
+
+        Assert.Equal(5000m, state.Outstanding);
+        Assert.Equal(5000m, state.Obligations!.Single(item => item.TransactionId == "new-withdrawal").RemainingAmount);
+    }
+
     /// <summary>
     /// A carried obligation must be discharged even when no carried date came with it. The queue
     /// used to be seeded only when the date was present, so the amount survived in a separate

@@ -9,7 +9,8 @@ public partial class TransactionQueryService
         IEnumerable<Transaction> transactions,
         int year,
         int monthIndex,
-        int cycleDay)
+        int cycleDay,
+        IReadOnlyDictionary<string, string>? stabilityReloadStatuses = null)
     {
         var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
         var start = TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart));
@@ -34,7 +35,11 @@ public partial class TransactionQueryService
                 transaction.RecurringPaymentId,
                 transaction.RecurringOccurrenceDate,
                 transaction.WishlistItemId,
-                transaction.SavingsGoalId))
+                transaction.SavingsGoalId,
+                stabilityReloadStatuses is not null
+                    && stabilityReloadStatuses.TryGetValue(transaction.Id, out var status)
+                    ? status
+                    : null))
             .ToList();
         return new TransactionListResult(items);
     }

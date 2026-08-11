@@ -87,11 +87,13 @@ public class BootstrapController : ControllerBase
             snapshot.Cycle,
             cancellationToken);
 
+        var stabilityReloadStatuses = await _transactionQueryService.GetStabilityReloadStatusMapAsync(cancellationToken);
         var transactions = TransactionQueryService.ProjectCycleTransactions(
             snapshot.CycleRelevantTransactions,
             snapshot.Cycle.ActiveYear,
             snapshot.Cycle.ActiveMonthIndex,
-            snapshot.Cycle.CycleDay);
+            snapshot.Cycle.CycleDay,
+            stabilityReloadStatuses);
 
         var recurringPayments = await RecurringPaymentsController.BuildRecurringPaymentDtosAsync(
             _recurringPaymentService, _payEarlyService, cancellationToken);

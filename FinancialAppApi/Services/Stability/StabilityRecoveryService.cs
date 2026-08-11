@@ -64,15 +64,18 @@ public class StabilityRecoveryService
     private readonly AppDbContext _context;
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly FinancialClock _financialClock;
+    private readonly StabilityPlanRevisionService _planRevisionService;
 
     public StabilityRecoveryService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
-        FinancialClock? financialClock = null)
+        FinancialClock? financialClock = null,
+        StabilityPlanRevisionService? planRevisionService = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _financialClock = financialClock ?? FinancialClock.Utc;
+        _planRevisionService = planRevisionService ?? new StabilityPlanRevisionService(context);
     }
 
     private async Task BackfillCurrentCycleRecoveryIntentAsync(
@@ -80,6 +83,7 @@ public class StabilityRecoveryService
         int year,
         int monthIndex,
         IReadOnlyList<Transaction> cycleTxs,
+        IReadOnlyList<StabilityPlanSnapshot> planRevisions,
         CancellationToken cancellationToken)
     {
         var current = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
@@ -99,17 +103,19 @@ public class StabilityRecoveryService
                 .Sum(candidate => Math.Max(0m,
                     CategoryAttributionService.GetCategoryAmount(candidate, Stability)));
             var inferred = Math.Round(
-                Math.Max(0m, stabilityCredit - parent.Amount * setting.StabilityAlloc),
+                Math.Max(
+                    0m,
+                    stabilityCredit - parent.Amount * StabilityPlanRevisionService.At(
+                        planRevisions,
+                        parent.PostedAt).StabilityAlloc),
                 2,
                 MidpointRounding.AwayFromZero);
-            if (inferred <= 0m) continue;
-
             var stored = await _context.Transactions.FirstOrDefaultAsync(
                 transaction => transaction.Id == parent.Id
                     && transaction.StabilityRecoveryTopUpAmount == null,
                 cancellationToken);
             if (stored == null) continue;
-            stored.StabilityRecoveryTopUpAmount = inferred;
+            stored.StabilityRecoveryTopUpAmount = Math.Max(0m, inferred);
             changed = true;
         }
         if (changed)
@@ -142,8 +148,9 @@ public class StabilityRecoveryService
         CancellationToken cancellationToken = default,
         decimal rewardsRecurringCommitted = 0m)
     {
+        var planRevisions = await _planRevisionService.GetAsync(setting, cancellationToken);
         await BackfillCurrentCycleRecoveryIntentAsync(
-            setting, year, monthIndex, activeCycleTxs, cancellationToken);
+            setting, year, monthIndex, activeCycleTxs, planRevisions, cancellationToken);
 
         // Rebuild the cache before reading the prior reload state. InvalidateFromAsync deletes
         // cached rows on every transaction mutation, so replaying from a partially-invalidated
@@ -175,11 +182,24 @@ public class StabilityRecoveryService
                 previous.StabilityReloadOldestDate,
                 0m,
                 0m);
+        var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, setting.CycleDay);
+        var cycleStartUtc = DateTime.SpecifyKind(cycleStart, DateTimeKind.Utc);
+        var cycleEndUtc = DateTime.SpecifyKind(cycleEnd, DateTimeKind.Utc);
+        var planAtStart = StabilityPlanRevisionService.At(planRevisions, cycleStartUtc);
+        var cyclePlanPoints = planRevisions
+            .Where(revision => revision.EffectiveAt > cycleStartUtc && revision.EffectiveAt <= cycleEndUtc)
+            .Select(revision => new ReloadPlanPoint(revision.EffectiveAt, revision.TargetStabilityFund))
+            .Prepend(new ReloadPlanPoint(planAtStart.EffectiveAt, planAtStart.TargetStabilityFund))
+            .ToList();
         var replay = StabilityReloadLedger.Replay(
             openingReload,
             openingStability,
-            setting.TargetStabilityFund,
-            StabilityReloadLedger.DescribeAll(activeCycleTxs, setting.StabilityAlloc));
+            cyclePlanPoints,
+            StabilityReloadLedger.DescribeAll(
+                activeCycleTxs,
+                transaction => StabilityPlanRevisionService.At(
+                    planRevisions,
+                    transaction.PostedAt).StabilityAlloc));
 
         var lastMarked = history.LastOrDefault(row => row.StabilityReloadMarkedAmount > 0m);
         var lastDrawdownCycleKey = replay.MarkedThisRun > 0m
@@ -212,7 +232,7 @@ public class StabilityRecoveryService
                 year,
                 monthIndex,
                 setting.CycleDay,
-                setting.StabilityAlloc,
+                planRevisions,
                 replay.Outstanding,
                 cancellationToken)
             : (MarkedTotal: 0m, RepaidTotal: 0m);
@@ -223,7 +243,8 @@ public class StabilityRecoveryService
         return new StabilityRecoveryDto(
             replay.Outstanding > 0m,
             ObfuscationHelper.Obfuscate(reloadTotals.MarkedTotal),
-            ObfuscationHelper.Obfuscate(setting.TargetStabilityFund),
+            ObfuscationHelper.Obfuscate(
+                StabilityPlanRevisionService.At(planRevisions, cycleEndUtc).TargetStabilityFund),
             ObfuscationHelper.Obfuscate(currentStability),
             ObfuscationHelper.Obfuscate(replay.Outstanding),
             ObfuscationHelper.Obfuscate(openingReload.Outstanding),
@@ -248,7 +269,7 @@ public class StabilityRecoveryService
         int year,
         int monthIndex,
         int cycleDay,
-        decimal stabilityAlloc,
+        IReadOnlyList<StabilityPlanSnapshot> planRevisions,
         decimal outstanding,
         CancellationToken cancellationToken)
     {
@@ -287,7 +308,9 @@ public class StabilityRecoveryService
                     StabilityRecoveryTopUpAmount = row.StabilityRecoveryTopUpAmount,
                     StabilityReloadIntent = row.StabilityReloadIntent
                 }),
-                stabilityAlloc)
+                transaction => StabilityPlanRevisionService.At(
+                    planRevisions,
+                    transaction.PostedAt).StabilityAlloc)
             .Where(movement => movement.Marked)
             .Sum(movement => Math.Max(0m, -movement.Change));
         return (markedTotal, Math.Max(0m, markedTotal - outstanding));
@@ -309,6 +332,7 @@ public class StabilityRecoveryService
     {
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
             transactionDate, setting.CycleDay);
+        var planRevisions = await _planRevisionService.GetAsync(setting, cancellationToken);
 
         await _cycleBalanceService.EnsureComputedThroughAsync(
             year, monthIndex, setting.CycleDay, cancellationToken);
@@ -353,15 +377,29 @@ public class StabilityRecoveryService
                 previous.StabilityReloadOldestDate,
                 0m,
                 0m);
+        var cycleStartUtc = DateTime.SpecifyKind(start, DateTimeKind.Utc);
+        var cycleEndUtc = DateTime.SpecifyKind(end, DateTimeKind.Utc);
+        var planAtStart = StabilityPlanRevisionService.At(planRevisions, cycleStartUtc);
+        var cyclePlanPoints = planRevisions
+            .Where(revision => revision.EffectiveAt > cycleStartUtc && revision.EffectiveAt <= cycleEndUtc)
+            .Select(revision => new ReloadPlanPoint(revision.EffectiveAt, revision.TargetStabilityFund))
+            .Prepend(new ReloadPlanPoint(planAtStart.EffectiveAt, planAtStart.TargetStabilityFund))
+            .ToList();
         var replay = StabilityReloadLedger.Replay(
             openingReload,
             openingStability,
-            setting.TargetStabilityFund,
-            StabilityReloadLedger.DescribeAll(cycleTxs, setting.StabilityAlloc));
+            cyclePlanPoints,
+            StabilityReloadLedger.DescribeAll(
+                cycleTxs,
+                transaction => StabilityPlanRevisionService.At(
+                    planRevisions,
+                    transaction.PostedAt).StabilityAlloc));
 
         return new StabilityState(
             currentBalance,
-            setting.TargetStabilityFund,
+            StabilityPlanRevisionService.At(
+                planRevisions,
+                transactionDate.ToDateTime(TimeOnly.MaxValue, DateTimeKind.Utc)).TargetStabilityFund,
             replay.Outstanding,
             year,
             monthIndex);

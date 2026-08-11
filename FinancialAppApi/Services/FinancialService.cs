@@ -59,6 +59,7 @@ public class FinancialService
     private readonly RecurringOccurrenceLedgerService _recurringOccurrenceLedger;
     private readonly FinancialClock _financialClock;
     private readonly Stability.StabilityRecoveryService _stabilityRecoveryService;
+    private readonly Stability.StabilityPlanRevisionService _stabilityPlanRevisionService;
 
     public FinancialService(
         AppDbContext context,
@@ -67,7 +68,8 @@ public class FinancialService
         RecurringOccurrenceService recurringOccurrenceService,
         FinancialClock? financialClock = null,
         Stability.StabilityRecoveryService? stabilityRecoveryService = null,
-        RecurringOccurrenceLedgerService? recurringOccurrenceLedger = null)
+        RecurringOccurrenceLedgerService? recurringOccurrenceLedger = null,
+        Stability.StabilityPlanRevisionService? stabilityPlanRevisionService = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
@@ -77,11 +79,14 @@ public class FinancialService
             ?? new RecurringOccurrenceLedgerService(context, recurringOccurrenceService, _financialClock);
         _stabilityRecoveryService = stabilityRecoveryService
             ?? new Stability.StabilityRecoveryService(context, cycleBalanceService, _financialClock);
+        _stabilityPlanRevisionService = stabilityPlanRevisionService
+            ?? new Stability.StabilityPlanRevisionService(context);
     }
 
     public async Task<object> GetWalletBalanceAsync(CancellationToken cancellationToken = default)
     {
         var setting = await GetOrCreateSettingAsync(cancellationToken);
+
         return await BuildWalletBalanceAsync(setting, null, cancellationToken);
     }
 
@@ -565,6 +570,11 @@ public class FinancialService
         }
 
         var setting = await GetOrCreateSettingAsync(cancellationToken);
+        var previousStabilityPlan = new FinancialSetting
+        {
+            TargetStabilityFund = setting.TargetStabilityFund,
+            StabilityAlloc = setting.StabilityAlloc,
+        };
 
         var targetStabilityFundChanged = targetStabilityFund != setting.TargetStabilityFund;
         var stabilityAllocChanged = update.StabilityAlloc != setting.StabilityAlloc;
@@ -598,9 +608,27 @@ public class FinancialService
         await strategy.ExecuteAsync(async () =>
         {
             await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
-            if (cycleDayChanged || targetStabilityFundChanged || stabilityAllocChanged)
+            if (targetStabilityFundChanged || stabilityAllocChanged)
+            {
+                await _stabilityPlanRevisionService.AppendIfChangedAsync(
+                    previousStabilityPlan,
+                    setting,
+                    DateTime.UtcNow,
+                    cancellationToken);
+            }
+            if (cycleDayChanged)
             {
                 await _cycleBalanceService.InvalidateAllAsync(cancellationToken);
+            }
+            else if (targetStabilityFundChanged || stabilityAllocChanged)
+            {
+                var currentCycle = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+                    _financialClock.Today,
+                    setting.CycleDay);
+                await _cycleBalanceService.InvalidateFromAsync(
+                    currentCycle.year,
+                    currentCycle.monthIndex,
+                    cancellationToken);
             }
             await _context.SaveChangesAsync(cancellationToken);
             await dbTransaction.CommitAsync(cancellationToken);
@@ -720,6 +748,7 @@ public class FinancialService
             };
             _context.FinancialSettings.Add(setting);
             await _context.SaveChangesAsync(cancellationToken);
+            await _stabilityPlanRevisionService.EnsureBaselineAsync(setting, cancellationToken);
         }
 
         var cycleDay = setting.CycleDay;

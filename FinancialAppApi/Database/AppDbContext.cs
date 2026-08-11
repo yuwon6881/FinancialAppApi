@@ -43,6 +43,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<WebAuthnChallenge> WebAuthnChallenges => Set<WebAuthnChallenge>();
     public DbSet<ReceiptScanJob> ReceiptScanJobs => Set<ReceiptScanJob>();
     public DbSet<CycleBalance> CycleBalances => Set<CycleBalance>();
+    public DbSet<StabilityPlanRevision> StabilityPlanRevisions => Set<StabilityPlanRevision>();
     public DbSet<PendingTwoFactor> PendingTwoFactors => Set<PendingTwoFactor>();
     public DbSet<RecoveryCode> RecoveryCodes => Set<RecoveryCode>();
     public DbSet<SecurityQuestionAnswer> SecurityQuestionAnswers => Set<SecurityQuestionAnswer>();
@@ -331,6 +332,14 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.RewardsBalance).HasColumnType("numeric(12,2)");
         });
 
+        modelBuilder.Entity<StabilityPlanRevision>(entity =>
+        {
+            entity.Property(e => e.EffectiveAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.TargetStabilityFund).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.StabilityAlloc).HasColumnType("numeric(8,6)");
+            entity.HasIndex(e => new { e.UserId, e.EffectiveAt, e.Id });
+        });
+
         modelBuilder.Entity<TransactionCategory>(entity =>
         {
             entity.Property(e => e.CycleLimit).HasColumnType("numeric(12,2)");
@@ -523,6 +532,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<SavingsGoal>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<SavingsGoalCompletion>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<CycleBalance>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<StabilityPlanRevision>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<UserSession>(), applyQueryFilter: false);
         ConfigureUserOwnership(modelBuilder.Entity<WebAuthnCredential>(), applyQueryFilter: false);
         ConfigureUserOwnership(modelBuilder.Entity<WebAuthnChallenge>(), applyQueryFilter: false);

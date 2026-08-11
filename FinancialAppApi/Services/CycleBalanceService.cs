@@ -27,6 +27,7 @@ public class CycleBalanceService
     private const int BaselineYear = 2026;
 
     private readonly AppDbContext _context;
+    private readonly StabilityPlanRevisionService _stabilityPlanRevisionService;
 
     // Opening balances resolved so far in this request. The service is scoped, so the lifetime is
     // one request -- long enough to matter (a single /api/bootstrap resolves the same cycle twice,
@@ -36,9 +37,13 @@ public class CycleBalanceService
     // thing that can is Invalidate*Async, which clears it.
     private readonly Dictionary<(int year, int monthIndex, int cycleDay), (decimal, decimal, decimal, decimal)> _openingBalances = new();
 
-    public CycleBalanceService(AppDbContext context)
+    public CycleBalanceService(
+        AppDbContext context,
+        StabilityPlanRevisionService? stabilityPlanRevisionService = null)
     {
         _context = context;
+        _stabilityPlanRevisionService = stabilityPlanRevisionService
+            ?? new StabilityPlanRevisionService(context);
     }
 
     // Ensures a CycleBalance row exists for every cycle from this timeline's start through
@@ -66,10 +71,10 @@ public class CycleBalanceService
 
         var setting = await _context.FinancialSettings
             .AsNoTracking()
-            .Select(value => new { value.TargetStabilityFund, value.StabilityAlloc })
             .FirstOrDefaultAsync(cancellationToken);
-        var stabilityTarget = setting?.TargetStabilityFund ?? 0m;
-        var stabilityAlloc = setting?.StabilityAlloc ?? 0m;
+        var planRevisions = setting == null
+            ? [new StabilityPlanSnapshot(DateTime.UnixEpoch, 0m, 0m)]
+            : await _stabilityPlanRevisionService.GetAsync(setting, cancellationToken);
 
         decimal essentials = 0m, growth = 0m, stability = 0m, rewards = 0m;
         var reloadState = last == null
@@ -120,11 +125,23 @@ public class CycleBalanceService
                     .ToList();
 
                 var stabilityOpening = stability;
+                var cycleStartUtc = DateTime.SpecifyKind(cycleStart, DateTimeKind.Utc);
+                var cycleEndUtc = DateTime.SpecifyKind(cycleEnd, DateTimeKind.Utc);
+                var planAtStart = StabilityPlanRevisionService.At(planRevisions, cycleStartUtc);
+                var cyclePlanPoints = planRevisions
+                    .Where(revision => revision.EffectiveAt > cycleStartUtc && revision.EffectiveAt <= cycleEndUtc)
+                    .Select(revision => new ReloadPlanPoint(revision.EffectiveAt, revision.TargetStabilityFund))
+                    .Prepend(new ReloadPlanPoint(planAtStart.EffectiveAt, planAtStart.TargetStabilityFund))
+                    .ToList();
                 var reloaded = StabilityReloadLedger.Replay(
                     reloadState,
                     stabilityOpening,
-                    stabilityTarget,
-                    StabilityReloadLedger.DescribeAll(cycleTxs, stabilityAlloc));
+                    cyclePlanPoints,
+                    StabilityReloadLedger.DescribeAll(
+                        cycleTxs,
+                        transaction => StabilityPlanRevisionService.At(
+                            planRevisions,
+                            transaction.PostedAt).StabilityAlloc));
                 reloadState = reloaded;
 
                 essentials += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Essentials"));

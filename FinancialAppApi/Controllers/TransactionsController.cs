@@ -99,7 +99,11 @@ public class TransactionsController : ControllerBase
             return NotFound();
         }
 
-        return Ok(MapToDto(transaction));
+        var statusMap = await _transactionQueryService.GetStabilityReloadStatusMapAsync(
+            HttpContext.RequestAborted);
+        return Ok(MapToDto(
+            transaction,
+            statusMap.TryGetValue(transaction.Id, out var status) ? status : null));
     }
 
     // GET: api/transactions/export
@@ -164,10 +168,23 @@ public class TransactionsController : ControllerBase
         }
         if (result.Status == TransactionMutationStatus.Existing)
         {
-            return Ok(MapToDto(result.Transaction!));
+            var statusMap = await _transactionQueryService.GetStabilityReloadStatusMapAsync(
+                HttpContext.RequestAborted);
+            return Ok(MapToDto(
+                result.Transaction!,
+                statusMap.TryGetValue(result.Transaction!.Id, out var status) ? status : null));
         }
 
-        return CreatedAtAction(nameof(GetTransactions), new { id = result.Transaction!.Id }, MapToDto(result.Transaction));
+        var createdStatuses = await _transactionQueryService.GetStabilityReloadStatusMapAsync(
+            HttpContext.RequestAborted);
+        return CreatedAtAction(
+            nameof(GetTransactions),
+            new { id = result.Transaction!.Id },
+            MapToDto(
+                result.Transaction,
+                createdStatuses.TryGetValue(result.Transaction.Id, out var createdStatus)
+                    ? createdStatus
+                    : null));
     }
 
     [HttpPost("bulk-delete")]
@@ -193,7 +210,7 @@ public class TransactionsController : ControllerBase
             return BadRequest(new { message = result.Message });
         }
 
-        return Ok(new { deleted = result.Transactions.Select(MapToDto).ToList() });
+        return Ok(new { deleted = result.Transactions.Select(transaction => MapToDto(transaction)).ToList() });
     }
 
     [HttpPost("bulk-restore")]
@@ -224,7 +241,7 @@ public class TransactionsController : ControllerBase
             return BadRequest(new { message = result.Message });
         }
 
-        return Ok(new { restored = result.Transactions.Select(MapToDto).ToList() });
+        return Ok(new { restored = result.Transactions.Select(transaction => MapToDto(transaction)).ToList() });
     }
 
     private static string CanonicalTransactionId(string id)
@@ -297,7 +314,7 @@ public class TransactionsController : ControllerBase
             dto.StabilityReloadIntent);
     }
 
-    public static TransactionDto MapToDto(Transaction t)
+    public static TransactionDto MapToDto(Transaction t, string? stabilityReloadStatus = null)
     {
         return new TransactionDto
         {
@@ -315,7 +332,8 @@ public class TransactionsController : ControllerBase
             RecurringPaymentId = t.RecurringPaymentId,
             RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
             WishlistItemId = t.WishlistItemId,
-            SavingsGoalId = t.SavingsGoalId
+            SavingsGoalId = t.SavingsGoalId,
+            StabilityReloadStatus = stabilityReloadStatus
         };
     }
 
@@ -337,7 +355,8 @@ public class TransactionsController : ControllerBase
             RecurringPaymentId = t.RecurringPaymentId,
             RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
             WishlistItemId = t.WishlistItemId,
-            SavingsGoalId = t.SavingsGoalId
+            SavingsGoalId = t.SavingsGoalId,
+            StabilityReloadStatus = t.StabilityReloadStatus
         };
     }
 }
@@ -357,6 +376,7 @@ public class TransactionDto
     public string? RecurringOccurrenceDate { get; set; }
     public int? WishlistItemId { get; set; }
     public int? SavingsGoalId { get; set; }
+    public string? StabilityReloadStatus { get; set; }
 }
 
 public sealed class BulkDeleteTransactionsRequest

@@ -3,6 +3,7 @@ using System.Text;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
+using FinancialAppApi.Services.Stability;
 
 namespace FinancialAppApi.Services;
 
@@ -19,7 +20,8 @@ public sealed record TransactionProjection(
     string? RecurringPaymentId,
     DateOnly? RecurringOccurrenceDate,
     int? WishlistItemId,
-    int? SavingsGoalId);
+    int? SavingsGoalId,
+    string? StabilityReloadStatus = null);
 
 public sealed record TransactionListResult(
     IReadOnlyList<TransactionProjection> Items,
@@ -33,11 +35,17 @@ public partial class TransactionQueryService
 {
     private readonly AppDbContext _context;
     private readonly FinancialClock _financialClock;
+    private readonly StabilityReloadStatusService _stabilityReloadStatusService;
 
-    public TransactionQueryService(AppDbContext context, FinancialClock? financialClock = null)
+    public TransactionQueryService(
+        AppDbContext context,
+        FinancialClock? financialClock = null,
+        StabilityReloadStatusService? stabilityReloadStatusService = null)
     {
         _context = context;
         _financialClock = financialClock ?? FinancialClock.Utc;
+        _stabilityReloadStatusService = stabilityReloadStatusService
+            ?? new StabilityReloadStatusService(context);
     }
 
     public async Task<TransactionListResult> GetTransactionsAsync(
@@ -103,7 +111,11 @@ public partial class TransactionQueryService
                 ))
                 .ToListAsync(cancellationToken);
 
-            return new TransactionListResult(txs, total, page, pageSize);
+            return new TransactionListResult(
+                await ApplyStatusesAsync(txs, cancellationToken),
+                total,
+                page,
+                pageSize);
         }
 
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
@@ -133,7 +145,8 @@ public partial class TransactionQueryService
                     t.SavingsGoalId
                 ))
                 .ToListAsync(cancellationToken);
-            return new TransactionListResult(txs);
+            return new TransactionListResult(
+                await ApplyStatusesAsync(txs, cancellationToken));
         }
 
         string activeMonth = queryMonth ?? setting.SelectedMonth;
@@ -169,7 +182,25 @@ public partial class TransactionQueryService
             ))
             .ToListAsync(cancellationToken);
 
-        return new TransactionListResult(filtered);
+        return new TransactionListResult(
+            await ApplyStatusesAsync(filtered, cancellationToken));
+    }
+
+    public Task<IReadOnlyDictionary<string, string>> GetStabilityReloadStatusMapAsync(
+        CancellationToken cancellationToken = default) =>
+        _stabilityReloadStatusService.GetStatusMapAsync(cancellationToken);
+
+    private async Task<IReadOnlyList<TransactionProjection>> ApplyStatusesAsync(
+        IReadOnlyList<TransactionProjection> items,
+        CancellationToken cancellationToken)
+    {
+        if (items.Count == 0) return items;
+        var statusMap = await _stabilityReloadStatusService.GetStatusMapAsync(cancellationToken);
+        return items
+            .Select(item => statusMap.TryGetValue(item.Id, out var status)
+                ? item with { StabilityReloadStatus = status }
+                : item)
+            .ToList();
     }
 
     public async Task<Transaction?> GetTransactionByIdAsync(string id, CancellationToken cancellationToken = default)
