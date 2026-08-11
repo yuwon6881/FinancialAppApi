@@ -174,6 +174,69 @@ public class StabilityReloadLedgerTests
         Assert.Equal(500m, state.Outstanding);
     }
 
+    /// <summary>
+    /// A carried obligation must be discharged even when no carried date came with it. The queue
+    /// used to be seeded only when the date was present, so the amount survived in a separate
+    /// running total that repayments debited while the queue had nothing to discharge -- and the
+    /// two never reconverged. Taken from a real ledger: 1,600.52 carried in, 1,048 of transfers
+    /// and a 520 reimbursement putting money back, 871.77 marked across three drawdowns. The card
+    /// reported being 904.29 short (more than had ever been marked) with 0.00 put back.
+    /// </summary>
+    [Fact]
+    public void Replay_DischargesACarriedObligationThatHasNoCarriedDate()
+    {
+        var state = StabilityReloadLedger.Replay(
+            new ReloadState(1600.52m, null, 0m, 0m),
+            openingBalance: 5000m,
+            target: 10000m,
+            movements:
+            [
+                new ReloadMovement(new DateOnly(2026, 7, 28), 148m, 148m, false),
+                new ReloadMovement(new DateOnly(2026, 7, 28), 900m, 900m, false),
+                new ReloadMovement(new DateOnly(2026, 8, 6), -70m, 0m, true),
+                new ReloadMovement(new DateOnly(2026, 8, 9), -125m, 0m, true),
+                new ReloadMovement(new DateOnly(2026, 8, 9), -676.77m, 0m, true),
+                new ReloadMovement(new DateOnly(2026, 8, 9), 520m, 520m, false),
+            ]);
+
+        // 1600.52 carried - 1048 - 520 repaid + 871.77 marked.
+        Assert.Equal(904.29m, state.Outstanding);
+        Assert.Equal(1568m, state.RepaidThisRun);
+        Assert.Equal(871.77m, state.MarkedThisRun);
+        // The carried entry is still at the head, so the window the card filters by reaches back
+        // past this cycle rather than starting at the newest drawdown.
+        Assert.Null(state.OldestOutstandingDate);
+    }
+
+    /// <summary>
+    /// With nothing carried in, the same cycle owes exactly what it marked less what went back.
+    /// This is the figure the user expects to read, and the desync above inflated it by the
+    /// undischargeable carried amount.
+    /// </summary>
+    [Fact]
+    public void Replay_OwesWhatWasMarkedLessWhatWentBack()
+    {
+        var state = StabilityReloadLedger.Replay(
+            Opening(),
+            openingBalance: 5000m,
+            target: 10000m,
+            movements:
+            [
+                new ReloadMovement(new DateOnly(2026, 7, 28), 148m, 148m, false),
+                new ReloadMovement(new DateOnly(2026, 7, 28), 900m, 900m, false),
+                new ReloadMovement(new DateOnly(2026, 8, 6), -70m, 0m, true),
+                new ReloadMovement(new DateOnly(2026, 8, 9), -125m, 0m, true),
+                new ReloadMovement(new DateOnly(2026, 8, 9), -676.77m, 0m, true),
+                new ReloadMovement(new DateOnly(2026, 8, 9), 520m, 520m, false),
+            ]);
+
+        Assert.Equal(351.77m, state.Outstanding);
+        Assert.Equal(520m, state.RepaidThisRun);
+        // Transfers arriving before anything was marked repay nothing -- there was no obligation
+        // for them to discharge yet.
+        Assert.Equal(new DateOnly(2026, 8, 9), state.OldestOutstandingDate);
+    }
+
     private static ReloadState Opening() => new(0m, null, 0m, 0m);
 
     private static Transaction Transaction(

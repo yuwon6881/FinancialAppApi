@@ -29,12 +29,22 @@ public static class StabilityReloadLedger
         decimal target,
         IEnumerable<ReloadMovement> movements)
     {
-        var queue = new LinkedList<(DateOnly Date, decimal Amount)>();
-        var outstanding = Math.Max(0m, opening.Outstanding);
-        if (outstanding > 0m && opening.OldestOutstandingDate.HasValue)
+        // The obligation is the queue, and nothing else. It used to be tracked twice -- a running
+        // `outstanding` total beside the FIFO queue -- and the queue was seeded only when the
+        // carried state also carried a date. A carried obligation with no date therefore left the
+        // queue empty while the total was positive, and from the first repayment onward the two
+        // drifted apart permanently: the total was debited, the queue had nothing to discharge. The
+        // card then reported being short more than had ever been marked, and "put back so far"
+        // (derived as marked - outstanding) collapsed to zero even though real money had gone in.
+        // Deriving the total from the queue makes that divergence unrepresentable.
+        var queue = new LinkedList<(DateOnly? Date, decimal Amount)>();
+        if (opening.Outstanding > 0m)
         {
-            queue.AddLast((opening.OldestOutstandingDate.Value, outstanding));
+            // The date may legitimately be unknown; the amount must be carried regardless.
+            queue.AddLast((opening.OldestOutstandingDate, opening.Outstanding));
         }
+
+        decimal Outstanding() => queue.Sum(entry => entry.Amount);
 
         var running = openingBalance;
         var markedThisRun = 0m;
@@ -43,7 +53,6 @@ public static class StabilityReloadLedger
         void ClearAtTarget()
         {
             queue.Clear();
-            outstanding = 0m;
             repaidThisRun = 0m;
         }
 
@@ -62,18 +71,16 @@ public static class StabilityReloadLedger
             {
                 var marked = -movement.Change;
                 markedThisRun += marked;
-                outstanding += marked;
                 queue.AddLast((movement.Date, marked));
             }
 
-            var repayment = Math.Min(outstanding, Math.Max(0m, movement.Repayment));
+            var repayment = Math.Min(Outstanding(), Math.Max(0m, movement.Repayment));
             if (repayment > 0m)
             {
                 var remaining = repayment;
                 while (remaining > 0m && queue.Count > 0)
                 {
-                    var node = queue.First!;
-                    var oldest = node.Value;
+                    var oldest = queue.First!.Value;
                     queue.RemoveFirst();
                     var discharged = Math.Min(oldest.Amount, remaining);
                     remaining -= discharged;
@@ -84,7 +91,6 @@ public static class StabilityReloadLedger
                     }
                 }
 
-                outstanding -= repayment;
                 repaidThisRun += repayment;
             }
 
@@ -95,7 +101,7 @@ public static class StabilityReloadLedger
         }
 
         return new ReloadState(
-            Math.Max(0m, outstanding),
+            Outstanding(),
             queue.First?.Value.Date,
             markedThisRun,
             repaidThisRun);
