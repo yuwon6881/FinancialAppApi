@@ -29,7 +29,8 @@ public partial class AiAssistantService
         bool NeedsCycleInsights,
         bool NeedsRewards = false,
         bool NeedsInvestments = false,
-        bool NeedsReport = false);
+        bool NeedsReport = false,
+        bool NeedsLoans = false);
 
     private sealed record TargetCycleSelection(IReadOnlyList<CycleKey> Cycles, bool ExplicitlyRequested);
     internal sealed record AiTransactionRow(
@@ -86,6 +87,11 @@ public partial class AiAssistantService
         var recurringRows = referenceDomains.RecurringRows;
         var wishlistContext = referenceDomains.WishlistContext;
         var wishlistRows = referenceDomains.WishlistRows;
+        var loanContext = await LoadLoanContextAsync(
+            queryPlan,
+            intentPlan.ConversationState.LastLoanId,
+            sensitiveMode,
+            cancellationToken);
 
         var transactionDomain = await LoadTransactionDomainContextAsync(
             intentPlan, targetSelection, cycleDay, exactDate, categories, cancellationToken);
@@ -126,7 +132,9 @@ public partial class AiAssistantService
         var turn = ResolveConversationTurn(
             intentPlan, queryPlan, targetSelection, exactDate, sensitiveMode,
             allTransactions, recurringRows, wishlistRows);
-        var outgoingState = turn.OutgoingState;
+        var outgoingState = queryPlan.NeedsLoans
+            ? turn.OutgoingState with { LastLoanId = loanContext.SelectedLoanId ?? turn.OutgoingState.LastLoanId }
+            : turn.OutgoingState;
         var turnFacets = turn.Facets;
         var turnExactDate = turn.ExactDate;
         var turnTransactionType = turn.TransactionType;
@@ -145,7 +153,7 @@ public partial class AiAssistantService
 
         var datasets = await BuildContextDatasetsAsync(
             queryPlan, setting, intentPlan, allTransactions, targetSelection, selectedYear, selectedMonthIndex, cycleDay,
-            sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, recurringRows, ledgerDomain,
+            sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, recurringRows, wishlistRows, ledgerDomain,
             cancellationToken);
         var cycleSummaries = datasets.CycleSummaries;
         var derivedMetrics = datasets.DerivedMetrics;
@@ -222,6 +230,7 @@ public partial class AiAssistantService
             RecentTransactions: recentTransactions,
             RecentTransactionIds: recentTransactionIds,
             RecurringPayments: recurringContext,
+            Loans: loanContext.Payload,
             WishlistItems: wishlistContext,
             BudgetTargets: budgetTargets,
             WishlistForecast: wishlistForecast,
@@ -613,6 +622,12 @@ public partial class AiAssistantService
         {
             datasetStates[AiDatasetKey.Recurring] = new AiDatasetState(AiDatasetStatus.Available);
         }
+        if (queryPlan.NeedsLoans)
+        {
+            datasetStates[AiDatasetKey.Loans] = sensitiveMode
+                ? new AiDatasetState(AiDatasetStatus.Hidden, Reason: "hidden by sensitive mode")
+                : new AiDatasetState(AiDatasetStatus.Available);
+        }
         if (queryPlan.NeedsBudgetTargets)
         {
             datasetStates[AiDatasetKey.BudgetTargets] = sensitiveMode
@@ -668,6 +683,7 @@ public partial class AiAssistantService
         int? exactMatchCount,
         IReadOnlyDictionary<CycleKey, decimal>? perCycleRecoveredOutflow,
         List<AiRecurringRow> recurringRows,
+        List<AiWishlistRow> wishlistRows,
         LedgerDomainContext ledgerDomain,
         CancellationToken cancellationToken)
     {
@@ -699,6 +715,8 @@ public partial class AiAssistantService
             targetSelection.Cycles,
             cycleDay,
             allTransactions,
+            wishlistRows,
+            ledgerDomain.WishlistForecast,
             sensitiveMode,
             cancellationToken);
         var investments = await BuildInvestmentContextAsync(intentPlan, sensitiveMode, cancellationToken);
@@ -1253,6 +1271,7 @@ public partial class AiAssistantService
         // actionContext block carries this instead of a second copy of the full rows.
         IReadOnlyList<string> RecentTransactionIds,
         object RecurringPayments,
+        object Loans,
         object WishlistItems,
         object? BudgetTargets,
         object? WishlistForecast,

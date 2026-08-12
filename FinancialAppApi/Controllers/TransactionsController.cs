@@ -154,7 +154,9 @@ public class TransactionsController : ControllerBase
         {
             return BadRequest(new { message = result.Message });
         }
-        if (result.Status is TransactionMutationStatus.InvalidCategory or TransactionMutationStatus.InvalidLedgerCategory)
+        if (result.Status is TransactionMutationStatus.InvalidCategory
+            or TransactionMutationStatus.InvalidLedgerCategory
+            or TransactionMutationStatus.InvalidAccount)
         {
             return BadRequest(new { message = result.Message });
         }
@@ -236,6 +238,7 @@ public class TransactionsController : ControllerBase
             or TransactionMutationStatus.InvalidAmount
             or TransactionMutationStatus.InvalidCategory
             or TransactionMutationStatus.InvalidLedgerCategory
+            or TransactionMutationStatus.InvalidAccount
             or TransactionMutationStatus.InvalidRecurringOccurrence)
         {
             return BadRequest(new { message = result.Message });
@@ -270,7 +273,9 @@ public class TransactionsController : ControllerBase
         {
             return BadRequest(new { message = result.Message });
         }
-        if (result.Status is TransactionMutationStatus.InvalidCategory or TransactionMutationStatus.InvalidLedgerCategory)
+        if (result.Status is TransactionMutationStatus.InvalidCategory
+            or TransactionMutationStatus.InvalidLedgerCategory
+            or TransactionMutationStatus.InvalidAccount)
         {
             return BadRequest(new { message = result.Message });
         }
@@ -311,7 +316,9 @@ public class TransactionsController : ControllerBase
             dto.WishlistItemId,
             dto.RecurringOccurrenceDate,
             dto.StabilityRecoveryTopUpAmount,
-            dto.StabilityReloadIntent);
+            dto.StabilityReloadIntent,
+            dto.AccountId,
+            dto.CounterAccountId);
     }
 
     public static TransactionDto MapToDto(Transaction t, string? stabilityReloadStatus = null)
@@ -325,6 +332,8 @@ public class TransactionsController : ControllerBase
             Category = t.Category,
             LedgerCategory = t.LedgerCategory,
             Amount = ObfuscationHelper.Obfuscate(t.Amount),
+            AccountId = t.AccountId,
+            CounterAccountId = t.CounterAccountId,
             StabilityRecoveryTopUpAmount = t.StabilityRecoveryTopUpAmount.HasValue
                 ? ObfuscationHelper.Obfuscate(t.StabilityRecoveryTopUpAmount.Value)
                 : null,
@@ -348,6 +357,8 @@ public class TransactionsController : ControllerBase
             Category = t.Category,
             LedgerCategory = t.LedgerCategory,
             Amount = ObfuscationHelper.Obfuscate(t.Amount),
+            AccountId = t.AccountId,
+            CounterAccountId = t.CounterAccountId,
             StabilityRecoveryTopUpAmount = t.StabilityRecoveryTopUpAmount.HasValue
                 ? ObfuscationHelper.Obfuscate(t.StabilityRecoveryTopUpAmount.Value)
                 : null,
@@ -370,6 +381,8 @@ public class TransactionDto
     public string Category { get; set; } = string.Empty;
     public string LedgerCategory { get; set; } = string.Empty;
     public string Amount { get; set; } = string.Empty;
+    public string? AccountId { get; set; }
+    public string? CounterAccountId { get; set; }
     public string? StabilityRecoveryTopUpAmount { get; set; }
     public string? StabilityReloadIntent { get; set; }
     public string? RecurringPaymentId { get; set; }

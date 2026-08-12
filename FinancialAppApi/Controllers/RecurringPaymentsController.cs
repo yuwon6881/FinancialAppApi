@@ -158,7 +158,8 @@ public class RecurringPaymentsController : ControllerBase
         {
             return NotFound();
         }
-        if (result.Status == UpdateRecurringPaymentStatus.InvalidCategory)
+        if (result.Status is UpdateRecurringPaymentStatus.InvalidCategory
+            or UpdateRecurringPaymentStatus.InvalidLoanTerm)
         {
             return BadRequest(new { message = result.Message });
         }
@@ -170,10 +171,17 @@ public class RecurringPaymentsController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteRecurringPayment(string id)
     {
-        var deleted = await _recurringPaymentService.DeleteRecurringPaymentAsync(id, HttpContext.RequestAborted);
-        if (!deleted)
+        var result = await _recurringPaymentService.DeleteRecurringPaymentAsync(id, HttpContext.RequestAborted);
+        if (result.Status == DeleteRecurringPaymentStatus.NotFound)
         {
             return NotFound();
+        }
+        if (result.Status == DeleteRecurringPaymentStatus.LinkedToLoan)
+        {
+            var message = result.LoanName == null
+                ? "This recurring bill is linked to a loan and cannot be deleted."
+                : $"This recurring bill is linked to {result.LoanName} and cannot be deleted.";
+            return Conflict(new { message });
         }
 
         return NoContent();
@@ -367,7 +375,9 @@ public class RecurringPaymentsController : ControllerBase
             ReminderEnabled = rp.ReminderEnabled,
             ReminderMode = rp.ReminderMode,
             ReminderLeadDays = rp.ReminderLeadDays,
-            PaymentMode = rp.PaymentMode
+            PaymentMode = rp.PaymentMode,
+            LinkedLoanId = rp.LinkedLoanId,
+            LinkedLoanName = rp.LinkedLoanName
         };
     }
 }
@@ -416,4 +426,6 @@ public class RecurringPaymentDto
     public string ReminderMode { get; set; } = "Once";
     public int ReminderLeadDays { get; set; } = 1;
     public string PaymentMode { get; set; } = RecurringPaymentMode.Manual;
+    public string? LinkedLoanId { get; set; }
+    public string? LinkedLoanName { get; set; }
 }

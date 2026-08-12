@@ -149,6 +149,60 @@ public class RecurringPaymentServiceTests
     }
 
     [Fact]
+    public async Task UpdateRecurringPaymentAsync_EndDateUpdatesLinkedLoanPaymentCount()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        var payment = NewPayment("rec-1", "Car payment");
+        payment.DueDate = 1;
+        context.RecurringPayments.Add(payment);
+        context.Loans.Add(new Loan
+        {
+            Id = "loan-1", Name = "Car loan", RecurringPaymentId = "rec-1",
+            OpeningPrincipal = 1000m, TrackingStartDate = new DateOnly(2026, 1, 1),
+            AnnualRatePercent = 0m, TermPeriods = 10,
+            InterestMethod = LoanInterestMethod.ReducingBalance,
+            ScheduleFrequency = "Monthly", ScheduleDueDay = 1,
+            ScheduleStartDate = new DateOnly(2026, 1, 1),
+            ScheduleStatus = LoanScheduleStatus.Complete
+        });
+        await context.SaveChangesAsync();
+        var updated = NewPayment("rec-1", "Car payment");
+        updated.DueDate = 1;
+        updated.EndDate = "2027-12-01";
+
+        var result = await new RecurringPaymentService(context).UpdateRecurringPaymentAsync("rec-1", updated);
+
+        Assert.Equal(UpdateRecurringPaymentStatus.Updated, result.Status);
+        Assert.Equal(24, (await context.Loans.FindAsync("loan-1"))!.TermPeriods);
+    }
+
+    [Fact]
+    public async Task UpdateRecurringPaymentAsync_BackfillsClearedEndDateForLinkedLoan()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.RecurringPayments.Add(NewPayment("rec-1", "Car payment"));
+        context.Loans.Add(new Loan
+        {
+            Id = "loan-1", Name = "Car loan", RecurringPaymentId = "rec-1",
+            OpeningPrincipal = 1000m, TrackingStartDate = new DateOnly(2026, 1, 1),
+            AnnualRatePercent = 0m, TermPeriods = 12,
+            InterestMethod = LoanInterestMethod.ReducingBalance,
+            ScheduleFrequency = "Monthly", ScheduleDueDay = 15,
+            ScheduleStartDate = new DateOnly(2026, 1, 1),
+            ScheduleStatus = LoanScheduleStatus.Complete
+        });
+        await context.SaveChangesAsync();
+
+        var result = await new RecurringPaymentService(context).UpdateRecurringPaymentAsync(
+            "rec-1", NewPayment("rec-1", "Car payment"));
+
+        Assert.Equal(UpdateRecurringPaymentStatus.Updated, result.Status);
+        Assert.Equal("2026-12-15", result.Payment!.EndDate);
+    }
+
+    [Fact]
     public async Task GetRecurringPaymentsAsync_ProjectsPaymentMode()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -168,10 +222,39 @@ public class RecurringPaymentServiceTests
         await context.SaveChangesAsync();
         var service = new RecurringPaymentService(context);
 
-        var deleted = await service.DeleteRecurringPaymentAsync("rec-1");
+        var result = await service.DeleteRecurringPaymentAsync("rec-1");
 
-        Assert.True(deleted);
+        Assert.Equal(DeleteRecurringPaymentStatus.Deleted, result.Status);
         Assert.False(await context.RecurringPayments.AnyAsync(p => p.Id == "rec-1"));
+    }
+
+    [Fact]
+    public async Task DeleteRecurringPaymentAsync_RejectsALinkedLoanBill()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", "Car payment"));
+        context.Loans.Add(new Loan
+        {
+            Id = "loan-1",
+            Name = "Car loan",
+            RecurringPaymentId = "rec-1",
+            OpeningPrincipal = 1000m,
+            TrackingStartDate = new DateOnly(2026, 1, 1),
+            AnnualRatePercent = 0m,
+            TermPeriods = 10,
+            InterestMethod = LoanInterestMethod.ReducingBalance,
+            ScheduleFrequency = "Monthly",
+            ScheduleDueDay = 1,
+            ScheduleStartDate = new DateOnly(2026, 1, 1),
+            ScheduleStatus = LoanScheduleStatus.Complete
+        });
+        await context.SaveChangesAsync();
+
+        var result = await new RecurringPaymentService(context).DeleteRecurringPaymentAsync("rec-1");
+
+        Assert.Equal(DeleteRecurringPaymentStatus.LinkedToLoan, result.Status);
+        Assert.Equal("Car loan", result.LoanName);
+        Assert.True(await context.RecurringPayments.AnyAsync(payment => payment.Id == "rec-1"));
     }
 
     [Fact]

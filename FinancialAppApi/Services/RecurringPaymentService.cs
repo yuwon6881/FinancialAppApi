@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Loans;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
@@ -8,7 +9,8 @@ public enum UpdateRecurringPaymentStatus
 {
     Updated,
     NotFound,
-    InvalidCategory
+    InvalidCategory,
+    InvalidLoanTerm
 }
 
 public sealed record UpdateRecurringPaymentResult(
@@ -57,7 +59,20 @@ public sealed record RecurringPaymentProjection(
     string ReminderMode,
     int ReminderLeadDays,
     DateOnly OccurrenceTrackingStartDate,
-    string PaymentMode);
+    string PaymentMode,
+    string? LinkedLoanId,
+    string? LinkedLoanName);
+
+public enum DeleteRecurringPaymentStatus
+{
+    Deleted,
+    NotFound,
+    LinkedToLoan
+}
+
+public sealed record DeleteRecurringPaymentResult(
+    DeleteRecurringPaymentStatus Status,
+    string? LoanName = null);
 
 public class RecurringPaymentService
 {
@@ -88,28 +103,31 @@ public class RecurringPaymentService
         // Read-only: results are mapped to DTOs by the controller and never mutated, so skip
         // change tracking. Recurring payments are inherently bounded (a handful per user), so no
         // pagination is applied here.
-        return await _context.RecurringPayments
-            .AsNoTracking()
-            .OrderBy(p => p.Name)
-            .ThenBy(p => p.Id)
-            .Select(p => new RecurringPaymentProjection(
-                p.Id,
-                p.Name,
-                p.Amount,
-                p.Frequency,
-                p.Category,
-                p.LedgerCategory,
-                p.NextDueDate,
-                p.DueDate,
-                p.StartDate,
-                p.Active,
-                p.EndDate,
-                p.PushReminderEnabled,
-                p.PushReminderMode,
-                p.PushReminderLeadDays,
-                p.OccurrenceTrackingStartDate,
-                p.PaymentMode
-            ))
+        return await (
+            from payment in _context.RecurringPayments.AsNoTracking()
+            join loan in _context.Loans.AsNoTracking()
+                on payment.Id equals loan.RecurringPaymentId into linkedLoans
+            from linkedLoan in linkedLoans.DefaultIfEmpty()
+            orderby payment.Name, payment.Id
+            select new RecurringPaymentProjection(
+                payment.Id,
+                payment.Name,
+                payment.Amount,
+                payment.Frequency,
+                payment.Category,
+                payment.LedgerCategory,
+                payment.NextDueDate,
+                payment.DueDate,
+                payment.StartDate,
+                payment.Active,
+                payment.EndDate,
+                payment.PushReminderEnabled,
+                payment.PushReminderMode,
+                payment.PushReminderLeadDays,
+                payment.OccurrenceTrackingStartDate,
+                payment.PaymentMode,
+                linkedLoan == null ? null : linkedLoan.Id,
+                linkedLoan == null ? null : linkedLoan.Name))
             .ToListAsync(cancellationToken);
     }
 
@@ -190,6 +208,27 @@ public class RecurringPaymentService
                 Message: $"Category '{updated.Category}' does not exist.");
         }
 
+        var linkedLoan = await _context.Loans
+            .FirstOrDefaultAsync(loan => loan.RecurringPaymentId == id, cancellationToken);
+        if (linkedLoan != null)
+        {
+            if (!string.IsNullOrWhiteSpace(updated.EndDate))
+            {
+                if (!DateOnly.TryParseExact(updated.EndDate, "yyyy-MM-dd", out var endDate)
+                    || !LoanTermSchedule.TryCountPaymentsThrough(linkedLoan, endDate, out var count))
+                {
+                    return new UpdateRecurringPaymentResult(
+                        UpdateRecurringPaymentStatus.InvalidLoanTerm,
+                        Message: "The end date must include between 1 and 360 loan payments.");
+                }
+                linkedLoan.TermPeriods = count;
+            }
+            else if (LoanTermSchedule.TryGetEndDate(linkedLoan, out var calculatedEndDate))
+            {
+                updated.EndDate = calculatedEndDate.ToString("yyyy-MM-dd");
+            }
+        }
+
         await _occurrences.PreserveThroughTodayAndResetFutureAsync(existing, cancellationToken: cancellationToken);
 
         existing.Name = updated.Name;
@@ -221,19 +260,40 @@ public class RecurringPaymentService
         return new UpdateRecurringPaymentResult(UpdateRecurringPaymentStatus.Updated, existing);
     }
 
-    public async Task<bool> DeleteRecurringPaymentAsync(string id, CancellationToken cancellationToken = default)
+    public async Task<DeleteRecurringPaymentResult> DeleteRecurringPaymentAsync(
+        string id,
+        CancellationToken cancellationToken = default)
     {
         var payment = await _context.RecurringPayments.FindAsync([id], cancellationToken);
         if (payment == null)
         {
-            return false;
+            return new DeleteRecurringPaymentResult(DeleteRecurringPaymentStatus.NotFound);
+        }
+
+        var linkedLoanName = await _context.Loans
+            .AsNoTracking()
+            .Where(loan => loan.RecurringPaymentId == id)
+            .Select(loan => loan.Name)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (linkedLoanName != null)
+        {
+            return new DeleteRecurringPaymentResult(
+                DeleteRecurringPaymentStatus.LinkedToLoan,
+                linkedLoanName);
         }
 
         await _occurrences.PreserveThroughTodayAndResetFutureAsync(payment, cancellationToken: cancellationToken);
         _context.RecurringPayments.Remove(payment);
-        await _context.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            return new DeleteRecurringPaymentResult(DeleteRecurringPaymentStatus.LinkedToLoan);
+        }
 
-        return true;
+        return new DeleteRecurringPaymentResult(DeleteRecurringPaymentStatus.Deleted);
     }
 
     public async Task<UpdateReminderResult> UpdateReminderAsync(

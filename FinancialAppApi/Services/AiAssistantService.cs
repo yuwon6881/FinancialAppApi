@@ -62,7 +62,8 @@ public sealed record AiConversationState(
     string? LastInvestmentTopic = null,
     string? LastInvestmentRange = null,
     Guid? LastInvestmentInstrumentId = null,
-    string? LastReportCycleKey = null);
+    string? LastReportCycleKey = null,
+    string? LastLoanId = null);
 
 public sealed record AiInvocationContext(
     string Surface,
@@ -70,7 +71,8 @@ public sealed record AiInvocationContext(
     string? CycleKey = null,
     string? InvestmentRange = null,
     int? SavingsGoalId = null,
-    bool HasPendingLocalChanges = false);
+    bool HasPendingLocalChanges = false,
+    string? LoanId = null);
 
 public sealed record AiChatMessage(string Role, string Content);
 public sealed record AiChatRequest(
@@ -161,6 +163,7 @@ public partial class AiAssistantService
     private readonly AiConversationMemoryService _conversationMemory;
     private readonly SavingsGoals.SavingsGoalService _savingsGoalService;
     private readonly Investments.InvestmentPortfolioService? _investmentPortfolioService;
+    private readonly Loans.LoanService _loanService;
 
     public AiAssistantService(
         AiClient aiClient,
@@ -173,7 +176,8 @@ public partial class AiAssistantService
         AiConversationMemoryService? conversationMemory = null,
         SavingsGoals.SavingsGoalService? savingsGoalService = null,
         Investments.InvestmentPortfolioService? investmentPortfolioService = null,
-        RecurringOccurrenceLedgerService? recurringOccurrenceLedger = null)
+        RecurringOccurrenceLedgerService? recurringOccurrenceLedger = null,
+        Loans.LoanService? loanService = null)
     {
         _logger = logger ?? NullLogger<AiAssistantService>.Instance;
         _aiClient = aiClient;
@@ -192,6 +196,7 @@ public partial class AiAssistantService
             _financialClock,
             _recurringOccurrenceService);
         _investmentPortfolioService = investmentPortfolioService;
+        _loanService = loanService ?? new Loans.LoanService(context);
     }
 
     public async Task<AiChatOutcome> ChatAsync(AiChatRequest request, CancellationToken cancellationToken = default)
@@ -328,6 +333,7 @@ public partial class AiAssistantService
         var history = SanitizeHistory(request.History);
         var resolvedMessage = ApplyInvocationMessage(message, invocationContext);
         var intentPlan = ResolveDeterministically(resolvedMessage, priorState);
+        intentPlan = ApplyInvocationPresetPlan(intentPlan, invocationContext);
         if (ShouldUseSemanticPlanner(resolvedMessage, intentPlan, invocationContext))
         {
             var classified = await TryClassifyIntentAsync(resolvedMessage, priorState, cancellationToken);
@@ -337,6 +343,11 @@ public partial class AiAssistantService
             {
                 intentPlan = MergeResolutions(resolvedMessage, classified, priorState);
             }
+        }
+        if (invocationContext?.LoanId is { } loanId &&
+            await _loanService.GetLoanAsync(loanId, cancellationToken) == null)
+        {
+            return Ok(new AiChatResponse("That loan is not available.", [], State: priorState));
         }
 
         var contextResult = await BuildContextAsync(intentPlan, request.ForceSensitiveMode, cancellationToken);
@@ -522,7 +533,7 @@ public partial class AiAssistantService
         new(StringComparer.OrdinalIgnoreCase) { "dashboard", "reports", "recurring", "ledger", "wishlist", "drafts", "settings", "investments", "documents" };
 
     private static readonly HashSet<string> InvocationPresets =
-        new(StringComparer.OrdinalIgnoreCase) { "report-review", "investment-explain", "rewards-plan" };
+        new(StringComparer.OrdinalIgnoreCase) { "report-review", "investment-explain", "rewards-plan", "loan-explain" };
 
     private static readonly HashSet<string> InvocationRanges =
         new(StringComparer.OrdinalIgnoreCase) { "1m", "3m", "6m", "1y", "3y", "5y", "all" };
@@ -564,7 +575,13 @@ public partial class AiAssistantService
             error = "That savings goal reference is not valid.";
             return false;
         }
-        normalized = new AiInvocationContext(surface, preset, cycleKey, range, context.SavingsGoalId, context.HasPendingLocalChanges);
+        var loanId = string.IsNullOrWhiteSpace(context.LoanId) ? null : context.LoanId.Trim();
+        if (loanId is { Length: > 100 })
+        {
+            error = "That loan reference is not valid.";
+            return false;
+        }
+        normalized = new AiInvocationContext(surface, preset, cycleKey, range, context.SavingsGoalId, context.HasPendingLocalChanges, loanId);
         return true;
     }
 
@@ -579,7 +596,8 @@ public partial class AiAssistantService
             LastSavingsGoalId = context.SavingsGoalId ?? state?.LastSavingsGoalId,
             LastReportCycleKey = context.CycleKey ?? state?.LastReportCycleKey,
             LastInvestmentTopic = context.Preset == "investment-explain" ? "portfolio" : state?.LastInvestmentTopic,
-            LastRewardsTopic = context.Preset == "rewards-plan" ? "plan" : state?.LastRewardsTopic
+            LastRewardsTopic = context.Preset == "rewards-plan" ? "plan" : state?.LastRewardsTopic,
+            LastLoanId = context.LoanId ?? state?.LastLoanId
         };
     }
 
@@ -592,7 +610,58 @@ public partial class AiAssistantService
         if (context.Preset == "report-review") suffix.Add("report review");
         if (context.Preset == "investment-explain") suffix.Add("portfolio explanation");
         if (context.Preset == "rewards-plan") suffix.Add("Rewards plan");
+        if (context.Preset == "loan-explain") suffix.Add("loan summary");
         return suffix.Count == 0 ? message : $"{message} ({string.Join(", ", suffix)})";
+    }
+
+    private static AiIntentPlan ApplyInvocationPresetPlan(AiIntentPlan plan, AiInvocationContext? context)
+    {
+        if (context?.Preset == "loan-explain")
+        {
+            var loanIntents = plan.Intents.Append(AiIntent.LoanSummary).Distinct().ToList();
+            return plan with
+            {
+                Intents = loanIntents,
+                QueryPlan = BuildQueryPlan(
+                    loanIntents,
+                    needsTransactionDetail: false,
+                    needsCycleSummary: false,
+                    needsCycleComparison: false,
+                    needsWishlist: false,
+                    needsWishlistForecast: false,
+                    needsRecurring: false,
+                    needsBudgetTargets: false,
+                    needsCategoryLimits: false,
+                    needsCycleInsights: false,
+                    searchText: null,
+                    cycleHint: null,
+                    queryText: plan.QueryPlan.QueryText,
+                    needsLoans: true)
+            };
+        }
+        if (context?.Preset != "rewards-plan") return plan;
+
+        var intents = plan.Intents
+            .Concat([AiIntent.RewardsSummary, AiIntent.SavingsGoalPacing, AiIntent.WishlistForecast])
+            .Distinct()
+            .ToList();
+        var queryPlan = BuildQueryPlan(
+            intents,
+            needsTransactionDetail: false,
+            needsCycleSummary: true,
+            needsCycleComparison: false,
+            needsWishlist: true,
+            needsWishlistForecast: true,
+            needsRecurring: false,
+            needsBudgetTargets: true,
+            needsCategoryLimits: false,
+            needsCycleInsights: false,
+            searchText: null,
+            cycleHint: plan.QueryPlan.CycleHint,
+            queryText: plan.QueryPlan.QueryText,
+            transactionIds: plan.QueryPlan.TransactionIds,
+            wishlistItemId: plan.QueryPlan.WishlistItemId);
+        return plan with { Intents = intents, QueryPlan = queryPlan };
     }
 
     // Keep optional payload groups intent-specific so unrelated controls do not distract the model

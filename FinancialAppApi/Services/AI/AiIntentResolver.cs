@@ -37,9 +37,10 @@ public partial class AiAssistantService
         bool NeedsRewards,
         bool NeedsInvestments,
         bool NeedsReport,
+        bool NeedsLoans,
         bool NeedsCount);
 
-    private enum QueryFamily { Transactional, Wishlist, Recurring, Rewards, Investment, Report }
+    private enum QueryFamily { Transactional, Wishlist, Recurring, Rewards, Investment, Report, Loan }
 
     // Two-phase family resolution. A short continuation ("how about last cycle", "what about the
     // next one") often carries no topic of its own, so deciding the family from the message alone
@@ -52,6 +53,7 @@ public partial class AiAssistantService
         if (NeedsRewardsSignal(message)) return QueryFamily.Rewards;
         if (InvestmentCoreSignal.IsMatch(message)) return QueryFamily.Investment;
         if (NeedsReportSignal(message)) return QueryFamily.Report;
+        if (LoanSignal.IsMatch(message)) return QueryFamily.Loan;
         if (WishlistSignal.IsMatch(message)) return QueryFamily.Wishlist;
         if (RecurringSignal.IsMatch(message)) return QueryFamily.Recurring;
         // A real transaction/amount cue wins. A cycle by itself does not: recurring bill status is
@@ -72,6 +74,8 @@ public partial class AiAssistantService
                 return QueryFamily.Investment;
             if (topic == ReportTopic || intents.Any(i => i.StartsWith("report.", StringComparison.Ordinal)))
                 return QueryFamily.Report;
+            if (topic == LoanTopic || intents.Any(i => i.StartsWith("loan.", StringComparison.Ordinal)))
+                return QueryFamily.Loan;
             // Wishlist data has no cycle dimension in this app. Preserve the existing, useful
             // behavior where a cycle-only request after wishlist returns to the transaction frame.
             if (!MessageMentionsCycle(message) &&
@@ -190,6 +194,11 @@ public partial class AiAssistantService
             if (!NeedsReportSignal(message)) clauses.Add("report review");
             if (!MessageMentionsCycle(message) && !string.IsNullOrWhiteSpace(priorState.LastReportCycleKey))
                 clauses.Add($"cycle {priorState.LastReportCycleKey}");
+            return string.Join(" ", clauses);
+        }
+        if (family == QueryFamily.Loan)
+        {
+            if (!LoanSignal.IsMatch(message)) clauses.Add("loan payoff and interest summary");
             return string.Join(" ", clauses);
         }
 
@@ -317,6 +326,7 @@ public partial class AiAssistantService
             rewardsDomain,
             investmentDomain || Regex.IsMatch(lower, @"\binvestment\b.{0,30}\b(allocation|basket|drift|target)\b", RegexOptions.IgnoreCase),
             NeedsReportSignal(lower),
+            LoanSignal.IsMatch(lower),
             needsCount);
     }
 
@@ -385,6 +395,7 @@ public partial class AiAssistantService
             else intents.Add(AiIntent.InvestmentSummary);
         }
         if (s.NeedsReport) intents.Add(AiIntent.ReportReview);
+        if (s.NeedsLoans) intents.Add(AiIntent.LoanSummary);
         if (Regex.IsMatch(lower, @"\b(open|show|go to|navigate|take me)\b")) intents.Add(AiIntent.Navigation);
         if (intents.Count == 0) intents.Add(AiIntent.General);
 
@@ -483,6 +494,7 @@ public partial class AiAssistantService
         var s = ComputeSignalNeeds(baseQueryText.ToLowerInvariant(), constraints);
 
         var typedIntents = CarryAnalyticalIntents(ParseIntents(classification.Intents).ToList(), message, priorState);
+        if (s.NeedsLoans && !typedIntents.Contains(AiIntent.LoanSummary)) typedIntents.Add(AiIntent.LoanSummary);
         bool Has(AiIntent i) => typedIntents.Contains(i);
         var queryText = string.Join(" ", new[] { baseQueryText, classification.SearchText, classification.CycleHint,
                 classification.Date?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) }

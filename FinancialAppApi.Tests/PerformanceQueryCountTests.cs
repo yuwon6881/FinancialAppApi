@@ -3,6 +3,7 @@ using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
 using FinancialAppApi.Services.Investments;
+using FinancialAppApi.Services.Loans;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -180,6 +181,102 @@ public sealed class PerformanceQueryCountTests
 
         Assert.Equal(paymentCount, result.Count);
         Assert.Equal(2, fixture.Counter.CommandCount);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(50)]
+    public async Task RecurringList_LinkMetadataUsesOneQueryAtAnyListSize(int paymentCount)
+    {
+        await using var fixture = await SqliteFixture.CreateAsync();
+        for (var index = 0; index < paymentCount; index++)
+        {
+            var id = $"bill-{index}";
+            fixture.Context.RecurringPayments.Add(new RecurringPayment
+            {
+                Id = id,
+                Name = $"Bill {index}",
+                Amount = -100m,
+                Frequency = "Monthly",
+                Category = "Bills",
+                LedgerCategory = "Essentials",
+                DueDate = 1,
+                StartDate = "2026-01-01",
+                Active = true
+            });
+            fixture.Context.Loans.Add(new Loan
+            {
+                Id = $"loan-{index}",
+                Name = $"Loan {index}",
+                RecurringPaymentId = id,
+                OpeningPrincipal = 1000m,
+                TrackingStartDate = new DateOnly(2026, 1, 1),
+                AnnualRatePercent = 5m,
+                TermPeriods = 12,
+                InterestMethod = LoanInterestMethod.ReducingBalance,
+                ScheduleFrequency = "Monthly",
+                ScheduleDueDay = 1,
+                ScheduleStartDate = new DateOnly(2026, 1, 1),
+                ScheduleStatus = LoanScheduleStatus.Complete
+            });
+        }
+        await fixture.Context.SaveChangesAsync();
+        fixture.Context.ChangeTracker.Clear();
+        fixture.Counter.Reset();
+
+        var rows = await new RecurringPaymentService(fixture.Context).GetRecurringPaymentsAsync();
+
+        Assert.Equal(paymentCount, rows.Count);
+        Assert.All(rows, row => Assert.NotNull(row.LinkedLoanId));
+        Assert.Equal(1, fixture.Counter.CommandCount);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(50)]
+    public async Task LoanList_ReplayUsesThreeQueriesAtAnyListSize(int loanCount)
+    {
+        await using var fixture = await SqliteFixture.CreateAsync();
+        for (var index = 0; index < loanCount; index++)
+        {
+            var billId = $"bill-{index}";
+            fixture.Context.RecurringPayments.Add(new RecurringPayment
+            {
+                Id = billId,
+                Name = $"Bill {index}",
+                Amount = -100m,
+                Frequency = "Monthly",
+                Category = "Bills",
+                LedgerCategory = "Essentials",
+                DueDate = 1,
+                StartDate = "2026-01-01",
+                Active = true
+            });
+            fixture.Context.Loans.Add(new Loan
+            {
+                Id = $"loan-{index}",
+                Name = $"Loan {index}",
+                RecurringPaymentId = billId,
+                OpeningPrincipal = 1000m,
+                TrackingStartDate = new DateOnly(2026, 1, 1),
+                AnnualRatePercent = 5m,
+                TermPeriods = 12,
+                InterestMethod = LoanInterestMethod.ReducingBalance,
+                ScheduleFrequency = "Monthly",
+                ScheduleDueDay = 1,
+                ScheduleStartDate = new DateOnly(2026, 1, 1),
+                ScheduleStatus = LoanScheduleStatus.Complete
+            });
+        }
+        await fixture.Context.SaveChangesAsync();
+        fixture.Context.ChangeTracker.Clear();
+        fixture.Counter.Reset();
+
+        var rows = await new LoanService(fixture.Context).GetLoansAsync();
+
+        Assert.Equal(loanCount, rows.Count);
+        Assert.All(rows, row => Assert.True(row.Replay.FutureSchedule.Count <= 6));
+        Assert.Equal(3, fixture.Counter.CommandCount);
     }
 
     [Theory]

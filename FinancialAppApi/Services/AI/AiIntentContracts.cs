@@ -42,6 +42,7 @@ public partial class AiAssistantService
         InvestmentSummary,
         InvestmentHolding,
         InvestmentAllocation,
+        LoanSummary,
         ReportReview
     }
 
@@ -85,6 +86,7 @@ public partial class AiAssistantService
         new(AiIntent.InvestmentSummary, "investment.summary", "investment", true),
         new(AiIntent.InvestmentHolding, "investment.holding", "investment", true),
         new(AiIntent.InvestmentAllocation, "investment.allocation", "investment", true),
+        new(AiIntent.LoanSummary, "loan.summary", "loan", true),
         new(AiIntent.ReportReview, "report.review", "report", true)
     ];
 

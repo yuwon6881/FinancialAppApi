@@ -55,6 +55,25 @@ public class DatabaseInvariantTests
     }
 
     [Fact]
+    public void Model_EnforcesOneLiveDefaultPerBucketAndValidAccountShape()
+    {
+        using var context = TestHelpers.NewInMemoryContext();
+        var model = context.GetService<IDesignTimeModel>().Model;
+        var entity = model.FindEntityType(typeof(LedgerAccount))!;
+
+        var index = Assert.Single(entity.GetIndexes(), i =>
+            i.Properties.Select(p => p.Name).SequenceEqual(
+                [nameof(LedgerAccount.UserId), nameof(LedgerAccount.Bucket)]));
+        Assert.True(index.IsUnique);
+        Assert.Equal("\"IsDefault\"", index.GetFilter());
+
+        var bucketConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_bucket");
+        var kindConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_kind");
+        Assert.Equal("\"Bucket\" IN ('Essentials', 'Growth', 'Stability', 'Rewards')", bucketConstraint.Sql);
+        Assert.Equal("\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card')", kindConstraint.Sql);
+    }
+
+    [Fact]
     public void Model_EnforcesOnePushReminderDeliveryClaimPerOccurrenceAndSubscription()
     {
         using var context = TestHelpers.NewInMemoryContext();

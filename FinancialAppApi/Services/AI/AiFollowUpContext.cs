@@ -14,10 +14,11 @@ public partial class AiAssistantService
     private const string RewardsTopic = "rewards";
     private const string InvestmentTopic = "investment";
     private const string ReportTopic = "report";
+    private const string LoanTopic = "loan";
 
     private static readonly HashSet<string> KnownConversationTopics = new(StringComparer.Ordinal)
     {
-        TransactionTopic, WishlistTopic, RecurringTopic, RewardsTopic, InvestmentTopic, ReportTopic
+        TransactionTopic, WishlistTopic, RecurringTopic, RewardsTopic, InvestmentTopic, ReportTopic, LoanTopic
     };
 
     // These facets preserve the *kind* of answer requested, not just its data scope. This is what
@@ -175,6 +176,8 @@ public partial class AiAssistantService
             InvestmentCoreSignal.IsMatch(message)) return InvestmentTopic;
         if (intentNames.Any(i => i.StartsWith("report.", StringComparison.OrdinalIgnoreCase)) ||
             NeedsReportSignal(message)) return ReportTopic;
+        if (intentNames.Any(i => i.StartsWith("loan.", StringComparison.OrdinalIgnoreCase)) ||
+            LoanSignal.IsMatch(message)) return LoanTopic;
         if (WishlistSignal.IsMatch(message)) return WishlistTopic;
         if (RecurringSignal.IsMatch(message)) return RecurringTopic;
         if (ExplicitTransactionDomainSignal.IsMatch(message) || TryParseAmountThreshold(message) != null) return TransactionTopic;
@@ -194,7 +197,7 @@ public partial class AiAssistantService
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static bool IsSelfContainedFinancialRequest(string message) =>
-        NeedsRewardsSignal(message) || InvestmentCoreSignal.IsMatch(message) || NeedsReportSignal(message) ||
+        NeedsRewardsSignal(message) || InvestmentCoreSignal.IsMatch(message) || NeedsReportSignal(message) || LoanSignal.IsMatch(message) ||
         WishlistSignal.IsMatch(message) || RecurringSignal.IsMatch(message) ||
         ExplicitTransactionDomainSignal.IsMatch(message) || CategoryLimitSignal.IsMatch(message) ||
         CycleInsightSignal.IsMatch(message) ||

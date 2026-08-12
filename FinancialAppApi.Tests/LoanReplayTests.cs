@@ -71,7 +71,8 @@ public sealed class LoanReplayTests
             1000m,
             10m,
             1,
-            0m);
+            0m,
+            previousAccrualDate: new DateOnly(2026, 1, 1));
 
         Assert.False(split.PaymentDidNotCoverInterest);
         Assert.Equal(0m, split.Principal);
@@ -123,6 +124,33 @@ public sealed class LoanReplayTests
         var result = LoanReplay.Replay(loan, "Annually", [], dueDay: 15);
 
         Assert.Equal(new DateOnly(2027, 1, 15), result.FutureSchedule[0].OccurrenceDate);
+    }
+
+    [Fact]
+    public void DiscardedOccurrenceDaysRemainInTheNextDailyRestWindow()
+    {
+        var loan = NewLoan(rate: 12m);
+        loan.InterestMethod = LoanInterestMethod.ReducingBalanceDaily;
+        var result = LoanReplay.Replay(loan, "Monthly", [
+            new(new DateOnly(2026, 2, 1), DateTime.MinValue, 0m, IsDiscarded: true),
+            new(new DateOnly(2026, 3, 1), DateTime.MinValue, 100m, TransactionId: "march"),
+        ], dueDay: 1);
+
+        Assert.Equal(19.4m, result.Payments[0].Interest);
+    }
+
+    [Fact]
+    public void InterestOnlyForecastStopsAtTheTermAndLeavesTheBalloonUnpaid()
+    {
+        var loan = NewLoan(rate: 12m);
+        loan.InterestMethod = LoanInterestMethod.InterestOnly;
+        loan.TermPeriods = 3;
+
+        var result = LoanReplay.Replay(loan, "Monthly", [], dueDay: 1);
+
+        Assert.Equal(3, result.FutureSchedule.Count);
+        Assert.Null(result.PayoffDate);
+        Assert.Equal(1000m, result.OutstandingBalance);
     }
 
     private static Loan NewLoan(decimal rate) => new()

@@ -12,7 +12,6 @@ public enum LoanMutationStatus
     Invalid,
     RecurringPaymentNotFound,
     RecurringPaymentAlreadyLinked,
-    RecurringPaymentRelinkNotAllowed,
     Conflict
 }
 
@@ -33,10 +32,20 @@ public sealed record LoanView(
 public sealed class LoanService
 {
     private readonly AppDbContext _context;
+    private readonly RecurringOccurrenceLedgerService _occurrences;
 
-    public LoanService(AppDbContext context)
+    public LoanService(
+        AppDbContext context,
+        RecurringOccurrenceLedgerService? occurrences = null,
+        FinancialClock? clock = null)
     {
         _context = context;
+        var resolvedClock = clock ?? FinancialClock.Utc;
+        _occurrences = occurrences ?? new RecurringOccurrenceLedgerService(
+            context,
+            new RecurringOccurrenceService(
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance),
+            resolvedClock);
     }
 
     public async Task<List<LoanView>> GetLoansAsync(CancellationToken cancellationToken = default)
@@ -46,7 +55,7 @@ public sealed class LoanService
             .OrderBy(loan => loan.Name)
             .ThenBy(loan => loan.Id)
             .ToListAsync(cancellationToken);
-        return await BuildViewsAsync(loans, cancellationToken);
+        return await BuildViewsAsync(loans, previewScheduleLength: 6, cancellationToken);
     }
 
     public async Task<LoanView?> GetLoanAsync(
@@ -57,7 +66,7 @@ public sealed class LoanService
             .AsNoTracking()
             .FirstOrDefaultAsync(candidate => candidate.Id == id, cancellationToken);
         if (loan == null) return null;
-        return (await BuildViewsAsync([loan], cancellationToken)).Single();
+        return (await BuildViewsAsync([loan], previewScheduleLength: null, cancellationToken)).Single();
     }
 
     public async Task<LoanResult> CreateLoanAsync(
@@ -75,7 +84,7 @@ public sealed class LoanService
             return new LoanResult(LoanMutationStatus.Success, existingView);
         }
 
-        var validation = Validate(loan);
+        var validation = Validate(loan, validateTerm: false);
         if (validation != null) return validation;
 
         var paymentStatus = await ValidateRecurringPaymentLinkAsync(
@@ -85,9 +94,12 @@ public sealed class LoanService
         if (paymentStatus != null) return paymentStatus;
 
         var payment = await _context.RecurringPayments
-            .AsNoTracking()
             .FirstAsync(candidate => candidate.Id == loan.RecurringPaymentId, cancellationToken);
         CaptureScheduleSnapshot(loan, payment);
+        var termStatus = await SynchronizeNewLinkTermAsync(loan, payment, cancellationToken);
+        if (termStatus != null) return termStatus;
+        validation = Validate(loan);
+        if (validation != null) return validation;
 
         _context.Loans.Add(loan);
         try
@@ -118,32 +130,57 @@ public sealed class LoanService
             .FirstOrDefaultAsync(candidate => candidate.Id == id, cancellationToken);
         if (loan == null) return new LoanResult(LoanMutationStatus.NotFound);
 
-        if (!string.Equals(updated.RecurringPaymentId, loan.RecurringPaymentId, StringComparison.Ordinal))
-        {
-            return new LoanResult(
-                LoanMutationStatus.RecurringPaymentRelinkNotAllowed,
-                Message: "A loan keeps the bill history it was created from. Create a separate loan for another bill.");
-        }
+        var linkChanged = !string.Equals(updated.RecurringPaymentId, loan.RecurringPaymentId, StringComparison.Ordinal);
+        var termChanged = updated.TermPeriods != loan.TermPeriods;
 
-        var validation = Validate(updated);
+        var validation = Validate(updated, validateTerm: !linkChanged);
         if (validation != null) return validation;
 
         var paymentStatus = await ValidateRecurringPaymentLinkAsync(
             updated.RecurringPaymentId,
             id,
             cancellationToken,
-            allowMissingExistingLink: string.Equals(
-                updated.RecurringPaymentId,
-                loan.RecurringPaymentId,
-                StringComparison.Ordinal));
+            allowMissingExistingLink: !linkChanged);
         if (paymentStatus != null) return paymentStatus;
 
         loan.Name = updated.Name.Trim();
         loan.OpeningPrincipal = updated.OpeningPrincipal;
         loan.TrackingStartDate = updated.TrackingStartDate;
         loan.AnnualRatePercent = updated.AnnualRatePercent;
+        loan.RateBasis = updated.RateBasis;
         loan.TermPeriods = updated.TermPeriods;
         loan.InterestMethod = updated.InterestMethod;
+
+        RecurringPayment? payment = null;
+        if (linkChanged)
+        {
+            payment = await _context.RecurringPayments
+                .FirstAsync(candidate => candidate.Id == updated.RecurringPaymentId, cancellationToken);
+            loan.RecurringPaymentId = updated.RecurringPaymentId;
+            CaptureScheduleSnapshot(loan, payment);
+            var termStatus = await SynchronizeNewLinkTermAsync(loan, payment, cancellationToken);
+            if (termStatus != null) return termStatus;
+            validation = Validate(loan);
+            if (validation != null) return validation;
+        }
+        else
+        {
+            payment = await _context.RecurringPayments
+                .FirstOrDefaultAsync(candidate => candidate.Id == loan.RecurringPaymentId, cancellationToken);
+            if (payment != null
+                && (termChanged || string.IsNullOrWhiteSpace(payment.EndDate))
+                && LoanTermSchedule.TryGetEndDate(loan, out var endDate))
+            {
+                var serializedEndDate = endDate.ToString("yyyy-MM-dd");
+                if (!string.Equals(payment.EndDate, serializedEndDate, StringComparison.Ordinal))
+                {
+                    await _occurrences.PreserveThroughTodayAndResetFutureAsync(
+                        payment,
+                        cancellationToken: cancellationToken);
+                    payment.EndDate = serializedEndDate;
+                }
+            }
+        }
 
         try
         {
@@ -176,6 +213,7 @@ public sealed class LoanService
 
     private async Task<List<LoanView>> BuildViewsAsync(
         IReadOnlyList<Loan> loans,
+        int? previewScheduleLength,
         CancellationToken cancellationToken)
     {
         if (loans.Count == 0) return [];
@@ -197,11 +235,13 @@ public sealed class LoanService
                     || transaction.RecurringOccurrenceDate >= earliestTrackingStart))
             .ToListAsync(cancellationToken);
 
+        var transactionsByPayment = transactions
+            .GroupBy(transaction => transaction.RecurringPaymentId!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+
         return loans.Select(loan =>
         {
-            var loanTransactions = transactions
-                .Where(transaction => transaction.RecurringPaymentId == loan.RecurringPaymentId)
-                .ToList();
+            var loanTransactions = transactionsByPayment.GetValueOrDefault(loan.RecurringPaymentId) ?? [];
             var inputs = loanTransactions
                 .Where(transaction => transaction.RecurringOccurrenceDate != null)
                 .Select(transaction => new LoanPaymentInput(
@@ -218,7 +258,15 @@ public sealed class LoanService
             {
                 loan.ScheduleStatus = LoanScheduleStatus.Incomplete;
             }
-            return new LoanView(loan, payment, LoanReplay.Replay(loan, inputs));
+            var replay = LoanReplay.Replay(loan, inputs);
+            if (previewScheduleLength.HasValue && replay.FutureSchedule.Count > previewScheduleLength.Value)
+            {
+                replay = replay with
+                {
+                    FutureSchedule = replay.FutureSchedule.Take(previewScheduleLength.Value).ToList()
+                };
+            }
+            return new LoanView(loan, payment, replay);
         }).ToList();
     }
 
@@ -269,7 +317,7 @@ public sealed class LoanService
             : null;
     }
 
-    private static LoanResult? Validate(Loan loan)
+    private static LoanResult? Validate(Loan loan, bool validateTerm = true)
     {
         if (string.IsNullOrWhiteSpace(loan.Name))
             return Invalid("Name is required.");
@@ -281,13 +329,41 @@ public sealed class LoanService
             return Invalid("Tracking start date is required.");
         if (loan.AnnualRatePercent is < 0m or > 100m)
             return Invalid("Annual rate must be between 0% and 100%.");
-        if (loan.TermPeriods is < 1 or > 360)
+        if (validateTerm && loan.TermPeriods is < 1 or > 360)
             return Invalid("Term must be between 1 and 360 payment periods.");
-        if (loan.InterestMethod is not LoanInterestMethod.ReducingBalance and not LoanInterestMethod.Flat)
+        if (!LoanInterestMethod.IsKnown(loan.InterestMethod))
             return Invalid("Interest method is not supported.");
+        if (!LoanRateBasis.IsKnown(loan.RateBasis))
+            return Invalid("Interest rate period is not supported.");
         return null;
     }
 
     private static LoanResult Invalid(string message) =>
         new(LoanMutationStatus.Invalid, Message: message);
+
+    private async Task<LoanResult?> SynchronizeNewLinkTermAsync(
+        Loan loan,
+        RecurringPayment payment,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(payment.EndDate))
+        {
+            if (!DateOnly.TryParseExact(payment.EndDate, "yyyy-MM-dd", out var endDate)
+                || !LoanTermSchedule.TryCountPaymentsThrough(loan, endDate, out var count))
+            {
+                return Invalid("The linked bill end date must include between 1 and 360 loan payments.");
+            }
+            loan.TermPeriods = count;
+            return null;
+        }
+
+        if (LoanTermSchedule.TryGetEndDate(loan, out var calculatedEndDate))
+        {
+            await _occurrences.PreserveThroughTodayAndResetFutureAsync(
+                payment,
+                cancellationToken: cancellationToken);
+            payment.EndDate = calculatedEndDate.ToString("yyyy-MM-dd");
+        }
+        return null;
+    }
 }

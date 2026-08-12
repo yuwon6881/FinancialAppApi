@@ -34,6 +34,10 @@ public sealed record LoanScheduleEntry(
 /// </summary>
 public static class LoanAmortization
 {
+    // A fixed 365-day denominator keeps the same loan cost identical on either side of 29 February
+    // and lets the frontend reproduce the calculation without a second leap-year rule.
+    private const decimal DaysPerYear = 365m;
+
     public static int PeriodsPerYear(string? frequency) =>
         string.Equals(frequency, "Annually", StringComparison.OrdinalIgnoreCase) ? 1 : 12;
 
@@ -46,7 +50,7 @@ public static class LoanAmortization
     {
         var periodsPerYear = PeriodsPerYear(frequency);
         var rate = AnnualRate(loan.AnnualRatePercent);
-        if (loan.InterestMethod == LoanInterestMethod.Flat)
+        if (loan.InterestMethod is LoanInterestMethod.Flat or LoanInterestMethod.InterestOnly)
         {
             return RoundMoney(loan.OpeningPrincipal * rate * loan.TermPeriods / periodsPerYear);
         }
@@ -65,6 +69,10 @@ public static class LoanAmortization
             var totalInterest = loan.OpeningPrincipal * AnnualRate(loan.AnnualRatePercent)
                 * periods / periodsPerYear;
             return RoundMoney((loan.OpeningPrincipal + totalInterest) / periods);
+        }
+        if (loan.InterestMethod == LoanInterestMethod.InterestOnly)
+        {
+            return RoundMoney(loan.OpeningPrincipal * ratePerPeriod);
         }
 
         if (ratePerPeriod == 0m) return RoundMoney(loan.OpeningPrincipal / periods);
@@ -86,6 +94,7 @@ public static class LoanAmortization
         decimal payment,
         int paymentNumber,
         decimal flatInterestPaidBefore,
+        DateOnly previousAccrualDate,
         string? transactionId = null)
     {
         var actualPayment = RoundMoney(Math.Max(0m, payment));
@@ -96,9 +105,16 @@ public static class LoanAmortization
                 occurrenceDate, actualPayment, 0m, 0m, 0m, 0m, actualPayment, false, transactionId);
         }
 
-        var interestDue = loan.InterestMethod == LoanInterestMethod.Flat
-            ? FlatInterestForPayment(loan, frequency, paymentNumber, flatInterestPaidBefore)
-            : RoundMoney(normalizedBalance * AnnualRate(loan.AnnualRatePercent) / PeriodsPerYear(frequency));
+        var interestDue = loan.InterestMethod switch
+        {
+            LoanInterestMethod.Flat => FlatInterestForPayment(loan, frequency, paymentNumber, flatInterestPaidBefore),
+            LoanInterestMethod.ReducingBalanceDaily => DailyInterest(
+                loan,
+                normalizedBalance,
+                previousAccrualDate,
+                occurrenceDate),
+            _ => RoundMoney(normalizedBalance * AnnualRate(loan.AnnualRatePercent) / PeriodsPerYear(frequency))
+        };
         var interest = Math.Min(actualPayment, Math.Max(0m, interestDue));
         var didNotCoverInterest = actualPayment < interestDue && interestDue > 0m;
         var principal = didNotCoverInterest
@@ -125,7 +141,8 @@ public static class LoanAmortization
         DateOnly occurrenceDate,
         decimal balanceBefore,
         int paymentNumber,
-        decimal flatInterestPaidBefore)
+        decimal flatInterestPaidBefore,
+        DateOnly previousAccrualDate)
     {
         var split = ApplyPayment(
             loan,
@@ -134,7 +151,8 @@ public static class LoanAmortization
             balanceBefore,
             ScheduledPayment(loan, frequency),
             paymentNumber,
-            flatInterestPaidBefore);
+            flatInterestPaidBefore,
+            previousAccrualDate);
         return new LoanScheduleEntry(
             occurrenceDate,
             split.Payment,
@@ -157,6 +175,17 @@ public static class LoanAmortization
         return paymentNumber >= Math.Max(1, loan.TermPeriods)
             ? remainingInterest
             : Math.Min(remainingInterest, RoundMoney(totalInterest / Math.Max(1, loan.TermPeriods)));
+    }
+
+    private static decimal DailyInterest(
+        Loan loan,
+        decimal balance,
+        DateOnly previousAccrualDate,
+        DateOnly occurrenceDate)
+    {
+        var days = occurrenceDate.DayNumber - previousAccrualDate.DayNumber;
+        if (days <= 0) return 0m;
+        return RoundMoney(balance * AnnualRate(loan.AnnualRatePercent) * days / DaysPerYear);
     }
 
     private static decimal InverseDecimalPower(decimal value, int exponent)

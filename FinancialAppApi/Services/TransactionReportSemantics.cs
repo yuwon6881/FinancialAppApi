@@ -9,6 +9,7 @@ public static class TransactionReportSemantics
 
     public static bool IsTransfer(string? category, string? ledgerCategory) =>
         string.Equals(category, "Transfer", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(ledgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase) ||
         (ledgerCategory?.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase) ?? false);
 
     public static bool IsBalanceAdjustment(Transaction transaction) =>

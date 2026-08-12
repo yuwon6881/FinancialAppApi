@@ -8,6 +8,79 @@ namespace FinancialAppApi.Tests;
 public class TransactionPersistenceServiceTests
 {
     [Fact]
+    public async Task CreateTransactionAsync_RejectsAccountOutsideTheMovedBucket()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = "essentials-account",
+            Name = "Essentials bank",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+            IsDefault = true,
+        });
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).CreateTransactionAsync(
+            NewRequest("wrong-account", ledgerCategory: "Rewards") with { AccountId = "essentials-account" });
+
+        Assert.Equal(TransactionMutationStatus.InvalidAccount, result.Status);
+        Assert.False(await context.Transactions.AnyAsync(transaction => transaction.Id == "wrong-account"));
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_PreservesCounterAccountForCrossBucketTransfersAndAccountMoves()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.LedgerAccounts.AddRange(
+            new LedgerAccount
+            {
+                Id = "essentials-account",
+                Name = "Essentials bank",
+                Bucket = "Essentials",
+                Kind = LedgerAccountKind.Bank,
+                IsDefault = true,
+            },
+            new LedgerAccount
+            {
+                Id = "rewards-account",
+                Name = "Rewards wallet",
+                Bucket = "Rewards",
+                Kind = LedgerAccountKind.EWallet,
+                IsDefault = true,
+            },
+            new LedgerAccount
+            {
+                Id = "cash-account",
+                Name = "Cash tin",
+                Bucket = "Essentials",
+                Kind = LedgerAccountKind.Cash,
+            });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var transfer = await service.CreateTransactionAsync(
+            NewRequest("cross-transfer", ledgerCategory: "Transfer:Essentials->Rewards", amount: 40m, category: "Transfer") with
+            {
+                AccountId = "essentials-account",
+                CounterAccountId = "rewards-account",
+            });
+        var move = await service.CreateTransactionAsync(
+            NewRequest("account-move", ledgerCategory: "AccountMove", amount: 25m, category: "Transfer") with
+            {
+                AccountId = "essentials-account",
+                CounterAccountId = "cash-account",
+            });
+
+        Assert.Equal(TransactionMutationStatus.Created, transfer.Status);
+        Assert.Equal(TransactionMutationStatus.Created, move.Status);
+        Assert.Equal("rewards-account", transfer.Transaction!.CounterAccountId);
+        Assert.Equal(0m, CategoryAttributionService.GetCategoryAmount(move.Transaction!, "Essentials"));
+    }
+
+    [Fact]
     public async Task CreateTransactionAsync_CreatesIncomeSplitsFromSettings()
     {
         await using var context = TestHelpers.NewInMemoryContext();

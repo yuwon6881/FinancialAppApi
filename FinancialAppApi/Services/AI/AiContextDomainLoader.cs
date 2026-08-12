@@ -32,7 +32,8 @@ public partial class AiAssistantService
                 {
                     row.Id, row.Name, row.Category, row.LedgerCategory,
                     row.StartDate, row.EndDate, row.DueDate, row.Active, row.Frequency, row.NextDueDate,
-                    row.PushReminderEnabled, row.PushReminderMode, row.PushReminderLeadDays
+                    row.PushReminderEnabled, row.PushReminderMode, row.PushReminderLeadDays,
+                    row.LinkedLoanId, row.LinkedLoanName
                 }).ToList()
                 : recurringRows;
         }

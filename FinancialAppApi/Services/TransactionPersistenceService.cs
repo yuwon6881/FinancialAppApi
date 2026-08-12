@@ -15,6 +15,7 @@ public enum TransactionMutationStatus
     InvalidAmount,
     InvalidCategory,
     InvalidLedgerCategory,
+    InvalidAccount,
     InvalidRecurringOccurrence,
     Conflict
 }
@@ -31,7 +32,9 @@ public sealed record TransactionMutationRequest(
     int? WishlistItemId,
     string? RecurringOccurrenceDate = null,
     string? StabilityRecoveryTopUpAmount = null,
-    string? StabilityReloadIntent = null);
+    string? StabilityReloadIntent = null,
+    string? AccountId = null,
+    string? CounterAccountId = null);
 
 public sealed record TransactionMutationResult(
     TransactionMutationStatus Status,
@@ -115,8 +118,12 @@ public class TransactionPersistenceService
                 : null,
             StabilityReloadIntent = StabilityReloadIntent.Normalize(request.StabilityReloadIntent),
             RecurringPaymentId = request.RecurringPaymentId,
-            WishlistItemId = request.WishlistItemId
+            WishlistItemId = request.WishlistItemId,
+            AccountId = NormalizeOptionalId(request.AccountId),
+            CounterAccountId = NormalizeOptionalId(request.CounterAccountId),
         };
+        var accountValidation = await ValidateAccountReferencesAsync(transaction, cancellationToken);
+        if (accountValidation is not null) return accountValidation;
         var occurrence = await ResolveRecurringOccurrenceDateAsync(
             transaction,
             request.RecurringOccurrenceDate,
@@ -294,6 +301,22 @@ public class TransactionPersistenceService
             && nextRecoveryTopUp > 0m
             && originalAmount == amount
             && originalTransactionCycle != currentCycle;
+
+        // Validate account identity before any context-tracked transaction or split rows can be
+        // changed. The account lookup is deliberately separate from the existing transaction so
+        // an invalid update cannot leave a dirty entity behind if the split resolver reads cached
+        // cycle state and saves while it is loading.
+        var accountProbe = new Transaction
+        {
+            Category = ledgerValidation.Category,
+            LedgerCategory = ledgerValidation.LedgerCategory,
+            Amount = amount,
+            AccountId = NormalizeOptionalId(request.AccountId),
+            CounterAccountId = NormalizeOptionalId(request.CounterAccountId),
+        };
+        var accountValidation = await ValidateAccountReferencesAsync(accountProbe, cancellationToken);
+        if (accountValidation is not null) return accountValidation;
+
         var splitContext = await LoadIncomeSplitContextAsync(
             ledgerValidation.LedgerCategory, putDate, transaction.PostedAt, transaction.Id,
             preserveHistoricalRecovery, cancellationToken: cancellationToken);
@@ -318,6 +341,8 @@ public class TransactionPersistenceService
             ? originalReloadIntent
             : StabilityReloadIntent.Normalize(request.StabilityReloadIntent);
         transaction.WishlistItemId = request.WishlistItemId ?? transaction.WishlistItemId;
+        transaction.AccountId = accountProbe.AccountId;
+        transaction.CounterAccountId = accountProbe.CounterAccountId;
 
         if (transaction.RecurringOccurrenceDate.HasValue)
         {
@@ -549,6 +574,8 @@ public class TransactionPersistenceService
         && left.WishlistItemId == right.WishlistItemId
         && string.Equals(left.RecurringOccurrenceDate, right.RecurringOccurrenceDate, StringComparison.Ordinal)
         && string.Equals(left.StabilityRecoveryTopUpAmount, right.StabilityRecoveryTopUpAmount, StringComparison.Ordinal)
+        && string.Equals(left.AccountId, right.AccountId, StringComparison.Ordinal)
+        && string.Equals(left.CounterAccountId, right.CounterAccountId, StringComparison.Ordinal)
         && string.Equals(
             StabilityReloadIntent.Normalize(left.StabilityReloadIntent),
             StabilityReloadIntent.Normalize(right.StabilityReloadIntent),
@@ -596,6 +623,8 @@ public class TransactionPersistenceService
             && existing.WishlistItemId == request.WishlistItemId
             && existing.RecurringOccurrenceDate == requestOccurrence
             && existing.StabilityRecoveryTopUpAmount == comparableRecoveryTopUp
+            && string.Equals(existing.AccountId, NormalizeOptionalId(request.AccountId), StringComparison.Ordinal)
+            && string.Equals(existing.CounterAccountId, NormalizeOptionalId(request.CounterAccountId), StringComparison.Ordinal)
             && string.Equals(
                 existing.StabilityReloadIntent,
                 StabilityReloadIntent.Normalize(request.StabilityReloadIntent),
@@ -1081,12 +1110,99 @@ public class TransactionPersistenceService
             Message: message);
     }
 
+    private static TransactionMutationResult InvalidAccount(string message) => new(
+        TransactionMutationStatus.InvalidAccount,
+        Message: message);
+
+    private async Task<TransactionMutationResult?> ValidateAccountReferencesAsync(
+        Transaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var accountId = NormalizeOptionalId(transaction.AccountId);
+        var counterAccountId = NormalizeOptionalId(transaction.CounterAccountId);
+        transaction.AccountId = accountId;
+        transaction.CounterAccountId = counterAccountId;
+
+        if (string.Equals(transaction.LedgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase))
+        {
+            if (accountId is null || counterAccountId is null || accountId == counterAccountId)
+                return InvalidAccount("An account move needs two different accounts.");
+
+            var accountMoveRows = await _context.LedgerAccounts
+                .Where(account => account.Id == accountId || account.Id == counterAccountId)
+                .ToListAsync(cancellationToken);
+            if (accountMoveRows.Count != 2 || accountMoveRows.Any(account => account.IsArchived))
+                return InvalidAccount("Both accounts must be open before money can be moved between them.");
+            if (!string.Equals(accountMoveRows[0].Bucket, accountMoveRows[1].Bucket, StringComparison.OrdinalIgnoreCase))
+                return InvalidAccount("Both accounts in an account move must belong to the same bucket.");
+            return null;
+        }
+
+        var validBuckets = GetTransactionBuckets(transaction.LedgerCategory);
+        if (counterAccountId is not null
+            && !transaction.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
+            return InvalidAccount("A counter account is only valid for a bucket transfer or account move.");
+        if (accountId is null && counterAccountId is null) return null;
+        if (accountId is not null && counterAccountId is not null && accountId == counterAccountId)
+            return InvalidAccount("The source and destination accounts must be different.");
+
+        var accountIds = new[] { accountId, counterAccountId }
+            .Where(value => value is not null)
+            .Select(value => value!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var accountRows = await _context.LedgerAccounts
+            .Where(account => accountIds.Contains(account.Id))
+            .ToListAsync(cancellationToken);
+        if (accountRows.Count != accountIds.Count || accountRows.Any(account => account.IsArchived))
+            return InvalidAccount("The selected account is not available.");
+        if (validBuckets.Count > 0 && accountRows.Any(account => !validBuckets.Contains(account.Bucket, StringComparer.OrdinalIgnoreCase)))
+            return InvalidAccount("The selected account must belong to the transaction's ledger bucket.");
+        return null;
+    }
+
+    private static IReadOnlyList<string> GetTransactionBuckets(string ledgerCategory)
+    {
+        if (FinancialConstants.BudgetCategories.Contains(ledgerCategory, StringComparer.OrdinalIgnoreCase))
+            return [FinancialConstants.BudgetCategories.First(bucket => bucket.Equals(ledgerCategory, StringComparison.OrdinalIgnoreCase))];
+        if (ledgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = ledgerCategory["Transfer:".Length..].Split("->", StringSplitOptions.None);
+            return parts
+                .Select(part => FinancialConstants.BudgetCategories.FirstOrDefault(bucket =>
+                    bucket.Equals(part.Trim(), StringComparison.OrdinalIgnoreCase)))
+                .Where(bucket => bucket is not null)
+                .Select(bucket => bucket!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        return [];
+    }
+
+    private static string? NormalizeOptionalId(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
     private static (bool IsValid, string Category, string LedgerCategory, string? Message)
         ValidateAndNormalizeLedgerCategory(string category, string ledgerCategory, decimal amount)
     {
         var normalizedCategory = category.Trim();
         var normalizedLedger = ledgerCategory?.Trim() ?? string.Empty;
         var isTransferCategory = normalizedCategory.Equals("Transfer", StringComparison.OrdinalIgnoreCase);
+
+        if (normalizedLedger.Equals("AccountMove", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!isTransferCategory)
+            {
+                return (false, normalizedCategory, normalizedLedger,
+                    "An account move must use the Transfer category.");
+            }
+            if (amount <= 0)
+            {
+                return (false, normalizedCategory, normalizedLedger,
+                    "Account move amount must be greater than zero.");
+            }
+            return (true, "Transfer", "AccountMove", null);
+        }
 
         if (normalizedLedger.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
         {

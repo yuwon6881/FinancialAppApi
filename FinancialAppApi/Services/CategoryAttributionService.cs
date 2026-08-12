@@ -74,6 +74,12 @@ public static class CategoryAttributionService
 
     public static decimal GetCategoryAmount(Transaction t, string categoryName)
     {
+        // AccountMove is an in-bucket movement and intentionally has no effect on any of the
+        // four bucket totals. Accounts attribute its two sides separately.
+        if (string.Equals(t.LedgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0m;
+        }
         if (string.Equals(t.LedgerCategory, categoryName, StringComparison.OrdinalIgnoreCase))
         {
             return t.Amount;

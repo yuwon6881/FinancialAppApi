@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Database;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
+using FinancialAppApi.Services.Accounts;
 using FinancialAppApi.Services.Loans;
 
 namespace FinancialAppApi.Controllers;
@@ -38,6 +39,7 @@ public class BootstrapController : ControllerBase
     private readonly WishlistService _wishlistService;
     private readonly Services.SavingsGoals.SavingsGoalService _savingsGoalService;
     private readonly LoanService _loanService;
+    private readonly LedgerAccountService _ledgerAccountService;
 
     public BootstrapController(
         FinancialService financialService,
@@ -47,10 +49,12 @@ public class BootstrapController : ControllerBase
         TransactionCategoryService categoryService,
         WishlistService wishlistService,
         Services.SavingsGoals.SavingsGoalService savingsGoalService,
-        LoanService loanService)
+        LoanService loanService,
+        LedgerAccountService ledgerAccountService)
     {
         _savingsGoalService = savingsGoalService;
         _loanService = loanService;
+        _ledgerAccountService = ledgerAccountService;
         _financialService = financialService;
         _transactionQueryService = transactionQueryService;
         _recurringPaymentService = recurringPaymentService;
@@ -64,7 +68,8 @@ public class BootstrapController : ControllerBase
     public async Task<ActionResult<object>> GetBootstrap(
         [FromQuery(Name = "month")] string? queryMonth = null,
         [FromQuery(Name = "year")] int? queryYear = null,
-        [FromQuery(Name = "persistSelection")] bool persistSelection = true)
+        [FromQuery(Name = "persistSelection")] bool persistSelection = true,
+        [FromQuery(Name = "includeLoans")] bool includeLoans = true)
     {
         if (!IsValidPeriod(queryMonth, queryYear))
             return BadRequest(new { message = "Month must be a valid three-letter abbreviation and include a year." });
@@ -105,9 +110,16 @@ public class BootstrapController : ControllerBase
         var categories = await _categoryService.GetCategoriesAsync(cancellationToken);
         var wishlist = await _wishlistService.GetWishlistAsync(cancellationToken);
         var savingsGoals = await _savingsGoalService.GetGoalsAsync(cancellationToken);
-        var loans = await _loanService.GetLoansAsync(cancellationToken);
+        List<LoanDto>? loanDtos = null;
+        if (includeLoans)
+        {
+            var loans = await _loanService.GetLoansAsync(cancellationToken);
+            loanDtos = loans.Select(LoansController.MapToDto).ToList();
+        }
         var autocomplete = await _transactionQueryService.GetAutocompleteSuggestionsAsync(cancellationToken);
         var walletBalance = await _financialService.GetWalletBalanceAsync(snapshot, cancellationToken);
+        var accounts = await _ledgerAccountService.GetAccountsAsync(cancellationToken);
+        var accountBalances = await _ledgerAccountService.GetBalancesAsync(accounts, cancellationToken);
 
         return Ok(new
         {
@@ -120,9 +132,10 @@ public class BootstrapController : ControllerBase
             categories = categories.Select(TransactionCategoriesController.ToResponse).ToList(),
             wishlist = wishlist.Select(WishlistController.MapToDto).ToList(),
             savingsGoals = savingsGoals.Select(SavingsGoalsController.MapToDto).ToList(),
-            loans = loans.Select(LoansController.MapToDto).ToList(),
+            loans = loanDtos,
             autocomplete,
             walletBalance,
+            accounts = accounts.Select(account => LedgerAccountsController.MapToDto(account, accountBalances)).ToList(),
         });
     }
 

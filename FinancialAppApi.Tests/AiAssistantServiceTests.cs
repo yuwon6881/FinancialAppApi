@@ -83,6 +83,118 @@ public class AiAssistantServiceTests
     }
 
     [Fact]
+    public async Task ChatAsync_LoanPreset_LoadsOnlyTheSelectedSavedLoan()
+    {
+        await using var context = NewContextWithSettings();
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "bill-home", Name = "Home payment", Amount = -100m, Frequency = "Monthly",
+            Category = "Bills", LedgerCategory = "Essentials", DueDate = 1,
+            StartDate = "2026-01-01", Active = true
+        });
+        context.Loans.Add(new Loan
+        {
+            Id = "loan-home", Name = "Home loan", RecurringPaymentId = "bill-home",
+            OpeningPrincipal = 1000m, TrackingStartDate = new DateOnly(2026, 1, 1),
+            AnnualRatePercent = 5m, TermPeriods = 12, InterestMethod = LoanInterestMethod.ReducingBalance,
+            ScheduleFrequency = "Monthly", ScheduleDueDay = 1,
+            ScheduleStartDate = new DateOnly(2026, 1, 1), ScheduleStatus = LoanScheduleStatus.Complete
+        });
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("Here is the saved loan summary."));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest(
+            "Explain this loan",
+            [],
+            Context: new AiInvocationContext("recurring", "loan-explain", LoanId: "loan-home")));
+
+        Assert.False(outcome.IsProviderError);
+        Assert.Contains("\"loan.summary\"", handler.LastUserContent);
+        Assert.Contains("\"id\":\"loan-home\"", handler.LastUserContent);
+        Assert.Contains("\"amountStillOwed\":1000", handler.LastUserContent);
+        Assert.Equal("loan-home", outcome.Response.State?.LastLoanId);
+    }
+
+    [Fact]
+    public async Task ChatAsync_IncompleteLoan_DoesNotExposeSpeculativeForecasts()
+    {
+        await using var context = NewContextWithSettings();
+        context.Loans.Add(new Loan
+        {
+            Id = "loan-orphan", Name = "Old loan", RecurringPaymentId = "missing-bill",
+            OpeningPrincipal = 1000m, TrackingStartDate = new DateOnly(2026, 1, 1),
+            AnnualRatePercent = 5m, TermPeriods = 12, InterestMethod = LoanInterestMethod.ReducingBalance,
+            ScheduleStatus = LoanScheduleStatus.Incomplete
+        });
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("The forecast is unavailable."));
+        var service = NewService(context, handler);
+
+        _ = await service.ChatAsync(new AiChatRequest(
+            "Explain this loan",
+            [],
+            Context: new AiInvocationContext("recurring", "loan-explain", LoanId: "loan-orphan")));
+
+        Assert.Contains("\"forecastAvailable\":false", handler.LastUserContent);
+        Assert.DoesNotContain("amountStillOwed", handler.LastUserContent);
+        Assert.DoesNotContain("payoffDate", handler.LastUserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_LoanAmounts_AreBlockedBySensitiveModeBeforeGeneration()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: true);
+        context.Loans.Add(new Loan
+        {
+            Id = "loan-private", Name = "Private loan", RecurringPaymentId = "missing-bill",
+            OpeningPrincipal = 1000m, TrackingStartDate = new DateOnly(2026, 1, 1),
+            AnnualRatePercent = 5m, TermPeriods = 12, InterestMethod = LoanInterestMethod.ReducingBalance,
+            ScheduleStatus = LoanScheduleStatus.Incomplete
+        });
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler();
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest(
+            "How much do I owe?",
+            [],
+            Context: new AiInvocationContext("recurring", "loan-explain", LoanId: "loan-private")));
+
+        Assert.Equal(0, handler.CallCount);
+        Assert.Contains("Sensitive mode", outcome.Response.Reply);
+    }
+
+    [Fact]
+    public async Task ChatAsync_LinkedRecurringDeleteAction_IsSuppressed()
+    {
+        await using var context = NewContextWithSettings();
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "bill-home", Name = "Home payment", Amount = -100m, Frequency = "Monthly",
+            Category = "Bills", LedgerCategory = "Essentials", DueDate = 1,
+            StartDate = "2026-01-01", Active = true
+        });
+        context.Loans.Add(new Loan
+        {
+            Id = "loan-home", Name = "Home loan", RecurringPaymentId = "bill-home",
+            OpeningPrincipal = 1000m, TrackingStartDate = new DateOnly(2026, 1, 1),
+            AnnualRatePercent = 5m, TermPeriods = 12, InterestMethod = LoanInterestMethod.ReducingBalance,
+            ScheduleFrequency = "Monthly", ScheduleDueDay = 1,
+            ScheduleStartDate = new DateOnly(2026, 1, 1), ScheduleStatus = LoanScheduleStatus.Complete
+        });
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "I'll open delete.",
+            "[{\"type\":\"requestDeleteRecurring\",\"payload\":{\"id\":\"bill-home\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("Delete my Home payment bill", []));
+
+        Assert.Empty(outcome.Response.Actions);
+    }
+
+    [Fact]
     public async Task ChatAsync_QuestionContainingDeleteWord_IsNotTreatedAsDeleteCommand()
     {
         await using var context = NewContextWithSettings();
@@ -1341,6 +1453,54 @@ public class AiAssistantServiceTests
         context.TransactionCategories.Add(new TransactionCategory { Id = "food", Name = "Food" });
         context.SaveChanges();
         return context;
+    }
+
+    [Fact]
+    public async Task ChatAsync_RewardsPlanPreset_LoadsCommitmentsPoolsRewardsAndForecastWithoutClassifier()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        context.Transactions.AddRange(
+            new Transaction { Id = "rewards-balance", Date = DateTime.UtcNow.AddDays(-2), Description = "Rewards", Category = "Rewards", LedgerCategory = "Rewards", Amount = 900m },
+            new Transaction { Id = "essentials-balance", Date = DateTime.UtcNow.AddDays(-2), Description = "Essentials", Category = "Essentials", LedgerCategory = "Essentials", Amount = 1200m });
+        context.SavingsGoals.AddRange(
+            new SavingsGoal { Id = 41, Name = "Car service", TargetAmount = 600m, EarmarkedAmount = 200m, FundingBucket = SavingsGoalFundingBucket.Essentials, TargetDate = DateTime.UtcNow.AddMonths(2), Priority = "High", Status = SavingsGoalStatus.Active, CreatedAt = DateTime.UtcNow.AddMonths(-1) },
+            new SavingsGoal { Id = 42, Name = "Annual cover", TargetAmount = 300m, EarmarkedAmount = 300m, FundingBucket = SavingsGoalFundingBucket.Rewards, TargetDate = DateTime.UtcNow.AddMonths(-1), Priority = "Medium", Status = SavingsGoalStatus.Completed, CompletedAt = DateTime.UtcNow.AddDays(-3), CreatedAt = DateTime.UtcNow.AddMonths(-3) },
+            new SavingsGoal { Id = 43, Name = "Ready commitment", TargetAmount = 100m, EarmarkedAmount = 100m, FundingBucket = SavingsGoalFundingBucket.Rewards, TargetDate = DateTime.UtcNow.AddMonths(1), Priority = "Low", Status = SavingsGoalStatus.Active, CreatedAt = DateTime.UtcNow.AddMonths(-1) },
+            new SavingsGoal { Id = 44, Name = "Overdue commitment", TargetAmount = 100m, EarmarkedAmount = 10m, FundingBucket = SavingsGoalFundingBucket.Rewards, TargetDate = DateTime.UtcNow.AddMonths(-2), Priority = "Low", Status = SavingsGoalStatus.Active, CreatedAt = DateTime.UtcNow.AddMonths(-3) },
+            new SavingsGoal { Id = 45, Name = "On pace commitment", TargetAmount = 500m, EarmarkedAmount = 50m, FundingBucket = SavingsGoalFundingBucket.Rewards, TargetDate = DateTime.UtcNow.AddMonths(6), Priority = "Low", Status = SavingsGoalStatus.Active, CycleFundedKey = DateTime.UtcNow.ToString("yyyy-MM"), CycleFundedAmount = 500m, CreatedAt = DateTime.UtcNow.AddMonths(-1) });
+        context.WishlistItems.AddRange(
+            new WishlistItem { Id = 51, Name = "Headphones", Price = 250m, Priority = "High", IsActive = true, IsPurchased = false, CreatedAt = DateTime.UtcNow.AddDays(-5) },
+            new WishlistItem { Id = 52, Name = "Weekend trip", Price = 400m, Priority = "Medium", IsActive = false, IsPurchased = false, CreatedAt = DateTime.UtcNow.AddDays(-4) },
+            new WishlistItem { Id = 53, Name = "Coffee grinder", Price = 100m, Priority = "Low", IsActive = false, IsPurchased = true, PurchasedAt = DateTime.UtcNow.AddDays(-1), CreatedAt = DateTime.UtcNow.AddDays(-10) });
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("Your plan is ready."));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest(
+            "Explain my plan",
+            [],
+            Context: new AiInvocationContext("wishlist", "rewards-plan", HasPendingLocalChanges: true)));
+
+        Assert.Equal(1, handler.CallCount);
+        Assert.False(handler.WasClassifierCall(0));
+        Assert.Contains("rewards.summary", handler.LastUserContent);
+        Assert.Contains("savings_goal.pacing", handler.LastUserContent);
+        Assert.Contains("wishlist.forecast", handler.LastUserContent);
+        Assert.Contains("\"pools\"", handler.LastUserContent);
+        Assert.Contains("\"rewards\":{\"fundingBucket\":\"Rewards\"", handler.LastUserContent);
+        Assert.Contains("\"essentials\":{\"fundingBucket\":\"Essentials\"", handler.LastUserContent);
+        Assert.Contains("\"fundingBucket\":\"Essentials\"", handler.LastUserContent);
+        Assert.Contains("\"status\":\"ready\"", handler.LastUserContent);
+        Assert.Contains("\"status\":\"on-pace\"", handler.LastUserContent);
+        Assert.Contains("\"status\":\"needs-funding\"", handler.LastUserContent);
+        Assert.Contains("\"status\":\"overdue\"", handler.LastUserContent);
+        Assert.Contains("\"status\":\"completed\"", handler.LastUserContent);
+        Assert.Contains("\"status\":\"focused\"", handler.LastUserContent);
+        Assert.Contains("\"status\":\"queued\"", handler.LastUserContent);
+        Assert.Contains("\"status\":\"claimed\"", handler.LastUserContent);
+        Assert.Contains("\"claimable\":", handler.LastUserContent);
+        Assert.Contains("\"rewardForecast\":", handler.LastUserContent);
+        Assert.Contains("does not include changes still syncing", outcome.Response.Reply);
     }
 
     private static AiAssistantService NewService(

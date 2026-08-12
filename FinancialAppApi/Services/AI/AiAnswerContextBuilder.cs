@@ -87,6 +87,10 @@ public partial class AiAssistantService
         {
             result["reportReview"] = context.ReportReview;
         }
+        if (has("loan.summary"))
+        {
+            result["loans"] = context.Loans;
+        }
         return result;
     }
 }

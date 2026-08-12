@@ -112,7 +112,35 @@ public sealed class LoanServiceTests
     }
 
     [Fact]
-    public async Task UpdateLoanAsync_RejectsChangingTheLinkedBill()
+    public async Task CreateLoanAsync_UsesLinkedBillEndDateAsThePaymentCount()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var payment = NewPayment();
+        payment.EndDate = "2026-06-01";
+        context.RecurringPayments.Add(payment);
+        await context.SaveChangesAsync();
+
+        var result = await new LoanService(context).CreateLoanAsync(NewLoan());
+
+        Assert.Equal(LoanMutationStatus.Success, result.Status);
+        Assert.Equal(6, result.View!.Loan.TermPeriods);
+    }
+
+    [Fact]
+    public async Task CreateLoanAsync_BackfillsMissingBillEndDateFromPaymentCount()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment());
+        await context.SaveChangesAsync();
+
+        var result = await new LoanService(context).CreateLoanAsync(NewLoan());
+
+        Assert.Equal(LoanMutationStatus.Success, result.Status);
+        Assert.Equal("2026-10-01", (await context.RecurringPayments.FindAsync("bill-loan"))!.EndDate);
+    }
+
+    [Fact]
+    public async Task UpdateLoanAsync_RelinksAndReplaysOnlyTheNewBillsHistory()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         var otherPayment = NewPayment();
@@ -120,6 +148,31 @@ public sealed class LoanServiceTests
         otherPayment.Name = "Other bill";
         context.RecurringPayments.AddRange(NewPayment(), otherPayment);
         context.Loans.Add(NewLoan());
+        context.Transactions.AddRange(
+            new Transaction
+            {
+                Id = "tx-old",
+                Date = new DateTime(2026, 1, 2),
+                PostedAt = new DateTime(2026, 1, 2),
+                Description = "Old bill",
+                Category = "Bills",
+                LedgerCategory = "Essentials",
+                Amount = -400m,
+                RecurringPaymentId = "bill-loan",
+                RecurringOccurrenceDate = new DateOnly(2026, 1, 1)
+            },
+            new Transaction
+            {
+                Id = "tx-new",
+                Date = new DateTime(2026, 1, 2),
+                PostedAt = new DateTime(2026, 1, 2),
+                Description = "New bill",
+                Category = "Bills",
+                LedgerCategory = "Essentials",
+                Amount = -100m,
+                RecurringPaymentId = "bill-other",
+                RecurringOccurrenceDate = new DateOnly(2026, 1, 1)
+            });
         await context.SaveChangesAsync();
 
         var updated = NewLoan();
@@ -127,7 +180,71 @@ public sealed class LoanServiceTests
 
         var result = await new LoanService(context).UpdateLoanAsync(updated.Id, updated);
 
-        Assert.Equal(LoanMutationStatus.RecurringPaymentRelinkNotAllowed, result.Status);
+        Assert.Equal(LoanMutationStatus.Success, result.Status);
+        Assert.Equal("bill-other", result.View!.Loan.RecurringPaymentId);
+        Assert.Equal(900m, result.View.Replay.OutstandingBalance);
+        Assert.Equal("bill-loan", (await context.Transactions.FindAsync("tx-old"))!.RecurringPaymentId);
+        Assert.Equal("bill-other", (await context.Transactions.FindAsync("tx-new"))!.RecurringPaymentId);
+    }
+
+    [Fact]
+    public async Task UpdateLoanAsync_PreservesCapturedCadenceWhenTheLinkDoesNotChange()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var payment = NewPayment();
+        context.RecurringPayments.Add(payment);
+        var loan = NewLoan();
+        loan.ScheduleDueDay = 15;
+        context.Loans.Add(loan);
+        await context.SaveChangesAsync();
+
+        payment.DueDate = 20;
+        await context.SaveChangesAsync();
+
+        var updated = NewLoan();
+        updated.OpeningPrincipal = 1200m;
+
+        var result = await new LoanService(context).UpdateLoanAsync(updated.Id, updated);
+
+        Assert.Equal(LoanMutationStatus.Success, result.Status);
+        Assert.Equal(15, result.View!.Loan.ScheduleDueDay);
+    }
+
+    [Fact]
+    public async Task UpdateLoanAsync_ChangingPaymentCountUpdatesTheBillEndDate()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment());
+        context.Loans.Add(NewLoan());
+        await context.SaveChangesAsync();
+        var updated = NewLoan();
+        updated.TermPeriods = 24;
+
+        var result = await new LoanService(context).UpdateLoanAsync(updated.Id, updated);
+
+        Assert.Equal(LoanMutationStatus.Success, result.Status);
+        Assert.Equal("2027-12-01", (await context.RecurringPayments.FindAsync("bill-loan"))!.EndDate);
+    }
+
+    [Fact]
+    public async Task UpdateLoanAsync_PersistsRateBasisWhenOnlyTheNameChanges()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment());
+        var loan = NewLoan();
+        loan.RateBasis = LoanRateBasis.Monthly;
+        context.Loans.Add(loan);
+        await context.SaveChangesAsync();
+
+        var updated = NewLoan();
+        updated.Name = "Renamed loan";
+        updated.RateBasis = LoanRateBasis.Monthly;
+
+        var result = await new LoanService(context).UpdateLoanAsync(updated.Id, updated);
+
+        Assert.Equal(LoanMutationStatus.Success, result.Status);
+        Assert.Equal(LoanRateBasis.Monthly, result.View!.Loan.RateBasis);
+        Assert.Equal(LoanRateBasis.Monthly, (await context.Loans.FindAsync(loan.Id))!.RateBasis);
     }
 
     [Fact]
@@ -178,6 +295,26 @@ public sealed class LoanServiceTests
 
         Assert.Equal(LoanScheduleStatus.Incomplete, view.Loan.ScheduleStatus);
         Assert.Empty(view.Replay.FutureSchedule);
+    }
+
+    [Fact]
+    public async Task ListPreview_MatchesTheFullReplayWithoutRetainingEveryScheduleRow()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment());
+        context.Loans.Add(NewLoan());
+        await context.SaveChangesAsync();
+        var service = new LoanService(context);
+
+        var preview = Assert.Single(await service.GetLoansAsync());
+        var full = Assert.IsType<LoanView>(await service.GetLoanAsync("loan-one"));
+
+        Assert.Equal(6, preview.Replay.FutureSchedule.Count);
+        Assert.True(full.Replay.FutureSchedule.Count > preview.Replay.FutureSchedule.Count);
+        Assert.Equal(full.Replay.FutureSchedule.Take(6), preview.Replay.FutureSchedule);
+        Assert.Equal(full.Replay.OutstandingBalance, preview.Replay.OutstandingBalance);
+        Assert.Equal(full.Replay.TotalScheduledInterest, preview.Replay.TotalScheduledInterest);
+        Assert.Equal(full.Replay.PayoffDate, preview.Replay.PayoffDate);
     }
 
     private static RecurringPayment NewPayment() => new()

@@ -28,6 +28,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     }
 
     public DbSet<Transaction> Transactions => Set<Transaction>();
+    public DbSet<LedgerAccount> LedgerAccounts => Set<LedgerAccount>();
     public DbSet<RecurringPayment> RecurringPayments => Set<RecurringPayment>();
     public DbSet<RecurringPaymentOccurrence> RecurringPaymentOccurrences => Set<RecurringPaymentOccurrence>();
     public DbSet<FinancialSetting> FinancialSettings => Set<FinancialSetting>();
@@ -105,12 +106,36 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 .IsUnique()
                 .HasFilter("\"WishlistItemId\" IS NOT NULL");
             entity.HasIndex(e => new { e.UserId, e.SavingsGoalId });
+            entity.HasIndex(e => new { e.UserId, e.AccountId });
             // Guarantees a given recurring-payment occurrence can never be settled twice
             // (normal confirmation racing pay-early, pay-early retried, etc.). Partial so
             // legacy/manual transactions (either column null) are exempt.
             entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId, e.RecurringOccurrenceDate })
                 .IsUnique()
                 .HasFilter("\"RecurringPaymentId\" IS NOT NULL AND \"RecurringOccurrenceDate\" IS NOT NULL");
+        });
+
+        modelBuilder.Entity<LedgerAccount>(entity =>
+        {
+            entity.Property(e => e.Id).HasMaxLength(100);
+            entity.Property(e => e.Name).HasMaxLength(200);
+            entity.Property(e => e.Bucket).HasMaxLength(20);
+            entity.Property(e => e.Kind).HasMaxLength(20).HasDefaultValue(LedgerAccountKind.Bank);
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
+            entity.HasIndex(e => new { e.UserId, e.Bucket })
+                .IsUnique()
+                .HasFilter("\"IsDefault\"");
+            entity.ToTable(table =>
+            {
+                table.HasCheckConstraint(
+                    "ck_ledgeraccounts_bucket",
+                    $"\"Bucket\" IN ({string.Join(", ", FinancialConstants.BudgetCategories.Select(value => $"'{value}'"))})");
+                table.HasCheckConstraint(
+                    "ck_ledgeraccounts_kind",
+                    $"\"Kind\" IN ({string.Join(", ", LedgerAccountKind.Values.Select(value => $"'{value}'"))})");
+            });
         });
 
         modelBuilder.Entity<AppUser>(entity =>
@@ -319,6 +344,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.Property(e => e.OpeningPrincipal).HasColumnType("numeric(12,2)");
             entity.Property(e => e.AnnualRatePercent).HasColumnType("numeric(7,4)");
+            entity.Property(e => e.RateBasis).HasDefaultValue(LoanRateBasis.Yearly);
             entity.Property(e => e.TrackingStartDate).HasColumnType("date");
             entity.Property(e => e.InterestMethod).HasDefaultValue(LoanInterestMethod.ReducingBalance);
             entity.Property(e => e.ScheduleStartDate).HasColumnType("date");
@@ -330,9 +356,11 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 t.HasCheckConstraint("ck_loans_annualrate", "\"AnnualRatePercent\" >= 0 AND \"AnnualRatePercent\" <= 100");
                 t.HasCheckConstraint("ck_loans_term", "\"TermPeriods\" > 0 AND \"TermPeriods\" <= 360");
                 t.HasCheckConstraint("ck_loans_interestmethod",
-                    $"\"InterestMethod\" IN ('{LoanInterestMethod.ReducingBalance}', '{LoanInterestMethod.Flat}')");
+                    $"\"InterestMethod\" IN ('{LoanInterestMethod.ReducingBalance}', '{LoanInterestMethod.Flat}', '{LoanInterestMethod.ReducingBalanceDaily}', '{LoanInterestMethod.InterestOnly}')");
+                t.HasCheckConstraint("ck_loans_ratebasis",
+                    $"\"RateBasis\" IN ('{LoanRateBasis.Yearly}', '{LoanRateBasis.Monthly}')");
                 t.HasCheckConstraint("ck_loans_schedulestatus",
-                    $"\"ScheduleStatus\" IN ('{LoanScheduleStatus.Complete}', '{LoanScheduleStatus.NeedsReview}', '{LoanScheduleStatus.Incomplete}')");
+                    $"\"ScheduleStatus\" IN ('{LoanScheduleStatus.Complete}', '{LoanScheduleStatus.Incomplete}')");
                 t.HasCheckConstraint("ck_loans_scheduledueday",
                     "\"ScheduleDueDay\" IS NULL OR \"ScheduleDueDay\" BETWEEN 1 AND 31");
             });
@@ -552,6 +580,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         });
 
         ConfigureUserOwnership(modelBuilder.Entity<Transaction>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<LedgerAccount>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<RecurringPayment>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<RecurringPaymentOccurrence>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<FinancialSetting>(), applyQueryFilter: true);

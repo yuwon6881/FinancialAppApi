@@ -19,7 +19,8 @@ public class Loan : IUserOwnedEntity
     [StringLength(200)]
     public string Name { get; set; } = string.Empty;
 
-    // Deliberately not a foreign key: deleting the bill must leave the loan and its history intact.
+    // The deployed schema adds a restrictive NOT VALID foreign key: legacy orphaned loans remain
+    // recoverable, while linked bills cannot be deleted and new links must reference a real bill.
     [Required]
     [StringLength(100)]
     public string RecurringPaymentId { get; set; } = string.Empty;
@@ -33,6 +34,14 @@ public class Loan : IUserOwnedEntity
     /// <summary>Annual percentage rate, entered as a percentage such as 5.5 rather than 0.055.</summary>
     [Required]
     public decimal AnnualRatePercent { get; set; }
+
+    /// <summary>
+    /// How the rate was shown when the terms were entered. AnnualRatePercent remains the
+    /// authoritative stored value; no amortization code reads this display metadata.
+    /// </summary>
+    [Required]
+    [StringLength(10)]
+    public string RateBasis { get; set; } = LoanRateBasis.Yearly;
 
     [Required]
     public int TermPeriods { get; set; }
@@ -60,14 +69,27 @@ public static class LoanInterestMethod
 {
     public const string ReducingBalance = "ReducingBalance";
     public const string Flat = "Flat";
+    public const string ReducingBalanceDaily = "ReducingBalanceDaily";
+    public const string InterestOnly = "InterestOnly";
+
+    public static bool IsKnown(string? value) =>
+        value is ReducingBalance or Flat or ReducingBalanceDaily or InterestOnly;
+}
+
+public static class LoanRateBasis
+{
+    public const string Yearly = "Yearly";
+    public const string Monthly = "Monthly";
+
+    public static bool IsKnown(string? value) =>
+        value is Yearly or Monthly;
 }
 
 public static class LoanScheduleStatus
 {
     public const string Complete = "Complete";
-    public const string NeedsReview = "NeedsReview";
     public const string Incomplete = "Incomplete";
 
     public static bool IsKnown(string? value) =>
-        value is Complete or NeedsReview or Incomplete;
+        value is Complete or Incomplete;
 }

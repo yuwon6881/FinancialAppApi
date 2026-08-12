@@ -84,6 +84,7 @@ public static class LoanReplay
         var flatInterestPaid = 0m;
         var paymentNumber = 0;
         var totalInterestPaid = 0m;
+        var accrualDate = loan.TrackingStartDate;
         DateOnly? lastOccurrenceDate = null;
         DateOnly? payoffDate = null;
         var payments = new List<LoanPaymentSplit>();
@@ -105,6 +106,7 @@ public static class LoanReplay
                 Math.Abs(input.Amount),
                 paymentNumber,
                 flatInterestPaid,
+                accrualDate,
                 input.TransactionId);
             payments.Add(split);
             if (split.BalanceBefore > 0m
@@ -115,6 +117,9 @@ public static class LoanReplay
             balance = split.BalanceAfter;
             flatInterestPaid = LoanAmortization.RoundMoney(flatInterestPaid + split.Interest);
             totalInterestPaid = LoanAmortization.RoundMoney(totalInterestPaid + split.Interest);
+            // Underpayments still close the accrual window. Interest is never capitalized, so
+            // leaving this unchanged would charge the same days again on the next payment.
+            accrualDate = input.OccurrenceDate;
         }
 
         var scheduledPayment = LoanAmortization.ScheduledPayment(loan, frequency);
@@ -125,7 +130,10 @@ public static class LoanReplay
             ? AddPeriod(lastOccurrenceDate.Value, frequency, dueDay)
             : FindOccurrenceOnOrAfter(scheduleStartDate!.Value, dueDay!.Value, frequency!, loan.TrackingStartDate);
 
-        for (var i = 0; i < 600 && balance > 0m; i++)
+        var futurePeriodLimit = loan.InterestMethod == LoanInterestMethod.InterestOnly
+            ? Math.Max(0, loan.TermPeriods - paymentNumber)
+            : 600;
+        for (var i = 0; i < futurePeriodLimit && balance > 0m; i++)
         {
             var futureNumber = paymentNumber + i + 1;
             var entry = LoanAmortization.ApplyScheduledPayment(
@@ -134,10 +142,12 @@ public static class LoanReplay
                 nextDate,
                 balance,
                 futureNumber,
-                flatInterestPaid);
+                flatInterestPaid,
+                accrualDate);
             futureSchedule.Add(entry);
             balance = entry.BalanceAfter;
             flatInterestPaid = LoanAmortization.RoundMoney(flatInterestPaid + entry.Interest);
+            accrualDate = nextDate;
             if (balance <= 0m)
             {
                 payoffDate ??= nextDate;

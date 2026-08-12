@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Accounts;
 using Microsoft.EntityFrameworkCore;
 using System.Diagnostics;
 using FinancialAppApi.Diagnostics;
@@ -60,6 +61,7 @@ public class FinancialService
     private readonly FinancialClock _financialClock;
     private readonly Stability.StabilityRecoveryService _stabilityRecoveryService;
     private readonly Stability.StabilityPlanRevisionService _stabilityPlanRevisionService;
+    private readonly LedgerAccountService _ledgerAccountService;
 
     public FinancialService(
         AppDbContext context,
@@ -69,7 +71,8 @@ public class FinancialService
         FinancialClock? financialClock = null,
         Stability.StabilityRecoveryService? stabilityRecoveryService = null,
         RecurringOccurrenceLedgerService? recurringOccurrenceLedger = null,
-        Stability.StabilityPlanRevisionService? stabilityPlanRevisionService = null)
+        Stability.StabilityPlanRevisionService? stabilityPlanRevisionService = null,
+        LedgerAccountService? ledgerAccountService = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
@@ -81,6 +84,12 @@ public class FinancialService
             ?? new Stability.StabilityRecoveryService(context, cycleBalanceService, _financialClock);
         _stabilityPlanRevisionService = stabilityPlanRevisionService
             ?? new Stability.StabilityPlanRevisionService(context);
+        _ledgerAccountService = ledgerAccountService
+            ?? new LedgerAccountService(
+                context,
+                new LedgerAccountBalanceService(context),
+                cycleBalanceService,
+                _financialClock);
     }
 
     public async Task<object> GetWalletBalanceAsync(CancellationToken cancellationToken = default)
@@ -312,12 +321,29 @@ public class FinancialService
         var incomeAllocatedStability = ReportMetricsCalculator.IncomeAllocatedTo(activeCycleTxs, "Stability");
         var incomeAllocatedRewards = ReportMetricsCalculator.IncomeAllocatedTo(activeCycleTxs, "Rewards");
 
+        var ledgerAccounts = await _ledgerAccountService.GetAccountsAsync(cancellationToken);
+        var ledgerAccountBalances = await _ledgerAccountService.GetBalancesAsync(
+            ledgerAccounts,
+            cancellationToken,
+            activeRangeEndExclusive);
+        object AccountsFor(string bucket) => ledgerAccounts
+            .Where(account => string.Equals(account.Bucket, bucket, StringComparison.OrdinalIgnoreCase))
+            .Select(account => new
+            {
+                id = account.Id,
+                name = account.Name,
+                remaining = ObfuscationHelper.Obfuscate(
+                    ledgerAccountBalances.TryGetValue(account.Id, out var balance) ? balance : 0m),
+                isArchived = account.IsArchived,
+            })
+            .ToList();
+
         var categories = new[]
         {
-            new { name = "Essentials", allocation = setting.EssentialsAlloc, target = ObfuscationHelper.Obfuscate(targetEssentials), incomeAllocated = ObfuscationHelper.Obfuscate(incomeAllocatedEssentials), budget = ObfuscationHelper.Obfuscate(selectedBudgetEssentials), netChange = ObfuscationHelper.Obfuscate(selectedNetEssentials), spent = ObfuscationHelper.Obfuscate(selectedSpentEssentials), remaining = ObfuscationHelper.Obfuscate(selectedRemEssentials) },
-            new { name = "Growth", allocation = setting.GrowthAlloc, target = ObfuscationHelper.Obfuscate(targetGrowth), incomeAllocated = ObfuscationHelper.Obfuscate(incomeAllocatedGrowth), budget = ObfuscationHelper.Obfuscate(selectedBudgetGrowth), netChange = ObfuscationHelper.Obfuscate(selectedNetGrowth), spent = ObfuscationHelper.Obfuscate(selectedSpentGrowth), remaining = ObfuscationHelper.Obfuscate(selectedRemGrowth) },
-            new { name = "Stability", allocation = setting.StabilityAlloc, target = ObfuscationHelper.Obfuscate(targetStability), incomeAllocated = ObfuscationHelper.Obfuscate(incomeAllocatedStability), budget = ObfuscationHelper.Obfuscate(selectedBudgetStability), netChange = ObfuscationHelper.Obfuscate(selectedNetStability), spent = ObfuscationHelper.Obfuscate(selectedSpentStability), remaining = ObfuscationHelper.Obfuscate(selectedRemStability) },
-            new { name = "Rewards", allocation = setting.RewardsAlloc, target = ObfuscationHelper.Obfuscate(targetRewards), incomeAllocated = ObfuscationHelper.Obfuscate(incomeAllocatedRewards), budget = ObfuscationHelper.Obfuscate(selectedBudgetRewards), netChange = ObfuscationHelper.Obfuscate(selectedNetRewards), spent = ObfuscationHelper.Obfuscate(selectedSpentRewards), remaining = ObfuscationHelper.Obfuscate(selectedRemRewards) }
+            new { name = "Essentials", allocation = setting.EssentialsAlloc, target = ObfuscationHelper.Obfuscate(targetEssentials), incomeAllocated = ObfuscationHelper.Obfuscate(incomeAllocatedEssentials), budget = ObfuscationHelper.Obfuscate(selectedBudgetEssentials), netChange = ObfuscationHelper.Obfuscate(selectedNetEssentials), spent = ObfuscationHelper.Obfuscate(selectedSpentEssentials), remaining = ObfuscationHelper.Obfuscate(selectedRemEssentials), accounts = AccountsFor("Essentials") },
+            new { name = "Growth", allocation = setting.GrowthAlloc, target = ObfuscationHelper.Obfuscate(targetGrowth), incomeAllocated = ObfuscationHelper.Obfuscate(incomeAllocatedGrowth), budget = ObfuscationHelper.Obfuscate(selectedBudgetGrowth), netChange = ObfuscationHelper.Obfuscate(selectedNetGrowth), spent = ObfuscationHelper.Obfuscate(selectedSpentGrowth), remaining = ObfuscationHelper.Obfuscate(selectedRemGrowth), accounts = AccountsFor("Growth") },
+            new { name = "Stability", allocation = setting.StabilityAlloc, target = ObfuscationHelper.Obfuscate(targetStability), incomeAllocated = ObfuscationHelper.Obfuscate(incomeAllocatedStability), budget = ObfuscationHelper.Obfuscate(selectedBudgetStability), netChange = ObfuscationHelper.Obfuscate(selectedNetStability), spent = ObfuscationHelper.Obfuscate(selectedSpentStability), remaining = ObfuscationHelper.Obfuscate(selectedRemStability), accounts = AccountsFor("Stability") },
+            new { name = "Rewards", allocation = setting.RewardsAlloc, target = ObfuscationHelper.Obfuscate(targetRewards), incomeAllocated = ObfuscationHelper.Obfuscate(incomeAllocatedRewards), budget = ObfuscationHelper.Obfuscate(selectedBudgetRewards), netChange = ObfuscationHelper.Obfuscate(selectedNetRewards), spent = ObfuscationHelper.Obfuscate(selectedSpentRewards), remaining = ObfuscationHelper.Obfuscate(selectedRemRewards), accounts = AccountsFor("Rewards") }
         };
 
         var totalBalance = selectedRemEssentials + selectedRemStability + selectedRemRewards;

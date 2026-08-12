@@ -18,7 +18,8 @@ public sealed class LoansControllerTests
             TrackingStartDate = new DateOnly(2026, 1, 31),
             AnnualRatePercent = 3.8875m,
             TermPeriods = 360,
-            InterestMethod = LoanInterestMethod.ReducingBalance
+            InterestMethod = LoanInterestMethod.ReducingBalance,
+            RateBasis = LoanRateBasis.Monthly
         };
         var payment = new RecurringPayment
         {
@@ -32,6 +33,7 @@ public sealed class LoansControllerTests
         var dto = LoansController.MapToDto(new LoanView(loan, payment, replay));
 
         Assert.Equal(3.8875m, dto.AnnualRatePercent);
+        Assert.Equal(LoanRateBasis.Monthly, dto.RateBasis);
         Assert.Equal(31, dto.RecurringPaymentDueDate);
         Assert.Equal(6, dto.Snapshot.FutureSchedule.Count);
     }

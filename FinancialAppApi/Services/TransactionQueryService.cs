@@ -21,7 +21,9 @@ public sealed record TransactionProjection(
     DateOnly? RecurringOccurrenceDate,
     int? WishlistItemId,
     int? SavingsGoalId,
-    string? StabilityReloadStatus = null);
+    string? StabilityReloadStatus = null,
+    string? AccountId = null,
+    string? CounterAccountId = null);
 
 public sealed record TransactionListResult(
     IReadOnlyList<TransactionProjection> Items,
@@ -107,7 +109,10 @@ public partial class TransactionQueryService
                     t.RecurringPaymentId,
                     t.RecurringOccurrenceDate,
                     t.WishlistItemId,
-                    t.SavingsGoalId
+                    t.SavingsGoalId,
+                    null,
+                    t.AccountId,
+                    t.CounterAccountId
                 ))
                 .ToListAsync(cancellationToken);
 
@@ -142,7 +147,10 @@ public partial class TransactionQueryService
                     t.RecurringPaymentId,
                     t.RecurringOccurrenceDate,
                     t.WishlistItemId,
-                    t.SavingsGoalId
+                    t.SavingsGoalId,
+                    null,
+                    t.AccountId,
+                    t.CounterAccountId
                 ))
                 .ToListAsync(cancellationToken);
             return new TransactionListResult(
@@ -178,7 +186,10 @@ public partial class TransactionQueryService
                 t.RecurringPaymentId,
                 t.RecurringOccurrenceDate,
                 t.WishlistItemId,
-                t.SavingsGoalId
+                t.SavingsGoalId,
+                null,
+                t.AccountId,
+                t.CounterAccountId
             ))
             .ToListAsync(cancellationToken);
 
@@ -320,7 +331,18 @@ public partial class TransactionQueryService
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
-            .Select(t => new { t.Date, t.Description, t.Category, t.LedgerCategory, t.Amount });
+            .Select(t => new
+            {
+                t.Date,
+                t.Description,
+                t.Category,
+                t.LedgerCategory,
+                t.Amount,
+                AccountName = _context.LedgerAccounts
+                    .Where(account => account.Id == t.AccountId)
+                    .Select(account => account.Name)
+                    .FirstOrDefault()
+            });
 
         await using var writer = new StreamWriter(
             destination,
@@ -328,13 +350,14 @@ public partial class TransactionQueryService
             bufferSize: 16 * 1024,
             leaveOpen: true);
         await writer.WriteLineAsync(
-            "Date,Description,Category,Ledger Allocation,Debit (Outflow),Credit (Inflow),Internal Movement");
+            "Date,Description,Category,Ledger Allocation,Debit (Outflow),Credit (Inflow),Internal Movement,Account");
 
         await foreach (var t in rows
                            .AsAsyncEnumerable()
                            .WithCancellation(cancellationToken))
         {
-            var isTransfer = t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase);
+            var isTransfer = t.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(t.LedgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase);
             var isOutflow = t.Amount < 0;
             var debit = !isTransfer && isOutflow ? FormatAmount(Math.Abs(t.Amount)) : "";
             var credit = !isTransfer && !isOutflow ? FormatAmount(t.Amount) : "";
@@ -348,7 +371,8 @@ public partial class TransactionQueryService
                 EscapeCsvField(DisplayLedgerAllocation(t.LedgerCategory)),
                 EscapeCsvField(debit),
                 EscapeCsvField(credit),
-                EscapeCsvField(movement)
+                EscapeCsvField(movement),
+                EscapeCsvField(t.AccountName ?? string.Empty)
             }));
         }
         await writer.FlushAsync(cancellationToken);
@@ -549,6 +573,7 @@ public partial class TransactionQueryService
 
     private static string DisplayLedgerAllocation(string ledgerCategory)
     {
+        if (string.Equals(ledgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase)) return "Between accounts";
         if (ledgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase)) return "Income";
         if (ledgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
             return ledgerCategory.Substring("Transfer:".Length).Replace("->", " -> ");

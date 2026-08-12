@@ -28,6 +28,17 @@ public class Transaction : IUserOwnedEntity
     [Required]
     public decimal Amount { get; set; }
 
+    // Denormalized placement for the bucket leg this row represents. It is deliberately not an
+    // FK: archived accounts must keep historical attribution, and the account can be removed
+    // only when no transaction references it.
+    [StringLength(100)]
+    public string? AccountId { get; set; }
+
+    // AccountMove rows have no bucket leg. This is the destination account for that in-bucket
+    // movement; ordinary transactions leave it null.
+    [StringLength(100)]
+    public string? CounterAccountId { get; set; }
+
     // Null is a legacy salary whose recovery intent was never recorded; zero is explicitly
     // ordinary income; a positive value is the extra Stability reimbursement the server actually
     // applied after clamping the request against the live shortfall.

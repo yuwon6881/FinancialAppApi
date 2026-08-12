@@ -201,4 +201,34 @@ public class AiAssistantServiceUnitTests
 
         Assert.False(Services.AiAssistantService.ShouldUseSemanticPlanner(message, deterministic, null));
     }
+
+    [Theory]
+    [InlineData("Explain my loan payoff")]
+    [InlineData("How much interest remains on my mortgage?")]
+    public void LoanQuestions_RequestOnlyLoanGrounding(string message)
+    {
+        var plan = Services.AiAssistantService.ResolveDeterministically(message);
+
+        Assert.Contains(Services.AiAssistantService.AiIntent.LoanSummary, plan.Intents);
+        Assert.True(plan.QueryPlan.NeedsLoans);
+        Assert.False(plan.QueryPlan.NeedsTransactionDetail);
+        Assert.False(plan.QueryPlan.NeedsRecurring);
+    }
+
+    [Fact]
+    public void LoanFollowUp_PreservesSelectedLoanReference()
+    {
+        var prior = EmptyState() with
+        {
+            LastIntent = "loan.summary",
+            LastIntents = ["loan.summary"],
+            LastTopic = "loan",
+            LastLoanId = "loan-home"
+        };
+
+        var plan = Services.AiAssistantService.ResolveDeterministically("What about the next payment?", prior);
+
+        Assert.Contains(Services.AiAssistantService.AiIntent.LoanSummary, plan.Intents);
+        Assert.Equal("loan-home", plan.ConversationState.LastLoanId);
+    }
 }

@@ -257,7 +257,8 @@ public partial class AiAssistantService
             priorState?.LastInvestmentTopic,
             priorState?.LastInvestmentRange,
             priorState?.LastInvestmentInstrumentId,
-            priorState?.LastReportCycleKey);
+            priorState?.LastReportCycleKey,
+            priorState?.LastLoanId);
     }
 
     private static string? ExtractConversationCycle(string? text)
@@ -411,7 +412,8 @@ public partial class AiAssistantService
             investmentTopic,
             investmentRange,
             investmentInstrumentId,
-            reportCycleKey);
+            reportCycleKey,
+            Clamp(state.LastLoanId));
     }
 
     private static readonly Regex CycleKeyPattern = new(@"^\d{4}-(0[1-9]|1[0-2])$", RegexOptions.Compiled);
@@ -552,6 +554,10 @@ public partial class AiAssistantService
     private static readonly Regex RecurringSignal = new(
         @"\b(recurring|subscription|subscriptions|sub|subs|membership|memberships|renewal|renewals|renews?|bill|bills|instalments?|installments?|standing orders?|monthly payment|yearly payment|annual payment|autopay|auto-pay|auto-renewal|auto renewal|direct debit|direct debits|payment reminders?|bill reminders?|subscription reminders?|push reminders?)\b",
         RegexOptions.Compiled);
+
+    private static readonly Regex LoanSignal = new(
+        @"\b(loans?|mortgages?|financing|amount still owed|payoff date|pay off|interest remaining)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex WishlistSignal = new(
         @"\b(wishlist|wish list|wish-list|wish|bucket list|dream purchase|next purchase|want to buy|planning to buy|saving for|save for|saving up|save up|priority item|afford|goal|goals|savings? goal|savings? target)\b",

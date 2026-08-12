@@ -18,7 +18,8 @@ public partial class AiAssistantService
         string StartDate, string? EndDate, int DueDate, bool Active,
         string Frequency, string NextDueDate, bool PushReminderEnabled = false,
         string PushReminderMode = "Once", int PushReminderLeadDays = 1,
-        string PaymentMode = Models.RecurringPaymentMode.Manual);
+        string PaymentMode = Models.RecurringPaymentMode.Manual,
+        string? LinkedLoanId = null, string? LinkedLoanName = null);
 
     private sealed record AiLedgerEditMatch(string Id, string Description, DateTime Date);
 
@@ -53,14 +54,17 @@ public partial class AiAssistantService
     }
 
     private async Task<List<AiRecurringRow>> LoadRecurringRowsAsync(CancellationToken cancellationToken) =>
-        await _context.RecurringPayments
-            .AsNoTracking()
-            .OrderBy(r => r.Name)
-            .Select(r => new AiRecurringRow(
+        await (from r in _context.RecurringPayments.AsNoTracking()
+            join loan in _context.Loans.AsNoTracking() on r.Id equals loan.RecurringPaymentId into linkedLoans
+            from linkedLoan in linkedLoans.DefaultIfEmpty()
+            orderby r.Name
+            select new AiRecurringRow(
                 r.Id, r.Name, r.Amount, r.Category, r.LedgerCategory,
                 r.StartDate, r.EndDate, r.DueDate, r.Active,
                 r.Frequency, r.NextDueDate ?? string.Empty, r.PushReminderEnabled,
-                r.PushReminderMode, r.PushReminderLeadDays, r.PaymentMode))
+                r.PushReminderMode, r.PushReminderLeadDays, r.PaymentMode,
+                linkedLoan == null ? null : linkedLoan.Id,
+                linkedLoan == null ? null : linkedLoan.Name))
             .Take(100)
             .ToListAsync(cancellationToken);
 

@@ -45,7 +45,6 @@ public sealed class LoansController : ControllerBase
         {
             LoanMutationStatus.Success => Ok(MapToDto(result.View!)),
             LoanMutationStatus.RecurringPaymentAlreadyLinked => Conflict(new { message = result.Message }),
-            LoanMutationStatus.RecurringPaymentRelinkNotAllowed => Conflict(new { message = result.Message }),
             LoanMutationStatus.Conflict => Conflict(new { message = result.Message }),
             _ => BadRequest(new { message = result.Message })
         };
@@ -59,7 +58,6 @@ public sealed class LoansController : ControllerBase
         {
             LoanMutationStatus.NotFound => NotFound(),
             LoanMutationStatus.RecurringPaymentAlreadyLinked => Conflict(new { message = result.Message }),
-            LoanMutationStatus.RecurringPaymentRelinkNotAllowed => Conflict(new { message = result.Message }),
             LoanMutationStatus.Conflict => Conflict(new { message = result.Message }),
             LoanMutationStatus.Success => Ok(MapToDto(result.View!)),
             _ => BadRequest(new { message = result.Message })
@@ -85,12 +83,14 @@ public sealed class LoansController : ControllerBase
             OpeningPrincipal = ObfuscationHelper.Obfuscate(view.Loan.OpeningPrincipal),
             TrackingStartDate = view.Loan.TrackingStartDate.ToString("yyyy-MM-dd"),
             AnnualRatePercent = view.Loan.AnnualRatePercent,
+            RateBasis = view.Loan.RateBasis,
             TermPeriods = view.Loan.TermPeriods,
             InterestMethod = view.Loan.InterestMethod,
             RecurringPaymentExists = view.RecurringPayment != null,
             RecurringPaymentName = view.RecurringPayment?.Name,
             RecurringPaymentFrequency = view.RecurringPayment?.Frequency,
             RecurringPaymentDueDate = view.RecurringPayment?.DueDate,
+            RecurringPaymentLedgerCategory = view.RecurringPayment?.LedgerCategory,
             ScheduleFrequency = view.Loan.ScheduleFrequency,
             ScheduleDueDay = view.Loan.ScheduleDueDay,
             ScheduleStartDate = view.Loan.ScheduleStartDate?.ToString("yyyy-MM-dd"),
@@ -143,6 +143,7 @@ public sealed class LoansController : ControllerBase
         OpeningPrincipal = Math.Round(ReadWireAmount(dto.OpeningPrincipal), 2, MidpointRounding.AwayFromZero),
         TrackingStartDate = ParseDate(dto.TrackingStartDate),
         AnnualRatePercent = Math.Round(ReadWireRate(dto.AnnualRatePercent), 4, MidpointRounding.AwayFromZero),
+        RateBasis = dto.RateBasis ?? LoanRateBasis.Yearly,
         TermPeriods = dto.TermPeriods,
         InterestMethod = dto.InterestMethod ?? LoanInterestMethod.ReducingBalance
     };
@@ -175,6 +176,7 @@ public sealed class LoanMutationDto
     public JsonElement OpeningPrincipal { get; set; }
     public string? TrackingStartDate { get; set; }
     public JsonElement AnnualRatePercent { get; set; }
+    public string? RateBasis { get; set; }
     public int TermPeriods { get; set; }
     public string? InterestMethod { get; set; }
 }
@@ -187,12 +189,14 @@ public sealed class LoanDto
     public string OpeningPrincipal { get; set; } = string.Empty;
     public string TrackingStartDate { get; set; } = string.Empty;
     public decimal AnnualRatePercent { get; set; }
+    public string RateBasis { get; set; } = LoanRateBasis.Yearly;
     public int TermPeriods { get; set; }
     public string InterestMethod { get; set; } = LoanInterestMethod.ReducingBalance;
     public bool RecurringPaymentExists { get; set; }
     public string? RecurringPaymentName { get; set; }
     public string? RecurringPaymentFrequency { get; set; }
     public int? RecurringPaymentDueDate { get; set; }
+    public string? RecurringPaymentLedgerCategory { get; set; }
     public string? ScheduleFrequency { get; set; }
     public int? ScheduleDueDay { get; set; }
     public string? ScheduleStartDate { get; set; }

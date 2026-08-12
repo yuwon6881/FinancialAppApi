@@ -323,8 +323,14 @@ public partial class AiAssistantService
         {
             return HasKnownId(payload, "id", context.RecurringPayments) && HasRequiredIsoDate(payload, "date");
         }
+        if (type.Equals("requestDeleteRecurring", StringComparison.OrdinalIgnoreCase))
+        {
+            return context.RecurringPayments is IEnumerable<AiRecurringRow> rows &&
+                payload.TryGetValue("id", out var idValue) && idValue != null &&
+                rows.Any(row => row.Id.Equals(idValue.ToString(), StringComparison.OrdinalIgnoreCase) &&
+                    string.IsNullOrWhiteSpace(row.LinkedLoanId));
+        }
         if (type.Equals("openEditRecurringDraft", StringComparison.OrdinalIgnoreCase) ||
-            type.Equals("requestDeleteRecurring", StringComparison.OrdinalIgnoreCase) ||
             type.Equals("toggleRecurring", StringComparison.OrdinalIgnoreCase))
         {
             return HasKnownId(payload, "id", context.RecurringPayments);
@@ -366,6 +372,13 @@ public partial class AiAssistantService
             if (wishlistItem == null || wishlistItem.IsPurchased || !wishlistItem.IsActive) return false;
             var pool = await _savingsGoalService.GetPoolSummaryAsync(cancellationToken);
             return pool.Unassigned >= wishlistItem.Price;
+        }
+        if (type.Equals("requestDeleteRecurring", StringComparison.OrdinalIgnoreCase))
+        {
+            var recurringId = ReadPayloadString(payload, "id");
+            return recurringId != null &&
+                !await _context.Loans.AsNoTracking()
+                    .AnyAsync(loan => loan.RecurringPaymentId == recurringId, cancellationToken);
         }
         if (!type.Equals("openWishlist", StringComparison.OrdinalIgnoreCase) &&
             !type.Equals("openAddSavingsGoalDraft", StringComparison.OrdinalIgnoreCase) &&
