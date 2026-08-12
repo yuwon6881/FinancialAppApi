@@ -407,6 +407,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<RecurringPaymentPayEarlyService>();
         services.AddScoped<TransactionCategoryService>();
         services.AddScoped<WishlistService>();
+        services.AddScoped<Services.SavingsGoals.SharedPoolMutationLock>();
         services.AddScoped<Services.SavingsGoals.SavingsGoalService>();
         services.AddScoped<Services.Loans.LoanService>();
         services.AddScoped<TransactionPersistenceService>();

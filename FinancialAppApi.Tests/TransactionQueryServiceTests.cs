@@ -89,6 +89,40 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
+    public async Task GetTransactionsAsync_CountsTheUnderlyingRecurringRowOnceWhenALoanIsLinked()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Loans.Add(new Loan
+        {
+            Id = "loan-report",
+            Name = "Loan report test",
+            RecurringPaymentId = "loan-bill",
+            OpeningPrincipal = 1000m,
+            TrackingStartDate = new DateOnly(2026, 7, 1),
+            AnnualRatePercent = 0m,
+            TermPeriods = 10,
+            InterestMethod = LoanInterestMethod.ReducingBalance,
+            ScheduleFrequency = "Monthly",
+            ScheduleDueDay = 1,
+            ScheduleStartDate = new DateOnly(2026, 1, 1),
+            ScheduleStatus = LoanScheduleStatus.Complete,
+        });
+        context.Transactions.Add(NewTransaction(
+            "loan-report-tx",
+            "Loan bill",
+            "Bills",
+            "Essentials",
+            -100m,
+            recurringPaymentId: "loan-bill"));
+        await context.SaveChangesAsync();
+
+        var result = await new TransactionQueryService(context).GetTransactionsAsync(all: true);
+
+        Assert.Equal(1, result.Total);
+        Assert.Equal("loan-report-tx", Assert.Single(result.Items).Id);
+    }
+
+    [Fact]
     public async Task GetTransactionsAsync_WishlistOnlyReturnsLinkedPurchases()
     {
         await using var context = TestHelpers.NewInMemoryContext();

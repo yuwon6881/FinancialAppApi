@@ -321,6 +321,8 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.AnnualRatePercent).HasColumnType("numeric(7,4)");
             entity.Property(e => e.TrackingStartDate).HasColumnType("date");
             entity.Property(e => e.InterestMethod).HasDefaultValue(LoanInterestMethod.ReducingBalance);
+            entity.Property(e => e.ScheduleStartDate).HasColumnType("date");
+            entity.Property(e => e.ScheduleStatus).HasDefaultValue(LoanScheduleStatus.Incomplete);
             entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId }).IsUnique();
             entity.ToTable(t =>
             {
@@ -329,6 +331,10 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 t.HasCheckConstraint("ck_loans_term", "\"TermPeriods\" > 0 AND \"TermPeriods\" <= 360");
                 t.HasCheckConstraint("ck_loans_interestmethod",
                     $"\"InterestMethod\" IN ('{LoanInterestMethod.ReducingBalance}', '{LoanInterestMethod.Flat}')");
+                t.HasCheckConstraint("ck_loans_schedulestatus",
+                    $"\"ScheduleStatus\" IN ('{LoanScheduleStatus.Complete}', '{LoanScheduleStatus.NeedsReview}', '{LoanScheduleStatus.Incomplete}')");
+                t.HasCheckConstraint("ck_loans_scheduledueday",
+                    "\"ScheduleDueDay\" IS NULL OR \"ScheduleDueDay\" BETWEEN 1 AND 31");
             });
         });
 

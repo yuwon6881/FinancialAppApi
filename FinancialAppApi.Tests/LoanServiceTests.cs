@@ -43,6 +43,8 @@ public sealed class LoanServiceTests
 
         Assert.Null(view.RecurringPayment);
         Assert.Equal("bill-loan", view.Loan.RecurringPaymentId);
+        Assert.Equal(LoanScheduleStatus.Incomplete, view.Loan.ScheduleStatus);
+        Assert.Empty(view.Replay.FutureSchedule);
     }
 
     [Fact]
@@ -86,6 +88,98 @@ public sealed class LoanServiceTests
         Assert.Equal(LoanMutationStatus.RecurringPaymentAlreadyLinked, result.Status);
     }
 
+    [Fact]
+    public async Task CreateLoanAsync_CapturesTheBillCadence()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment());
+        await context.SaveChangesAsync();
+
+        var loan = NewLoan();
+        loan.ScheduleFrequency = null;
+        loan.ScheduleDueDay = null;
+        loan.ScheduleStartDate = null;
+        loan.ScheduleStatus = LoanScheduleStatus.Incomplete;
+
+        var result = await new LoanService(context).CreateLoanAsync(loan);
+
+        Assert.Equal(LoanMutationStatus.Success, result.Status);
+        Assert.Equal("Monthly", result.View!.Loan.ScheduleFrequency);
+        Assert.Equal(1, result.View.Loan.ScheduleDueDay);
+        Assert.Equal(new DateOnly(2026, 1, 1), result.View.Loan.ScheduleStartDate);
+        Assert.Equal(LoanScheduleStatus.Complete, result.View.Loan.ScheduleStatus);
+        Assert.Empty(context.Transactions);
+    }
+
+    [Fact]
+    public async Task UpdateLoanAsync_RejectsChangingTheLinkedBill()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var otherPayment = NewPayment();
+        otherPayment.Id = "bill-other";
+        otherPayment.Name = "Other bill";
+        context.RecurringPayments.AddRange(NewPayment(), otherPayment);
+        context.Loans.Add(NewLoan());
+        await context.SaveChangesAsync();
+
+        var updated = NewLoan();
+        updated.RecurringPaymentId = "bill-other";
+
+        var result = await new LoanService(context).UpdateLoanAsync(updated.Id, updated);
+
+        Assert.Equal(LoanMutationStatus.RecurringPaymentRelinkNotAllowed, result.Status);
+    }
+
+    [Fact]
+    public async Task GetLoansAsync_UsesCapturedCadenceAfterTheBillChanges()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var payment = NewPayment();
+        payment.DueDate = 15;
+        context.RecurringPayments.Add(payment);
+        var loan = NewLoan();
+        loan.ScheduleDueDay = 15;
+        context.Loans.Add(loan);
+        await context.SaveChangesAsync();
+
+        payment.Frequency = "Annually";
+        payment.DueDate = 20;
+        await context.SaveChangesAsync();
+
+        var view = Assert.Single(await new LoanService(context).GetLoansAsync());
+
+        Assert.Equal("Annually", view.RecurringPayment?.Frequency);
+        Assert.Equal("Monthly", view.Loan.ScheduleFrequency);
+        Assert.Equal(15, view.Loan.ScheduleDueDay);
+        Assert.Equal(new DateOnly(2026, 1, 15), view.Replay.FutureSchedule[0].OccurrenceDate);
+    }
+
+    [Fact]
+    public async Task GetLoansAsync_MarksLegacyUntaggedHistoryIncomplete()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment());
+        context.Loans.Add(NewLoan());
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-legacy-loan",
+            Date = new DateTime(2026, 1, 2),
+            PostedAt = new DateTime(2026, 1, 2),
+            Description = "Legacy loan bill",
+            Category = "Bills",
+            LedgerCategory = "Essentials",
+            Amount = -100m,
+            RecurringPaymentId = "bill-loan",
+            RecurringOccurrenceDate = null
+        });
+        await context.SaveChangesAsync();
+
+        var view = Assert.Single(await new LoanService(context).GetLoansAsync());
+
+        Assert.Equal(LoanScheduleStatus.Incomplete, view.Loan.ScheduleStatus);
+        Assert.Empty(view.Replay.FutureSchedule);
+    }
+
     private static RecurringPayment NewPayment() => new()
     {
         Id = "bill-loan",
@@ -108,6 +202,10 @@ public sealed class LoanServiceTests
         TrackingStartDate = new DateOnly(2026, 1, 1),
         AnnualRatePercent = 0m,
         TermPeriods = 10,
-        InterestMethod = LoanInterestMethod.ReducingBalance
+        InterestMethod = LoanInterestMethod.ReducingBalance,
+        ScheduleFrequency = "Monthly",
+        ScheduleDueDay = 1,
+        ScheduleStartDate = new DateOnly(2026, 1, 1),
+        ScheduleStatus = LoanScheduleStatus.Complete
     };
 }

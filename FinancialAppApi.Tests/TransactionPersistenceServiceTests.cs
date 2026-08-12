@@ -130,6 +130,58 @@ public class TransactionPersistenceServiceTests
         Assert.Equal(-1200m, context.Transactions.Single().Amount);
     }
 
+    [Fact]
+    public async Task UpdateTransactionAsync_CannotChangeARecordedRecurringBillLink()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.Transactions.Add(new Transaction
+        {
+            Id = "recurring-tx",
+            Date = new DateTime(2026, 7, 9, 0, 0, 0, DateTimeKind.Utc),
+            PostedAt = new DateTime(2026, 7, 9, 0, 0, 0, DateTimeKind.Utc),
+            Description = "Recurring payment",
+            Category = "Other",
+            LedgerCategory = "Rewards",
+            Amount = -25m,
+            RecurringPaymentId = "bill-original",
+            RecurringOccurrenceDate = new DateOnly(2026, 7, 9)
+        });
+        await context.SaveChangesAsync();
+
+        var request = NewRequest("recurring-tx") with { RecurringPaymentId = "bill-other" };
+        var result = await NewService(context).UpdateTransactionAsync("recurring-tx", request);
+
+        Assert.Equal(TransactionMutationStatus.Conflict, result.Status);
+        Assert.Equal("bill-original", (await context.Transactions.SingleAsync()).RecurringPaymentId);
+    }
+
+    [Fact]
+    public async Task UpdateTransactionAsync_CannotChangeARecordedRecurringOccurrenceDate()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.Transactions.Add(new Transaction
+        {
+            Id = "recurring-date-tx",
+            Date = new DateTime(2026, 7, 9, 0, 0, 0, DateTimeKind.Utc),
+            PostedAt = new DateTime(2026, 7, 9, 0, 0, 0, DateTimeKind.Utc),
+            Description = "Recurring payment",
+            Category = "Other",
+            LedgerCategory = "Rewards",
+            Amount = -25m,
+            RecurringPaymentId = "bill-original",
+            RecurringOccurrenceDate = new DateOnly(2026, 7, 9)
+        });
+        await context.SaveChangesAsync();
+
+        var request = NewRequest("recurring-date-tx") with { RecurringOccurrenceDate = "2026-07-10" };
+        var result = await NewService(context).UpdateTransactionAsync("recurring-date-tx", request);
+
+        Assert.Equal(TransactionMutationStatus.Conflict, result.Status);
+        Assert.Equal(new DateOnly(2026, 7, 9), (await context.Transactions.SingleAsync()).RecurringOccurrenceDate);
+    }
+
     [Theory]
     [InlineData("Transfer:Rewards->Rewards", 25, "Transfer source and target must be different.")]
     [InlineData("Transfer:Rewards->Unknown", 25, "Transfer source and target must be one of")]
@@ -579,6 +631,83 @@ public class TransactionPersistenceServiceTests
         Assert.Equal(100m, (await context.Transactions.SingleAsync(t => t.Id == "salary-split-Stability")).Amount);
         var splits = await context.Transactions.Where(t => t.Id.StartsWith("salary-split-")).ToListAsync();
         Assert.Equal(1000m, splits.Sum(t => t.Amount));
+    }
+
+    [Fact]
+    public async Task UpdateTransactionAsync_PreservesAnUnchangedHistoricalIncomeSplit()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedSettings(context, targetStabilityFund: 10000m);
+        context.FinancialSettings.Local.Single().StabilityAlloc = 0.30m;
+        context.StabilityPlanRevisions.AddRange(
+            new StabilityPlanRevision
+            {
+                EffectiveAt = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                TargetStabilityFund = 10000m,
+                StabilityAlloc = 0.15m,
+            },
+            new StabilityPlanRevision
+            {
+                EffectiveAt = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc),
+                TargetStabilityFund = 10000m,
+                StabilityAlloc = 0.30m,
+            });
+        var salary = NewTransaction("historical-salary", ledgerCategory: "Income", amount: 1000m);
+        salary.PostedAt = new DateTime(2026, 7, 9, 9, 0, 0, DateTimeKind.Utc);
+        salary.StabilityRecoveryTopUpAmount = 0m;
+        context.Transactions.AddRange(
+            salary,
+            NewTransaction("historical-salary-split-Essentials", ledgerCategory: "Transfer:Income->Essentials", amount: 500m),
+            NewTransaction("historical-salary-split-Growth", ledgerCategory: "Transfer:Income->Growth", amount: 250m),
+            NewTransaction("historical-salary-split-Stability", ledgerCategory: "Transfer:Income->Stability", amount: 150m),
+            NewTransaction("historical-salary-split-Rewards", ledgerCategory: "Transfer:Income->Rewards", amount: 100m));
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context, ClockAt(2026, 8, 12)).UpdateTransactionAsync(
+            salary.Id,
+            NewRequest(salary.Id, ledgerCategory: "Income", amount: 1000m));
+
+        Assert.Equal(TransactionMutationStatus.Updated, result.Status);
+        Assert.Equal(150m, (await context.Transactions.SingleAsync(t => t.Id == salary.Id + "-split-Stability")).Amount);
+        Assert.Equal(1000m, (await context.Transactions
+            .Where(t => t.Id.StartsWith(salary.Id + "-split-"))
+            .SumAsync(t => t.Amount)));
+    }
+
+    [Fact]
+    public async Task RestoreTransactionsAsync_UsesThePostedAtPlanForHistoricalIncomeStabilityShare()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedSettings(context, targetStabilityFund: 10000m);
+        context.FinancialSettings.Local.Single().StabilityAlloc = 0.30m;
+        context.StabilityPlanRevisions.AddRange(
+            new StabilityPlanRevision
+            {
+                EffectiveAt = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                TargetStabilityFund = 10000m,
+                StabilityAlloc = 0.15m,
+            },
+            new StabilityPlanRevision
+            {
+                EffectiveAt = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc),
+                TargetStabilityFund = 10000m,
+                StabilityAlloc = 0.30m,
+            });
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context, ClockAt(2026, 8, 12)).RestoreTransactionsAsync([
+            NewRequest(
+                "restored-historical-salary",
+                ledgerCategory: "Income",
+                amount: 1000m,
+                postedAt: "2026-07-09T09:00:00.000Z")
+        ]);
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal(150m, (await context.Transactions
+            .SingleAsync(t => t.Id == "restored-historical-salary-split-Stability")).Amount);
     }
 
     private static FinancialClock ClockAt(int year, int month, int day)

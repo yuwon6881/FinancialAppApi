@@ -89,7 +89,9 @@ public class WishlistController : ControllerBase
         return result.Status switch
         {
             WishlistMutationStatus.NotFound => NotFound(),
-            WishlistMutationStatus.AlreadyPurchased or WishlistMutationStatus.PriceInvalid => BadRequest(new { message = result.Message }),
+            WishlistMutationStatus.AlreadyPurchased
+                or WishlistMutationStatus.PriceInvalid
+                or WishlistMutationStatus.DateInvalid => BadRequest(new { message = result.Message }),
             _ => Ok(new { item = MapToDto(result.Item!), transaction = TransactionsController.MapToDto(result.Transaction!) })
         };
     }

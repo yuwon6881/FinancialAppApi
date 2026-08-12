@@ -12,6 +12,7 @@ public enum LoanMutationStatus
     Invalid,
     RecurringPaymentNotFound,
     RecurringPaymentAlreadyLinked,
+    RecurringPaymentRelinkNotAllowed,
     Conflict
 }
 
@@ -83,6 +84,11 @@ public sealed class LoanService
             cancellationToken);
         if (paymentStatus != null) return paymentStatus;
 
+        var payment = await _context.RecurringPayments
+            .AsNoTracking()
+            .FirstAsync(candidate => candidate.Id == loan.RecurringPaymentId, cancellationToken);
+        CaptureScheduleSnapshot(loan, payment);
+
         _context.Loans.Add(loan);
         try
         {
@@ -112,6 +118,13 @@ public sealed class LoanService
             .FirstOrDefaultAsync(candidate => candidate.Id == id, cancellationToken);
         if (loan == null) return new LoanResult(LoanMutationStatus.NotFound);
 
+        if (!string.Equals(updated.RecurringPaymentId, loan.RecurringPaymentId, StringComparison.Ordinal))
+        {
+            return new LoanResult(
+                LoanMutationStatus.RecurringPaymentRelinkNotAllowed,
+                Message: "A loan keeps the bill history it was created from. Create a separate loan for another bill.");
+        }
+
         var validation = Validate(updated);
         if (validation != null) return validation;
 
@@ -126,7 +139,6 @@ public sealed class LoanService
         if (paymentStatus != null) return paymentStatus;
 
         loan.Name = updated.Name.Trim();
-        loan.RecurringPaymentId = updated.RecurringPaymentId;
         loan.OpeningPrincipal = updated.OpeningPrincipal;
         loan.TrackingStartDate = updated.TrackingStartDate;
         loan.AnnualRatePercent = updated.AnnualRatePercent;
@@ -181,14 +193,17 @@ public sealed class LoanService
             .AsNoTracking()
             .Where(transaction => transaction.RecurringPaymentId != null
                 && paymentIds.Contains(transaction.RecurringPaymentId)
-                && transaction.RecurringOccurrenceDate != null
-                && transaction.RecurringOccurrenceDate >= earliestTrackingStart)
+                && (transaction.RecurringOccurrenceDate == null
+                    || transaction.RecurringOccurrenceDate >= earliestTrackingStart))
             .ToListAsync(cancellationToken);
 
         return loans.Select(loan =>
         {
-            var inputs = transactions
+            var loanTransactions = transactions
                 .Where(transaction => transaction.RecurringPaymentId == loan.RecurringPaymentId)
+                .ToList();
+            var inputs = loanTransactions
+                .Where(transaction => transaction.RecurringOccurrenceDate != null)
                 .Select(transaction => new LoanPaymentInput(
                     transaction.RecurringOccurrenceDate!.Value,
                     transaction.PostedAt,
@@ -198,9 +213,33 @@ public sealed class LoanService
                 .ToList();
 
             payments.TryGetValue(loan.RecurringPaymentId, out var payment);
-            var frequency = payment?.Frequency;
-            return new LoanView(loan, payment, LoanReplay.Replay(loan, frequency, inputs, payment?.DueDate));
+            var hasLegacyHistory = loanTransactions.Any(transaction => transaction.RecurringOccurrenceDate == null);
+            if (payment == null || hasLegacyHistory)
+            {
+                loan.ScheduleStatus = LoanScheduleStatus.Incomplete;
+            }
+            return new LoanView(loan, payment, LoanReplay.Replay(loan, inputs));
         }).ToList();
+    }
+
+    private static void CaptureScheduleSnapshot(Loan loan, RecurringPayment payment)
+    {
+        loan.ScheduleFrequency = string.Equals(payment.Frequency, "Monthly", StringComparison.OrdinalIgnoreCase)
+            ? "Monthly"
+            : string.Equals(payment.Frequency, "Annually", StringComparison.OrdinalIgnoreCase)
+                ? "Annually"
+                : null;
+        loan.ScheduleDueDay = payment.DueDate is >= 1 and <= 31
+            ? payment.DueDate
+            : null;
+        loan.ScheduleStartDate = DateOnly.TryParseExact(payment.StartDate, "yyyy-MM-dd", out var start)
+            ? start
+            : null;
+        loan.ScheduleStatus = loan.ScheduleFrequency != null
+            && loan.ScheduleDueDay.HasValue
+            && loan.ScheduleStartDate.HasValue
+            ? LoanScheduleStatus.Complete
+            : LoanScheduleStatus.Incomplete;
     }
 
     private async Task<LoanResult?> ValidateRecurringPaymentLinkAsync(

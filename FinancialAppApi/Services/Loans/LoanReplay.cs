@@ -20,10 +20,59 @@ public static class LoanReplay
 {
     public static LoanReplayResult Replay(
         Loan loan,
+        IEnumerable<LoanPaymentInput> inputs) =>
+        ReplayCore(
+            loan,
+            loan.ScheduleFrequency,
+            inputs,
+            loan.ScheduleDueDay,
+            loan.ScheduleStartDate,
+            scheduleAvailable: loan.ScheduleStatus != LoanScheduleStatus.Incomplete);
+
+    // Kept as an explicit-cadence overload for pure arithmetic callers and compatibility with
+    // older tests. Production read models use the immutable cadence stored on Loan above.
+    public static LoanReplayResult Replay(
+        Loan loan,
         string? frequency,
         IEnumerable<LoanPaymentInput> inputs,
         int? dueDay = null)
     {
+        var resolvedFrequency = frequency ?? loan.ScheduleFrequency;
+        var resolvedDueDay = dueDay ?? loan.ScheduleDueDay ?? loan.TrackingStartDate.Day;
+        var scheduleStartDate = loan.ScheduleStartDate ?? loan.TrackingStartDate;
+        return ReplayCore(
+            loan,
+            resolvedFrequency,
+            inputs,
+            resolvedDueDay,
+            scheduleStartDate,
+            scheduleAvailable: frequency != null || dueDay != null
+                ? HasValidCadence(resolvedFrequency, resolvedDueDay, scheduleStartDate)
+                : loan.ScheduleStatus != LoanScheduleStatus.Incomplete
+                    && HasValidCadence(resolvedFrequency, resolvedDueDay, scheduleStartDate));
+    }
+
+    private static LoanReplayResult ReplayCore(
+        Loan loan,
+        string? frequency,
+        IEnumerable<LoanPaymentInput> inputs,
+        int? dueDay,
+        DateOnly? scheduleStartDate,
+        bool scheduleAvailable)
+    {
+        if (!scheduleAvailable || !HasValidCadence(frequency, dueDay, scheduleStartDate))
+        {
+            return new LoanReplayResult(
+                0m,
+                0m,
+                0m,
+                0m,
+                null,
+                null,
+                [],
+                []);
+        }
+
         var ordered = inputs
             .Where(input => input.OccurrenceDate >= loan.TrackingStartDate)
             .OrderBy(input => input.OccurrenceDate)
@@ -74,7 +123,7 @@ public static class LoanReplay
         var futureSchedule = new List<LoanScheduleEntry>();
         var nextDate = lastOccurrenceDate.HasValue
             ? AddPeriod(lastOccurrenceDate.Value, frequency, dueDay)
-            : loan.TrackingStartDate;
+            : FindOccurrenceOnOrAfter(scheduleStartDate!.Value, dueDay!.Value, frequency!, loan.TrackingStartDate);
 
         for (var i = 0; i < 600 && balance > 0m; i++)
         {
@@ -107,6 +156,49 @@ public static class LoanReplay
             payments,
             futureSchedule);
     }
+
+    private static bool HasValidCadence(string? frequency, int? dueDay, DateOnly? scheduleStartDate) =>
+        scheduleStartDate.HasValue
+        && dueDay is >= 1 and <= 31
+        && (string.Equals(frequency, "Monthly", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(frequency, "Annually", StringComparison.OrdinalIgnoreCase));
+
+    private static DateOnly FindOccurrenceOnOrAfter(
+        DateOnly start,
+        int dueDay,
+        string frequency,
+        DateOnly date)
+    {
+        var annual = string.Equals(frequency, "Annually", StringComparison.OrdinalIgnoreCase);
+        if (annual)
+        {
+            var year = Math.Max(start.Year, date.Year);
+            var candidate = AnchoredDate(year, start.Month, dueDay);
+            if (candidate < start || candidate < date)
+                candidate = AnchoredDate(year + 1, start.Month, dueDay);
+            return candidate;
+        }
+
+        var candidateYear = Math.Max(start.Year, date.Year);
+        var candidateMonth = candidateYear == start.Year
+            ? Math.Max(start.Month, date.Month)
+            : date.Month;
+        var monthlyCandidate = AnchoredDate(candidateYear, candidateMonth, dueDay);
+        if (monthlyCandidate < start || monthlyCandidate < date)
+        {
+            candidateMonth++;
+            if (candidateMonth == 13)
+            {
+                candidateMonth = 1;
+                candidateYear++;
+            }
+            monthlyCandidate = AnchoredDate(candidateYear, candidateMonth, dueDay);
+        }
+        return monthlyCandidate;
+    }
+
+    private static DateOnly AnchoredDate(int year, int month, int dueDay) =>
+        new(year, month, Math.Min(dueDay, DateTime.DaysInMonth(year, month)));
 
     private static DateOnly AddPeriod(DateOnly date, string? frequency, int? dueDay)
     {

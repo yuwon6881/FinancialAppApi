@@ -44,6 +44,7 @@ public class TransactionPersistenceService
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly RecurringOccurrenceService _occurrenceService;
     private readonly Stability.StabilityRecoveryService _stabilityRecoveryService;
+    private readonly Stability.StabilityPlanRevisionService _stabilityPlanRevisionService;
     private readonly RecurringOccurrenceLedgerService _occurrenceLedger;
     private readonly FinancialClock _clock;
 
@@ -53,12 +54,15 @@ public class TransactionPersistenceService
         RecurringOccurrenceService occurrenceService,
         Stability.StabilityRecoveryService stabilityRecoveryService,
         RecurringOccurrenceLedgerService? occurrenceLedger = null,
-        FinancialClock? clock = null)
+        FinancialClock? clock = null,
+        Stability.StabilityPlanRevisionService? stabilityPlanRevisionService = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _occurrenceService = occurrenceService;
         _stabilityRecoveryService = stabilityRecoveryService;
+        _stabilityPlanRevisionService = stabilityPlanRevisionService
+            ?? new Stability.StabilityPlanRevisionService(context);
         _clock = clock ?? FinancialClock.Utc;
         _occurrenceLedger = occurrenceLedger ?? new RecurringOccurrenceLedgerService(context, occurrenceService, _clock);
     }
@@ -159,7 +163,7 @@ public class TransactionPersistenceService
         }
 
         var splitContext = await LoadIncomeSplitContextAsync(
-            transaction.LedgerCategory, TransactionDate.ToDateOnly(transaction.Date), transaction.Id,
+            transaction.LedgerCategory, TransactionDate.ToDateOnly(transaction.Date), transaction.PostedAt, transaction.Id,
             preserveHistoricalRecovery: false, cancellationToken: cancellationToken);
         var splitSpec = ResolveIncomeSplitSpec(transaction, splitContext);
 
@@ -237,6 +241,25 @@ public class TransactionPersistenceService
         var originalAmount = transaction.Amount;
         var originalRecoveryTopUp = transaction.StabilityRecoveryTopUpAmount;
         var originalReloadIntent = transaction.StabilityReloadIntent;
+        if (request.RecurringPaymentId != null
+            && !string.Equals(request.RecurringPaymentId, transaction.RecurringPaymentId, StringComparison.Ordinal))
+        {
+            return new TransactionMutationResult(
+                TransactionMutationStatus.Conflict,
+                transaction,
+                "A transaction's recurring bill link cannot be changed after it is recorded.");
+        }
+        if (!string.IsNullOrWhiteSpace(request.RecurringOccurrenceDate))
+        {
+            if (!DateOnly.TryParseExact(request.RecurringOccurrenceDate, "yyyy-MM-dd", out var requestedOccurrence)
+                || requestedOccurrence != transaction.RecurringOccurrenceDate)
+            {
+                return new TransactionMutationResult(
+                    TransactionMutationStatus.Conflict,
+                    transaction,
+                    "A transaction's recurring occurrence date cannot be changed after it is recorded.");
+            }
+        }
         var nextRecoveryTopUp = request.StabilityRecoveryTopUpAmount == null
             ? originalRecoveryTopUp
             : requestedRecoveryTopUp;
@@ -272,13 +295,18 @@ public class TransactionPersistenceService
             && originalAmount == amount
             && originalTransactionCycle != currentCycle;
         var splitContext = await LoadIncomeSplitContextAsync(
-            ledgerValidation.LedgerCategory, putDate, transaction.Id,
+            ledgerValidation.LedgerCategory, putDate, transaction.PostedAt, transaction.Id,
             preserveHistoricalRecovery, cancellationToken: cancellationToken);
 
         var existingSplits = await _context.Transactions
             .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
             .ToListAsync(cancellationToken);
-        _context.Transactions.RemoveRange(existingSplits);
+        var preserveHistoricalIncomeSplit = settingForCycle != null
+            && string.Equals(ledgerValidation.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase)
+            && originalAmount == amount
+            && TransactionDate.ToDateOnly(originalDate) == putDate
+            && originalTransactionCycle != currentCycle
+            && originalRecoveryTopUp.GetValueOrDefault() == nextRecoveryTopUp.GetValueOrDefault();
 
         transaction.Date = TransactionDate.PreserveTimeWhenSameDate(transaction.Date, putDate);
         transaction.Description = request.Description;
@@ -289,7 +317,6 @@ public class TransactionPersistenceService
         transaction.StabilityReloadIntent = request.StabilityReloadIntent == null
             ? originalReloadIntent
             : StabilityReloadIntent.Normalize(request.StabilityReloadIntent);
-        transaction.RecurringPaymentId = request.RecurringPaymentId ?? transaction.RecurringPaymentId;
         transaction.WishlistItemId = request.WishlistItemId ?? transaction.WishlistItemId;
 
         if (transaction.RecurringOccurrenceDate.HasValue)
@@ -299,8 +326,17 @@ public class TransactionPersistenceService
             if (occurrenceRow != null) RecurringOccurrenceLedgerService.SettleFromTransaction(occurrenceRow, transaction);
         }
 
-        var splitSpec = ResolveIncomeSplitSpec(transaction, splitContext);
-        AddIncomeSplitTransactions(transaction, splitSpec);
+        if (preserveHistoricalIncomeSplit && Stability.HistoricalIncomeSplitRows.CanPreserve(transaction, existingSplits))
+        {
+            transaction.StabilityRecoveryTopUpAmount = nextRecoveryTopUp ?? 0m;
+            Stability.HistoricalIncomeSplitRows.RefreshMetadata(transaction, existingSplits);
+        }
+        else
+        {
+            _context.Transactions.RemoveRange(existingSplits);
+            var splitSpec = ResolveIncomeSplitSpec(transaction, splitContext);
+            AddIncomeSplitTransactions(transaction, splitSpec);
+        }
         await ApplyWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
         await SaveAndInvalidateCycleBalancesAsync(
@@ -672,6 +708,7 @@ public class TransactionPersistenceService
     private sealed record IncomeSplitContext(
         FinancialSetting? Setting,
         Stability.StabilityState? State,
+        Stability.StabilityPlanSnapshot? Plan,
         bool PreserveHistoricalRecovery = false);
 
     private static bool IsIncomeLedgerCategory(string? ledgerCategory) =>
@@ -691,20 +728,23 @@ public class TransactionPersistenceService
     private async Task<IncomeSplitContext> LoadIncomeSplitContextAsync(
         string? ledgerCategory,
         DateOnly transactionDate,
+        DateTime postedAt,
         string transactionId,
         bool preserveHistoricalRecovery,
         CancellationToken cancellationToken)
     {
-        if (!IsIncomeLedgerCategory(ledgerCategory)) return new IncomeSplitContext(null, null);
+        if (!IsIncomeLedgerCategory(ledgerCategory)) return new IncomeSplitContext(null, null, null);
 
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
-        if (setting == null) return new IncomeSplitContext(null, null);
+        if (setting == null) return new IncomeSplitContext(null, null, null);
 
         // Excludes this transaction's own earlier contribution, so re-saving a salary is measured
         // against the fund without itself rather than on top of it.
         var state = await _stabilityRecoveryService.GetStabilityStateAsync(
             setting, transactionDate, transactionId, cancellationToken);
-        return new IncomeSplitContext(setting, state, preserveHistoricalRecovery);
+        var plan = Stability.StabilityPlanRevisionService.At(
+            await _stabilityPlanRevisionService.GetAsync(setting, cancellationToken), postedAt);
+        return new IncomeSplitContext(setting, state, plan, preserveHistoricalRecovery);
     }
 
     private static string ResolveIncomeSplitSpec(Transaction transaction, IncomeSplitContext context)
@@ -724,6 +764,7 @@ public class TransactionPersistenceService
 
         if (isPlainIncome)
         {
+            var stabilityAlloc = context.Plan?.StabilityAlloc ?? setting!.StabilityAlloc;
             // Every caller gets the target cap here, not just the web form. It used to be enforced
             // client-side only, so AI ledger drafts, recurring settlement and any outbox replay
             // whose balance had gone stale applied raw percentages and sailed past the target.
@@ -734,7 +775,7 @@ public class TransactionPersistenceService
                     transaction.Amount,
                     setting!.EssentialsAlloc,
                     setting.GrowthAlloc,
-                    setting.StabilityAlloc,
+                    stabilityAlloc,
                     setting.RewardsAlloc,
                     stabilityBalance: 0m,
                     stabilityTarget: 0m,
@@ -750,7 +791,7 @@ public class TransactionPersistenceService
                 transaction.Amount,
                 setting!.EssentialsAlloc,
                 setting.GrowthAlloc,
-                setting.StabilityAlloc,
+                stabilityAlloc,
                 setting.RewardsAlloc,
                 state!.CurrentBalance,
                 state.Target,

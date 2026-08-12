@@ -419,6 +419,34 @@ public class SavingsGoalServiceTests
     }
 
     [Fact]
+    public async Task FundCurrentCycleAsync_FundsOnlyTheRequestedBucket()
+    {
+        await using var context = NewContext(rewardsBalance: 1000m);
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-essentials-seed",
+            Date = Today.ToDateTime(TimeOnly.MinValue),
+            Description = "Essentials allocation",
+            Category = "Other",
+            LedgerCategory = SavingsGoalFundingBucket.Essentials,
+            Amount = 1000m
+        });
+        var rewardsGoal = NewGoal("Reward", 500m, new DateOnly(2026, 9, 20));
+        var essentialsGoal = NewGoal(
+            "Home reserve",
+            500m,
+            new DateOnly(2026, 9, 20),
+            fundingBucket: SavingsGoalFundingBucket.Essentials);
+        context.SavingsGoals.AddRange(rewardsGoal, essentialsGoal);
+        await context.SaveChangesAsync();
+
+        await NewService(context).FundCurrentCycleAsync(SavingsGoalFundingBucket.Essentials);
+
+        Assert.Equal(0m, context.SavingsGoals.Single(goal => goal.Id == rewardsGoal.Id).EarmarkedAmount);
+        Assert.True(context.SavingsGoals.Single(goal => goal.Id == essentialsGoal.Id).EarmarkedAmount > 0m);
+    }
+
+    [Fact]
     public async Task FundCurrentCycleAsync_NeverPushesTotalEarmarksPastTheRewardsBalance()
     {
         await using var context = NewContext(rewardsBalance: 1000m);

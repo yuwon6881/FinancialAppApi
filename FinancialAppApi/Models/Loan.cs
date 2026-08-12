@@ -40,10 +40,34 @@ public class Loan : IUserOwnedEntity
     [Required]
     [StringLength(30)]
     public string InterestMethod { get; set; } = LoanInterestMethod.ReducingBalance;
+
+    // These fields are captured from the linked bill when the loan is created. They deliberately
+    // do not follow later bill edits: loan interest and occurrence order must remain reproducible
+    // even when the reminder schedule is renamed, paused, or deleted.
+    [StringLength(20)]
+    public string? ScheduleFrequency { get; set; }
+
+    public int? ScheduleDueDay { get; set; }
+
+    public DateOnly? ScheduleStartDate { get; set; }
+
+    [Required]
+    [StringLength(20)]
+    public string ScheduleStatus { get; set; } = LoanScheduleStatus.Incomplete;
 }
 
 public static class LoanInterestMethod
 {
     public const string ReducingBalance = "ReducingBalance";
     public const string Flat = "Flat";
+}
+
+public static class LoanScheduleStatus
+{
+    public const string Complete = "Complete";
+    public const string NeedsReview = "NeedsReview";
+    public const string Incomplete = "Incomplete";
+
+    public static bool IsKnown(string? value) =>
+        value is Complete or NeedsReview or Incomplete;
 }

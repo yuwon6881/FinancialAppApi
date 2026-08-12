@@ -45,6 +45,7 @@ public sealed class LoansController : ControllerBase
         {
             LoanMutationStatus.Success => Ok(MapToDto(result.View!)),
             LoanMutationStatus.RecurringPaymentAlreadyLinked => Conflict(new { message = result.Message }),
+            LoanMutationStatus.RecurringPaymentRelinkNotAllowed => Conflict(new { message = result.Message }),
             LoanMutationStatus.Conflict => Conflict(new { message = result.Message }),
             _ => BadRequest(new { message = result.Message })
         };
@@ -58,6 +59,7 @@ public sealed class LoansController : ControllerBase
         {
             LoanMutationStatus.NotFound => NotFound(),
             LoanMutationStatus.RecurringPaymentAlreadyLinked => Conflict(new { message = result.Message }),
+            LoanMutationStatus.RecurringPaymentRelinkNotAllowed => Conflict(new { message = result.Message }),
             LoanMutationStatus.Conflict => Conflict(new { message = result.Message }),
             LoanMutationStatus.Success => Ok(MapToDto(result.View!)),
             _ => BadRequest(new { message = result.Message })
@@ -89,6 +91,10 @@ public sealed class LoansController : ControllerBase
             RecurringPaymentName = view.RecurringPayment?.Name,
             RecurringPaymentFrequency = view.RecurringPayment?.Frequency,
             RecurringPaymentDueDate = view.RecurringPayment?.DueDate,
+            ScheduleFrequency = view.Loan.ScheduleFrequency,
+            ScheduleDueDay = view.Loan.ScheduleDueDay,
+            ScheduleStartDate = view.Loan.ScheduleStartDate?.ToString("yyyy-MM-dd"),
+            ScheduleStatus = view.Loan.ScheduleStatus,
             Snapshot = new LoanSnapshotDto
             {
                 OutstandingBalance = ObfuscationHelper.Obfuscate(replay.OutstandingBalance),
@@ -187,6 +193,10 @@ public sealed class LoanDto
     public string? RecurringPaymentName { get; set; }
     public string? RecurringPaymentFrequency { get; set; }
     public int? RecurringPaymentDueDate { get; set; }
+    public string? ScheduleFrequency { get; set; }
+    public int? ScheduleDueDay { get; set; }
+    public string? ScheduleStartDate { get; set; }
+    public string ScheduleStatus { get; set; } = LoanScheduleStatus.Incomplete;
     public LoanSnapshotDto Snapshot { get; set; } = new();
 }
 

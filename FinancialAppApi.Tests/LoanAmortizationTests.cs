@@ -57,6 +57,19 @@ public sealed class LoanAmortizationTests
         Assert.Equal(200m, split.Surplus);
     }
 
+    [Theory]
+    [InlineData(25, 300)]
+    [InlineData(100, 360)]
+    public void HighAnnualRatesDoNotOverflowThePaymentFormula(decimal rate, int term)
+    {
+        var loan = NewLoan(opening: 1000m, rate: rate, term: term);
+
+        var payment = LoanAmortization.ScheduledPayment(loan, "Annually");
+
+        Assert.True(payment > 0m);
+        Assert.Equal(payment, LoanAmortization.RoundMoney(payment));
+    }
+
     private static Loan NewLoan(
         decimal opening,
         decimal rate,

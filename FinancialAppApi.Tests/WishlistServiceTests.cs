@@ -152,6 +152,21 @@ public class WishlistServiceTests
     }
 
     [Fact]
+    public async Task PurchaseWishlistItemAsync_RejectsFutureClaimDate()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.WishlistItems.Add(NewItem(1, "Headphones", active: true, price: 80m));
+        context.Transactions.Add(new Transaction { Id = "reward", Date = DateTime.UtcNow, Amount = 1000m, LedgerCategory = "Rewards" });
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).PurchaseWishlistItemAsync(1, DateTime.UtcNow.Date.AddDays(1));
+
+        Assert.Equal(WishlistMutationStatus.DateInvalid, result.Status);
+        Assert.False((await context.WishlistItems.FindAsync(1))!.IsPurchased);
+        Assert.False(await context.Transactions.AnyAsync(t => t.WishlistItemId == 1));
+    }
+
+    [Fact]
     public async Task PurchaseWishlistItemAsync_ReplayReturnsTheOriginalTransaction()
     {
         await using var context = TestHelpers.NewInMemoryContext();

@@ -68,7 +68,15 @@ public class SavingsGoalsController : ControllerBase
     public async Task<IActionResult> DeleteGoal(int id)
     {
         var status = await _savingsGoalService.DeleteGoalAsync(id, HttpContext.RequestAborted);
-        return status == SavingsGoalMutationStatus.NotFound ? NotFound() : NoContent();
+        return status switch
+        {
+            SavingsGoalMutationStatus.NotFound => NotFound(),
+            SavingsGoalMutationStatus.Conflict => Conflict(new
+            {
+                message = "This commitment changed while it was being deleted. Refresh and try again."
+            }),
+            _ => NoContent()
+        };
     }
 
     // POST: api/savings-goals/{id}/contribute
@@ -88,15 +96,22 @@ public class SavingsGoalsController : ControllerBase
     }
 
     // POST: api/savings-goals/fund
-    // Distributes each eligible bucket's unassigned money across its goals at their deadline-derived pace.
-    // Idempotent within a cycle.
+    // Distributes the selected bucket's unassigned money across its goals at their deadline-derived pace.
+    // Idempotent within a cycle. An omitted body keeps the long-standing Rewards default.
     [HttpPost("fund")]
-    public async Task<IActionResult> FundCurrentCycle()
+    public async Task<IActionResult> FundCurrentCycle([FromBody] SavingsGoalFundingRequestDto? dto = null)
     {
-        var result = await _savingsGoalService.FundCurrentCycleAsync(HttpContext.RequestAborted);
+        var fundingBucket = string.IsNullOrWhiteSpace(dto?.FundingBucket)
+            ? SavingsGoalFundingBucket.Rewards
+            : dto.FundingBucket;
+        var result = await _savingsGoalService.FundCurrentCycleAsync(fundingBucket, HttpContext.RequestAborted);
         if (result.Status == SavingsGoalMutationStatus.Conflict)
         {
             return Conflict(new { message = result.Message });
+        }
+        if (result.Status == SavingsGoalMutationStatus.FundingBucketInvalid)
+        {
+            return BadRequest(new { message = result.Message });
         }
         return Ok(new
         {
@@ -220,6 +235,11 @@ public class SavingsGoalMutationDto
 public class SavingsGoalContributionDto
 {
     public JsonElement Amount { get; set; }
+}
+
+public class SavingsGoalFundingRequestDto
+{
+    public string? FundingBucket { get; set; }
 }
 
 public class SavingsGoalDto

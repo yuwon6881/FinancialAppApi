@@ -102,6 +102,29 @@ public sealed class LoanReplayTests
         Assert.Equal(0m, result.OutstandingBalance);
     }
 
+    [Fact]
+    public void FirstMonthlyScheduleUsesTheBillAnchorAfterTrackingStarts()
+    {
+        var loan = NewLoan(rate: 0m);
+        loan.TrackingStartDate = new DateOnly(2026, 1, 12);
+
+        var result = LoanReplay.Replay(loan, "Monthly", [], dueDay: 15);
+
+        Assert.Equal(new DateOnly(2026, 1, 15), result.FutureSchedule[0].OccurrenceDate);
+    }
+
+    [Fact]
+    public void FirstAnnualScheduleUsesTheBillMonthAndAnchor()
+    {
+        var loan = NewLoan(rate: 0m);
+        loan.TrackingStartDate = new DateOnly(2026, 4, 1);
+        loan.ScheduleStartDate = new DateOnly(2026, 1, 1);
+
+        var result = LoanReplay.Replay(loan, "Annually", [], dueDay: 15);
+
+        Assert.Equal(new DateOnly(2027, 1, 15), result.FutureSchedule[0].OccurrenceDate);
+    }
+
     private static Loan NewLoan(decimal rate) => new()
     {
         Id = "loan-test",

@@ -69,8 +69,12 @@ public static class LoanAmortization
 
         if (ratePerPeriod == 0m) return RoundMoney(loan.OpeningPrincipal / periods);
 
-        var power = DecimalPower(1m + ratePerPeriod, periods);
-        var denominator = 1m - 1m / power;
+        // Computing the positive power overflows decimal for valid annual loans such as 25%
+        // over 300 periods. The formula only needs its reciprocal, which can be accumulated
+        // without ever leaving the decimal range and naturally underflows to zero at extreme
+        // rates instead of throwing.
+        var inversePower = InverseDecimalPower(1m + ratePerPeriod, periods);
+        var denominator = 1m - inversePower;
         return RoundMoney(loan.OpeningPrincipal * ratePerPeriod / denominator);
     }
 
@@ -155,10 +159,10 @@ public static class LoanAmortization
             : Math.Min(remainingInterest, RoundMoney(totalInterest / Math.Max(1, loan.TermPeriods)));
     }
 
-    private static decimal DecimalPower(decimal value, int exponent)
+    private static decimal InverseDecimalPower(decimal value, int exponent)
     {
         var result = 1m;
-        for (var i = 0; i < exponent; i++) result *= value;
+        for (var i = 0; i < exponent; i++) result /= value;
         return result;
     }
 }

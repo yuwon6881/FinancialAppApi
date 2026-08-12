@@ -12,6 +12,7 @@ public enum WishlistMutationStatus
     NotFound,
     NameRequired,
     PriceInvalid,
+    DateInvalid,
     AlreadyPurchased
 }
 
@@ -43,17 +44,20 @@ public class WishlistService
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly SavingsGoalService _savingsGoalService;
     private readonly FinancialClock _financialClock;
+    private readonly SharedPoolMutationLock _sharedPoolMutationLock;
 
     public WishlistService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
         SavingsGoalService savingsGoalService,
-        FinancialClock? financialClock = null)
+        FinancialClock? financialClock = null,
+        SharedPoolMutationLock? sharedPoolMutationLock = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _savingsGoalService = savingsGoalService;
         _financialClock = financialClock ?? FinancialClock.Utc;
+        _sharedPoolMutationLock = sharedPoolMutationLock ?? new SharedPoolMutationLock(context);
     }
 
     public async Task<List<WishlistItemProjection>> GetWishlistAsync(CancellationToken cancellationToken = default)
@@ -251,6 +255,14 @@ public class WishlistService
                 : new WishlistPurchaseResult(WishlistMutationStatus.AlreadyPurchased, Message: "Item is already purchased.");
         }
 
+        if (customDate.HasValue && DateOnly.FromDateTime(customDate.Value) > _financialClock.Today)
+        {
+            return new WishlistPurchaseResult(
+                WishlistMutationStatus.DateInvalid,
+                Message: "A wishlist claim date cannot be in the future.");
+        }
+
+        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var poolSummary = await _savingsGoalService.GetPoolSummaryAsync(cancellationToken);
         if (poolSummary.Unassigned < item.Price)
         {
