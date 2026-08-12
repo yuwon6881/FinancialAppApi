@@ -32,6 +32,44 @@ public class SavingsGoalServiceTests
     }
 
     [Fact]
+    public async Task GetPoolSummaryAsync_SeparatesEssentialsFromRewards()
+    {
+        await using var context = NewContext(rewardsBalance: 0m);
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-essentials-seed",
+            Date = Today.ToDateTime(TimeOnly.MinValue),
+            Description = "Essentials allocation",
+            Category = "Other",
+            LedgerCategory = "Essentials",
+            Amount = 1000m
+        });
+        context.SavingsGoals.Add(NewGoal("Home reserve", 500m, new DateOnly(2026, 9, 20), earmarked: 300m, fundingBucket: SavingsGoalFundingBucket.Essentials));
+        context.SavingsGoals.Add(NewGoal("Reward", 500m, new DateOnly(2026, 9, 20), earmarked: 200m));
+        await context.SaveChangesAsync();
+
+        var summary = await NewService(context).GetPoolSummaryAsync(SavingsGoalFundingBucket.Essentials);
+
+        Assert.Equal(SavingsGoalFundingBucket.Essentials, summary.FundingBucket);
+        Assert.Equal(1000m, summary.RewardsBalance);
+        Assert.Equal(300m, summary.TotalEarmarked);
+        Assert.Equal(700m, summary.Unassigned);
+    }
+
+    [Fact]
+    public async Task CreateGoalAsync_RejectsGrowthAndStabilityFundingBuckets()
+    {
+        await using var context = NewContext(rewardsBalance: 1000m);
+        var service = NewService(context);
+
+        var growth = await service.CreateGoalAsync(NewGoal("Growth", 100m, new DateOnly(2026, 9, 20), fundingBucket: "Growth"));
+        var stability = await service.CreateGoalAsync(NewGoal("Stability", 100m, new DateOnly(2026, 9, 20), fundingBucket: "Stability"));
+
+        Assert.Equal(SavingsGoalMutationStatus.FundingBucketInvalid, growth.Status);
+        Assert.Equal(SavingsGoalMutationStatus.FundingBucketInvalid, stability.Status);
+    }
+
+    [Fact]
     public async Task GetPoolSummaryAsync_HoldsPendingRewardsOccurrenceOutOfFreeBalance()
     {
         await using var context = NewContext(rewardsBalance: 1150m);
@@ -787,7 +825,8 @@ public class SavingsGoalServiceTests
         decimal target,
         DateOnly targetDate,
         decimal earmarked = 0m,
-        string? clientKey = null)
+        string? clientKey = null,
+        string fundingBucket = SavingsGoalFundingBucket.Rewards)
     {
         return new SavingsGoal
         {
@@ -797,6 +836,7 @@ public class SavingsGoalServiceTests
             TargetDate = targetDate.ToDateTime(TimeOnly.MinValue),
             Priority = "Medium",
             ClientKey = clientKey,
+            FundingBucket = fundingBucket,
             CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
         };
     }

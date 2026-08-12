@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Database;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
+using FinancialAppApi.Services.Loans;
 
 namespace FinancialAppApi.Controllers;
 
@@ -36,6 +37,7 @@ public class BootstrapController : ControllerBase
     private readonly TransactionCategoryService _categoryService;
     private readonly WishlistService _wishlistService;
     private readonly Services.SavingsGoals.SavingsGoalService _savingsGoalService;
+    private readonly LoanService _loanService;
 
     public BootstrapController(
         FinancialService financialService,
@@ -44,9 +46,11 @@ public class BootstrapController : ControllerBase
         RecurringPaymentPayEarlyService payEarlyService,
         TransactionCategoryService categoryService,
         WishlistService wishlistService,
-        Services.SavingsGoals.SavingsGoalService savingsGoalService)
+        Services.SavingsGoals.SavingsGoalService savingsGoalService,
+        LoanService loanService)
     {
         _savingsGoalService = savingsGoalService;
+        _loanService = loanService;
         _financialService = financialService;
         _transactionQueryService = transactionQueryService;
         _recurringPaymentService = recurringPaymentService;
@@ -101,6 +105,7 @@ public class BootstrapController : ControllerBase
         var categories = await _categoryService.GetCategoriesAsync(cancellationToken);
         var wishlist = await _wishlistService.GetWishlistAsync(cancellationToken);
         var savingsGoals = await _savingsGoalService.GetGoalsAsync(cancellationToken);
+        var loans = await _loanService.GetLoansAsync(cancellationToken);
         var autocomplete = await _transactionQueryService.GetAutocompleteSuggestionsAsync(cancellationToken);
         var walletBalance = await _financialService.GetWalletBalanceAsync(snapshot, cancellationToken);
 
@@ -115,6 +120,7 @@ public class BootstrapController : ControllerBase
             categories = categories.Select(TransactionCategoriesController.ToResponse).ToList(),
             wishlist = wishlist.Select(WishlistController.MapToDto).ToList(),
             savingsGoals = savingsGoals.Select(SavingsGoalsController.MapToDto).ToList(),
+            loans = loans.Select(LoansController.MapToDto).ToList(),
             autocomplete,
             walletBalance,
         });

@@ -14,8 +14,9 @@ public enum SavingsGoalMutationStatus
     TargetInvalid,
     TargetDateInvalid,
     RecurrenceInvalid,
+    FundingBucketInvalid,
     ContributionInvalid,
-    /// <summary>The requested earmark would claim more Rewards money than actually exists.</summary>
+    /// <summary>The requested earmark would claim more money from its bucket than actually exists.</summary>
     ExceedsAvailable,
     AlreadyCompleted,
     NothingEarmarked,
@@ -33,7 +34,11 @@ public sealed record SavingsGoalFundingResult(
     IReadOnlyList<SavingsGoal> Goals,
     decimal TotalGranted,
     decimal FreeToSpend,
-    string? Message = null);
+    decimal EssentialsFreeToSpend,
+    string? Message = null)
+{
+    public decimal RewardsFreeToSpend => FreeToSpend;
+}
 
 // OutstandingThisCycleTotal is what every active goal still needs this cycle.
 // Zero means there is nothing left to fund.
@@ -48,10 +53,16 @@ public sealed record SavingsGoalPoolSummary(
     decimal Unassigned,
     decimal RequiredPerCycleTotal,
     decimal OutstandingThisCycleTotal,
-    string CurrentCycleKey);
+    string CurrentCycleKey)
+{
+    // Kept as an alias because the Rewards pool is the long-standing API shape. The overload that
+    // accepts a bucket fills the same fields for an Essentials pool and labels it here.
+    public string FundingBucket { get; init; } = SavingsGoalFundingBucket.Rewards;
+    public decimal Balance => RewardsBalance;
+}
 
 /// <summary>
-/// Owns dated savings commitments funded from the Rewards pool.
+/// Owns dated savings commitments funded from the Essentials or Rewards pool.
 ///
 /// Two rules hold everything together:
 /// 1. Earmarks are bookkeeping on money that already exists. Completing a goal consumes its
@@ -102,14 +113,20 @@ public class SavingsGoalService
     }
 
     public async Task<SavingsGoalPoolSummary> GetPoolSummaryAsync(CancellationToken cancellationToken = default)
+        => await GetPoolSummaryAsync(SavingsGoalFundingBucket.Rewards, cancellationToken);
+
+    public async Task<SavingsGoalPoolSummary> GetPoolSummaryAsync(
+        string fundingBucket,
+        CancellationToken cancellationToken = default)
     {
+        EnsureFundingBucket(fundingBucket);
         var cycleDay = await GetCycleDayAsync(cancellationToken);
-        var rewardsBalance = await GetRewardsBalanceAsync(cycleDay, cancellationToken);
-        var pendingRewards = await GetPendingRewardsRecurringAsync(cycleDay, cancellationToken);
-        var availableRewards = Math.Max(0m, rewardsBalance - pendingRewards);
+        var bucketBalance = await GetBucketBalanceAsync(fundingBucket, cycleDay, cancellationToken);
+        var pendingBucket = await GetPendingBucketRecurringAsync(fundingBucket, cycleDay, cancellationToken);
+        var availableBucket = Math.Max(0m, bucketBalance - pendingBucket);
         var active = await _context.SavingsGoals
             .AsNoTracking()
-            .Where(goal => goal.Status == SavingsGoalStatus.Active)
+            .Where(goal => goal.Status == SavingsGoalStatus.Active && goal.FundingBucket == fundingBucket)
             .ToListAsync(cancellationToken);
 
         var today = _financialClock.Today;
@@ -125,12 +142,15 @@ public class SavingsGoalService
         }
 
         return new SavingsGoalPoolSummary(
-            availableRewards,
+            availableBucket,
             totalEarmarked,
-            SavingsGoalPacing.Unassigned(availableRewards, totalEarmarked),
+            SavingsGoalPacing.Unassigned(availableBucket, totalEarmarked),
             requiredPerCycleTotal,
             outstandingThisCycleTotal,
-            cycleKey);
+            cycleKey)
+        {
+            FundingBucket = fundingBucket
+        };
     }
 
     public async Task<SavingsGoalResult> CreateGoalAsync(SavingsGoal goal, CancellationToken cancellationToken = default)
@@ -156,16 +176,19 @@ public class SavingsGoalService
         goal.CycleFundedKey = null;
         goal.CycleFundedAmount = 0m;
         goal.EarmarkedAmount = Math.Max(0m, goal.EarmarkedAmount);
+        goal.FundingBucket = string.IsNullOrWhiteSpace(goal.FundingBucket)
+            ? SavingsGoalFundingBucket.Rewards
+            : goal.FundingBucket;
         goal.RecurrenceDayOfMonth = goal.IsRecurring ? goal.TargetDate.Day : null;
         goal.LastCompletionTransactionId = null;
 
         // A goal may be seeded with money already set aside. That still has to fit in the pool.
         if (goal.EarmarkedAmount > 0m)
         {
-            var headroom = await GetUnassignedAsync(cancellationToken: cancellationToken);
+            var headroom = await GetUnassignedAsync(goal.FundingBucket, cancellationToken: cancellationToken);
             if (goal.EarmarkedAmount > headroom)
             {
-                return ExceedsAvailable(headroom);
+                return ExceedsAvailable(headroom, goal.FundingBucket);
             }
         }
 
@@ -196,6 +219,17 @@ public class SavingsGoalService
         var validation = Validate(updated);
         if (validation != null) return validation;
 
+        var nextFundingBucket = updated.FundingBucket;
+        if (!string.Equals(goal.FundingBucket, nextFundingBucket, StringComparison.Ordinal)
+            && goal.EarmarkedAmount > 0m)
+        {
+            var targetBucketHeadroom = await GetUnassignedAsync(nextFundingBucket, cancellationToken: cancellationToken);
+            if (goal.EarmarkedAmount > targetBucketHeadroom)
+            {
+                return ExceedsAvailable(targetBucketHeadroom, nextFundingBucket);
+            }
+        }
+
         goal.Name = updated.Name;
         goal.TargetAmount = updated.TargetAmount;
         // Lowering the target below what is already set aside releases the surplus back to the pool
@@ -216,6 +250,7 @@ public class SavingsGoalService
         var targetDateChanged = goal.TargetDate.Date != updated.TargetDate.Date;
         goal.TargetDate = updated.TargetDate;
         goal.Priority = updated.Priority;
+        goal.FundingBucket = nextFundingBucket;
         goal.IsRecurring = updated.IsRecurring;
         goal.RecurrenceMonths = updated.RecurrenceMonths;
         goal.RecurrenceDayOfMonth = updated.IsRecurring
@@ -280,8 +315,8 @@ public class SavingsGoalService
 
         if (amount > 0m)
         {
-            var headroom = await GetUnassignedAsync(cancellationToken: cancellationToken);
-            if (amount > headroom) return ExceedsAvailable(headroom);
+            var headroom = await GetUnassignedAsync(goal.FundingBucket, cancellationToken: cancellationToken);
+            if (amount > headroom) return ExceedsAvailable(headroom, goal.FundingBucket);
         }
 
         // A release cannot take out more than this goal holds, and a top-up cannot push it past its
@@ -321,7 +356,7 @@ public class SavingsGoalService
     }
 
     /// <summary>
-    /// Pours the currently-unassigned Rewards money through the goal waterfall, giving each goal only
+    /// Pours each eligible bucket's currently-unassigned money through the goal waterfall, giving each goal only
     /// what it still needs this cycle.
     ///
     /// Precise rather than once-per-cycle: a goal the user already topped up by hand is outstanding
@@ -331,8 +366,6 @@ public class SavingsGoalService
     public async Task<SavingsGoalFundingResult> FundCurrentCycleAsync(CancellationToken cancellationToken = default)
     {
         var cycleDay = await GetCycleDayAsync(cancellationToken);
-        var rewardsBalance = await GetRewardsBalanceAsync(cycleDay, cancellationToken);
-        var pendingRewards = await GetPendingRewardsRecurringAsync(cycleDay, cancellationToken);
         var today = _financialClock.Today;
         var cycleKey = CurrentCycleKey(today, cycleDay);
 
@@ -340,21 +373,36 @@ public class SavingsGoalService
             .Where(goal => goal.Status == SavingsGoalStatus.Active)
             .ToListAsync(cancellationToken);
 
-        var available = SavingsGoalPacing.Unassigned(
-            rewardsBalance,
-            active.Sum(goal => goal.EarmarkedAmount),
-            pendingRewards);
-
-        var waterfall = SavingsGoalPacing.Distribute(active, available, today, cycleDay, cycleKey);
         var byId = active.ToDictionary(goal => goal.Id);
-        foreach (var grant in waterfall.Grants)
+        var totalGranted = 0m;
+        var rewardsFreeToSpend = 0m;
+        var essentialsFreeToSpend = 0m;
+        var rewardsAvailable = 0m;
+        var essentialsAvailable = 0m;
+        foreach (var bucketGroup in active.GroupBy(goal => goal.FundingBucket))
         {
-            if (grant.Amount <= 0m) continue;
-            var goal = byId[grant.GoalId];
-            var next = Math.Min(goal.TargetAmount, goal.EarmarkedAmount + grant.Amount);
-            ApplyCycleFunding(goal, next - goal.EarmarkedAmount, cycleKey);
-            InvalidateCompletionUndo(goal);
-            goal.EarmarkedAmount = next;
+            var available = await GetUnassignedAsync(bucketGroup.Key, cycleDay, cancellationToken);
+            var waterfall = SavingsGoalPacing.Distribute(bucketGroup, available, today, cycleDay, cycleKey);
+            totalGranted += waterfall.TotalGranted;
+            if (bucketGroup.Key == SavingsGoalFundingBucket.Rewards)
+            {
+                rewardsAvailable = available;
+                rewardsFreeToSpend = waterfall.FreeToSpend;
+            }
+            else if (bucketGroup.Key == SavingsGoalFundingBucket.Essentials)
+            {
+                essentialsAvailable = available;
+                essentialsFreeToSpend = waterfall.FreeToSpend;
+            }
+            foreach (var grant in waterfall.Grants)
+            {
+                if (grant.Amount <= 0m) continue;
+                var goal = byId[grant.GoalId];
+                var next = Math.Min(goal.TargetAmount, goal.EarmarkedAmount + grant.Amount);
+                ApplyCycleFunding(goal, next - goal.EarmarkedAmount, cycleKey);
+                InvalidateCompletionUndo(goal);
+                goal.EarmarkedAmount = next;
+            }
         }
 
         try
@@ -367,19 +415,21 @@ public class SavingsGoalService
                 SavingsGoalMutationStatus.Conflict,
                 [],
                 0m,
-                available,
+                rewardsAvailable,
+                essentialsAvailable,
                 "A commitment changed while this cycle was being funded. Refresh and try again.");
         }
 
         return new SavingsGoalFundingResult(
             SavingsGoalMutationStatus.Success,
             await GetGoalsAsync(cancellationToken),
-            waterfall.TotalGranted,
-            waterfall.FreeToSpend);
+            totalGranted,
+            rewardsFreeToSpend,
+            essentialsFreeToSpend);
     }
 
     /// <summary>
-    /// Closes out a goal by consuming exactly what it has earmarked through a linked Rewards ledger
+    /// Closes out a goal by consuming exactly what it has earmarked through a linked bucket ledger
     /// expense. Deleting that transaction restores this snapshot while it is still the latest,
     /// untouched completion. A recurring goal rolls its deadline forward and starts again at zero.
     /// </summary>
@@ -397,7 +447,7 @@ public class SavingsGoalService
         {
             return new SavingsGoalResult(
                 SavingsGoalMutationStatus.NothingEarmarked,
-                Message: "Set aside some rewards before marking this commitment done.");
+                Message: $"Set aside some {goal.FundingBucket.ToLowerInvariant()} money before marking this commitment done.");
         }
 
         var previousTargetDate = goal.TargetDate;
@@ -413,7 +463,7 @@ public class SavingsGoalService
             PostedAt = DateTime.UtcNow,
             Description = $"Completed commitment: {goal.Name}",
             Category = "Other",
-            LedgerCategory = "Rewards",
+            LedgerCategory = goal.FundingBucket,
             Amount = -previousEarmarkedAmount,
             SavingsGoalId = goal.Id
         };
@@ -510,12 +560,19 @@ public class SavingsGoalService
     }
 
     /// <summary>
-    /// Rewards money on hand right now: the balance carried into the current cycle plus this cycle's
-    /// Rewards ledger movement. Mirrors how the dashboard and the AI context loader derive it, so
+    /// Eligible bucket money on hand right now: the balance carried into the current cycle plus this cycle's
+    /// bucket ledger movement. Mirrors how the dashboard and the AI context loader derive it, so
     /// the number the invariant is checked against is the number the user sees.
     /// </summary>
-    public async Task<decimal> GetRewardsBalanceAsync(int cycleDay, CancellationToken cancellationToken = default)
+    public Task<decimal> GetRewardsBalanceAsync(int cycleDay, CancellationToken cancellationToken = default)
+        => GetBucketBalanceAsync(SavingsGoalFundingBucket.Rewards, cycleDay, cancellationToken);
+
+    public async Task<decimal> GetBucketBalanceAsync(
+        string fundingBucket,
+        int cycleDay,
+        CancellationToken cancellationToken = default)
     {
+        EnsureFundingBucket(fundingBucket);
         var today = _financialClock.Today;
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
         var opening = await _cycleBalanceService.GetOpeningBalanceAsync(year, monthIndex, cycleDay);
@@ -529,18 +586,25 @@ public class SavingsGoalService
             .Where(t => t.Date >= startInclusive && t.Date < endExclusive)
             .ToListAsync(cancellationToken);
 
-        return opening.rewards + cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Rewards"));
+        var openingBalance = fundingBucket == SavingsGoalFundingBucket.Essentials
+            ? opening.essentials
+            : opening.rewards;
+        return openingBalance + cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, fundingBucket));
     }
 
-    private async Task<decimal> GetUnassignedAsync(int? cycleDay = null, CancellationToken cancellationToken = default)
+    private async Task<decimal> GetUnassignedAsync(
+        string fundingBucket = SavingsGoalFundingBucket.Rewards,
+        int? cycleDay = null,
+        CancellationToken cancellationToken = default)
     {
+        EnsureFundingBucket(fundingBucket);
         var resolvedCycleDay = cycleDay ?? await GetCycleDayAsync(cancellationToken);
-        var rewardsBalance = await GetRewardsBalanceAsync(resolvedCycleDay, cancellationToken);
-        var pendingRewards = await GetPendingRewardsRecurringAsync(resolvedCycleDay, cancellationToken);
+        var bucketBalance = await GetBucketBalanceAsync(fundingBucket, resolvedCycleDay, cancellationToken);
+        var pendingBucket = await GetPendingBucketRecurringAsync(fundingBucket, resolvedCycleDay, cancellationToken);
         var totalEarmarked = await _context.SavingsGoals
-            .Where(goal => goal.Status == SavingsGoalStatus.Active)
+            .Where(goal => goal.Status == SavingsGoalStatus.Active && goal.FundingBucket == fundingBucket)
             .SumAsync(goal => goal.EarmarkedAmount, cancellationToken);
-        return SavingsGoalPacing.Unassigned(rewardsBalance, totalEarmarked, pendingRewards);
+        return SavingsGoalPacing.Unassigned(bucketBalance, totalEarmarked, pendingBucket);
     }
 
     /// <summary>
@@ -549,10 +613,12 @@ public class SavingsGoalService
     /// transactions retain the legacy posting-date fallback because older ledger rows predate the
     /// occurrence column.
     /// </summary>
-    private async Task<decimal> GetPendingRewardsRecurringAsync(
+    private async Task<decimal> GetPendingBucketRecurringAsync(
+        string fundingBucket,
         int cycleDay,
         CancellationToken cancellationToken)
     {
+        EnsureFundingBucket(fundingBucket);
         var today = _financialClock.Today;
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
         var range = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
@@ -567,7 +633,7 @@ public class SavingsGoalService
             payments, startOnly, endOnly, cancellationToken: cancellationToken);
         var pending = occurrences
             .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.Pending
-                && string.Equals(occurrence.LedgerCategory, "Rewards", StringComparison.OrdinalIgnoreCase))
+                && string.Equals(occurrence.LedgerCategory, fundingBucket, StringComparison.OrdinalIgnoreCase))
             .Sum(occurrence => Math.Abs(occurrence.ScheduledAmount ?? 0m));
 
         return Math.Round(pending, 2, MidpointRounding.AwayFromZero);
@@ -604,11 +670,12 @@ public class SavingsGoalService
         return new DateTime(nextMonth.Year, nextMonth.Month, day);
     }
 
-    private static SavingsGoalResult ExceedsAvailable(decimal headroom)
+    private static SavingsGoalResult ExceedsAvailable(decimal headroom, string fundingBucket)
     {
+        var bucketLabel = fundingBucket == SavingsGoalFundingBucket.Essentials ? "essentials" : "rewards";
         return new SavingsGoalResult(
             SavingsGoalMutationStatus.ExceedsAvailable,
-            Message: $"That would claim more rewards than you have. Only {headroom:0.00} is unassigned.");
+            Message: $"That would claim more {bucketLabel} money than you have. Only {headroom:0.00} is unassigned.");
     }
 
     private static SavingsGoalResult? Validate(SavingsGoal goal)
@@ -625,6 +692,12 @@ public class SavingsGoalService
         {
             return new SavingsGoalResult(SavingsGoalMutationStatus.TargetDateInvalid, Message: "Goal target date is required.");
         }
+        if (!IsAllowedFundingBucket(goal.FundingBucket))
+        {
+            return new SavingsGoalResult(
+                SavingsGoalMutationStatus.FundingBucketInvalid,
+                Message: "Savings goals can use Essentials or Rewards only; Growth belongs to investments and Stability is reserved for emergency-fund recovery.");
+        }
         if (goal.IsRecurring && (goal.RecurrenceMonths < 1 || goal.RecurrenceMonths > 120))
         {
             return new SavingsGoalResult(SavingsGoalMutationStatus.RecurrenceInvalid, Message: "Repeat interval must be between 1 and 120 months.");
@@ -636,5 +709,16 @@ public class SavingsGoalService
         }
 
         return null;
+    }
+
+    private static bool IsAllowedFundingBucket(string? fundingBucket) =>
+        fundingBucket is SavingsGoalFundingBucket.Essentials or SavingsGoalFundingBucket.Rewards;
+
+    private static void EnsureFundingBucket(string fundingBucket)
+    {
+        if (!IsAllowedFundingBucket(fundingBucket))
+        {
+            throw new ArgumentException("Savings goals can use Essentials or Rewards only; Growth belongs to investments and Stability is reserved for emergency-fund recovery.", nameof(fundingBucket));
+        }
     }
 }

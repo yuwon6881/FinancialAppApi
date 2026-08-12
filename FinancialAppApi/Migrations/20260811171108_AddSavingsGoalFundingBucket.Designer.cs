@@ -3,6 +3,7 @@ using System;
 using FinancialAppApi.Database;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace FinancialAppApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260811171108_AddSavingsGoalFundingBucket")]
+    partial class AddSavingsGoalFundingBucket
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -906,62 +909,6 @@ namespace FinancialAppApi.Migrations
                     b.HasIndex("UserId", "AccountId", "InstrumentId", "TradeDate");
 
                     b.ToTable("InvestmentTransactions");
-                });
-
-            modelBuilder.Entity("FinancialAppApi.Models.Loan", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
-                    b.Property<decimal>("AnnualRatePercent")
-                        .HasColumnType("numeric(7,4)");
-
-                    b.Property<string>("InterestMethod")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(30)
-                        .HasColumnType("character varying(30)")
-                        .HasDefaultValue("ReducingBalance");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<decimal>("OpeningPrincipal")
-                        .HasColumnType("numeric(12,2)");
-
-                    b.Property<string>("RecurringPaymentId")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
-                    b.Property<int>("TermPeriods")
-                        .HasColumnType("integer");
-
-                    b.Property<DateOnly>("TrackingStartDate")
-                        .HasColumnType("date");
-
-                    b.Property<string>("UserId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("UserId", "RecurringPaymentId")
-                        .IsUnique();
-
-                    b.ToTable("Loans", t =>
-                        {
-                            t.HasCheckConstraint("ck_loans_annualrate", "\"AnnualRatePercent\" >= 0 AND \"AnnualRatePercent\" <= 100");
-
-                            t.HasCheckConstraint("ck_loans_interestmethod", "\"InterestMethod\" IN ('ReducingBalance', 'Flat')");
-
-                            t.HasCheckConstraint("ck_loans_openingprincipal", "\"OpeningPrincipal\" > 0");
-
-                            t.HasCheckConstraint("ck_loans_term", "\"TermPeriods\" > 0 AND \"TermPeriods\" <= 360");
-                        });
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.MarketDataQuotaWindow", b =>
@@ -2292,15 +2239,6 @@ namespace FinancialAppApi.Migrations
                     b.Navigation("Account");
 
                     b.Navigation("Instrument");
-                });
-
-            modelBuilder.Entity("FinancialAppApi.Models.Loan", b =>
-                {
-                    b.HasOne("FinancialAppApi.Models.AppUser", null)
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.MarketDataRefreshJob", b =>

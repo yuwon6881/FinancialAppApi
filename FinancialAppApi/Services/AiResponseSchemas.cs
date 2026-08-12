@@ -106,11 +106,13 @@ internal static class AiResponseSchemas
             ["priority"] = Str(enums: ["low", "medium", "high"]),
             ["isRecurring"] = Bool(),
             ["recurrenceMonths"] = Int(),
+            ["fundingBucket"] = Str("Savings goals may use Essentials or Rewards.", enums: ["Essentials", "Rewards"]),
             ["changes"] = Obj(new Dictionary<string, object>
             {
                 ["name"] = Str(), ["targetAmount"] = Num(minimum: 0),
                 ["targetDate"] = Str(), ["priority"] = Str(enums: ["low", "medium", "high"]),
-                ["isRecurring"] = Bool(), ["recurrenceMonths"] = Int()
+                ["isRecurring"] = Bool(), ["recurrenceMonths"] = Int(),
+                ["fundingBucket"] = Str("Savings goals may use Essentials or Rewards.", enums: ["Essentials", "Rewards"])
             })
         });
 

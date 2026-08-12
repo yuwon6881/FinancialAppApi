@@ -53,6 +53,8 @@ public sealed record StabilityState(
     int Year,
     int MonthIndex);
 
+internal sealed record GoalCommitments(decimal Essentials, decimal Rewards);
+
 /// <summary>
 /// Loads the state <see cref="StabilityRecoveryPlanner"/> needs and packages its output for the
 /// dashboard. The EF half of the feature; every decision worth testing lives in the planner.
@@ -131,9 +133,8 @@ public class StabilityRecoveryService
     /// Builds the dashboard's recovery block for the cycle the caller is showing.
     /// <para>
     /// <c>essentialsCommitted</c> is this cycle's unpaid Essentials bills, which the caller already
-    /// has. The caller also supplies unpaid recurring Rewards bills; the matching savings-goal
-    /// figure -- active earmarks plus what goals still need this cycle -- is loaded here rather than threaded in. Both kinds
-    /// of Rewards commitment are one floor, so refilling the buffer never spends money already
+    /// has. The caller also supplies unpaid recurring Rewards bills. Active savings goals are then
+    /// added to the matching bucket floor, so refilling the buffer never spends money already
     /// promised somewhere else.
     /// </para>
     /// </summary>
@@ -237,8 +238,9 @@ public class StabilityRecoveryService
                 cancellationToken)
             : (MarkedTotal: 0m, RepaidTotal: 0m);
 
-        var rewardsCommitted = rewardsRecurringCommitted +
-            await GetGoalCommitmentsAsync(year, monthIndex, setting.CycleDay, cancellationToken);
+        var goalCommitments = await GetGoalCommitmentsAsync(year, monthIndex, setting.CycleDay, cancellationToken);
+        var committedEssentials = essentialsCommitted + goalCommitments.Essentials;
+        var committedRewards = rewardsRecurringCommitted + goalCommitments.Rewards;
 
         return new StabilityRecoveryDto(
             replay.Outstanding > 0m,
@@ -256,8 +258,8 @@ public class StabilityRecoveryService
             pace.IsOverdue,
             lastDrawdownCycleKey,
             ObfuscationHelper.Obfuscate(reloadTotals.RepaidTotal),
-            ObfuscationHelper.Obfuscate(essentialsCommitted),
-            ObfuscationHelper.Obfuscate(rewardsCommitted),
+            ObfuscationHelper.Obfuscate(committedEssentials),
+            ObfuscationHelper.Obfuscate(committedRewards),
             BuildSuggestedDraws(setting),
             // The same window the totals were measured over, so "see every movement since then"
             // lands on exactly the rows those figures came from.
@@ -412,9 +414,9 @@ public class StabilityRecoveryService
         GetStabilityStateAsync(setting, _financialClock.Today, excludeTransactionId, cancellationToken);
 
     /// <summary>
-    /// What active savings goals already earmark plus still need this cycle. Goals claim Rewards, so a
-    /// proportional top-up that ignored them would have two features quietly claiming the same
-    /// money -- and the deadline-bound one would lose. Uses the goals' own pacing rather than a
+    /// What active savings goals already earmark plus still need this cycle. Goals claim their
+    /// eligible bucket, so a proportional top-up that ignored them would have two features quietly
+    /// claiming the same money -- and the deadline-bound one would lose. Uses the goals' own pacing rather than a
     /// second implementation of it.
     /// <para>
     /// Answers zero for any cycle but the current one. A goal's pace is measured from today's
@@ -423,7 +425,7 @@ public class StabilityRecoveryService
     /// can offer a top-up in the first place, so the figure has no reader there anyway.
     /// </para>
     /// </summary>
-    private async Task<decimal> GetGoalCommitmentsAsync(
+    private async Task<GoalCommitments> GetGoalCommitmentsAsync(
         int year,
         int monthIndex,
         int cycleDay,
@@ -431,18 +433,27 @@ public class StabilityRecoveryService
     {
         var (currentYear, currentMonth) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
             _financialClock.Today, cycleDay);
-        if (year != currentYear || monthIndex != currentMonth) return 0m;
+        if (year != currentYear || monthIndex != currentMonth) return new GoalCommitments(0m, 0m);
 
         var active = await _context.SavingsGoals
             .AsNoTracking()
             .Where(goal => goal.Status == SavingsGoalStatus.Active)
             .ToListAsync(cancellationToken);
-        if (active.Count == 0) return 0m;
+        if (active.Count == 0) return new GoalCommitments(0m, 0m);
 
         var cycleKey = StabilityRecoveryPlanner.CycleKey(currentYear, currentMonth);
 
-        return active.Sum(goal => goal.EarmarkedAmount + SavingsGoals.SavingsGoalPacing
-            .ComputePace(goal, _financialClock.Today, cycleDay, cycleKey).OutstandingThisCycle);
+        var commitments = active
+            .Select(goal => new
+            {
+                Bucket = goal.FundingBucket,
+                Amount = goal.EarmarkedAmount + SavingsGoals.SavingsGoalPacing
+                    .ComputePace(goal, _financialClock.Today, cycleDay, cycleKey).OutstandingThisCycle
+            })
+            .ToList();
+        return new GoalCommitments(
+            commitments.Where(item => item.Bucket == SavingsGoalFundingBucket.Essentials).Sum(item => item.Amount),
+            commitments.Where(item => item.Bucket == SavingsGoalFundingBucket.Rewards).Sum(item => item.Amount));
     }
 
     /// <summary>

@@ -274,10 +274,11 @@ public partial class AiAssistantService
         }
         if (type.Equals("openAddSavingsGoalDraft", StringComparison.OrdinalIgnoreCase))
         {
-            return HasOnlyKeys(payload, ["name", "targetAmount", "targetDate", "priority", "isRecurring", "recurrenceMonths"]) &&
+            return HasOnlyKeys(payload, ["name", "targetAmount", "targetDate", "priority", "isRecurring", "recurrenceMonths", "fundingBucket"]) &&
                 HasRequiredString(payload, "name") && HasRequiredPositiveNumber(payload, "targetAmount") &&
                 HasRequiredIsoDate(payload, "targetDate") && HasRequiredKnownString(payload, "priority", ["low", "medium", "high"]) &&
-                HasBoolean(payload, "isRecurring") && HasRequiredInteger(payload, "recurrenceMonths", 0, 120);
+                HasBoolean(payload, "isRecurring") && HasRequiredInteger(payload, "recurrenceMonths", 0, 120) &&
+                HasKnownOptionalString(payload, "fundingBucket", ["Essentials", "Rewards"]);
         }
 
         if (type.Equals("openAddRecurringDraft", StringComparison.OrdinalIgnoreCase))
@@ -614,13 +615,14 @@ public partial class AiAssistantService
             changes = dictionary;
         else
             return false;
-        if (changes.Count == 0 || !changes.Keys.All(new[] { "name", "targetAmount", "targetDate", "priority", "isRecurring", "recurrenceMonths" }.Contains)) return false;
+        if (changes.Count == 0 || !changes.Keys.All(new[] { "name", "targetAmount", "targetDate", "priority", "isRecurring", "recurrenceMonths", "fundingBucket" }.Contains)) return false;
         return (!changes.ContainsKey("name") || HasRequiredString(changes, "name")) &&
             (!changes.ContainsKey("targetAmount") || HasRequiredPositiveNumber(changes, "targetAmount")) &&
             (!changes.ContainsKey("targetDate") || HasRequiredIsoDate(changes, "targetDate")) &&
             (!changes.ContainsKey("priority") || HasRequiredKnownString(changes, "priority", ["low", "medium", "high"])) &&
             (!changes.ContainsKey("isRecurring") || HasBoolean(changes, "isRecurring")) &&
-            (!changes.ContainsKey("recurrenceMonths") || HasRequiredInteger(changes, "recurrenceMonths", 0, 120));
+            (!changes.ContainsKey("recurrenceMonths") || HasRequiredInteger(changes, "recurrenceMonths", 0, 120)) &&
+            HasKnownOptionalString(changes, "fundingBucket", ["Essentials", "Rewards"]);
     }
 
     private static bool HasKnownOptionalString(

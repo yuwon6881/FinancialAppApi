@@ -2,17 +2,15 @@ using System.ComponentModel.DataAnnotations;
 
 namespace FinancialAppApi.Models
 {
-    // A dated savings commitment funded out of the SAME Rewards pool the wishlist draws from
-    // (car maintenance in 3 months, a house deposit in 6 years). It is deliberately NOT a fifth
-    // budget bucket: the four ledger allocations (Essentials/Growth/Stability/Rewards) are
-    // untouched, and a goal is purely an *earmark* -- a claim on Rewards money the user already
-    // has. The governing invariant is enforced in SavingsGoalService:
+    // A dated savings commitment funded out of one of the two eligible budget buckets
+    // (Essentials or Rewards). It is deliberately not a fifth budget bucket: the four ledger
+    // allocations remain unchanged, and a goal is purely an earmark on money the user already has.
+    // The governing invariant is enforced in SavingsGoalService:
     //
-    //     SUM(EarmarkedAmount of active goals) <= current Rewards balance
+    //     SUM(EarmarkedAmount of active goals in a bucket) <= current bucket balance
     //
     // so a goal can never lay claim to money that is not there, and
-    // (rewardsBalance - SUM(earmarked)) is the genuinely spontaneous "free to spend" remainder
-    // that wishlist rewards are measured against.
+    // (bucketBalance - SUM(earmarked)) is the genuinely unclaimed remainder for that bucket.
     public class SavingsGoal : IUserOwnedEntity
     {
         [Key]
@@ -30,12 +28,17 @@ namespace FinancialAppApi.Models
         public decimal TargetAmount { get; set; }
 
         /// <summary>
-        /// How much of the Rewards pool is currently claimed by this goal. Only ever changed by an
+        /// How much of the selected budget pool is currently claimed by this goal. Only ever changed by an
         /// explicit operation (create, contribute, per-cycle funding, complete) -- never derived on
         /// read, so the number the user saw last is the number that is still there.
         /// </summary>
         [Required]
         public decimal EarmarkedAmount { get; set; }
+
+        /// <summary>Which existing budget bucket holds this goal's earmark.</summary>
+        [Required]
+        [StringLength(20)]
+        public string FundingBucket { get; set; } = SavingsGoalFundingBucket.Rewards;
 
         /// <summary>The date the money needs to be ready. Drives the required-per-cycle pace.</summary>
         [Required]
@@ -114,5 +117,13 @@ namespace FinancialAppApi.Models
     {
         public const string Active = "active";
         public const string Completed = "completed";
+    }
+
+    // Stored as a string with a database check constraint rather than a CLR enum, matching the
+    // project's existing string-backed domain values.
+    public static class SavingsGoalFundingBucket
+    {
+        public const string Essentials = "Essentials";
+        public const string Rewards = "Rewards";
     }
 }

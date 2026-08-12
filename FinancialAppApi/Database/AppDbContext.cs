@@ -39,6 +39,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<WishlistItem> WishlistItems => Set<WishlistItem>();
     public DbSet<SavingsGoal> SavingsGoals => Set<SavingsGoal>();
     public DbSet<SavingsGoalCompletion> SavingsGoalCompletions => Set<SavingsGoalCompletion>();
+    public DbSet<Loan> Loans => Set<Loan>();
     public DbSet<WebAuthnCredential> WebAuthnCredentials => Set<WebAuthnCredential>();
     public DbSet<WebAuthnChallenge> WebAuthnChallenges => Set<WebAuthnChallenge>();
     public DbSet<ReceiptScanJob> ReceiptScanJobs => Set<ReceiptScanJob>();
@@ -282,6 +283,9 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 .HasColumnType("numeric(12,2)")
                 .HasDefaultValue(0m)
                 .IsConcurrencyToken();
+            entity.Property(e => e.FundingBucket)
+                .HasMaxLength(20)
+                .HasDefaultValue(SavingsGoalFundingBucket.Rewards);
             entity.Property(e => e.CycleFundedAmount).HasColumnType("numeric(12,2)").HasDefaultValue(0m);
             entity.Property(e => e.TargetDate).HasColumnType("date");
             entity.Property(e => e.Priority).HasDefaultValue("Medium");
@@ -306,6 +310,25 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 t.HasCheckConstraint("ck_savingsgoals_target_positive", "\"TargetAmount\" > 0");
                 t.HasCheckConstraint("ck_savingsgoals_earmark_within_target",
                     "\"EarmarkedAmount\" >= 0 AND \"EarmarkedAmount\" <= \"TargetAmount\"");
+                t.HasCheckConstraint("ck_savingsgoals_fundingbucket",
+                    $"\"FundingBucket\" IN ('{SavingsGoalFundingBucket.Essentials}', '{SavingsGoalFundingBucket.Rewards}')");
+            });
+        });
+
+        modelBuilder.Entity<Loan>(entity =>
+        {
+            entity.Property(e => e.OpeningPrincipal).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.AnnualRatePercent).HasColumnType("numeric(7,4)");
+            entity.Property(e => e.TrackingStartDate).HasColumnType("date");
+            entity.Property(e => e.InterestMethod).HasDefaultValue(LoanInterestMethod.ReducingBalance);
+            entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId }).IsUnique();
+            entity.ToTable(t =>
+            {
+                t.HasCheckConstraint("ck_loans_openingprincipal", "\"OpeningPrincipal\" > 0");
+                t.HasCheckConstraint("ck_loans_annualrate", "\"AnnualRatePercent\" >= 0 AND \"AnnualRatePercent\" <= 100");
+                t.HasCheckConstraint("ck_loans_term", "\"TermPeriods\" > 0 AND \"TermPeriods\" <= 360");
+                t.HasCheckConstraint("ck_loans_interestmethod",
+                    $"\"InterestMethod\" IN ('{LoanInterestMethod.ReducingBalance}', '{LoanInterestMethod.Flat}')");
             });
         });
 
@@ -531,6 +554,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<WishlistItem>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<SavingsGoal>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<SavingsGoalCompletion>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<Loan>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<CycleBalance>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<StabilityPlanRevision>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<UserSession>(), applyQueryFilter: false);

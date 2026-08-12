@@ -408,6 +408,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<TransactionCategoryService>();
         services.AddScoped<WishlistService>();
         services.AddScoped<Services.SavingsGoals.SavingsGoalService>();
+        services.AddScoped<Services.Loans.LoanService>();
         services.AddScoped<TransactionPersistenceService>();
         services.AddScoped<TransactionQueryService>();
         services.AddScoped<FinancialService>();

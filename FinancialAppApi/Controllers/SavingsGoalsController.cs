@@ -88,7 +88,7 @@ public class SavingsGoalsController : ControllerBase
     }
 
     // POST: api/savings-goals/fund
-    // Distributes the unassigned Rewards money across goals at their deadline-derived pace.
+    // Distributes each eligible bucket's unassigned money across its goals at their deadline-derived pace.
     // Idempotent within a cycle.
     [HttpPost("fund")]
     public async Task<IActionResult> FundCurrentCycle()
@@ -102,7 +102,9 @@ public class SavingsGoalsController : ControllerBase
         {
             goals = result.Goals.Select(MapToDto).ToList(),
             totalGranted = ObfuscationHelper.Obfuscate(result.TotalGranted),
-            freeToSpend = ObfuscationHelper.Obfuscate(result.FreeToSpend)
+            freeToSpend = ObfuscationHelper.Obfuscate(result.RewardsFreeToSpend),
+            rewardsFreeToSpend = ObfuscationHelper.Obfuscate(result.RewardsFreeToSpend),
+            essentialsFreeToSpend = ObfuscationHelper.Obfuscate(result.EssentialsFreeToSpend)
         });
     }
 
@@ -136,6 +138,9 @@ public class SavingsGoalsController : ControllerBase
             Priority = dto.Priority,
             IsRecurring = dto.IsRecurring,
             RecurrenceMonths = dto.RecurrenceMonths,
+            FundingBucket = string.IsNullOrWhiteSpace(dto.FundingBucket)
+                ? SavingsGoalFundingBucket.Rewards
+                : dto.FundingBucket,
             CreatedAt = dto.CreatedAt == default ? DateTime.UtcNow : dto.CreatedAt,
             ClientKey = dto.ClientKey
         };
@@ -165,6 +170,7 @@ public class SavingsGoalsController : ControllerBase
             Status = goal.Status,
             IsRecurring = goal.IsRecurring,
             RecurrenceMonths = goal.RecurrenceMonths,
+            FundingBucket = goal.FundingBucket,
             CycleFundedKey = goal.CycleFundedKey,
             CycleFundedAmount = ObfuscationHelper.Obfuscate(goal.CycleFundedAmount),
             CreatedAt = goal.CreatedAt,
@@ -206,6 +212,7 @@ public class SavingsGoalMutationDto
     public string Priority { get; set; } = "Medium";
     public bool IsRecurring { get; set; }
     public int RecurrenceMonths { get; set; } = 12;
+    public string FundingBucket { get; set; } = SavingsGoalFundingBucket.Rewards;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public string? ClientKey { get; set; }
 }
@@ -226,6 +233,7 @@ public class SavingsGoalDto
     public string Status { get; set; } = SavingsGoalStatus.Active;
     public bool IsRecurring { get; set; }
     public int RecurrenceMonths { get; set; }
+    public string FundingBucket { get; set; } = SavingsGoalFundingBucket.Rewards;
     public string? CycleFundedKey { get; set; }
     public string CycleFundedAmount { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
