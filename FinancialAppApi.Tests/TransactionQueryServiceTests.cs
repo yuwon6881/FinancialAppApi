@@ -29,6 +29,21 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
+    public void ProjectCycleTransactions_PreservesAccountPlacement()
+    {
+        var transaction = NewTransaction("ordinary", "Groceries", "Food", "Essentials", -40m);
+        transaction.AccountId = "essentials-wallet";
+        transaction.CounterAccountId = "rewards-card";
+
+        var projected = TransactionQueryService.ProjectCycleTransactions(
+            [transaction], 2026, 7, cycleDay: 1);
+
+        var item = Assert.Single(projected.Items);
+        Assert.Equal("essentials-wallet", item.AccountId);
+        Assert.Equal("rewards-card", item.CounterAccountId);
+    }
+
+    [Fact]
     public async Task GetTransactionsAsync_AllModeReturnsPagedFilteredResults()
     {
         await using var context = TestHelpers.NewInMemoryContext();

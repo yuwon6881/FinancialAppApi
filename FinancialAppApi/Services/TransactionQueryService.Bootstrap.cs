@@ -40,6 +40,8 @@ public partial class TransactionQueryService
                     && stabilityReloadStatuses.TryGetValue(transaction.Id, out var status)
                     ? status
                     : null,
+                AccountId: transaction.AccountId,
+                CounterAccountId: transaction.CounterAccountId,
                 ExcludeFromAutocomplete: transaction.ExcludeFromAutocomplete))
             .ToList();
         return new TransactionListResult(items);
