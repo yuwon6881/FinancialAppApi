@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace FinancialAppApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260813082414_EnforceLedgerAccountTracking")]
-    partial class EnforceLedgerAccountTracking
+    [Migration("20260813134142_AddLedgerAccountInterest")]
+    partial class AddLedgerAccountInterest
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -925,6 +925,31 @@ namespace FinancialAppApi.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("InterestEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("InterestFrequency")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasDefaultValue("Monthly");
+
+                    b.Property<DateOnly?>("InterestNextAccrualDate")
+                        .HasColumnType("date");
+
+                    b.Property<decimal>("InterestRatePercent")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("numeric(7,4)")
+                        .HasDefaultValue(0m);
+
+                    b.Property<decimal>("InterestRemainder")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("numeric(12,8)")
+                        .HasDefaultValue(0m);
+
                     b.Property<bool>("IsArchived")
                         .HasColumnType("boolean");
 
@@ -962,6 +987,12 @@ namespace FinancialAppApi.Migrations
                     b.ToTable("LedgerAccounts", t =>
                         {
                             t.HasCheckConstraint("ck_ledgeraccounts_bucket", "\"Bucket\" IN ('Essentials', 'Growth', 'Stability', 'Rewards')");
+
+                            t.HasCheckConstraint("ck_ledgeraccounts_interestfrequency", "\"InterestFrequency\" IN ('Daily', 'Monthly', 'Yearly')");
+
+                            t.HasCheckConstraint("ck_ledgeraccounts_interestrate", "\"InterestRatePercent\" >= 0 AND \"InterestRatePercent\" <= 100");
+
+                            t.HasCheckConstraint("ck_ledgeraccounts_interestremainder", "\"InterestRemainder\" >= 0");
 
                             t.HasCheckConstraint("ck_ledgeraccounts_kind", "\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'Other')");
                         });
@@ -1812,6 +1843,11 @@ namespace FinancialAppApi.Migrations
                     b.Property<string>("Description")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<bool>("ExcludeFromAutocomplete")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
 
                     b.Property<string>("LedgerCategory")
                         .IsRequired()

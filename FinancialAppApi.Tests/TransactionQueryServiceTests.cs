@@ -278,6 +278,25 @@ public class TransactionQueryServiceTests
         Assert.Equal("Prawn Noodle Soup", Assert.Single(suggestions).Description);
     }
 
+    [Fact]
+    public async Task GetAutocompleteSuggestionsAsync_UsesTheStoredMarkerInsteadOfDescriptionText()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var marked = NewTransaction("marked-row", "A normal-looking description", "Food", "Essentials", -8m);
+        marked.ExcludeFromAutocomplete = true;
+        context.Transactions.AddRange(
+            NewTransaction("ordinary-alignment", "Account balance alignment - RYT", "Food", "Essentials", -20m),
+            NewTransaction("ordinary-purchased", "Purchased: lunch", "Food", "Essentials", -12m),
+            marked);
+        await context.SaveChangesAsync();
+
+        var suggestions = await new TransactionQueryService(context).GetAutocompleteSuggestionsAsync();
+
+        Assert.Equal(
+            ["Account balance alignment - RYT", "Purchased: lunch"],
+            suggestions.Select(suggestion => suggestion.Description).OrderBy(description => description));
+    }
+
     private static Transaction NewTransaction(
         string id,
         string description,
@@ -301,7 +320,9 @@ public class TransactionQueryServiceTests
             Amount = amount,
             RecurringPaymentId = recurringPaymentId,
             WishlistItemId = wishlistItemId,
-            SavingsGoalId = savingsGoalId
+            SavingsGoalId = savingsGoalId,
+            ExcludeFromAutocomplete = TransactionAutocompletePolicy.ShouldExclude(
+                id, category, ledgerCategory, wishlistItemId, savingsGoalId)
         };
     }
 }

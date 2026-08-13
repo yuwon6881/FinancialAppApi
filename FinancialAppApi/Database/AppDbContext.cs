@@ -91,6 +91,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             // Bounded numeric(12,2) instead of unbounded numeric: exact for money, but
             // fixed/smaller on-disk, which matters against the 500MB free storage ceiling.
             entity.Property(e => e.Amount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.ExcludeFromAutocomplete).HasDefaultValue(false);
             entity.Property(e => e.StabilityRecoveryTopUpAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.Date).HasColumnType("timestamp with time zone");
             entity.Property(e => e.PostedAt).HasColumnType("timestamp with time zone");
@@ -119,7 +120,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 .OnDelete(DeleteBehavior.Restrict);
             entity.ToTable(t => t.HasCheckConstraint(
                 "ck_transactions_account_tracking",
-                "(\"LedgerCategory\" IN ('Essentials', 'Growth', 'Stability', 'Rewards') AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (\"LedgerCategory\" = 'AccountMove' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL) OR (\"LedgerCategory\" LIKE 'Transfer:%' AND ((lower(\"LedgerCategory\") LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") NOT LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL))) OR (\"LedgerCategory\" NOT IN ('Essentials', 'Growth', 'Stability', 'Rewards', 'AccountMove') AND \"LedgerCategory\" NOT LIKE 'Transfer:%')"));
+                "(lower(\"LedgerCategory\") IN ('essentials', 'growth', 'stability', 'rewards') AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") = 'accountmove' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL) OR (lower(\"LedgerCategory\") LIKE 'transfer:%' AND ((lower(\"LedgerCategory\") LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") NOT LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL))) OR (lower(\"LedgerCategory\") NOT IN ('essentials', 'growth', 'stability', 'rewards', 'accountmove') AND lower(\"LedgerCategory\") NOT LIKE 'transfer:%' AND \"AccountId\" IS NULL AND \"CounterAccountId\" IS NULL)"));
             // Guarantees a given recurring-payment occurrence can never be settled twice
             // (normal confirmation racing pay-early, pay-early retried, etc.). Partial so
             // legacy/manual transactions (either column null) are exempt.
@@ -134,6 +135,12 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.Name).HasMaxLength(200);
             entity.Property(e => e.Bucket).HasMaxLength(20);
             entity.Property(e => e.Kind).HasMaxLength(20).HasDefaultValue(LedgerAccountKind.Bank);
+            entity.Property(e => e.InterestEnabled).HasDefaultValue(false);
+            entity.Property(e => e.InterestRatePercent).HasColumnType("numeric(7,4)").HasDefaultValue(0m);
+            entity.Property(e => e.InterestFrequency)
+                .HasMaxLength(10)
+                .HasDefaultValue(LedgerAccountInterestFrequency.Monthly);
+            entity.Property(e => e.InterestRemainder).HasColumnType("numeric(12,8)").HasDefaultValue(0m);
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
             entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
@@ -148,6 +155,15 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 table.HasCheckConstraint(
                     "ck_ledgeraccounts_kind",
                     $"\"Kind\" IN ({string.Join(", ", LedgerAccountKind.Values.Select(value => $"'{value}'"))})");
+                table.HasCheckConstraint(
+                    "ck_ledgeraccounts_interestfrequency",
+                    $"\"InterestFrequency\" IN ({string.Join(", ", LedgerAccountInterestFrequency.Values.Select(value => $"'{value}'"))})");
+                table.HasCheckConstraint(
+                    "ck_ledgeraccounts_interestrate",
+                    "\"InterestRatePercent\" >= 0 AND \"InterestRatePercent\" <= 100");
+                table.HasCheckConstraint(
+                    "ck_ledgeraccounts_interestremainder",
+                    "\"InterestRemainder\" >= 0");
             });
             entity.HasAlternateKey(e => new { e.UserId, e.Id });
         });

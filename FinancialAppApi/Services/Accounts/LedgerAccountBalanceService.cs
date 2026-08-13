@@ -46,7 +46,8 @@ public sealed class LedgerAccountBalanceService
             transactionQuery = transactionQuery.Where(transaction => transaction.Date < throughExclusive.Value);
         }
 
-        var transactions = await transactionQuery
+        var balances = EmptyBalances(accountRows);
+        await foreach (var transaction in transactionQuery
             .Select(transaction => new LedgerTransactionProjection(
                 transaction.Date,
                 transaction.Category,
@@ -54,8 +55,12 @@ public sealed class LedgerAccountBalanceService
                 transaction.Amount,
                 transaction.AccountId,
                 transaction.CounterAccountId))
-            .ToListAsync(cancellationToken);
-        return Calculate(accountRows, accountsById, defaults, transactions);
+            .AsAsyncEnumerable()
+            .WithCancellation(cancellationToken))
+        {
+            Accumulate(balances, transaction.ToTransaction(), accountsById, defaults);
+        }
+        return balances;
     }
 
     public async Task<LedgerAccountBalanceSnapshot> GetBalanceSnapshotAsync(
@@ -70,7 +75,7 @@ public sealed class LedgerAccountBalanceService
             return new LedgerAccountBalanceSnapshot(empty, empty);
         }
 
-        var transactions = await _context.Transactions
+        var transactions = _context.Transactions
             .AsNoTracking()
             .Select(transaction => new LedgerTransactionProjection(
                 transaction.Date,
@@ -78,33 +83,20 @@ public sealed class LedgerAccountBalanceService
                 transaction.LedgerCategory,
                 transaction.Amount,
                 transaction.AccountId,
-                transaction.CounterAccountId))
-            .ToListAsync(cancellationToken);
+                transaction.CounterAccountId));
         var accountsById = accountRows.ToDictionary(account => account.Id, StringComparer.Ordinal);
         var defaults = DefaultAccounts(accountRows);
         var current = EmptyBalances(accountRows);
         var through = EmptyBalances(accountRows);
-        foreach (var transaction in transactions)
+        await foreach (var transaction in transactions
+            .AsAsyncEnumerable()
+            .WithCancellation(cancellationToken))
         {
             Accumulate(current, transaction.ToTransaction(), accountsById, defaults);
             if (transaction.Date < throughExclusive)
                 Accumulate(through, transaction.ToTransaction(), accountsById, defaults);
         }
         return new LedgerAccountBalanceSnapshot(current, through);
-    }
-
-    private static IReadOnlyDictionary<string, decimal> Calculate(
-        IReadOnlyCollection<LedgerAccount> accounts,
-        IReadOnlyDictionary<string, LedgerAccount> accountsById,
-        IReadOnlyDictionary<string, string> defaults,
-        IEnumerable<LedgerTransactionProjection> transactions)
-    {
-        var balances = EmptyBalances(accounts);
-        foreach (var projection in transactions)
-        {
-            Accumulate(balances, projection.ToTransaction(), accountsById, defaults);
-        }
-        return balances;
     }
 
     private static void Accumulate(

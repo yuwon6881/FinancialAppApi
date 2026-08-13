@@ -71,6 +71,22 @@ public class LedgerAccountServiceTests
     }
 
     [Fact]
+    public async Task ArchivingTheLastOpenAccountReturnsConflict()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+        await service.CreateAsync(Mutation("acct-only", "Main bank"));
+
+        var result = await service.UpdateAsync(
+            "acct-only",
+            Mutation("acct-only", "Main bank", isArchived: true));
+
+        Assert.Equal(LedgerAccountMutationStatus.Conflict, result.Status);
+        Assert.Equal("Every bucket needs one open account. Add another before closing this one.", result.Message);
+        Assert.False(context.LedgerAccounts.Single().IsArchived);
+    }
+
+    [Fact]
     public async Task DeleteWithLedgerActivityReturnsConflictAndLeavesTheAccount()
     {
         await using var context = TestHelpers.NewInMemoryContext();

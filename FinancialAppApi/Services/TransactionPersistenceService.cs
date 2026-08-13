@@ -126,6 +126,7 @@ public class TransactionPersistenceService
             AccountId = NormalizeOptionalId(request.AccountId),
             CounterAccountId = NormalizeOptionalId(request.CounterAccountId),
         };
+        transaction.ExcludeFromAutocomplete = TransactionAutocompletePolicy.ShouldExclude(transaction);
         await _accountResolver.ResolveMissingAsync(transaction, cancellationToken);
         var accountValidation = await ValidateAccountReferencesAsync(transaction, cancellationToken);
         if (accountValidation is not null) return accountValidation;
@@ -359,6 +360,7 @@ public class TransactionPersistenceService
         transaction.WishlistItemId = request.WishlistItemId ?? transaction.WishlistItemId;
         transaction.AccountId = accountProbe.AccountId;
         transaction.CounterAccountId = accountProbe.CounterAccountId;
+        transaction.ExcludeFromAutocomplete = TransactionAutocompletePolicy.ShouldExclude(transaction);
 
         if (transaction.RecurringOccurrenceDate.HasValue)
         {
@@ -910,6 +912,22 @@ public class TransactionPersistenceService
         string splitSpec,
         CancellationToken cancellationToken)
     {
+        if (!IsIncomeLedgerCategory(transaction.LedgerCategory)) return;
+        var requestedAccountId = transaction.AccountId;
+        string? requestedAccountBucket = null;
+        if (requestedAccountId is not null)
+        {
+            requestedAccountBucket = await _context.LedgerAccounts
+                .AsNoTracking()
+                .Where(account => account.Id == requestedAccountId && !account.IsArchived)
+                .Select(account => account.Bucket)
+                .FirstOrDefaultAsync(cancellationToken);
+        }
+        // The parent becomes a persisted Income row, which has no bucket leg. Its AccountId is a
+        // wire-only placement hint for the generated child in the matching bucket.
+        transaction.AccountId = null;
+        transaction.CounterAccountId = null;
+
         if (string.IsNullOrEmpty(splitSpec)) return;
 
         var parts = splitSpec.Split(',');
@@ -968,7 +986,11 @@ public class TransactionPersistenceService
                 Description = $"[Split: {categories[i]}] {transaction.Description}",
                 Category = "Transfer",
                 LedgerCategory = $"Transfer:Income->{categories[i]}",
-                Amount = finalCents[i] / 100m
+                Amount = finalCents[i] / 100m,
+                ExcludeFromAutocomplete = true,
+                AccountId = string.Equals(requestedAccountBucket, categories[i], StringComparison.OrdinalIgnoreCase)
+                    ? requestedAccountId
+                    : null,
             };
             await _accountResolver.ResolveMissingAsync(split, cancellationToken);
             _context.Transactions.Add(split);
@@ -1144,11 +1166,6 @@ public class TransactionPersistenceService
         transaction.AccountId = accountId;
         transaction.CounterAccountId = counterAccountId;
 
-        // A user created before the account migration can still have a short window where the
-        // account table is empty. Keep old clients writable in that state; migrated users always
-        // have one live default per bucket and therefore take the strict path below.
-        var trackingEnabled = await _context.LedgerAccounts.AnyAsync(cancellationToken);
-
         if (string.Equals(transaction.LedgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase))
         {
             if (accountId is null || counterAccountId is null || accountId == counterAccountId)
@@ -1163,8 +1180,6 @@ public class TransactionPersistenceService
                 return InvalidAccount("Both accounts in an account move must belong to the same bucket.");
             return null;
         }
-
-        if (!trackingEnabled) return null;
 
         if (LedgerAccountResolver.IsBucket(transaction.LedgerCategory) && accountId is null)
             return InvalidAccount("Choose the account that holds this bucket's money.");

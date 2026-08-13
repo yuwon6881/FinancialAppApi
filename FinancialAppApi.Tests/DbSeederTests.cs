@@ -25,6 +25,14 @@ public class DbSeederTests
             .ToList();
         Assert.Equal(10, names.Count);
         Assert.Contains("Social", names);
+        var accounts = context.LedgerAccounts.IgnoreQueryFilters().Where(account => account.UserId == UserId).ToList();
+        Assert.Equal(4, accounts.Count);
+        Assert.All(accounts, account =>
+        {
+            Assert.True(account.IsDefault);
+            Assert.False(account.IsArchived);
+            Assert.Equal(LedgerAccountKind.Other, account.Kind);
+        });
     }
 
     [Fact]

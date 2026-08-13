@@ -8,6 +8,22 @@ namespace FinancialAppApi.Tests;
 public class TransactionPersistenceServiceTests
 {
     [Fact]
+    public async Task CreateTransactionAsync_RejectsMissingBucketAccountBeforeSaving()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.TransactionCategories.AddRange(
+            new TransactionCategory { Id = "cat-other", Name = "Other" },
+            new TransactionCategory { Id = "cat-transfer", Name = "Transfer" });
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).CreateTransactionAsync(
+            NewRequest("missing-account", ledgerCategory: "Essentials") with { AccountId = null });
+
+        Assert.Equal(TransactionMutationStatus.InvalidAccount, result.Status);
+        Assert.False(await context.Transactions.AnyAsync(transaction => transaction.Id == "missing-account"));
+    }
+
+    [Fact]
     public async Task CreateTransactionAsync_RejectsAccountOutsideTheMovedBucket()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -77,6 +93,8 @@ public class TransactionPersistenceServiceTests
         Assert.Equal(TransactionMutationStatus.Created, transfer.Status);
         Assert.Equal(TransactionMutationStatus.Created, move.Status);
         Assert.Equal("rewards-account", transfer.Transaction!.CounterAccountId);
+        Assert.True(transfer.Transaction.ExcludeFromAutocomplete);
+        Assert.True(move.Transaction!.ExcludeFromAutocomplete);
         Assert.Equal(0m, CategoryAttributionService.GetCategoryAmount(move.Transaction!, "Essentials"));
     }
 
@@ -101,6 +119,42 @@ public class TransactionPersistenceServiceTests
         Assert.Equal(TransactionMutationStatus.Created, result.Status);
         Assert.Equal(5, await context.Transactions.CountAsync());
         Assert.True(await context.Transactions.AnyAsync(t => t.Id == "tx-1-split-Essentials" && t.Amount == 500m));
+        Assert.All(
+            context.Transactions.Where(t => t.Id.StartsWith("tx-1-split-")),
+            transaction => Assert.True(transaction.ExcludeFromAutocomplete));
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_PlacesTheMatchingSalaryChildInTheChosenAccount()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = "rewards-wallet",
+            Name = "Rewards wallet",
+            Bucket = "Rewards",
+            Kind = LedgerAccountKind.EWallet,
+        });
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            EssentialsAlloc = 0.50m,
+            GrowthAlloc = 0.25m,
+            StabilityAlloc = 0.15m,
+            RewardsAlloc = 0.10m,
+        });
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).CreateTransactionAsync(
+            NewRequest("salary-account", ledgerCategory: "Income", amount: 1000m) with
+            {
+                AccountId = "rewards-wallet",
+            });
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Null(result.Transaction!.AccountId);
+        Assert.Equal("rewards-wallet", context.Transactions.Single(row => row.Id == "salary-account-split-Rewards").AccountId);
+        Assert.Equal("default-essentials", context.Transactions.Single(row => row.Id == "salary-account-split-Essentials").AccountId);
     }
 
     [Fact]
@@ -901,6 +955,17 @@ public class TransactionPersistenceServiceTests
         context.TransactionCategories.AddRange(
             new TransactionCategory { Id = "cat-other", Name = "Other" },
             new TransactionCategory { Id = "cat-transfer", Name = "Transfer" });
+        foreach (var bucket in FinancialConstants.BudgetCategories)
+        {
+            context.LedgerAccounts.Add(new LedgerAccount
+            {
+                Id = $"default-{bucket.ToLowerInvariant()}",
+                Name = $"{bucket} balance",
+                Bucket = bucket,
+                Kind = LedgerAccountKind.Other,
+                IsDefault = true,
+            });
+        }
     }
 
     private static TransactionMutationRequest NewRequest(

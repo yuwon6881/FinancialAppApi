@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace FinancialAppApi.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260813082414_EnforceLedgerAccountTracking")]
-    partial class EnforceLedgerAccountTracking
+    [Migration("20260813123804_ExcludeSystemTransactionsFromAutocomplete")]
+    partial class ExcludeSystemTransactionsFromAutocomplete
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -1812,6 +1812,11 @@ namespace FinancialAppApi.Migrations
                     b.Property<string>("Description")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<bool>("ExcludeFromAutocomplete")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
 
                     b.Property<string>("LedgerCategory")
                         .IsRequired()

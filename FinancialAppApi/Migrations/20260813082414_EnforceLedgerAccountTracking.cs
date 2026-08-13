@@ -189,6 +189,15 @@ public partial class EnforceLedgerAccountTracking : Migration
             END $$;
             """);
 
+        // Rows without a bucket leg never consume account placement. Older optional clients could
+        // still send FK-valid ids here, so normalize them before the strict exempt-row branch lands.
+        migrationBuilder.Sql("""
+            UPDATE "Transactions"
+            SET "AccountId" = NULL, "CounterAccountId" = NULL
+            WHERE lower("LedgerCategory") NOT IN ('essentials', 'growth', 'stability', 'rewards', 'accountmove')
+              AND lower("LedgerCategory") NOT LIKE 'transfer:%';
+            """);
+
         migrationBuilder.AddCheckConstraint(
             name: "ck_ledgeraccounts_kind",
             table: "LedgerAccounts",
@@ -197,7 +206,7 @@ public partial class EnforceLedgerAccountTracking : Migration
         migrationBuilder.AddCheckConstraint(
             name: "ck_transactions_account_tracking",
             table: "Transactions",
-            sql: "(\"LedgerCategory\" IN ('Essentials', 'Growth', 'Stability', 'Rewards') AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (\"LedgerCategory\" = 'AccountMove' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL) OR (\"LedgerCategory\" LIKE 'Transfer:%' AND ((lower(\"LedgerCategory\") LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") NOT LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL))) OR (\"LedgerCategory\" NOT IN ('Essentials', 'Growth', 'Stability', 'Rewards', 'AccountMove') AND \"LedgerCategory\" NOT LIKE 'Transfer:%')");
+            sql: "(lower(\"LedgerCategory\") IN ('essentials', 'growth', 'stability', 'rewards') AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") = 'accountmove' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL) OR (lower(\"LedgerCategory\") LIKE 'transfer:%' AND ((lower(\"LedgerCategory\") LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") NOT LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL))) OR (lower(\"LedgerCategory\") NOT IN ('essentials', 'growth', 'stability', 'rewards', 'accountmove') AND lower(\"LedgerCategory\") NOT LIKE 'transfer:%' AND \"AccountId\" IS NULL AND \"CounterAccountId\" IS NULL)");
 
         migrationBuilder.AddForeignKey(
             name: "FK_Transactions_LedgerAccounts_UserId_AccountId",

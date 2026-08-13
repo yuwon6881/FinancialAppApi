@@ -489,6 +489,7 @@ public class SavingsGoalService
             Category = "Other",
             LedgerCategory = goal.FundingBucket,
             Amount = -previousEarmarkedAmount,
+            ExcludeFromAutocomplete = true,
             SavingsGoalId = goal.Id
         };
 

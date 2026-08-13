@@ -28,9 +28,12 @@ public class Transaction : IUserOwnedEntity
     [Required]
     public decimal Amount { get; set; }
 
-    // Denormalized placement for the bucket leg this row represents. It is deliberately not an
-    // FK: archived accounts must keep historical attribution, and the account can be removed
-    // only when no transaction references it.
+    // Stored policy for description autocomplete. This is derived from the row's structural
+    // role by the server and is not accepted as client authority.
+    public bool ExcludeFromAutocomplete { get; set; }
+
+    // Placement for the bucket leg this row represents. A same-user restrictive composite FK
+    // preserves historical attribution and prevents removal while transactions reference it.
     [StringLength(100)]
     public string? AccountId { get; set; }
 

@@ -411,6 +411,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<Services.SavingsGoals.SavingsGoalService>();
         services.AddScoped<Services.Loans.LoanService>();
         services.AddScoped<Services.Accounts.LedgerAccountBalanceService>();
+        services.AddScoped<Services.Accounts.LedgerAccountInterestService>();
         services.AddScoped<Services.Accounts.LedgerAccountResolver>();
         services.AddScoped<Services.Accounts.LedgerAccountService>();
         services.AddScoped<TransactionPersistenceService>();

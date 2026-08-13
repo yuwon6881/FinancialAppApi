@@ -290,6 +290,7 @@ public class WishlistService
             Category = "Other",
             LedgerCategory = "Rewards",
             Amount = -item.Price,
+            ExcludeFromAutocomplete = true,
             WishlistItemId = item.Id
         };
 

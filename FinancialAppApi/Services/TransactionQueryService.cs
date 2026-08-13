@@ -23,7 +23,8 @@ public sealed record TransactionProjection(
     int? SavingsGoalId,
     string? StabilityReloadStatus = null,
     string? AccountId = null,
-    string? CounterAccountId = null);
+    string? CounterAccountId = null,
+    bool ExcludeFromAutocomplete = false);
 
 public sealed record TransactionListResult(
     IReadOnlyList<TransactionProjection> Items,
@@ -112,7 +113,8 @@ public partial class TransactionQueryService
                     t.SavingsGoalId,
                     null,
                     t.AccountId,
-                    t.CounterAccountId
+                    t.CounterAccountId,
+                    t.ExcludeFromAutocomplete
                 ))
                 .ToListAsync(cancellationToken);
 
@@ -150,7 +152,8 @@ public partial class TransactionQueryService
                     t.SavingsGoalId,
                     null,
                     t.AccountId,
-                    t.CounterAccountId
+                    t.CounterAccountId,
+                    t.ExcludeFromAutocomplete
                 ))
                 .ToListAsync(cancellationToken);
             return new TransactionListResult(
@@ -189,7 +192,8 @@ public partial class TransactionQueryService
                 t.SavingsGoalId,
                 null,
                 t.AccountId,
-                t.CounterAccountId
+                t.CounterAccountId,
+                t.ExcludeFromAutocomplete
             ))
             .ToListAsync(cancellationToken);
 
@@ -235,13 +239,7 @@ public partial class TransactionQueryService
     public async Task<List<AutocompleteSuggestion>> GetAutocompleteSuggestionsAsync(CancellationToken cancellationToken = default)
     {
         var recentTxs = await _context.Transactions
-            .Where(t => t.LedgerCategory != "Discarded"
-                && !t.Id.Contains("-split-")
-                && !t.LedgerCategory.StartsWith("Transfer:Income->")
-                && t.WishlistItemId == null
-                && t.SavingsGoalId == null
-                && !t.Description.StartsWith("Purchased:")
-                && !t.Description.EndsWith("(Wish List)"))
+            .Where(t => !t.ExcludeFromAutocomplete)
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)

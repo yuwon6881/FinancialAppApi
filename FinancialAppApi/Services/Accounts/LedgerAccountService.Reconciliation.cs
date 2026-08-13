@@ -18,11 +18,20 @@ public sealed partial class LedgerAccountService
             return new(LedgerAccountMutationStatus.Invalid, "At least one account target is required.");
         if (request.Targets.Any(target => !LedgerAccountKind.IsValid(target.Kind)))
             return new(LedgerAccountMutationStatus.Invalid, "Choose a valid account kind for every row.");
+        if (request.Targets.Any(target => target.InterestFrequency is not null
+                && !LedgerAccountInterestFrequency.IsValid(target.InterestFrequency)))
+            return new(LedgerAccountMutationStatus.Invalid, "Choose a valid interest frequency for every row.");
+        if (request.Targets.Any(target => target.InterestRatePercent is < 0m or > 100m))
+            return new(LedgerAccountMutationStatus.Invalid, "Interest rate must be between 0% and 100%.");
+        if (request.Targets.Any(target => target.InterestEnabled == true
+                && (target.InterestRatePercent ?? 0m) <= 0m))
+            return new(LedgerAccountMutationStatus.Invalid, "Enter an interest rate above 0%, or choose no interest.");
 
         var bucket = FinancialConstants.BudgetCategories.First(value =>
             value.Equals(request.Bucket, StringComparison.OrdinalIgnoreCase));
         var userId = _context.RequireCurrentUserId();
         var operationKey = SanitizeOperationId(request.OperationId);
+        await ApplyDueInterestAsync(cancellationToken);
         var targets = request.Targets
             .Select(target => target with
             {
@@ -31,6 +40,12 @@ public sealed partial class LedgerAccountService
                 Kind = LedgerAccountKind.Normalize(target.Kind),
                 ExpectedCurrent = RoundMoney(target.ExpectedCurrent),
                 Target = RoundMoney(target.Target),
+                InterestRatePercent = target.InterestRatePercent is null
+                    ? null
+                    : NormalizeInterestRate(target.InterestRatePercent.Value),
+                InterestFrequency = target.InterestFrequency is null
+                    ? null
+                    : NormalizeInterestFrequency(target.InterestFrequency),
             })
             .ToList();
         if (targets.Count == 0 || targets.Any(target => string.IsNullOrWhiteSpace(target.Name)))
@@ -101,12 +116,19 @@ public sealed partial class LedgerAccountService
                         && candidate.Name.Equals(target.Name, StringComparison.OrdinalIgnoreCase));
                 if (account is null)
                 {
+                    var interest = NormalizeReconcileInterest(target);
                     account = new LedgerAccount
                     {
                         Id = target.Id ?? $"acct-{Guid.NewGuid():N}",
                         Name = target.Name,
                         Bucket = bucket,
                         Kind = target.Kind,
+                        InterestEnabled = interest.Enabled,
+                        InterestRatePercent = interest.RatePercent,
+                        InterestFrequency = interest.Frequency,
+                        InterestNextAccrualDate = interest.Enabled && !target.IsArchived
+                            ? LedgerAccountInterestFrequency.NextDate(_clock.Today, interest.Frequency)
+                            : null,
                         IsDefault = target.IsDefault,
                         IsArchived = target.IsArchived,
                         CreatedAt = DateTime.UtcNow,
@@ -123,9 +145,42 @@ public sealed partial class LedgerAccountService
                 }
                 else
                 {
+                    var wasArchived = account.IsArchived;
                     account.Name = target.Name;
                     account.Kind = target.Kind;
                     account.IsArchived = target.IsArchived;
+                    if (target.InterestEnabled.HasValue
+                        || target.InterestRatePercent.HasValue
+                        || target.InterestFrequency is not null)
+                    {
+                        var interest = NormalizeReconcileInterest(target, account);
+                        var interestChanged = account.InterestEnabled != interest.Enabled
+                            || account.InterestRatePercent != interest.RatePercent
+                            || !string.Equals(account.InterestFrequency, interest.Frequency, StringComparison.OrdinalIgnoreCase);
+                        account.InterestEnabled = interest.Enabled;
+                        account.InterestRatePercent = interest.RatePercent;
+                        account.InterestFrequency = interest.Frequency;
+                        if (!interest.Enabled || account.IsArchived)
+                        {
+                            account.InterestNextAccrualDate = null;
+                            account.InterestRemainder = 0m;
+                        }
+                        else if (interestChanged || account.InterestNextAccrualDate is null)
+                        {
+                            account.InterestNextAccrualDate = LedgerAccountInterestFrequency.NextDate(_clock.Today, interest.Frequency);
+                            account.InterestRemainder = 0m;
+                        }
+                    }
+                    if (account.IsArchived)
+                    {
+                        account.InterestNextAccrualDate = null;
+                        account.InterestRemainder = 0m;
+                    }
+                    else if (wasArchived && account.InterestEnabled && account.InterestNextAccrualDate is null)
+                    {
+                        account.InterestNextAccrualDate = LedgerAccountInterestFrequency.NextDate(_clock.Today, account.InterestFrequency);
+                        account.InterestRemainder = 0m;
+                    }
                     account.UpdatedAt = DateTime.UtcNow;
                     if (!target.IsArchived && target.IsDefault)
                     {
@@ -257,6 +312,7 @@ public sealed partial class LedgerAccountService
             Category = "Adjustment",
             LedgerCategory = bucket,
             Amount = amount,
+            ExcludeFromAutocomplete = true,
             AccountId = accountId,
             StabilityReloadIntent = StabilityReloadIntent.Unanswered,
         };
@@ -294,6 +350,7 @@ public sealed partial class LedgerAccountService
             Category = "Transfer",
             LedgerCategory = "AccountMove",
             Amount = amount,
+            ExcludeFromAutocomplete = true,
             AccountId = sourceAccountId,
             CounterAccountId = destinationAccountId,
             StabilityReloadIntent = StabilityReloadIntent.Unanswered,
@@ -323,6 +380,18 @@ public sealed partial class LedgerAccountService
 
     private static decimal RoundMoney(decimal value) =>
         Math.Round(value, 2, MidpointRounding.AwayFromZero);
+
+    private static (bool Enabled, decimal RatePercent, string Frequency) NormalizeReconcileInterest(
+        LedgerAccountReconcileTarget target,
+        LedgerAccount? existing = null)
+    {
+        var enabled = target.InterestEnabled ?? existing?.InterestEnabled ?? false;
+        var rate = target.InterestRatePercent ?? existing?.InterestRatePercent ?? 0m;
+        var frequency = target.InterestFrequency
+            ?? existing?.InterestFrequency
+            ?? LedgerAccountInterestFrequency.Monthly;
+        return (enabled, NormalizeInterestRate(rate), NormalizeInterestFrequency(frequency));
+    }
 
     private static bool NearlyEqual(decimal left, decimal right) =>
         Math.Abs(left - right) < 0.005m;

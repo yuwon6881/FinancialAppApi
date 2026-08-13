@@ -39,7 +39,8 @@ public partial class TransactionQueryService
                 stabilityReloadStatuses is not null
                     && stabilityReloadStatuses.TryGetValue(transaction.Id, out var status)
                     ? status
-                    : null))
+                    : null,
+                ExcludeFromAutocomplete: transaction.ExcludeFromAutocomplete))
             .ToList();
         return new TransactionListResult(items);
     }

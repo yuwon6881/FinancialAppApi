@@ -342,6 +342,7 @@ public class TransactionsController : ControllerBase
             RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
             WishlistItemId = t.WishlistItemId,
             SavingsGoalId = t.SavingsGoalId,
+            ExcludeFromAutocomplete = t.ExcludeFromAutocomplete,
             StabilityReloadStatus = stabilityReloadStatus
         };
     }
@@ -367,6 +368,7 @@ public class TransactionsController : ControllerBase
             RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
             WishlistItemId = t.WishlistItemId,
             SavingsGoalId = t.SavingsGoalId,
+            ExcludeFromAutocomplete = t.ExcludeFromAutocomplete,
             StabilityReloadStatus = t.StabilityReloadStatus
         };
     }
@@ -389,6 +391,7 @@ public class TransactionDto
     public string? RecurringOccurrenceDate { get; set; }
     public int? WishlistItemId { get; set; }
     public int? SavingsGoalId { get; set; }
+    public bool ExcludeFromAutocomplete { get; set; }
     public string? StabilityReloadStatus { get; set; }
 }
 

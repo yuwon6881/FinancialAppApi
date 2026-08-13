@@ -1,0 +1,131 @@
+using FinancialAppApi.Database;
+using FinancialAppApi.Models;
+using FinancialAppApi.Services;
+using FinancialAppApi.Services.Accounts;
+
+namespace FinancialAppApi.Tests;
+
+public sealed class LedgerAccountInterestServiceTests
+{
+    [Fact]
+    public async Task AccountMutationsPersistInterestSettingsAndScheduleTheNextPosting()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = new LedgerAccountService(
+            context,
+            new LedgerAccountBalanceService(context),
+            new CycleBalanceService(context),
+            FinancialClock.Utc);
+
+        var result = await service.CreateAsync(new LedgerAccountMutation(
+            "acct-configured-interest",
+            "Configured interest account",
+            "Essentials",
+            LedgerAccountKind.Bank,
+            false,
+            true,
+            InterestEnabled: true,
+            InterestRatePercent: 5m,
+            InterestFrequency: LedgerAccountInterestFrequency.Monthly));
+
+        Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
+        Assert.True(result.Account!.InterestEnabled);
+        Assert.Equal(5m, result.Account.InterestRatePercent);
+        Assert.Equal(LedgerAccountInterestFrequency.Monthly, result.Account.InterestFrequency);
+        Assert.Equal(FinancialClock.Utc.Today.AddMonths(1), result.Account.InterestNextAccrualDate);
+
+        var update = await service.UpdateAsync(
+            result.Account.Id,
+            new LedgerAccountMutation(
+                result.Account.Id,
+                result.Account.Name,
+                result.Account.Bucket,
+                result.Account.Kind,
+                false,
+                true));
+
+        Assert.Equal(LedgerAccountMutationStatus.Success, update.Status);
+        Assert.True(update.Account!.InterestEnabled);
+        Assert.Equal(5m, update.Account.InterestRatePercent);
+        Assert.Equal(LedgerAccountInterestFrequency.Monthly, update.Account.InterestFrequency);
+    }
+
+    [Fact]
+    public void CalculateAccrualUsesTheAnnualRateAndSelectedPostingFrequency()
+    {
+        var monthly = LedgerAccountInterestService.CalculateAccrual(
+            1_000m,
+            12m,
+            LedgerAccountInterestFrequency.Monthly,
+            0m);
+        var daily = LedgerAccountInterestService.CalculateAccrual(
+            1_000m,
+            12m,
+            LedgerAccountInterestFrequency.Daily,
+            0m);
+        var yearly = LedgerAccountInterestService.CalculateAccrual(
+            1_000m,
+            12m,
+            LedgerAccountInterestFrequency.Yearly,
+            0m);
+
+        Assert.Equal(10m, monthly.PostedAmount);
+        Assert.Equal(0.32m, daily.PostedAmount);
+        Assert.Equal(120m, yearly.PostedAmount);
+        Assert.True(daily.Remainder > 0m);
+    }
+
+    [Fact]
+    public async Task ApplyDueInterestPostsCatchUpRowsAndDoesNotDuplicateThem()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var today = FinancialClock.Utc.Today;
+        var account = new LedgerAccount
+        {
+            Id = "acct-interest",
+            Name = "Interest account",
+            UserId = TestHelpers.DefaultUserId,
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+            IsDefault = true,
+            InterestEnabled = true,
+            InterestRatePercent = 12m,
+            InterestFrequency = LedgerAccountInterestFrequency.Daily,
+            InterestNextAccrualDate = today.AddDays(-1),
+        };
+        context.LedgerAccounts.Add(account);
+        context.Transactions.Add(new Transaction
+        {
+            Id = "acct-interest-opening",
+            Date = TransactionDate.StartOfDate(today.AddDays(-3)),
+            Description = "Opening balance",
+            Category = "Adjustment",
+            LedgerCategory = "Essentials",
+            Amount = 1_000m,
+            AccountId = account.Id,
+        });
+        await context.SaveChangesAsync();
+
+        var service = new LedgerAccountInterestService(
+            context,
+            new LedgerAccountBalanceService(context),
+            FinancialClock.Utc);
+
+        var first = await service.ApplyDueInterestAsync();
+        var rows = context.Transactions
+            .Where(transaction => transaction.Id.StartsWith("acct-interest-interest-"))
+            .OrderBy(transaction => transaction.Date)
+            .ToList();
+
+        Assert.True(first.HasChanges);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(new[] { 0.32m, 0.33m }, rows.Select(row => row.Amount).ToArray());
+        Assert.Equal(today.AddDays(1), account.InterestNextAccrualDate);
+        Assert.True(account.InterestRemainder > 0m);
+
+        var second = await service.ApplyDueInterestAsync();
+
+        Assert.False(second.HasChanges);
+        Assert.Equal(2, context.Transactions.Count(transaction => transaction.Id.StartsWith("acct-interest-interest-")));
+    }
+}

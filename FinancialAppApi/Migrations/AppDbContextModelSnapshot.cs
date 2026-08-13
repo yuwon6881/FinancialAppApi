@@ -922,6 +922,31 @@ namespace FinancialAppApi.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("InterestEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("InterestFrequency")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasDefaultValue("Monthly");
+
+                    b.Property<DateOnly?>("InterestNextAccrualDate")
+                        .HasColumnType("date");
+
+                    b.Property<decimal>("InterestRatePercent")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("numeric(7,4)")
+                        .HasDefaultValue(0m);
+
+                    b.Property<decimal>("InterestRemainder")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("numeric(12,8)")
+                        .HasDefaultValue(0m);
+
                     b.Property<bool>("IsArchived")
                         .HasColumnType("boolean");
 
@@ -959,6 +984,12 @@ namespace FinancialAppApi.Migrations
                     b.ToTable("LedgerAccounts", t =>
                         {
                             t.HasCheckConstraint("ck_ledgeraccounts_bucket", "\"Bucket\" IN ('Essentials', 'Growth', 'Stability', 'Rewards')");
+
+                            t.HasCheckConstraint("ck_ledgeraccounts_interestfrequency", "\"InterestFrequency\" IN ('Daily', 'Monthly', 'Yearly')");
+
+                            t.HasCheckConstraint("ck_ledgeraccounts_interestrate", "\"InterestRatePercent\" >= 0 AND \"InterestRatePercent\" <= 100");
+
+                            t.HasCheckConstraint("ck_ledgeraccounts_interestremainder", "\"InterestRemainder\" >= 0");
 
                             t.HasCheckConstraint("ck_ledgeraccounts_kind", "\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'Other')");
                         });
@@ -1810,6 +1841,11 @@ namespace FinancialAppApi.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<bool>("ExcludeFromAutocomplete")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("LedgerCategory")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -1865,7 +1901,7 @@ namespace FinancialAppApi.Migrations
 
                     b.ToTable("Transactions", t =>
                         {
-                            t.HasCheckConstraint("ck_transactions_account_tracking", "(\"LedgerCategory\" IN ('Essentials', 'Growth', 'Stability', 'Rewards') AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (\"LedgerCategory\" = 'AccountMove' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL) OR (\"LedgerCategory\" LIKE 'Transfer:%' AND ((lower(\"LedgerCategory\") LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") NOT LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL))) OR (\"LedgerCategory\" NOT IN ('Essentials', 'Growth', 'Stability', 'Rewards', 'AccountMove') AND \"LedgerCategory\" NOT LIKE 'Transfer:%')");
+                            t.HasCheckConstraint("ck_transactions_account_tracking", "(lower(\"LedgerCategory\") IN ('essentials', 'growth', 'stability', 'rewards') AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") = 'accountmove' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL) OR (lower(\"LedgerCategory\") LIKE 'transfer:%' AND ((lower(\"LedgerCategory\") LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") NOT LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL))) OR (lower(\"LedgerCategory\") NOT IN ('essentials', 'growth', 'stability', 'rewards', 'accountmove') AND lower(\"LedgerCategory\") NOT LIKE 'transfer:%' AND \"AccountId\" IS NULL AND \"CounterAccountId\" IS NULL)");
 
                             t.HasCheckConstraint("ck_transactions_stabilityreloadintent", "\"StabilityReloadIntent\" IN ('Unanswered', 'Required', 'NotRequired')");
                         });

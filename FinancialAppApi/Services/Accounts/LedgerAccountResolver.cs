@@ -12,6 +12,7 @@ namespace FinancialAppApi.Services.Accounts;
 public sealed class LedgerAccountResolver
 {
     private readonly AppDbContext _context;
+    private IReadOnlyDictionary<string, string>? _defaultAccountIdByBucket;
 
     public LedgerAccountResolver(AppDbContext context)
     {
@@ -20,10 +21,21 @@ public sealed class LedgerAccountResolver
 
     public async Task ResolveMissingAsync(Transaction transaction, CancellationToken cancellationToken = default)
     {
-        var defaults = await _context.LedgerAccounts
-            .AsNoTracking()
-            .Where(account => account.IsDefault && !account.IsArchived)
-            .ToDictionaryAsync(account => account.Bucket, account => account.Id, StringComparer.OrdinalIgnoreCase, cancellationToken);
+        if (!IsBucket(transaction.LedgerCategory)
+            && !transaction.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
+            return;
+        if (_defaultAccountIdByBucket is null)
+        {
+            var rows = await _context.LedgerAccounts
+                .AsNoTracking()
+                .Where(account => account.IsDefault && !account.IsArchived)
+                .Select(account => new { account.Bucket, account.Id })
+                .ToListAsync(cancellationToken);
+            _defaultAccountIdByBucket = rows
+                .GroupBy(account => account.Bucket, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First().Id, StringComparer.OrdinalIgnoreCase);
+        }
+        var defaults = _defaultAccountIdByBucket;
 
         ResolveMissing(transaction, defaults);
     }
