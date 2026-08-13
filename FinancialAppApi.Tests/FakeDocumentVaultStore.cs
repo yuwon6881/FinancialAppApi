@@ -12,6 +12,10 @@ internal sealed class FakeDocumentVaultStore : IDocumentVaultStore
     public bool FailDeletes { get; set; }
     public bool IsConfigured { get; set; } = true;
     public int DownloadCalls { get; private set; }
+    public HashSet<string> FailedDeletePaths { get; } = new(StringComparer.Ordinal);
+    public int DeleteCalls { get; private set; }
+    public int MaxConcurrentDeletes { get; private set; }
+    private int _concurrentDeletes;
 
     public Task UploadAsync(string objectPath, byte[] data, string contentType, CancellationToken ct = default)
     {
@@ -39,12 +43,22 @@ internal sealed class FakeDocumentVaultStore : IDocumentVaultStore
         return true;
     }
 
-    public Task DeleteIfExistsAsync(string objectPath, CancellationToken ct = default)
+    public async Task DeleteIfExistsAsync(string objectPath, CancellationToken ct = default)
     {
+        DeleteCalls++;
+        var concurrent = Interlocked.Increment(ref _concurrentDeletes);
+        MaxConcurrentDeletes = Math.Max(MaxConcurrentDeletes, concurrent);
         ct.ThrowIfCancellationRequested();
-        if (FailDeletes) throw new DocumentVaultStoreException("Delete failed.");
-        Objects.Remove(objectPath);
-        return Task.CompletedTask;
+        try
+        {
+            await Task.Yield();
+            if (FailDeletes || FailedDeletePaths.Contains(objectPath)) throw new DocumentVaultStoreException("Delete failed.");
+            Objects.Remove(objectPath);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _concurrentDeletes);
+        }
     }
 }
 

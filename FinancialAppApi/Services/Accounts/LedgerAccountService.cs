@@ -60,6 +60,12 @@ public sealed class LedgerAccountService
         DateTime? throughExclusive = null) =>
         _balanceService.GetBalancesAsync(accounts, cancellationToken, throughExclusive);
 
+    public Task<LedgerAccountBalanceSnapshot> GetBalanceSnapshotAsync(
+        IReadOnlyCollection<LedgerAccount> accounts,
+        DateTime throughExclusive,
+        CancellationToken cancellationToken = default) =>
+        _balanceService.GetBalanceSnapshotAsync(accounts, throughExclusive, cancellationToken);
+
     public async Task<LedgerAccountMutationResult> CreateAsync(
         LedgerAccountMutation mutation,
         CancellationToken cancellationToken = default)
@@ -106,7 +112,7 @@ public sealed class LedgerAccountService
             _context.Transactions.Add(new Transaction
             {
                 Id = $"{account.Id}-opening",
-                Date = _clock.Today.ToDateTime(TimeOnly.MinValue),
+                Date = TransactionDate.StartOfDate(_clock.Today),
                 PostedAt = now,
                 Description = $"Opening Balance — {account.Name}",
                 Category = "Adjustment",

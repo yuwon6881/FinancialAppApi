@@ -213,6 +213,9 @@ public static class StabilityReloadLedger
             IsIncome(transaction) ? transaction.StabilityRecoveryTopUpAmount : null);
     }
 
+    public static bool CanCarryReloadStatus(Transaction transaction) =>
+        Describe(transaction, 0m) is { Change: < 0m };
+
     /// <summary>
     /// Describes the generated Stability child together with its income parent. The parent is the
     /// logical salary movement; the child is only how the persisted balance is materialized.

@@ -205,7 +205,7 @@ public partial class TransactionQueryService
         IReadOnlyList<TransactionProjection> items,
         CancellationToken cancellationToken)
     {
-        if (items.Count == 0) return items;
+        if (!items.Any(CanCarryStabilityReloadStatus)) return items;
         var statusMap = await _stabilityReloadStatusService.GetStatusMapAsync(cancellationToken);
         return items
             .Select(item => statusMap.TryGetValue(item.Id, out var status)
@@ -213,6 +213,17 @@ public partial class TransactionQueryService
                 : item)
             .ToList();
     }
+
+    internal static bool CanCarryStabilityReloadStatus(TransactionProjection item) =>
+        StabilityReloadLedger.CanCarryReloadStatus(new Transaction
+        {
+            Id = item.Id,
+            Category = item.Category,
+            LedgerCategory = item.LedgerCategory,
+            Amount = item.Amount,
+            StabilityRecoveryTopUpAmount = item.StabilityRecoveryTopUpAmount,
+            StabilityReloadIntent = item.StabilityReloadIntent,
+        });
 
     public async Task<Transaction?> GetTransactionByIdAsync(string id, CancellationToken cancellationToken = default)
     {

@@ -215,6 +215,64 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         return null;
     }
 
+    public async Task<InvestmentPlanDto> UpdatePlanAsync(
+        InvestmentPlanMutationDto value,
+        CancellationToken cancellationToken)
+    {
+        var plan = await context.InvestmentPlans.SingleOrDefaultAsync(cancellationToken);
+        if (plan is null)
+        {
+            plan = new InvestmentPlan();
+            context.InvestmentPlans.Add(plan);
+        }
+
+        plan.UsEquityTarget = value.UsEquityTarget;
+        plan.InternationalExUsTarget = value.InternationalExUsTarget;
+        plan.BondsTarget = value.BondsTarget;
+        plan.WatchDrift = value.WatchDrift;
+        plan.AlertDrift = value.AlertDrift;
+        plan.UpdatedAt = DateTime.UtcNow;
+        await context.SaveChangesAsync(cancellationToken);
+        return ToDto(plan);
+    }
+
+    public async Task<bool> UpdateAllocationSleeveAsync(
+        Guid instrumentId,
+        string? sleeve,
+        CancellationToken cancellationToken)
+    {
+        var instrument = await context.InvestmentInstruments.FindAsync([instrumentId], cancellationToken);
+        if (instrument is null) return false;
+
+        instrument.AllocationSleeve = sleeve is null
+            ? null
+            : InvestmentKinds.AllocationSleeves.Single(value =>
+                value.Equals(sleeve, StringComparison.OrdinalIgnoreCase));
+        instrument.UpdatedAt = DateTime.UtcNow;
+        await context.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task<bool> UpdateAllocationOrderAsync(
+        IReadOnlyList<Guid> instrumentIds,
+        CancellationToken cancellationToken)
+    {
+        var instruments = await context.InvestmentInstruments
+            .Where(value => instrumentIds.Contains(value.Id))
+            .ToDictionaryAsync(value => value.Id, cancellationToken);
+        if (instruments.Count != instrumentIds.Count) return false;
+
+        for (var index = 0; index < instrumentIds.Count; index++)
+        {
+            var instrument = instruments[instrumentIds[index]];
+            instrument.AllocationOrder = index;
+            instrument.UpdatedAt = DateTime.UtcNow;
+        }
+
+        await context.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
     internal static string ClassifyDrift(decimal absoluteDrift, decimal watchDrift, decimal alertDrift)
         => absoluteDrift >= alertDrift ? "Alert" : absoluteDrift >= watchDrift ? "Watch" : "OnTrack";
 

@@ -2,7 +2,6 @@ using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Database;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
-using FinancialAppApi.Services.Accounts;
 using FinancialAppApi.Services.Loans;
 
 namespace FinancialAppApi.Controllers;
@@ -39,7 +38,6 @@ public class BootstrapController : ControllerBase
     private readonly WishlistService _wishlistService;
     private readonly Services.SavingsGoals.SavingsGoalService _savingsGoalService;
     private readonly LoanService _loanService;
-    private readonly LedgerAccountService _ledgerAccountService;
 
     public BootstrapController(
         FinancialService financialService,
@@ -49,12 +47,10 @@ public class BootstrapController : ControllerBase
         TransactionCategoryService categoryService,
         WishlistService wishlistService,
         Services.SavingsGoals.SavingsGoalService savingsGoalService,
-        LoanService loanService,
-        LedgerAccountService ledgerAccountService)
+        LoanService loanService)
     {
         _savingsGoalService = savingsGoalService;
         _loanService = loanService;
-        _ledgerAccountService = ledgerAccountService;
         _financialService = financialService;
         _transactionQueryService = transactionQueryService;
         _recurringPaymentService = recurringPaymentService;
@@ -96,13 +92,21 @@ public class BootstrapController : ControllerBase
             snapshot.Cycle,
             cancellationToken);
 
-        var stabilityReloadStatuses = await _transactionQueryService.GetStabilityReloadStatusMapAsync(cancellationToken);
         var transactions = TransactionQueryService.ProjectCycleTransactions(
             snapshot.CycleRelevantTransactions,
             snapshot.Cycle.ActiveYear,
             snapshot.Cycle.ActiveMonthIndex,
-            snapshot.Cycle.CycleDay,
-            stabilityReloadStatuses);
+            snapshot.Cycle.CycleDay);
+        if (transactions.Items.Any(TransactionQueryService.CanCarryStabilityReloadStatus))
+        {
+            var stabilityReloadStatuses = await _transactionQueryService.GetStabilityReloadStatusMapAsync(cancellationToken);
+            transactions = TransactionQueryService.ProjectCycleTransactions(
+                snapshot.CycleRelevantTransactions,
+                snapshot.Cycle.ActiveYear,
+                snapshot.Cycle.ActiveMonthIndex,
+                snapshot.Cycle.CycleDay,
+                stabilityReloadStatuses);
+        }
 
         var recurringPayments = await RecurringPaymentsController.BuildRecurringPaymentDtosAsync(
             _recurringPaymentService, _payEarlyService, cancellationToken);
@@ -118,8 +122,8 @@ public class BootstrapController : ControllerBase
         }
         var autocomplete = await _transactionQueryService.GetAutocompleteSuggestionsAsync(cancellationToken);
         var walletBalance = await _financialService.GetWalletBalanceAsync(snapshot, cancellationToken);
-        var accounts = await _ledgerAccountService.GetAccountsAsync(cancellationToken);
-        var accountBalances = await _ledgerAccountService.GetBalancesAsync(accounts, cancellationToken);
+        var accounts = snapshot.LedgerAccounts;
+        var accountBalances = snapshot.LedgerAccountBalances.Current;
 
         return Ok(new
         {

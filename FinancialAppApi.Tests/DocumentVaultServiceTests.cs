@@ -424,6 +424,28 @@ public class DocumentVaultServiceTests
     }
 
     [Fact]
+    public async Task DeleteManyAsync_PreservesOrderAndRowsWhoseStorageDeleteFails()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        context.VaultDocuments.AddRange(VaultDocumentForYear(2026, 1), VaultDocumentForYear(2026, 2));
+        await context.SaveChangesAsync();
+        var store = new FakeDocumentVaultStore();
+        store.FailedDeletePaths.Add("test-user/2026/2.pdf");
+
+        var results = await NewService(context, store).DeleteManyAsync([999, 2, 1]);
+
+        Assert.Equal([999, 2, 1], results.Select(result => result.Id));
+        Assert.Equal(DocumentDeleteOutcome.AlreadyGone, results[0].Outcome);
+        Assert.Equal(DocumentDeleteOutcome.StorageFailed, results[1].Outcome);
+        Assert.Equal(DocumentDeleteOutcome.Deleted, results[2].Outcome);
+        Assert.NotNull(await context.VaultDocuments.FindAsync(2));
+        Assert.Null(await context.VaultDocuments.FindAsync(1));
+        Assert.Equal(2, store.DeleteCalls);
+        Assert.InRange(store.MaxConcurrentDeletes, 1, 4);
+    }
+
+    [Fact]
     public async Task WriteZipAsync_FailsWhenAStoredObjectIsMissing()
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");

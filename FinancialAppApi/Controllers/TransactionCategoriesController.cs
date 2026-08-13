@@ -35,6 +35,22 @@ public class TransactionCategoriesController : ControllerBase
         return Ok(categories.Select(ToResponse).ToList());
     }
 
+    [HttpGet("usage")]
+    public async Task<ActionResult<IReadOnlyList<TransactionCategoryUsage>>> GetUsage(
+        [FromQuery] string? startDate,
+        [FromQuery] string? endDate,
+        CancellationToken cancellationToken)
+    {
+        if (!TransactionDate.TryParseInputDate(startDate, out var start)
+            || !TransactionDate.TryParseInputDate(endDate, out var end)
+            || start > end)
+        {
+            return BadRequest(new { message = "Start date and end date must be valid dates in chronological order." });
+        }
+
+        return Ok(await _categoryService.GetUsageAsync(start, end, cancellationToken));
+    }
+
     // POST: api/categories
     [HttpPost]
     public async Task<ActionResult<TransactionCategory>> PostCategory(TransactionCategoryMutationDto dto)

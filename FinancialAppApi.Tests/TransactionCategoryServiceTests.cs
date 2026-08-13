@@ -8,6 +8,38 @@ namespace FinancialAppApi.Tests;
 public class TransactionCategoryServiceTests
 {
     [Fact]
+    public async Task GetUsageAsync_GroupsNormalizedNamesAcrossTheInclusiveRangeWithoutAPageLimit()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(Enumerable.Range(0, 501).Select(index => new Transaction
+        {
+            Id = $"usage-{index}",
+            Date = new DateTime(2026, 7, index % 2 == 0 ? 1 : 31, 12, 0, 0, DateTimeKind.Utc),
+            PostedAt = DateTime.UtcNow.AddSeconds(index),
+            Description = "Usage",
+            Category = index % 2 == 0 ? " Food " : "FOOD",
+            LedgerCategory = "Essentials",
+            Amount = -1m,
+        }));
+        context.Transactions.Add(new Transaction
+        {
+            Id = "discarded-usage",
+            Date = new DateTime(2026, 7, 15, 0, 0, 0, DateTimeKind.Utc),
+            PostedAt = DateTime.UtcNow,
+            Description = "Discarded",
+            Category = "Food",
+            LedgerCategory = "Discarded",
+        });
+        await context.SaveChangesAsync();
+
+        var usage = await NewService(context).GetUsageAsync(new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
+
+        var result = Assert.Single(usage);
+        Assert.Equal("food", result.CategoryKey);
+        Assert.Equal(501, result.Count);
+    }
+
+    [Fact]
     public async Task GetCategoriesAsync_ReturnsEmptyCollectionWhenThereAreNoCategories()
     {
         await using var context = TestHelpers.NewInMemoryContext();

@@ -26,6 +26,35 @@ public sealed class InvestmentAllocationServiceTests
     }
 
     [Fact]
+    public async Task AllocationMutationsPersistThroughTheDomainService()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var first = Instrument("AAA", null);
+        var second = Instrument("BBB", null);
+        context.InvestmentInstruments.AddRange(first, second);
+        await context.SaveChangesAsync();
+        var service = new InvestmentAllocationService(context);
+
+        var plan = await service.UpdatePlanAsync(
+            new InvestmentPlanMutationDto(60, 15, 25, 4, 7),
+            CancellationToken.None);
+        var sleeveUpdated = await service.UpdateAllocationSleeveAsync(
+            first.Id,
+            "usequity",
+            CancellationToken.None);
+        var orderUpdated = await service.UpdateAllocationOrderAsync(
+            [second.Id, first.Id],
+            CancellationToken.None);
+
+        Assert.Equal(60, plan.UsEquityTarget);
+        Assert.True(sleeveUpdated);
+        Assert.True(orderUpdated);
+        Assert.Equal("USEquity", first.AllocationSleeve);
+        Assert.Equal(1, first.AllocationOrder);
+        Assert.Equal(0, second.AllocationOrder);
+    }
+
+    [Fact]
     public async Task Allocation_AggregatesAccounts_ExcludesCashAndUsesCashBeforeContribution()
     {
         await using var context = TestHelpers.NewInMemoryContext();

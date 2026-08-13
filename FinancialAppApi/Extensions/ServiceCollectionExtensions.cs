@@ -457,6 +457,7 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<MarketDataProviderRegistry>().ActiveProvider);
         services.AddScoped<InvestmentAccountingService>();
         services.AddScoped<InvestmentHistoryValidationService>();
+        services.AddScoped<InvestmentQueryService>();
         services.AddScoped<InvestmentPortfolioService>();
         services.AddScoped<InstrumentHistoryService>();
         services.AddScoped<InvestmentMarketDataService>();

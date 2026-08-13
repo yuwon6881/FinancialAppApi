@@ -16,6 +16,7 @@ public sealed class InvestmentsController(
     InvestmentAccountingService accountingService,
     InvestmentHistoryValidationService historyValidationService,
     InstrumentHistoryService instrumentHistoryService,
+    InvestmentQueryService queryService,
     InvestmentMarketDataService marketDataService,
     IMarketDataProvider marketDataProvider) : ControllerBase
 {
@@ -41,9 +42,7 @@ public sealed class InvestmentsController(
 
     [HttpGet("accounts")]
     public async Task<ActionResult<IReadOnlyList<InvestmentAccount>>> GetAccounts()
-        => Ok(await context.InvestmentAccounts.AsNoTracking()
-            .OrderBy(value => value.IsArchived).ThenBy(value => value.Name).ThenBy(value => value.Id)
-            .ToListAsync(HttpContext.RequestAborted));
+        => Ok(await queryService.GetAccountsAsync(HttpContext.RequestAborted));
 
     [HttpGet("currencies")]
     public ActionResult<IReadOnlyList<CurrencyCatalogItem>> GetCurrencies()
@@ -60,20 +59,8 @@ public sealed class InvestmentsController(
         [FromQuery] int pageSize = 10)
     {
         if (!ValidPage(page, pageSize)) return BadRequest(new { message = "Page must be positive and page size must be 10, 25, or 50." });
-        var query = context.InvestmentTransactions.AsNoTracking();
-        if (accountId is not null) query = query.Where(value => value.AccountId == accountId);
-        if (instrumentId is not null) query = query.Where(value => value.InstrumentId == instrumentId);
-        if (!string.IsNullOrWhiteSpace(type)) query = query.Where(value => value.Type == type);
-        if (from is not null) query = query.Where(value => value.TradeDate >= from);
-        if (to is not null) query = query.Where(value => value.TradeDate <= to);
-        var total = await query.CountAsync(HttpContext.RequestAborted);
-        var rows = await query.OrderByDescending(value => value.TradeDate)
-            .ThenByDescending(value => value.CreatedAt)
-            .ThenByDescending(value => value.Id)
-            .Skip((page - 1) * pageSize).Take(pageSize)
-            .ToListAsync(HttpContext.RequestAborted);
-        var items = rows.Select(InvestmentPortfolioService.ToDto).ToList();
-        return Ok(new PagedResult<InvestmentTransactionDto>(items, total, page, pageSize));
+        return Ok(await queryService.GetTransactionsAsync(
+            accountId, instrumentId, type, from, to, page, pageSize, HttpContext.RequestAborted));
     }
 
     [HttpGet("cash-flows")]
@@ -86,19 +73,8 @@ public sealed class InvestmentsController(
         [FromQuery] int pageSize = 10)
     {
         if (!ValidPage(page, pageSize)) return BadRequest(new { message = "Page must be positive and page size must be 10, 25, or 50." });
-        var query = context.InvestmentCashFlows.AsNoTracking();
-        if (accountId is not null) query = query.Where(value => value.AccountId == accountId);
-        if (!string.IsNullOrWhiteSpace(type)) query = query.Where(value => value.Type == type);
-        if (from is not null) query = query.Where(value => value.Date >= from);
-        if (to is not null) query = query.Where(value => value.Date <= to);
-        var total = await query.CountAsync(HttpContext.RequestAborted);
-        var rows = await query.OrderByDescending(value => value.Date)
-            .ThenByDescending(value => value.CreatedAt)
-            .ThenByDescending(value => value.Id)
-            .Skip((page - 1) * pageSize).Take(pageSize)
-            .ToListAsync(HttpContext.RequestAborted);
-        var items = rows.Select(InvestmentPortfolioService.ToDto).ToList();
-        return Ok(new PagedResult<InvestmentCashFlowDto>(items, total, page, pageSize));
+        return Ok(await queryService.GetCashFlowsAsync(
+            accountId, type, from, to, page, pageSize, HttpContext.RequestAborted));
     }
 
     [HttpPost("accounts")]
@@ -813,5 +789,4 @@ public sealed record CashFlowMutationDto(
     decimal? ToAmount = null,
     DateTime? CreatedAt = null);
 
-public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
 public sealed record DeletedTransactionsSnapshot(IReadOnlyList<InvestmentTransactionDto> Transactions);

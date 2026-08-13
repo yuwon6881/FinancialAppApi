@@ -49,6 +49,12 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         Assert.Equal(originalBytes.Length, usage.GetProperty("totalBytes").GetInt64());
         Assert.Equal(1, usage.GetProperty("documentCount").GetInt32());
 
+        var overview = await client.GetFromJsonAsync<JsonElement>("/api/documents/overview");
+        Assert.Equal(2026, overview.GetProperty("selectedTaxYear").GetInt32());
+        Assert.Equal(1, overview.GetProperty("usage").GetProperty("documentCount").GetInt32());
+        Assert.Equal([2026], overview.GetProperty("availableYears").EnumerateArray().Select(year => year.GetInt32()));
+        Assert.Single(overview.GetProperty("reliefCategories").EnumerateArray());
+
         var downloadResponse = await client.GetAsync($"/api/documents/{documentId}/content");
         Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
         Assert.Equal(originalBytes, await downloadResponse.Content.ReadAsByteArrayAsync());

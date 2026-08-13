@@ -13,12 +13,36 @@ namespace FinancialAppApi.Tests;
 
 public sealed class PerformanceQueryCountTests
 {
-    // Settings, active payments, cycle-relevant transactions, and the recurring-occurrence
-    // ledger -- four reads, each of a distinct shared table, and no repeats. The ledger's
+    [Fact]
+    public async Task OrdinaryTransactionPage_SkipsFullHistoryStabilityReplay()
+    {
+        await using var fixture = await SqliteFixture.CreateAsync();
+        fixture.Context.Transactions.Add(new Transaction
+        {
+            Id = "ordinary-page-row",
+            Date = TransactionDate.StartOfDate(new DateOnly(2026, 7, 10)),
+            PostedAt = DateTime.UtcNow,
+            Description = "Coffee",
+            Category = "Food",
+            LedgerCategory = "Rewards",
+            Amount = -5m,
+        });
+        await fixture.Context.SaveChangesAsync();
+        fixture.Counter.Reset();
+
+        var result = await new TransactionQueryService(fixture.Context).GetTransactionsAsync(
+            all: true, page: 1, pageSize: 10);
+
+        Assert.Single(result.Items);
+        Assert.Equal(2, fixture.Counter.CommandCount);
+    }
+
+    // Settings, active payments, cycle transactions, occurrence ledger, accounts, and the full
+    // account-attribution history -- six reads, each of a distinct shared input, and no repeats. The ledger's
     // backfill deliberately reuses the transactions already loaded here rather than scanning
     // them a second time; that reuse is what keeps this at four rather than five.
     [Fact]
-    public async Task BootstrapSnapshot_LoadsSharedCoreDataInFourQueries()
+    public async Task BootstrapSnapshot_LoadsSharedCoreDataInSixQueries()
     {
         await using var fixture = await SqliteFixture.CreateAsync();
         fixture.Context.FinancialSettings.Add(new FinancialSetting
@@ -27,6 +51,14 @@ public sealed class PerformanceQueryCountTests
             SelectedMonth = "Jul",
             SelectedYear = 2026,
             CycleDay = 1
+        });
+        fixture.Context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = "acct-essentials",
+            Name = "Everyday",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+            IsDefault = true,
         });
         await fixture.Context.SaveChangesAsync();
         fixture.Counter.Reset();
@@ -47,7 +79,7 @@ public sealed class PerformanceQueryCountTests
             persistSelection: false,
             CancellationToken.None);
 
-        Assert.Equal(4, fixture.Counter.CommandCount);
+        Assert.Equal(6, fixture.Counter.CommandCount);
     }
 
     // The full dashboard reuses the snapshot's settings and active recurring payments when it

@@ -46,6 +46,8 @@ public sealed record UpdateCategoryCycleLimitResult(
     TransactionCategory? Category = null,
     string? Message = null);
 
+public sealed record TransactionCategoryUsage(string CategoryKey, int Count);
+
 public class TransactionCategoryService
 {
     // The category table has ~10 rows and changes rarely, but is read on nearly every
@@ -83,6 +85,25 @@ public class TransactionCategoryService
         }
 
         return categories!;
+    }
+
+    public async Task<IReadOnlyList<TransactionCategoryUsage>> GetUsageAsync(
+        DateOnly startDate,
+        DateOnly endDate,
+        CancellationToken cancellationToken = default)
+    {
+        var start = TransactionDate.StartOfDate(startDate);
+        var endExclusive = TransactionDate.ExclusiveEndOfDate(endDate);
+        var usage = await _context.Transactions
+            .AsNoTracking()
+            .Where(transaction => transaction.LedgerCategory != "Discarded"
+                && transaction.Date >= start
+                && transaction.Date < endExclusive)
+            .GroupBy(transaction => transaction.Category.Trim().ToLower())
+            .Select(group => new { CategoryKey = group.Key, Count = group.Count() })
+            .OrderBy(row => row.CategoryKey)
+            .ToListAsync(cancellationToken);
+        return usage.Select(row => new TransactionCategoryUsage(row.CategoryKey, row.Count)).ToList();
     }
 
     public async Task<CreateTransactionCategoryResult> CreateCategoryAsync(TransactionCategory category)

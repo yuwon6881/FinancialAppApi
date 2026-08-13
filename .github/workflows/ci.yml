@@ -23,3 +23,4 @@ jobs:
       - run: |
           dotnet tool install --global dotnet-ef
           dotnet ef migrations list --project FinancialAppApi --startup-project FinancialAppApi
+          dotnet ef migrations has-pending-model-changes --project FinancialAppApi --startup-project FinancialAppApi

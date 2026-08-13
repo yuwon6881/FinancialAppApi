@@ -282,6 +282,34 @@ public class DocumentsController : ControllerBase
     public async Task<IActionResult> GetAvailableTaxYears(CancellationToken ct) =>
         Ok(await _service.GetAvailableTaxYearsAsync(ct));
 
+    [HttpGet("overview")]
+    public async Task<IActionResult> GetOverview([FromQuery] int? taxYear, CancellationToken ct)
+    {
+        if (taxYear.HasValue && !_service.IsTaxYearAllowed(taxYear.Value))
+            return BadRequest(new { message = _service.TaxYearValidationMessage });
+
+        var availableYears = await _service.GetAvailableTaxYearsAsync(ct);
+        var selectedTaxYear = taxYear ?? availableYears.FirstOrDefault();
+        var usage = await _service.GetUsageAsync(ct);
+        var retention = await _retentionService.GetReviewAsync(ct);
+        var summary = selectedTaxYear == 0
+            ? null
+            : await _service.GetTaxYearSummaryAsync(selectedTaxYear, ct);
+        var reliefCategories = selectedTaxYear == 0
+            ? []
+            : await _service.GetReliefCategoriesAsync(selectedTaxYear, ct);
+
+        return Ok(new
+        {
+            usage,
+            availableYears,
+            retention,
+            selectedTaxYear = selectedTaxYear == 0 ? (int?)null : selectedTaxYear,
+            summary,
+            reliefCategories,
+        });
+    }
+
     [HttpGet("constraints")]
     public IActionResult GetConstraints() => Ok(_service.GetConstraints());
 
@@ -412,10 +440,10 @@ public class DocumentsController : ControllerBase
         if (ids.Count == 0) return BadRequest(new { message = "Choose at least one document." });
         if (ids.Count > 100) return BadRequest(new { message = "Delete at most 100 documents at a time." });
 
+        var outcomes = await _service.DeleteManyAsync(ids, ct);
         var results = new List<object>();
-        foreach (var id in ids)
+        foreach (var (id, outcome) in outcomes)
         {
-            var outcome = await _service.DeleteAsync(id, ct);
             // `deleted` stays true for an id that was already gone, so a replay still reads as
             // success and the client clears the row — but the message says which it was, so the
             // count in the toast is not quietly inflated by rows nobody removed.

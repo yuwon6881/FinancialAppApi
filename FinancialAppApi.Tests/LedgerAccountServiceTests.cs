@@ -16,13 +16,15 @@ public class LedgerAccountServiceTests
         string id,
         string name,
         bool isDefault = false,
-        bool isArchived = false) => new(
+        bool isArchived = false,
+        decimal openingAmount = 0m) => new(
         id,
         name,
         "Essentials",
         LedgerAccountKind.Bank,
         isArchived,
-        isDefault);
+        isDefault,
+        openingAmount);
 
     [Fact]
     public async Task FirstAccountInABucketBecomesDefaultAndSecondDoesNot()
@@ -35,6 +37,19 @@ public class LedgerAccountServiceTests
 
         Assert.True(first.Account!.IsDefault);
         Assert.False(second.Account!.IsDefault);
+    }
+
+    [Fact]
+    public async Task OpeningBalanceUsesUtcTransactionDate()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+
+        var result = await service.CreateAsync(Mutation("acct-opening", "Main bank", openingAmount: 125m));
+
+        Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
+        var openingTransaction = context.Transactions.Single(transaction => transaction.Id == "acct-opening-opening");
+        Assert.Equal(DateTimeKind.Utc, openingTransaction.Date.Kind);
     }
 
     [Fact]

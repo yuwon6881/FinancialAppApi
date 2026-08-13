@@ -36,7 +36,9 @@ public class FinancialService
         FinancialCycleContext Cycle,
         List<RecurringPayment> ActiveRecurringPayments,
         List<RecurringPaymentOccurrence> RecurringOccurrences,
-        List<Transaction> CycleRelevantTransactions);
+        List<Transaction> CycleRelevantTransactions,
+        IReadOnlyList<LedgerAccount> LedgerAccounts,
+        LedgerAccountBalanceSnapshot LedgerAccountBalances);
 
     private sealed record ActiveRecurringItem(
         string id,
@@ -188,11 +190,19 @@ public class FinancialService
             cycleRelevantTransactions,
             cancellationToken);
 
+        var ledgerAccounts = await _ledgerAccountService.GetAccountsAsync(cancellationToken);
+        var ledgerAccountBalances = await _ledgerAccountService.GetBalanceSnapshotAsync(
+            ledgerAccounts,
+            activeRangeEndExclusive,
+            cancellationToken);
+
         return new FinancialBootstrapSnapshot(
             cycle,
             activeRecurringPayments,
             recurringOccurrences,
-            cycleRelevantTransactions);
+            cycleRelevantTransactions,
+            ledgerAccounts,
+            ledgerAccountBalances);
     }
 
     internal async Task<object> GetDashboardDataAsync(
@@ -321,11 +331,8 @@ public class FinancialService
         var incomeAllocatedStability = ReportMetricsCalculator.IncomeAllocatedTo(activeCycleTxs, "Stability");
         var incomeAllocatedRewards = ReportMetricsCalculator.IncomeAllocatedTo(activeCycleTxs, "Rewards");
 
-        var ledgerAccounts = await _ledgerAccountService.GetAccountsAsync(cancellationToken);
-        var ledgerAccountBalances = await _ledgerAccountService.GetBalancesAsync(
-            ledgerAccounts,
-            cancellationToken,
-            activeRangeEndExclusive);
+        var ledgerAccounts = snapshot.LedgerAccounts;
+        var ledgerAccountBalances = snapshot.LedgerAccountBalances.ThroughExclusive;
         object AccountsFor(string bucket) => ledgerAccounts
             .Where(account => string.Equals(account.Bucket, bucket, StringComparison.OrdinalIgnoreCase))
             .Select(account => new
