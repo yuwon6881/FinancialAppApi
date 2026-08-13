@@ -14,6 +14,10 @@ public sealed partial class LedgerAccountService
             return new(LedgerAccountMutationStatus.Invalid, "Choose a valid ledger bucket.");
         if (string.IsNullOrWhiteSpace(request.OperationId) || request.OperationId.Trim().Length > 80)
             return new(LedgerAccountMutationStatus.Invalid, "The reconciliation operation id is invalid.");
+        if (request.Targets is null || request.Targets.Count == 0)
+            return new(LedgerAccountMutationStatus.Invalid, "At least one account target is required.");
+        if (request.Targets.Any(target => !LedgerAccountKind.IsValid(target.Kind)))
+            return new(LedgerAccountMutationStatus.Invalid, "Choose a valid account kind for every row.");
 
         var bucket = FinancialConstants.BudgetCategories.First(value =>
             value.Equals(request.Bucket, StringComparison.OrdinalIgnoreCase));

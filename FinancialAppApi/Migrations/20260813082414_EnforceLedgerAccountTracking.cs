@@ -226,6 +226,7 @@ public partial class EnforceLedgerAccountTracking : Migration
             table: "Transactions");
         migrationBuilder.DropCheckConstraint("ck_transactions_account_tracking", "Transactions");
         migrationBuilder.DropCheckConstraint("ck_ledgeraccounts_kind", "LedgerAccounts");
+        migrationBuilder.Sql("UPDATE \"LedgerAccounts\" SET \"Kind\" = 'Bank' WHERE \"Kind\" = 'Other';");
         migrationBuilder.AddCheckConstraint(
             name: "ck_ledgeraccounts_kind",
             table: "LedgerAccounts",
