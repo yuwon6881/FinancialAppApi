@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Accounts;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
@@ -50,6 +51,7 @@ public class TransactionPersistenceService
     private readonly Stability.StabilityPlanRevisionService _stabilityPlanRevisionService;
     private readonly RecurringOccurrenceLedgerService _occurrenceLedger;
     private readonly FinancialClock _clock;
+    private readonly LedgerAccountResolver _accountResolver;
 
     public TransactionPersistenceService(
         AppDbContext context,
@@ -58,7 +60,8 @@ public class TransactionPersistenceService
         Stability.StabilityRecoveryService stabilityRecoveryService,
         RecurringOccurrenceLedgerService? occurrenceLedger = null,
         FinancialClock? clock = null,
-        Stability.StabilityPlanRevisionService? stabilityPlanRevisionService = null)
+        Stability.StabilityPlanRevisionService? stabilityPlanRevisionService = null,
+        LedgerAccountResolver? accountResolver = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
@@ -68,6 +71,7 @@ public class TransactionPersistenceService
             ?? new Stability.StabilityPlanRevisionService(context);
         _clock = clock ?? FinancialClock.Utc;
         _occurrenceLedger = occurrenceLedger ?? new RecurringOccurrenceLedgerService(context, occurrenceService, _clock);
+        _accountResolver = accountResolver ?? new LedgerAccountResolver(context);
     }
 
     public async Task<TransactionMutationResult> CreateTransactionAsync(
@@ -122,6 +126,7 @@ public class TransactionPersistenceService
             AccountId = NormalizeOptionalId(request.AccountId),
             CounterAccountId = NormalizeOptionalId(request.CounterAccountId),
         };
+        await _accountResolver.ResolveMissingAsync(transaction, cancellationToken);
         var accountValidation = await ValidateAccountReferencesAsync(transaction, cancellationToken);
         if (accountValidation is not null) return accountValidation;
         var occurrence = await ResolveRecurringOccurrenceDateAsync(
@@ -187,7 +192,7 @@ public class TransactionPersistenceService
             document.TransactionId = transaction.Id;
             document.DetachedFromTransactionId = null;
         }
-        AddIncomeSplitTransactions(transaction, splitSpec);
+        await AddIncomeSplitTransactionsAsync(transaction, splitSpec, cancellationToken);
         await ApplyWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
         try
@@ -311,9 +316,20 @@ public class TransactionPersistenceService
             Category = ledgerValidation.Category,
             LedgerCategory = ledgerValidation.LedgerCategory,
             Amount = amount,
-            AccountId = NormalizeOptionalId(request.AccountId),
-            CounterAccountId = NormalizeOptionalId(request.CounterAccountId),
+            AccountId = ResolveUpdatedAccountId(
+                request.AccountId,
+                transaction.AccountId,
+                transaction.LedgerCategory,
+                ledgerValidation.LedgerCategory,
+                counter: false),
+            CounterAccountId = ResolveUpdatedAccountId(
+                request.CounterAccountId,
+                transaction.CounterAccountId,
+                transaction.LedgerCategory,
+                ledgerValidation.LedgerCategory,
+                counter: true),
         };
+        await _accountResolver.ResolveMissingAsync(accountProbe, cancellationToken);
         var accountValidation = await ValidateAccountReferencesAsync(accountProbe, cancellationToken);
         if (accountValidation is not null) return accountValidation;
 
@@ -360,7 +376,7 @@ public class TransactionPersistenceService
         {
             _context.Transactions.RemoveRange(existingSplits);
             var splitSpec = ResolveIncomeSplitSpec(transaction, splitContext);
-            AddIncomeSplitTransactions(transaction, splitSpec);
+            await AddIncomeSplitTransactionsAsync(transaction, splitSpec, cancellationToken);
         }
         await ApplyWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
@@ -889,7 +905,10 @@ public class TransactionPersistenceService
         return true;
     }
 
-    private void AddIncomeSplitTransactions(Transaction transaction, string splitSpec)
+    private async Task AddIncomeSplitTransactionsAsync(
+        Transaction transaction,
+        string splitSpec,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(splitSpec)) return;
 
@@ -941,7 +960,7 @@ public class TransactionPersistenceService
         for (var i = 0; i < finalCents.Length; i++)
         {
             if (finalCents[i] <= 0) continue;
-            _context.Transactions.Add(new Transaction
+            var split = new Transaction
             {
                 Id = $"{transaction.Id}-split-{categories[i]}",
                 Date = transaction.Date,
@@ -950,7 +969,9 @@ public class TransactionPersistenceService
                 Category = "Transfer",
                 LedgerCategory = $"Transfer:Income->{categories[i]}",
                 Amount = finalCents[i] / 100m
-            });
+            };
+            await _accountResolver.ResolveMissingAsync(split, cancellationToken);
+            _context.Transactions.Add(split);
         }
     }
 
@@ -1123,6 +1144,11 @@ public class TransactionPersistenceService
         transaction.AccountId = accountId;
         transaction.CounterAccountId = counterAccountId;
 
+        // A user created before the account migration can still have a short window where the
+        // account table is empty. Keep old clients writable in that state; migrated users always
+        // have one live default per bucket and therefore take the strict path below.
+        var trackingEnabled = await _context.LedgerAccounts.AnyAsync(cancellationToken);
+
         if (string.Equals(transaction.LedgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase))
         {
             if (accountId is null || counterAccountId is null || accountId == counterAccountId)
@@ -1138,10 +1164,28 @@ public class TransactionPersistenceService
             return null;
         }
 
-        var validBuckets = GetTransactionBuckets(transaction.LedgerCategory);
+        if (!trackingEnabled) return null;
+
+        if (LedgerAccountResolver.IsBucket(transaction.LedgerCategory) && accountId is null)
+            return InvalidAccount("Choose the account that holds this bucket's money.");
+
         if (counterAccountId is not null
             && !transaction.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
             return InvalidAccount("A counter account is only valid for a bucket transfer or account move.");
+        if (transaction.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
+        {
+            var transferParts = transaction.LedgerCategory["Transfer:".Length..].Split("->", StringSplitOptions.None);
+            if (transferParts.Length == 2)
+            {
+                var source = transferParts[0].Trim();
+                var target = transferParts[1].Trim();
+                if (LedgerAccountResolver.IsBucket(source) && accountId is null)
+                    return InvalidAccount("Choose the account sending the money.");
+                if (LedgerAccountResolver.IsBucket(target)
+                    && (source.Equals("Income", StringComparison.OrdinalIgnoreCase) ? accountId is null : counterAccountId is null))
+                    return InvalidAccount("Choose the account receiving the money.");
+            }
+        }
         if (accountId is null && counterAccountId is null) return null;
         if (accountId is not null && counterAccountId is not null && accountId == counterAccountId)
             return InvalidAccount("The source and destination accounts must be different.");
@@ -1156,31 +1200,69 @@ public class TransactionPersistenceService
             .ToListAsync(cancellationToken);
         if (accountRows.Count != accountIds.Count || accountRows.Any(account => account.IsArchived))
             return InvalidAccount("The selected account is not available.");
-        if (validBuckets.Count > 0 && accountRows.Any(account => !validBuckets.Contains(account.Bucket, StringComparer.OrdinalIgnoreCase)))
+        if (LedgerAccountResolver.IsBucket(transaction.LedgerCategory)
+            && accountRows.Any(account => !account.Bucket.Equals(transaction.LedgerCategory, StringComparison.OrdinalIgnoreCase)))
             return InvalidAccount("The selected account must belong to the transaction's ledger bucket.");
-        return null;
-    }
 
-    private static IReadOnlyList<string> GetTransactionBuckets(string ledgerCategory)
-    {
-        if (FinancialConstants.BudgetCategories.Contains(ledgerCategory, StringComparer.OrdinalIgnoreCase))
-            return [FinancialConstants.BudgetCategories.First(bucket => bucket.Equals(ledgerCategory, StringComparison.OrdinalIgnoreCase))];
-        if (ledgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
+        if (transaction.LedgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
         {
-            var parts = ledgerCategory["Transfer:".Length..].Split("->", StringSplitOptions.None);
-            return parts
-                .Select(part => FinancialConstants.BudgetCategories.FirstOrDefault(bucket =>
-                    bucket.Equals(part.Trim(), StringComparison.OrdinalIgnoreCase)))
-                .Where(bucket => bucket is not null)
-                .Select(bucket => bucket!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            var parts = transaction.LedgerCategory["Transfer:".Length..].Split("->", StringSplitOptions.None);
+            if (parts.Length == 2)
+            {
+                var source = parts[0].Trim();
+                var target = parts[1].Trim();
+                var account = accountRows.FirstOrDefault(row => row.Id == accountId);
+                var counter = accountRows.FirstOrDefault(row => row.Id == counterAccountId);
+                if (LedgerAccountResolver.IsBucket(source)
+                    && (account is null || !account.Bucket.Equals(source, StringComparison.OrdinalIgnoreCase)))
+                    return InvalidAccount("The sending account must belong to the source bucket.");
+                if (LedgerAccountResolver.IsBucket(target)
+                    && !source.Equals("Income", StringComparison.OrdinalIgnoreCase)
+                    && (counter is null || !counter.Bucket.Equals(target, StringComparison.OrdinalIgnoreCase)))
+                    return InvalidAccount("The receiving account must belong to the target bucket.");
+                if (source.Equals("Income", StringComparison.OrdinalIgnoreCase)
+                    && (account is null || !account.Bucket.Equals(target, StringComparison.OrdinalIgnoreCase)))
+                    return InvalidAccount("The receiving account must belong to the target bucket.");
+            }
         }
-        return [];
+        return null;
     }
 
     private static string? NormalizeOptionalId(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string? ResolveUpdatedAccountId(
+        string? requestedId,
+        string? existingId,
+        string existingLedgerCategory,
+        string nextLedgerCategory,
+        bool counter)
+    {
+        var explicitId = NormalizeOptionalId(requestedId);
+        if (explicitId is not null) return explicitId;
+        if (string.Equals(existingLedgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(nextLedgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase))
+            return existingId;
+
+        var existingBucket = AccountLegBucket(existingLedgerCategory, counter);
+        var nextBucket = AccountLegBucket(nextLedgerCategory, counter);
+        return string.Equals(existingBucket, nextBucket, StringComparison.OrdinalIgnoreCase)
+            ? existingId
+            : null;
+    }
+
+    private static string? AccountLegBucket(string ledgerCategory, bool counter)
+    {
+        if (LedgerAccountResolver.IsBucket(ledgerCategory)) return counter ? null : ledgerCategory;
+        if (!ledgerCategory.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase)) return null;
+        var parts = ledgerCategory["Transfer:".Length..].Split("->", StringSplitOptions.None);
+        if (parts.Length != 2) return null;
+        var source = parts[0].Trim();
+        var target = parts[1].Trim();
+        if (source.Equals("Income", StringComparison.OrdinalIgnoreCase))
+            return counter ? null : target;
+        return counter ? target : source;
+    }
 
     private static (bool IsValid, string Category, string LedgerCategory, string? Message)
         ValidateAndNormalizeLedgerCategory(string category, string ledgerCategory, decimal amount)

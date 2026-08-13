@@ -27,7 +27,38 @@ public sealed record LedgerAccountMutationResult(
     string? Message = null,
     int ActivityCount = 0);
 
-public sealed class LedgerAccountService
+public sealed record LedgerAccountReconcileTarget(
+    string? Id,
+    string Name,
+    string Kind,
+    bool IsDefault,
+    bool IsArchived,
+    decimal ExpectedCurrent,
+    decimal Target);
+
+public sealed record LedgerAccountReconcileRequest(
+    string OperationId,
+    string Bucket,
+    decimal ExpectedBucketTotal,
+    IReadOnlyList<LedgerAccountReconcileTarget> Targets);
+
+public sealed record LedgerAccountReconcileTransaction(
+    string Id,
+    DateTime Date,
+    string Description,
+    string Category,
+    string LedgerCategory,
+    decimal Amount,
+    string? AccountId,
+    string? CounterAccountId);
+
+public sealed record LedgerAccountReconcileResult(
+    LedgerAccountMutationStatus Status,
+    string? Message = null,
+    IReadOnlyList<LedgerAccount>? Accounts = null,
+    IReadOnlyList<LedgerAccountReconcileTransaction>? Transactions = null);
+
+public sealed partial class LedgerAccountService
 {
     private readonly AppDbContext _context;
     private readonly LedgerAccountBalanceService _balanceService;

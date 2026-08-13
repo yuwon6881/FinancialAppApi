@@ -70,6 +70,49 @@ public sealed class LedgerAccountsController : ControllerBase
         return NoContent();
     }
 
+    [HttpPost("reconcile")]
+    public async Task<IActionResult> Reconcile(LedgerAccountReconcileDto dto)
+    {
+        if (dto.Targets is null)
+            return BadRequest(new { message = "At least one account target is required." });
+
+        var request = new LedgerAccountReconcileRequest(
+            dto.OperationId ?? string.Empty,
+            dto.Bucket ?? string.Empty,
+            ReadAmount(dto.ExpectedBucketTotal),
+            dto.Targets.Select(target => new LedgerAccountReconcileTarget(
+                target.Id,
+                target.Name ?? string.Empty,
+                target.Kind ?? LedgerAccountKind.Other,
+                target.IsDefault,
+                target.IsArchived,
+                ReadAmount(target.ExpectedCurrent),
+                ReadAmount(target.Target))).ToList());
+        var result = await _accountService.ReconcileAsync(request, HttpContext.RequestAborted);
+        if (result.Status == LedgerAccountMutationStatus.Conflict)
+            return Conflict(new { message = result.Message });
+        if (result.Status != LedgerAccountMutationStatus.Success)
+            return BadRequest(new { message = result.Message });
+
+        var accounts = result.Accounts ?? [];
+        var balances = await _accountService.GetBalancesAsync(accounts, HttpContext.RequestAborted);
+        return Ok(new
+        {
+            accounts = accounts.Select(account => MapToDto(account, balances)).ToList(),
+            transactions = (result.Transactions ?? []).Select(transaction => new
+            {
+                id = transaction.Id,
+                date = transaction.Date.ToUniversalTime().ToString("O"),
+                description = transaction.Description,
+                category = transaction.Category,
+                ledgerCategory = transaction.LedgerCategory,
+                amount = ObfuscationHelper.Obfuscate(transaction.Amount),
+                accountId = transaction.AccountId,
+                counterAccountId = transaction.CounterAccountId,
+            }).ToList(),
+        });
+    }
+
     internal static LedgerAccountDto MapToDto(
         LedgerAccount account,
         IReadOnlyDictionary<string, decimal> balances) => new()
@@ -131,4 +174,23 @@ public sealed class LedgerAccountDto
     public string Remaining { get; set; } = string.Empty;
     public string CreatedAt { get; set; } = string.Empty;
     public string UpdatedAt { get; set; } = string.Empty;
+}
+
+public sealed class LedgerAccountReconcileDto
+{
+    public string? OperationId { get; set; }
+    public string? Bucket { get; set; }
+    public JsonElement ExpectedBucketTotal { get; set; }
+    public List<LedgerAccountReconcileTargetDto>? Targets { get; set; }
+}
+
+public sealed class LedgerAccountReconcileTargetDto
+{
+    public string? Id { get; set; }
+    public string? Name { get; set; }
+    public string? Kind { get; set; }
+    public bool IsDefault { get; set; }
+    public bool IsArchived { get; set; }
+    public JsonElement ExpectedCurrent { get; set; }
+    public JsonElement Target { get; set; }
 }

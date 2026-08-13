@@ -17,6 +17,14 @@ public sealed class PerformanceQueryCountTests
     public async Task OrdinaryTransactionPage_SkipsFullHistoryStabilityReplay()
     {
         await using var fixture = await SqliteFixture.CreateAsync();
+        fixture.Context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = "acct-rewards",
+            Name = "Rewards wallet",
+            Bucket = "Rewards",
+            Kind = LedgerAccountKind.Other,
+            IsDefault = true,
+        });
         fixture.Context.Transactions.Add(new Transaction
         {
             Id = "ordinary-page-row",
@@ -26,6 +34,7 @@ public sealed class PerformanceQueryCountTests
             Category = "Food",
             LedgerCategory = "Rewards",
             Amount = -5m,
+            AccountId = "acct-rewards",
         });
         await fixture.Context.SaveChangesAsync();
         fixture.Counter.Reset();

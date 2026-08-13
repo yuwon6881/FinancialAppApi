@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Accounts;
 using FinancialAppApi.Services.SavingsGoals;
 using Microsoft.EntityFrameworkCore;
 
@@ -45,19 +46,22 @@ public class WishlistService
     private readonly SavingsGoalService _savingsGoalService;
     private readonly FinancialClock _financialClock;
     private readonly SharedPoolMutationLock _sharedPoolMutationLock;
+    private readonly LedgerAccountResolver _accountResolver;
 
     public WishlistService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
         SavingsGoalService savingsGoalService,
         FinancialClock? financialClock = null,
-        SharedPoolMutationLock? sharedPoolMutationLock = null)
+        SharedPoolMutationLock? sharedPoolMutationLock = null,
+        LedgerAccountResolver? accountResolver = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _savingsGoalService = savingsGoalService;
         _financialClock = financialClock ?? FinancialClock.Utc;
         _sharedPoolMutationLock = sharedPoolMutationLock ?? new SharedPoolMutationLock(context);
+        _accountResolver = accountResolver ?? new LedgerAccountResolver(context);
     }
 
     public async Task<List<WishlistItemProjection>> GetWishlistAsync(CancellationToken cancellationToken = default)
@@ -290,6 +294,7 @@ public class WishlistService
         };
 
         item.PurchaseTransactionId = tx.Id;
+        await _accountResolver.ResolveMissingAsync(tx, cancellationToken);
         _context.Transactions.Add(tx);
 
         var strategy = _context.Database.CreateExecutionStrategy();

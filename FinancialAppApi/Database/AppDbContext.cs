@@ -107,6 +107,19 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 .HasFilter("\"WishlistItemId\" IS NOT NULL");
             entity.HasIndex(e => new { e.UserId, e.SavingsGoalId });
             entity.HasIndex(e => new { e.UserId, e.AccountId });
+            entity.HasOne<LedgerAccount>()
+                .WithMany()
+                .HasForeignKey(e => new { e.UserId, e.AccountId })
+                .HasPrincipalKey(e => new { e.UserId, e.Id })
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<LedgerAccount>()
+                .WithMany()
+                .HasForeignKey(e => new { e.UserId, e.CounterAccountId })
+                .HasPrincipalKey(e => new { e.UserId, e.Id })
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.ToTable(t => t.HasCheckConstraint(
+                "ck_transactions_account_tracking",
+                "(\"LedgerCategory\" IN ('Essentials', 'Growth', 'Stability', 'Rewards') AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (\"LedgerCategory\" = 'AccountMove' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL) OR (\"LedgerCategory\" LIKE 'Transfer:%' AND ((lower(\"LedgerCategory\") LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") NOT LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL))) OR (\"LedgerCategory\" NOT IN ('Essentials', 'Growth', 'Stability', 'Rewards', 'AccountMove') AND \"LedgerCategory\" NOT LIKE 'Transfer:%')"));
             // Guarantees a given recurring-payment occurrence can never be settled twice
             // (normal confirmation racing pay-early, pay-early retried, etc.). Partial so
             // legacy/manual transactions (either column null) are exempt.
@@ -136,6 +149,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                     "ck_ledgeraccounts_kind",
                     $"\"Kind\" IN ({string.Join(", ", LedgerAccountKind.Values.Select(value => $"'{value}'"))})");
             });
+            entity.HasAlternateKey(e => new { e.UserId, e.Id });
         });
 
         modelBuilder.Entity<AppUser>(entity =>

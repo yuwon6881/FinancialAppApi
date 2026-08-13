@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Accounts;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Cryptography;
 using System.Text;
@@ -48,18 +49,21 @@ public class RecurringPaymentPayEarlyService
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly FinancialClock _financialClock;
     private readonly RecurringOccurrenceLedgerService _occurrenceLedger;
+    private readonly LedgerAccountResolver _accountResolver;
 
     public RecurringPaymentPayEarlyService(
         AppDbContext context,
         RecurringOccurrenceService occurrenceService,
         CycleBalanceService cycleBalanceService,
         FinancialClock? financialClock = null,
-        RecurringOccurrenceLedgerService? occurrenceLedger = null)
+        RecurringOccurrenceLedgerService? occurrenceLedger = null,
+        LedgerAccountResolver? accountResolver = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _financialClock = financialClock ?? FinancialClock.Utc;
         _occurrenceLedger = occurrenceLedger ?? new RecurringOccurrenceLedgerService(context, occurrenceService, _financialClock);
+        _accountResolver = accountResolver ?? new LedgerAccountResolver(context);
     }
 
     public async Task<PayEarlyResult> PayEarlyAsync(
@@ -179,6 +183,7 @@ public class RecurringPaymentPayEarlyService
             RecurringOccurrenceDate = occurrence.Value
         };
 
+        await _accountResolver.ResolveMissingAsync(transaction, cancellationToken);
         _context.Transactions.Add(transaction);
         RecurringOccurrenceLedgerService.SettleFromTransaction(occurrenceRow!, transaction);
 

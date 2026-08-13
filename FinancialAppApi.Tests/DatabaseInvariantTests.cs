@@ -70,7 +70,16 @@ public class DatabaseInvariantTests
         var bucketConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_bucket");
         var kindConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_kind");
         Assert.Equal("\"Bucket\" IN ('Essentials', 'Growth', 'Stability', 'Rewards')", bucketConstraint.Sql);
-        Assert.Equal("\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card')", kindConstraint.Sql);
+        Assert.Equal("\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'Other')", kindConstraint.Sql);
+
+        var transactionEntity = model.FindEntityType(typeof(Transaction))!;
+        Assert.Contains(transactionEntity.GetCheckConstraints(), constraint => constraint.Name == "ck_transactions_account_tracking");
+        Assert.Contains(transactionEntity.GetForeignKeys(), foreignKey =>
+            foreignKey.Properties.Select(property => property.Name).SequenceEqual(
+                [nameof(Transaction.UserId), nameof(Transaction.AccountId)]));
+        Assert.Contains(transactionEntity.GetForeignKeys(), foreignKey =>
+            foreignKey.Properties.Select(property => property.Name).SequenceEqual(
+                [nameof(Transaction.UserId), nameof(Transaction.CounterAccountId)]));
     }
 
     [Fact]

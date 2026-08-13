@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Accounts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -79,6 +80,7 @@ public class SavingsGoalService
     private readonly RecurringOccurrenceService _recurringOccurrenceService;
     private readonly RecurringOccurrenceLedgerService _recurringOccurrenceLedger;
     private readonly SharedPoolMutationLock _sharedPoolMutationLock;
+    private readonly LedgerAccountResolver _accountResolver;
 
     public SavingsGoalService(
         AppDbContext context,
@@ -86,7 +88,8 @@ public class SavingsGoalService
         FinancialClock? financialClock = null,
         RecurringOccurrenceService? recurringOccurrenceService = null,
         RecurringOccurrenceLedgerService? recurringOccurrenceLedger = null,
-        SharedPoolMutationLock? sharedPoolMutationLock = null)
+        SharedPoolMutationLock? sharedPoolMutationLock = null,
+        LedgerAccountResolver? accountResolver = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
@@ -96,6 +99,7 @@ public class SavingsGoalService
         _recurringOccurrenceLedger = recurringOccurrenceLedger ??
             new RecurringOccurrenceLedgerService(context, _recurringOccurrenceService, _financialClock);
         _sharedPoolMutationLock = sharedPoolMutationLock ?? new SharedPoolMutationLock(context);
+        _accountResolver = accountResolver ?? new LedgerAccountResolver(context);
     }
 
     public async Task<List<SavingsGoal>> GetGoalsAsync(CancellationToken cancellationToken = default)
@@ -523,6 +527,7 @@ public class SavingsGoalService
         }
 
         goal.LastCompletionTransactionId = transaction.Id;
+        await _accountResolver.ResolveMissingAsync(transaction, cancellationToken);
         _context.Transactions.Add(transaction);
         _context.SavingsGoalCompletions.Add(new SavingsGoalCompletion
         {

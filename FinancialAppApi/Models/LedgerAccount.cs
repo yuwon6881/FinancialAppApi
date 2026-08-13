@@ -46,8 +46,9 @@ public static class LedgerAccountKind
     public const string EWallet = "EWallet";
     public const string Cash = "Cash";
     public const string Card = "Card";
+    public const string Other = "Other";
 
-    public static readonly string[] Values = [Bank, EWallet, Cash, Card];
+    public static readonly string[] Values = [Bank, EWallet, Cash, Card, Other];
 
     public static bool IsValid(string? value) =>
         value is not null && Values.Contains(value, StringComparer.OrdinalIgnoreCase);
