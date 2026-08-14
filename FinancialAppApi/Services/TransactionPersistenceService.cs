@@ -35,7 +35,8 @@ public sealed record TransactionMutationRequest(
     string? StabilityRecoveryTopUpAmount = null,
     string? StabilityReloadIntent = null,
     string? AccountId = null,
-    string? CounterAccountId = null);
+    string? CounterAccountId = null,
+    IReadOnlyDictionary<string, string>? SplitAccountIds = null);
 
 public sealed record TransactionMutationResult(
     TransactionMutationStatus Status,
@@ -193,7 +194,7 @@ public class TransactionPersistenceService
             document.TransactionId = transaction.Id;
             document.DetachedFromTransactionId = null;
         }
-        await AddIncomeSplitTransactionsAsync(transaction, splitSpec, cancellationToken);
+        await AddIncomeSplitTransactionsAsync(transaction, splitSpec, request.SplitAccountIds, cancellationToken);
         await ApplyWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
         try
@@ -378,7 +379,7 @@ public class TransactionPersistenceService
         {
             _context.Transactions.RemoveRange(existingSplits);
             var splitSpec = ResolveIncomeSplitSpec(transaction, splitContext);
-            await AddIncomeSplitTransactionsAsync(transaction, splitSpec, cancellationToken);
+            await AddIncomeSplitTransactionsAsync(transaction, splitSpec, request.SplitAccountIds, cancellationToken);
         }
         await ApplyWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
@@ -910,6 +911,7 @@ public class TransactionPersistenceService
     private async Task AddIncomeSplitTransactionsAsync(
         Transaction transaction,
         string splitSpec,
+        IReadOnlyDictionary<string, string>? splitAccountIds,
         CancellationToken cancellationToken)
     {
         if (!IsIncomeLedgerCategory(transaction.LedgerCategory)) return;
@@ -978,19 +980,34 @@ public class TransactionPersistenceService
         for (var i = 0; i < finalCents.Length; i++)
         {
             if (finalCents[i] <= 0) continue;
+            var bucket = categories[i];
+            string? assignedAccountId = null;
+            if (splitAccountIds != null && splitAccountIds.TryGetValue(bucket, out var explicitId) && !string.IsNullOrWhiteSpace(explicitId))
+            {
+                var valid = await _context.LedgerAccounts
+                    .AsNoTracking()
+                    .AnyAsync(account => account.Id == explicitId && !account.IsArchived && account.Bucket == bucket, cancellationToken);
+                if (valid)
+                {
+                    assignedAccountId = explicitId;
+                }
+            }
+            if (assignedAccountId == null && string.Equals(requestedAccountBucket, bucket, StringComparison.OrdinalIgnoreCase))
+            {
+                assignedAccountId = requestedAccountId;
+            }
+
             var split = new Transaction
             {
-                Id = $"{transaction.Id}-split-{categories[i]}",
+                Id = $"{transaction.Id}-split-{bucket}",
                 Date = transaction.Date,
                 PostedAt = transaction.PostedAt,
-                Description = $"[Split: {categories[i]}] {transaction.Description}",
+                Description = $"[Split: {bucket}] {transaction.Description}",
                 Category = "Transfer",
-                LedgerCategory = $"Transfer:Income->{categories[i]}",
+                LedgerCategory = $"Transfer:Income->{bucket}",
                 Amount = finalCents[i] / 100m,
                 ExcludeFromAutocomplete = true,
-                AccountId = string.Equals(requestedAccountBucket, categories[i], StringComparison.OrdinalIgnoreCase)
-                    ? requestedAccountId
-                    : null,
+                AccountId = assignedAccountId,
             };
             await _accountResolver.ResolveMissingAsync(split, cancellationToken);
             _context.Transactions.Add(split);

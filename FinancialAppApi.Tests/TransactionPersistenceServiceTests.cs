@@ -158,6 +158,42 @@ public class TransactionPersistenceServiceTests
     }
 
     [Fact]
+    public async Task CreateTransactionAsync_AssignsSplitAccountIdsWhenSpecified()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.LedgerAccounts.AddRange(
+            new LedgerAccount { Id = "essentials-custom", Name = "Special checking", Bucket = "Essentials", Kind = LedgerAccountKind.Bank },
+            new LedgerAccount { Id = "growth-custom", Name = "Special broker", Bucket = "Growth", Kind = LedgerAccountKind.Bank },
+            new LedgerAccount { Id = "rewards-custom", Name = "Special rewards", Bucket = "Rewards", Kind = LedgerAccountKind.EWallet });
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            EssentialsAlloc = 0.50m,
+            GrowthAlloc = 0.25m,
+            StabilityAlloc = 0.15m,
+            RewardsAlloc = 0.10m,
+        });
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).CreateTransactionAsync(
+            NewRequest("salary-split-accounts", ledgerCategory: "Income", amount: 1000m) with
+            {
+                SplitAccountIds = new Dictionary<string, string>
+                {
+                    ["Essentials"] = "essentials-custom",
+                    ["Growth"] = "growth-custom",
+                    ["Rewards"] = "rewards-custom",
+                },
+            });
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal("essentials-custom", context.Transactions.Single(row => row.Id == "salary-split-accounts-split-Essentials").AccountId);
+        Assert.Equal("growth-custom", context.Transactions.Single(row => row.Id == "salary-split-accounts-split-Growth").AccountId);
+        Assert.Equal("default-stability", context.Transactions.Single(row => row.Id == "salary-split-accounts-split-Stability").AccountId);
+        Assert.Equal("rewards-custom", context.Transactions.Single(row => row.Id == "salary-split-accounts-split-Rewards").AccountId);
+    }
+
+    [Fact]
     public async Task CreateTransactionAsync_IncomeSplitsReconcileExactlyToSalaryAfterRounding()
     {
         await using var context = TestHelpers.NewInMemoryContext();

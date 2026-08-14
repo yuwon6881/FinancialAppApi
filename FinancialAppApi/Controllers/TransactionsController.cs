@@ -318,7 +318,8 @@ public class TransactionsController : ControllerBase
             dto.StabilityRecoveryTopUpAmount,
             dto.StabilityReloadIntent,
             dto.AccountId,
-            dto.CounterAccountId);
+            dto.CounterAccountId,
+            dto.SplitAccountIds);
     }
 
     public static TransactionDto MapToDto(Transaction t, string? stabilityReloadStatus = null)
@@ -385,6 +386,7 @@ public class TransactionDto
     public string Amount { get; set; } = string.Empty;
     public string? AccountId { get; set; }
     public string? CounterAccountId { get; set; }
+    public Dictionary<string, string>? SplitAccountIds { get; set; }
     public string? StabilityRecoveryTopUpAmount { get; set; }
     public string? StabilityReloadIntent { get; set; }
     public string? RecurringPaymentId { get; set; }
