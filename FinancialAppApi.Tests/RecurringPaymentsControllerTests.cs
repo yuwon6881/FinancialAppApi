@@ -175,6 +175,7 @@ public class RecurringPaymentsControllerTests
             Frequency = "Monthly",
             Category = "Bills",
             LedgerCategory = "Essentials",
+            AccountId = "acct-essentials",
             NextDueDate = "2026-01-15",
             DueDate = 15,
             StartDate = "2026-01-01",
@@ -250,7 +251,8 @@ public class RecurringPaymentsControllerTests
             DueDate = 15,
             StartDate = "2026-01-01",
             Active = true,
-            PaymentMode = RecurringPaymentMode.AutoDeduct
+            PaymentMode = RecurringPaymentMode.AutoDeduct,
+            AccountId = "acct-essentials"
         });
 
         Assert.IsType<CreatedAtActionResult>(result.Result);
@@ -291,11 +293,26 @@ public class RecurringPaymentsControllerTests
                 year++;
             }
         }
-        return new PayEarlyRequestDto { OccurrenceDate = new DateOnly(year, month, 15).ToString("yyyy-MM-dd") };
+        return new PayEarlyRequestDto
+        {
+            OccurrenceDate = new DateOnly(year, month, 15).ToString("yyyy-MM-dd"),
+            AccountId = "acct-essentials",
+        };
     }
 
     private static RecurringPaymentsController NewController(Database.AppDbContext context)
     {
+        if (context.LedgerAccounts.All(account => account.Id != "acct-essentials"))
+        {
+            context.LedgerAccounts.Add(new LedgerAccount
+            {
+                Id = "acct-essentials",
+                Name = "Essentials account",
+                Bucket = "Essentials",
+                Kind = LedgerAccountKind.Bank,
+            });
+            context.SaveChanges();
+        }
         var occurrenceService = new RecurringOccurrenceService(
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance);
         return new RecurringPaymentsController(

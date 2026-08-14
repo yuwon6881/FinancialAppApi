@@ -1,6 +1,5 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
-using FinancialAppApi.Services.Accounts;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Cryptography;
 using System.Text;
@@ -14,7 +13,8 @@ public enum PayEarlyStatus
     PaymentInactive,
     AutomaticPayment,
     NoUpcomingOccurrence,
-    Conflict
+    Conflict,
+    InvalidAccount
 }
 
 public sealed record PayEarlyResult(
@@ -22,7 +22,9 @@ public sealed record PayEarlyResult(
     Transaction? Transaction = null,
     DateOnly? SettledOccurrenceDate = null,
     DateOnly? NextOccurrenceDate = null,
-    string? Message = null);
+    string? Message = null,
+    string? Code = null,
+    IReadOnlyList<string>? MissingBuckets = null);
 
 // Lets a user settle the next future, unpaid occurrence of a recurring payment ahead of its
 // due date. The occurrence is always derived server-side from the same recurrence engine used
@@ -49,27 +51,25 @@ public class RecurringPaymentPayEarlyService
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly FinancialClock _financialClock;
     private readonly RecurringOccurrenceLedgerService _occurrenceLedger;
-    private readonly LedgerAccountResolver _accountResolver;
 
     public RecurringPaymentPayEarlyService(
         AppDbContext context,
         RecurringOccurrenceService occurrenceService,
         CycleBalanceService cycleBalanceService,
         FinancialClock? financialClock = null,
-        RecurringOccurrenceLedgerService? occurrenceLedger = null,
-        LedgerAccountResolver? accountResolver = null)
+        RecurringOccurrenceLedgerService? occurrenceLedger = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _financialClock = financialClock ?? FinancialClock.Utc;
         _occurrenceLedger = occurrenceLedger ?? new RecurringOccurrenceLedgerService(context, occurrenceService, _financialClock);
-        _accountResolver = accountResolver ?? new LedgerAccountResolver(context);
     }
 
     public async Task<PayEarlyResult> PayEarlyAsync(
         string recurringPaymentId,
         CancellationToken cancellationToken = default,
-        string? clientKey = null)
+        string? clientKey = null,
+        string? accountId = null)
     {
         var candidate = await ResolveNextFutureOccurrenceAsync(recurringPaymentId, cancellationToken);
         if (candidate.Result != null)
@@ -77,7 +77,7 @@ public class RecurringPaymentPayEarlyService
             return candidate.Result;
         }
 
-        return await PayEarlyAsync(recurringPaymentId, candidate.Occurrence!.Value, cancellationToken, clientKey);
+        return await PayEarlyAsync(recurringPaymentId, candidate.Occurrence!.Value, cancellationToken, clientKey, accountId: accountId);
     }
 
     public async Task<PayEarlyResult> PayEarlyAsync(
@@ -86,7 +86,8 @@ public class RecurringPaymentPayEarlyService
         CancellationToken cancellationToken = default,
         string? clientKey = null,
         string? transactionId = null,
-        DateTime? postedAt = null)
+        DateTime? postedAt = null,
+        string? accountId = null)
     {
         var payment = await _context.RecurringPayments
             .FirstOrDefaultAsync(p => p.Id == recurringPaymentId, cancellationToken);
@@ -103,6 +104,13 @@ public class RecurringPaymentPayEarlyService
         {
             return automaticRejection;
         }
+        var requestedAccountId = string.IsNullOrWhiteSpace(accountId) ? null : accountId.Trim();
+        if (requestedAccountId is null)
+            return new PayEarlyResult(
+                PayEarlyStatus.InvalidAccount,
+                Message: "Choose the account assigned to this recurring payment.",
+                Code: "ledger_account_required",
+                MissingBuckets: [payment.LedgerCategory]);
 
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
         var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
@@ -153,6 +161,28 @@ public class RecurringPaymentPayEarlyService
                 Message: "The selected occurrence is no longer the next unpaid occurrence. Refresh and try again.");
         }
 
+        // Identity is checked against the occurrence's own frozen account so paying one ahead
+        // settles it where it was scheduled, while the bucket is checked against the payment's
+        // current LedgerCategory because that is what the row below is written with. A bill moved
+        // to another bucket therefore fails here rather than writing a leg the attribution rules
+        // cannot place. Legacy occurrences carry no account and fall back to the parent.
+        var scheduledAccountId = occurrenceRow!.AccountId ?? payment.AccountId;
+        if (!string.Equals(requestedAccountId, scheduledAccountId, StringComparison.Ordinal))
+            return new PayEarlyResult(
+                PayEarlyStatus.InvalidAccount,
+                Message: "The account for this bill changed. Refresh and try again.",
+                Code: "ledger_account_invalid",
+                MissingBuckets: [payment.LedgerCategory]);
+        var account = await _context.LedgerAccounts.AsNoTracking()
+            .FirstOrDefaultAsync(candidate => candidate.Id == requestedAccountId, cancellationToken);
+        if (account is null || account.IsArchived
+            || !account.Bucket.Equals(payment.LedgerCategory, StringComparison.OrdinalIgnoreCase))
+            return new PayEarlyResult(
+                PayEarlyStatus.InvalidAccount,
+                Message: "Choose an open account in the recurring payment's bucket.",
+                Code: "ledger_account_invalid",
+                MissingBuckets: [payment.LedgerCategory]);
+
         // First line of defence against a race: re-check right before the insert. The
         // PostgreSQL partial unique index on (UserId, RecurringPaymentId, RecurringOccurrenceDate)
         // is the actual concurrency-safe guard — this check just turns the common case into a
@@ -180,10 +210,10 @@ public class RecurringPaymentPayEarlyService
             // the selected envelope or disappear from spending/category-watch calculations.
             Amount = -Math.Abs(payment.Amount),
             RecurringPaymentId = payment.Id,
-            RecurringOccurrenceDate = occurrence.Value
+            RecurringOccurrenceDate = occurrence.Value,
+            AccountId = requestedAccountId,
         };
 
-        await _accountResolver.ResolveMissingAsync(transaction, cancellationToken);
         _context.Transactions.Add(transaction);
         RecurringOccurrenceLedgerService.SettleFromTransaction(occurrenceRow!, transaction);
 

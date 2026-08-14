@@ -430,6 +430,15 @@ public class FinancialService
         var cycleSummaryInsights = ReportResponseMapper.ObfuscateSummaryInsights(
             ReportMetricsCalculator.BuildSummaryInsights(activeCycleTxs, activeRangeStartDate, activeRangeEndExclusive));
 
+        var recurringAccountShortfalls = summaryOnly
+            ? new List<object>()
+            : RecurringAccountShortfallEvaluator.EvaluateShortfalls(
+                snapshot.RecurringOccurrences,
+                allRecurring,
+                snapshot.LedgerAccounts,
+                snapshot.LedgerAccountBalances.Current,
+                _financialClock.Today);
+
         var result = new
         {
             setting = new
@@ -469,6 +478,7 @@ public class FinancialService
             todayPlanInsights,
             stabilityRecovery,
             categoryLimitProgress,
+            recurringAccountShortfalls,
             cycleSummaryInsights
         };
 

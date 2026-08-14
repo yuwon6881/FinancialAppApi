@@ -358,6 +358,7 @@ public sealed class RecurringOccurrenceLedgerService
         ScheduledAmount = Math.Abs(payment.Amount),
         Category = payment.Category,
         LedgerCategory = payment.LedgerCategory,
+        AccountId = payment.AccountId,
         PaymentMode = payment.PaymentMode,
         Status = RecurringOccurrenceStatus.Pending
     };
@@ -426,6 +427,8 @@ public sealed class RecurringOccurrenceLedgerService
                 ScheduledAmount = discarded ? null : Math.Abs(transaction.Amount),
                 Category = transaction.Category,
                 LedgerCategory = discarded ? null : transaction.LedgerCategory,
+                // Backfilled from what actually paid it, not from the schedule's current account.
+                AccountId = discarded ? null : transaction.AccountId,
                 PaymentMode = modes.GetValueOrDefault(transaction.RecurringPaymentId!) ?? RecurringPaymentMode.Manual,
                 Status = discarded ? RecurringOccurrenceStatus.Discarded : RecurringOccurrenceStatus.Paid,
                 PaidDate = discarded ? null : TransactionDate.ToDateOnly(transaction.Date),

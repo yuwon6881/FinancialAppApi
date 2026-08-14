@@ -545,6 +545,63 @@ public class FinancialServiceDashboardTests
     }
 
     [Fact]
+    public async Task GetDashboardDataAsync_IncludesRecurringAccountShortfalls_WhenAccountBalanceIsBelowAutoDeductBill()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026 });
+        var account = new LedgerAccount
+        {
+            Id = "acc-main",
+            Name = "Checking Account",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank
+        };
+        context.LedgerAccounts.Add(account);
+        // Seed 300 balance on acc-main
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-open",
+            Date = new DateTime(2026, 7, 1),
+            Description = "Income",
+            Category = "Income",
+            LedgerCategory = "Essentials",
+            AccountId = "acc-main",
+            Amount = 300m
+        });
+        // Auto-deduct bill of 1200 on July 20 (shortfall = 900)
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "rec-rent",
+            Name = "Rent",
+            Amount = 1200m,
+            Frequency = "Monthly",
+            Category = "Bills",
+            LedgerCategory = "Essentials",
+            AccountId = "acc-main",
+            PaymentMode = RecurringPaymentMode.AutoDeduct,
+            StartDate = "2026-01-01",
+            NextDueDate = "2026-07-20",
+            DueDate = 20,
+            Active = true
+        });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context, new DateTimeOffset(2026, 7, 19, 0, 0, 0, TimeSpan.Zero))
+            .GetDashboardDataAsync("Jul", 2026);
+        var shortfalls = ((IEnumerable<object>)response.GetType().GetProperty("recurringAccountShortfalls")!.GetValue(response)!)
+            .ToList();
+
+        Assert.Single(shortfalls);
+        var shortfall = shortfalls[0];
+        Assert.Equal("Rent", (string)shortfall.GetType().GetProperty("name")!.GetValue(shortfall)!);
+        Assert.Equal(1200m, GetAmount(shortfall, "amount"));
+        Assert.Equal(300m, GetAmount(shortfall, "accountBalance"));
+        Assert.Equal(900m, GetAmount(shortfall, "shortfall"));
+        Assert.Equal("Checking Account", (string)shortfall.GetType().GetProperty("accountName")!.GetValue(shortfall)!);
+        Assert.Equal(1, (int)shortfall.GetType().GetProperty("offsetDays")!.GetValue(shortfall)!);
+    }
+
+    [Fact]
     public async Task GetDashboardDataAsync_UsesTheGuideEffectiveForTheSelectedCycle()
     {
         await using var context = TestHelpers.NewInMemoryContext();

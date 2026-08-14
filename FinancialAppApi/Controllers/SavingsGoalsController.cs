@@ -125,9 +125,9 @@ public class SavingsGoalsController : ControllerBase
 
     // POST: api/savings-goals/{id}/complete
     [HttpPost("{id}/complete")]
-    public async Task<IActionResult> CompleteGoal(int id)
+    public async Task<IActionResult> CompleteGoal(int id, [FromBody] SavingsGoalCompletionRequestDto dto)
     {
-        var result = await _savingsGoalService.CompleteGoalAsync(id, HttpContext.RequestAborted);
+        var result = await _savingsGoalService.CompleteGoalAsync(id, dto.AccountId, HttpContext.RequestAborted);
         return result.Status switch
         {
             SavingsGoalMutationStatus.NotFound => NotFound(),
@@ -137,6 +137,7 @@ public class SavingsGoalsController : ControllerBase
                 transaction = TransactionsController.MapToDto(result.CompletionTransaction!)
             }),
             SavingsGoalMutationStatus.Conflict => Conflict(new { message = result.Message }),
+            SavingsGoalMutationStatus.InvalidAccount => BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets }),
             _ => BadRequest(new { message = result.Message })
         };
     }
@@ -235,6 +236,11 @@ public class SavingsGoalMutationDto
 public class SavingsGoalContributionDto
 {
     public JsonElement Amount { get; set; }
+}
+
+public class SavingsGoalCompletionRequestDto
+{
+    public string? AccountId { get; set; }
 }
 
 public class SavingsGoalFundingRequestDto

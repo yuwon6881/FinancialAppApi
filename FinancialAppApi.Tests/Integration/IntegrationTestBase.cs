@@ -29,11 +29,22 @@ public abstract class IntegrationTestBase : IDisposable
         ("cat-8", "Transport"), ("cat-9", "Other"), ("cat-10", "Transfer"),
     ];
 
+    /// <summary>The four ledger buckets, each of which now needs at least one explicit account.</summary>
+    protected static readonly string[] LedgerBuckets = ["Essentials", "Growth", "Stability", "Rewards"];
+
+    // Account placement is explicit everywhere: there is no default account per bucket and no
+    // fallback, so a transaction that names no account in its bucket is rejected. Provisioning no
+    // longer creates accounts (the user does, behind the coverage gate), so tests seed their own
+    // under a deterministic per-user id and send it on the wire.
+    protected static string AccountIdFor(string bucket, string username = "alice") =>
+        $"acct-{username}-{bucket.ToLowerInvariant()}";
+
     /// <summary>Seeds a user and a valid, non-expired session; returns the bearer token.</summary>
     protected async Task<string> SeedUserAndSessionAsync(
         string username = "alice",
         string password = "Password123!",
-        bool seedCategories = true)
+        bool seedCategories = true,
+        bool seedAccounts = true)
     {
         var token = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
         await Factory.WithDbContextAsync(async db =>
@@ -55,6 +66,22 @@ public abstract class IntegrationTestBase : IDisposable
                 {
                     var match = DefaultCategories.First(item => item.Name == category.Entity.Name);
                     category.Entity.Id = match.Id;
+                }
+            }
+
+            if (seedAccounts)
+            {
+                foreach (var bucket in LedgerBuckets)
+                {
+                    db.LedgerAccounts.Add(new LedgerAccount
+                    {
+                        Id = AccountIdFor(bucket, username),
+                        UserId = userId,
+                        Name = $"{bucket} balance",
+                        Bucket = bucket,
+                        Kind = LedgerAccountKind.Other,
+                        IsArchived = false,
+                    });
                 }
             }
 

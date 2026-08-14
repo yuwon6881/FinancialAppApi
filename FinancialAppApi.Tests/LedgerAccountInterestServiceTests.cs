@@ -23,7 +23,6 @@ public sealed class LedgerAccountInterestServiceTests
             "Essentials",
             LedgerAccountKind.Bank,
             false,
-            true,
             InterestEnabled: true,
             InterestRatePercent: 5m,
             InterestFrequency: LedgerAccountInterestFrequency.Monthly));
@@ -41,8 +40,7 @@ public sealed class LedgerAccountInterestServiceTests
                 result.Account.Name,
                 result.Account.Bucket,
                 result.Account.Kind,
-                false,
-                true));
+                false));
 
         Assert.Equal(LedgerAccountMutationStatus.Success, update.Status);
         Assert.True(update.Account!.InterestEnabled);
@@ -87,7 +85,6 @@ public sealed class LedgerAccountInterestServiceTests
             UserId = TestHelpers.DefaultUserId,
             Bucket = "Essentials",
             Kind = LedgerAccountKind.Bank,
-            IsDefault = true,
             InterestEnabled = true,
             InterestRatePercent = 12m,
             InterestFrequency = LedgerAccountInterestFrequency.Daily,

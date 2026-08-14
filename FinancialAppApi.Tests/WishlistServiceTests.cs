@@ -142,7 +142,7 @@ public class WishlistServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context);
 
-        var result = await service.PurchaseWishlistItemAsync(1);
+        var result = await service.PurchaseWishlistItemAsync(1, accountId: "acct-rewards");
 
         Assert.Equal(WishlistMutationStatus.Success, result.Status);
         Assert.True(result.Item!.IsPurchased);
@@ -159,7 +159,10 @@ public class WishlistServiceTests
         context.Transactions.Add(new Transaction { Id = "reward", Date = DateTime.UtcNow, Amount = 1000m, LedgerCategory = "Rewards" });
         await context.SaveChangesAsync();
 
-        var result = await NewService(context).PurchaseWishlistItemAsync(1, DateTime.UtcNow.Date.AddDays(1));
+        var result = await NewService(context).PurchaseWishlistItemAsync(
+            1,
+            DateTime.UtcNow.Date.AddDays(1),
+            accountId: "acct-rewards");
 
         Assert.Equal(WishlistMutationStatus.DateInvalid, result.Status);
         Assert.False((await context.WishlistItems.FindAsync(1))!.IsPurchased);
@@ -175,8 +178,8 @@ public class WishlistServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context);
 
-        var first = await service.PurchaseWishlistItemAsync(1);
-        var replay = await service.PurchaseWishlistItemAsync(1);
+        var first = await service.PurchaseWishlistItemAsync(1, accountId: "acct-rewards");
+        var replay = await service.PurchaseWishlistItemAsync(1, accountId: "acct-rewards");
 
         Assert.Equal(WishlistMutationStatus.Success, replay.Status);
         Assert.Equal(first.Transaction!.Id, replay.Transaction!.Id);
@@ -196,7 +199,7 @@ public class WishlistServiceTests
         context.Transactions.Add(new Transaction { Id = "reward", Date = DateTime.UtcNow, Amount = 1000m, LedgerCategory = "Rewards" });
         await context.SaveChangesAsync();
 
-        await NewService(context).PurchaseWishlistItemAsync(1);
+        await NewService(context).PurchaseWishlistItemAsync(1, accountId: "acct-rewards");
 
         var active = await context.WishlistItems.Where(w => w.IsActive).ToListAsync();
         Assert.Single(active);
@@ -235,6 +238,17 @@ public class WishlistServiceTests
 
     private static WishlistService NewService(Database.AppDbContext context)
     {
+        if (context.LedgerAccounts.All(account => account.Id != "acct-rewards"))
+        {
+            context.LedgerAccounts.Add(new LedgerAccount
+            {
+                Id = "acct-rewards",
+                Name = "Rewards account",
+                Bucket = "Rewards",
+                Kind = LedgerAccountKind.EWallet,
+            });
+            context.SaveChanges();
+        }
         var cycleBalanceService = new CycleBalanceService(context);
         var savingsGoalService = new FinancialAppApi.Services.SavingsGoals.SavingsGoalService(context, cycleBalanceService);
         return new WishlistService(context, cycleBalanceService, savingsGoalService);

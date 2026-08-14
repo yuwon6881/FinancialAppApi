@@ -132,7 +132,6 @@ public sealed partial class LedgerAccountService
                             InterestNextAccrualDate = interest.Enabled && !target.IsArchived
                                 ? LedgerAccountInterestFrequency.NextDate(_clock.Today, interest.Frequency)
                                 : null,
-                            IsDefault = target.IsDefault,
                             IsArchived = target.IsArchived,
                             CreatedAt = DateTime.UtcNow,
                             UpdatedAt = DateTime.UtcNow,
@@ -140,15 +139,19 @@ public sealed partial class LedgerAccountService
                         _context.LedgerAccounts.Add(account);
                         accounts.Add(account);
                         bucketAccounts.Add(account);
-                        if (account.IsDefault && !account.IsArchived)
-                        {
-                            foreach (var other in bucketAccounts.Where(other => other.Id != account.Id && other.IsDefault))
-                                other.IsDefault = false;
-                        }
                     }
                     else
                     {
                         var wasArchived = account.IsArchived;
+                        if (!wasArchived && target.IsArchived)
+                        {
+                            if (await _context.RecurringPayments.AnyAsync(
+                                    payment => payment.AccountId == account.Id && payment.Active,
+                                    cancellationToken))
+                                return await ConflictAsync(databaseTransaction, "An active recurring payment uses this account. Reassign it before closing the account.");
+                            if (!bucketAccounts.Any(other => other.Id != account.Id && !other.IsArchived))
+                                return await ConflictAsync(databaseTransaction, "Every bucket needs one open account. Add another before closing this one.");
+                        }
                         account.Name = target.Name;
                         account.Kind = target.Kind;
                         account.IsArchived = target.IsArchived;
@@ -185,26 +188,12 @@ public sealed partial class LedgerAccountService
                             account.InterestRemainder = 0m;
                         }
                         account.UpdatedAt = DateTime.UtcNow;
-                        if (!target.IsArchived && target.IsDefault)
-                        {
-                            foreach (var other in bucketAccounts.Where(other => other.Id != account.Id && other.IsDefault))
-                                other.IsDefault = false;
-                            account.IsDefault = true;
-                        }
-                        else
-                        {
-                            account.IsDefault = false;
-                        }
                     }
                     resolvedTargets.Add(target with { Id = account.Id });
                 }
 
-                var liveDefault = bucketAccounts
-                    .Where(account => !account.IsArchived && account.IsDefault)
-                    .OrderBy(account => account.CreatedAt)
-                    .FirstOrDefault();
-                if (liveDefault is null)
-                    return await ConflictAsync(databaseTransaction, "Choose a live default account before reconciling.");
+                if (!bucketAccounts.Any(account => !account.IsArchived))
+                    return await ConflictAsync(databaseTransaction, "Every bucket needs one open account.");
 
                 var working = bucketAccounts.ToDictionary(
                     account => account.Id,
@@ -217,15 +206,21 @@ public sealed partial class LedgerAccountService
                 var createdTransactions = new List<LedgerAccountReconcileTransaction>();
                 if (!NearlyEqual(bucketDelta, 0m))
                 {
+                    var adjustmentAccountId = request.AdjustmentAccountId?.Trim();
+                    var adjustmentAccount = adjustmentAccountId is null
+                        ? null
+                        : bucketAccounts.FirstOrDefault(account => account.Id == adjustmentAccountId);
+                    if (adjustmentAccount is null || adjustmentAccount.IsArchived)
+                        return await ConflictAsync(databaseTransaction, "Choose an open account in this bucket for the total correction.");
                     var id = $"reconcile-{operationKey}-adjustment";
                     var adjustment = await AddOrGetAdjustmentAsync(
                         id,
                         bucket,
                         bucketDelta,
-                        liveDefault.Id,
+                        adjustmentAccount.Id,
                         cancellationToken);
                     createdTransactions.Add(adjustment);
-                    working[liveDefault.Id] = RoundMoney(working.GetValueOrDefault(liveDefault.Id) + bucketDelta);
+                    working[adjustmentAccount.Id] = RoundMoney(working.GetValueOrDefault(adjustmentAccount.Id) + bucketDelta);
                 }
 
                 var differences = resolvedTargets

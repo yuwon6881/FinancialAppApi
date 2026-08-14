@@ -1,6 +1,5 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
-using FinancialAppApi.Services.Accounts;
 using FinancialAppApi.Services.SavingsGoals;
 using Microsoft.EntityFrameworkCore;
 
@@ -14,7 +13,8 @@ public enum WishlistMutationStatus
     NameRequired,
     PriceInvalid,
     DateInvalid,
-    AlreadyPurchased
+    AlreadyPurchased,
+    InvalidAccount
 }
 
 public sealed record WishlistItemResult(
@@ -26,7 +26,9 @@ public sealed record WishlistPurchaseResult(
     WishlistMutationStatus Status,
     WishlistItem? Item = null,
     Transaction? Transaction = null,
-    string? Message = null);
+    string? Message = null,
+    string? Code = null,
+    IReadOnlyList<string>? MissingBuckets = null);
 
 public sealed record WishlistItemProjection(
     int Id,
@@ -46,22 +48,19 @@ public class WishlistService
     private readonly SavingsGoalService _savingsGoalService;
     private readonly FinancialClock _financialClock;
     private readonly SharedPoolMutationLock _sharedPoolMutationLock;
-    private readonly LedgerAccountResolver _accountResolver;
 
     public WishlistService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
         SavingsGoalService savingsGoalService,
         FinancialClock? financialClock = null,
-        SharedPoolMutationLock? sharedPoolMutationLock = null,
-        LedgerAccountResolver? accountResolver = null)
+        SharedPoolMutationLock? sharedPoolMutationLock = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _savingsGoalService = savingsGoalService;
         _financialClock = financialClock ?? FinancialClock.Utc;
         _sharedPoolMutationLock = sharedPoolMutationLock ?? new SharedPoolMutationLock(context);
-        _accountResolver = accountResolver ?? new LedgerAccountResolver(context);
     }
 
     public async Task<List<WishlistItemProjection>> GetWishlistAsync(CancellationToken cancellationToken = default)
@@ -240,7 +239,8 @@ public class WishlistService
         DateTime? customDate = null,
         CancellationToken cancellationToken = default,
         string? transactionId = null,
-        DateTime? postedAt = null)
+        DateTime? postedAt = null,
+        string? accountId = null)
     {
         var item = await _context.WishlistItems.FindAsync([id], cancellationToken);
         if (item == null)
@@ -258,6 +258,22 @@ public class WishlistService
                 ? new WishlistPurchaseResult(WishlistMutationStatus.Success, item, existingTransaction)
                 : new WishlistPurchaseResult(WishlistMutationStatus.AlreadyPurchased, Message: "Item is already purchased.");
         }
+
+        var requestedAccountId = string.IsNullOrWhiteSpace(accountId) ? null : accountId.Trim();
+        if (requestedAccountId is null)
+            return new WishlistPurchaseResult(
+                WishlistMutationStatus.InvalidAccount,
+                Message: "Choose an account for this reward claim.",
+                Code: "ledger_account_required",
+                MissingBuckets: ["Rewards"]);
+        var account = await _context.LedgerAccounts.AsNoTracking()
+            .FirstOrDefaultAsync(candidate => candidate.Id == requestedAccountId, cancellationToken);
+        if (account is null || account.IsArchived || !account.Bucket.Equals("Rewards", StringComparison.OrdinalIgnoreCase))
+            return new WishlistPurchaseResult(
+                WishlistMutationStatus.InvalidAccount,
+                Message: "Choose an open account in the Rewards bucket.",
+                Code: "ledger_account_invalid",
+                MissingBuckets: ["Rewards"]);
 
         if (customDate.HasValue && DateOnly.FromDateTime(customDate.Value) > _financialClock.Today)
         {
@@ -291,11 +307,11 @@ public class WishlistService
             LedgerCategory = "Rewards",
             Amount = -item.Price,
             ExcludeFromAutocomplete = true,
-            WishlistItemId = item.Id
+            WishlistItemId = item.Id,
+            AccountId = requestedAccountId,
         };
 
         item.PurchaseTransactionId = tx.Id;
-        await _accountResolver.ResolveMissingAsync(tx, cancellationToken);
         _context.Transactions.Add(tx);
 
         var strategy = _context.Database.CreateExecutionStrategy();

@@ -69,7 +69,10 @@ public class WishlistIntegrationTests : IntegrationTestBase
             await db.SaveChangesAsync();
         });
 
-        var purchase = await client.PostAsync($"/api/wishlist/{id}/purchase", null);
+        var purchase = await client.PostAsJsonAsync($"/api/wishlist/{id}/purchase", new
+        {
+            accountId = AccountIdFor("Rewards"),
+        });
         Assert.Equal(HttpStatusCode.OK, purchase.StatusCode);
 
         var body = await purchase.Content.ReadFromJsonAsync<JsonElement>();
@@ -111,9 +114,15 @@ public class WishlistIntegrationTests : IntegrationTestBase
             });
             await db.SaveChangesAsync();
         });
-        await client.PostAsync($"/api/wishlist/{id}/purchase", null);
+        await client.PostAsJsonAsync($"/api/wishlist/{id}/purchase", new
+        {
+            accountId = AccountIdFor("Rewards"),
+        });
 
-        var second = await client.PostAsync($"/api/wishlist/{id}/purchase", null);
+        var second = await client.PostAsJsonAsync($"/api/wishlist/{id}/purchase", new
+        {
+            accountId = AccountIdFor("Rewards"),
+        });
 
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
 
@@ -140,7 +149,10 @@ public class WishlistIntegrationTests : IntegrationTestBase
             });
             await db.SaveChangesAsync();
         });
-        await client.PostAsync($"/api/wishlist/{id}/purchase", null);
+        await client.PostAsJsonAsync($"/api/wishlist/{id}/purchase", new
+        {
+            accountId = AccountIdFor("Rewards"),
+        });
 
         var unpurchase = await client.DeleteAsync($"/api/wishlist/{id}/purchase");
         Assert.Equal(HttpStatusCode.OK, unpurchase.StatusCode);

@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Accounts;
 using FinancialAppApi.Services.Loans;
 using Microsoft.EntityFrameworkCore;
 
@@ -10,13 +11,30 @@ public enum UpdateRecurringPaymentStatus
     Updated,
     NotFound,
     InvalidCategory,
-    InvalidLoanTerm
+    InvalidLoanTerm,
+    InvalidAccount
 }
 
 public sealed record UpdateRecurringPaymentResult(
     UpdateRecurringPaymentStatus Status,
     RecurringPayment? Payment = null,
-    string? Message = null);
+    string? Message = null,
+    string? Code = null,
+    IReadOnlyList<string>? MissingBuckets = null);
+
+public enum ToggleRecurringPaymentStatus
+{
+    Updated,
+    NotFound,
+    InvalidAccount
+}
+
+public sealed record ToggleRecurringPaymentResult(
+    ToggleRecurringPaymentStatus Status,
+    RecurringPayment? Payment = null,
+    string? Message = null,
+    string? Code = null,
+    IReadOnlyList<string>? MissingBuckets = null);
 
 public enum UpdateReminderStatus
 {
@@ -35,13 +53,16 @@ public enum CreateRecurringPaymentStatus
 {
     Created,
     Existing,
-    InvalidCategory
+    InvalidCategory,
+    InvalidAccount
 }
 
 public sealed record CreateRecurringPaymentResult(
     CreateRecurringPaymentStatus Status,
     RecurringPayment? Payment = null,
-    string? Message = null);
+    string? Message = null,
+    string? Code = null,
+    IReadOnlyList<string>? MissingBuckets = null);
 
 public sealed record RecurringPaymentProjection(
     string Id,
@@ -61,7 +82,8 @@ public sealed record RecurringPaymentProjection(
     DateOnly OccurrenceTrackingStartDate,
     string PaymentMode,
     string? LinkedLoanId,
-    string? LinkedLoanName);
+    string? LinkedLoanName,
+    string AccountId = "");
 
 public enum DeleteRecurringPaymentStatus
 {
@@ -127,7 +149,8 @@ public class RecurringPaymentService
                 payment.OccurrenceTrackingStartDate,
                 payment.PaymentMode,
                 linkedLoan == null ? null : linkedLoan.Id,
-                linkedLoan == null ? null : linkedLoan.Name))
+                linkedLoan == null ? null : linkedLoan.Name,
+                payment.AccountId))
             .ToListAsync(cancellationToken);
     }
 
@@ -152,6 +175,13 @@ public class RecurringPaymentService
                 CreateRecurringPaymentStatus.InvalidCategory,
                 Message: $"Category '{payment.Category}' does not exist.");
         }
+        var accountValidation = await ValidateAccountAsync(payment, payment.Active, cancellationToken);
+        if (accountValidation is not null)
+            return new CreateRecurringPaymentResult(
+                CreateRecurringPaymentStatus.InvalidAccount,
+                Message: accountValidation.Value.Message,
+                Code: accountValidation.Value.Code,
+                MissingBuckets: MissingBucketsFor(payment.LedgerCategory));
 
         if (payment.OccurrenceTrackingStartDate == default)
         {
@@ -165,12 +195,12 @@ public class RecurringPaymentService
         return new CreateRecurringPaymentResult(CreateRecurringPaymentStatus.Created, payment);
     }
 
-    public async Task<RecurringPayment?> ToggleActiveAsync(string id, bool? active = null, CancellationToken cancellationToken = default)
+    public async Task<ToggleRecurringPaymentResult> ToggleActiveAsync(string id, bool? active = null, CancellationToken cancellationToken = default)
     {
         var payment = await _context.RecurringPayments.FindAsync([id], cancellationToken);
         if (payment == null)
         {
-            return null;
+            return new ToggleRecurringPaymentResult(ToggleRecurringPaymentStatus.NotFound);
         }
 
         // Prefer the absolute desired state sent by the client. The offline outbox coalesces
@@ -179,6 +209,17 @@ public class RecurringPaymentService
         // or a lost-response retry would land on the wrong value). Fall back to a relative flip only
         // for legacy callers that send no body.
         var desired = active ?? !payment.Active;
+        if (desired)
+        {
+            var accountValidation = await ValidateAccountAsync(payment, requireOpen: true, cancellationToken);
+            if (accountValidation is not null)
+                return new ToggleRecurringPaymentResult(
+                    ToggleRecurringPaymentStatus.InvalidAccount,
+                    payment,
+                    accountValidation.Value.Message,
+                    accountValidation.Value.Code,
+                    MissingBucketsFor(payment.LedgerCategory));
+        }
         if (payment.Active != desired)
         {
             await _occurrences.PreserveThroughTodayAndResetFutureAsync(
@@ -190,7 +231,7 @@ public class RecurringPaymentService
             await _context.SaveChangesAsync(cancellationToken);
         }
 
-        return payment;
+        return new ToggleRecurringPaymentResult(ToggleRecurringPaymentStatus.Updated, payment);
     }
 
     public async Task<UpdateRecurringPaymentResult> UpdateRecurringPaymentAsync(string id, RecurringPayment updated, CancellationToken cancellationToken = default)
@@ -207,6 +248,14 @@ public class RecurringPaymentService
                 UpdateRecurringPaymentStatus.InvalidCategory,
                 Message: $"Category '{updated.Category}' does not exist.");
         }
+        var accountValidation = await ValidateAccountAsync(updated, updated.Active, cancellationToken);
+        if (accountValidation is not null)
+            return new UpdateRecurringPaymentResult(
+                UpdateRecurringPaymentStatus.InvalidAccount,
+                existing,
+                accountValidation.Value.Message,
+                accountValidation.Value.Code,
+                MissingBucketsFor(updated.LedgerCategory));
 
         var linkedLoan = await _context.Loans
             .FirstOrDefaultAsync(loan => loan.RecurringPaymentId == id, cancellationToken);
@@ -242,6 +291,7 @@ public class RecurringPaymentService
         existing.EndDate = updated.EndDate;
         existing.Active = updated.Active;
         existing.PaymentMode = updated.PaymentMode;
+        existing.AccountId = updated.AccountId.Trim();
 
         try
         {
@@ -361,5 +411,30 @@ public class RecurringPaymentService
         }
 
         return await _context.TransactionCategories.AnyAsync(c => c.Name.ToLower() == category.Trim().ToLower(), cancellationToken);
+    }
+
+    private async Task<(string Code, string Message)?> ValidateAccountAsync(
+        RecurringPayment payment,
+        bool requireOpen,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(payment.AccountId))
+            return ("ledger_account_required", "Choose an account for this recurring payment.");
+        if (!LedgerAccountPlacement.IsBucket(payment.LedgerCategory))
+            return ("ledger_account_invalid", "A recurring payment must use one of the four ledger buckets.");
+
+        var account = await _context.LedgerAccounts.AsNoTracking()
+            .FirstOrDefaultAsync(candidate => candidate.Id == payment.AccountId.Trim(), cancellationToken);
+        if (account is null
+            || !account.Bucket.Equals(payment.LedgerCategory.Trim(), StringComparison.OrdinalIgnoreCase)
+            || (requireOpen && account.IsArchived))
+            return ("ledger_account_invalid", "Choose an open account in the recurring payment's bucket.");
+        return null;
+    }
+
+    private static IReadOnlyList<string>? MissingBucketsFor(string? ledgerCategory)
+    {
+        var bucket = LedgerAccountPlacement.BucketOrNull(ledgerCategory);
+        return bucket is null ? null : [bucket];
     }
 }

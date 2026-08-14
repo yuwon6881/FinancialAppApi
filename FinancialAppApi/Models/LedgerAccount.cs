@@ -42,8 +42,6 @@ public sealed class LedgerAccount : IUserOwnedEntity
 
     public decimal InterestRemainder { get; set; }
 
-    public bool IsDefault { get; set; }
-
     public bool IsArchived { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

@@ -32,10 +32,6 @@ public sealed class LedgerAccountBalanceService
             ? await _context.LedgerAccounts.AsNoTracking().ToListAsync(cancellationToken)
             : accounts.ToList();
         var accountsById = accountRows.ToDictionary(account => account.Id, StringComparer.Ordinal);
-        var defaults = accountRows
-            .Where(account => account.IsDefault && !account.IsArchived)
-            .GroupBy(account => account.Bucket, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First().Id, StringComparer.OrdinalIgnoreCase);
         if (accountRows.Count == 0) return EmptyBalances(accountRows);
 
         var transactionQuery = _context.Transactions
@@ -58,7 +54,7 @@ public sealed class LedgerAccountBalanceService
             .AsAsyncEnumerable()
             .WithCancellation(cancellationToken))
         {
-            Accumulate(balances, transaction.ToTransaction(), accountsById, defaults);
+            Accumulate(balances, transaction.ToTransaction(), accountsById);
         }
         return balances;
     }
@@ -85,16 +81,15 @@ public sealed class LedgerAccountBalanceService
                 transaction.AccountId,
                 transaction.CounterAccountId));
         var accountsById = accountRows.ToDictionary(account => account.Id, StringComparer.Ordinal);
-        var defaults = DefaultAccounts(accountRows);
         var current = EmptyBalances(accountRows);
         var through = EmptyBalances(accountRows);
         await foreach (var transaction in transactions
             .AsAsyncEnumerable()
             .WithCancellation(cancellationToken))
         {
-            Accumulate(current, transaction.ToTransaction(), accountsById, defaults);
+            Accumulate(current, transaction.ToTransaction(), accountsById);
             if (transaction.Date < throughExclusive)
-                Accumulate(through, transaction.ToTransaction(), accountsById, defaults);
+                Accumulate(through, transaction.ToTransaction(), accountsById);
         }
         return new LedgerAccountBalanceSnapshot(current, through);
     }
@@ -102,8 +97,7 @@ public sealed class LedgerAccountBalanceService
     private static void Accumulate(
         IDictionary<string, decimal> balances,
         Transaction transaction,
-        IReadOnlyDictionary<string, LedgerAccount> accountsById,
-        IReadOnlyDictionary<string, string> defaults)
+        IReadOnlyDictionary<string, LedgerAccount> accountsById)
     {
         if (string.Equals(transaction.LedgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase))
         {
@@ -116,7 +110,7 @@ public sealed class LedgerAccountBalanceService
         {
             var leg = CategoryAttributionService.GetCategoryAmount(transaction, bucket);
             if (leg == 0m) continue;
-            Add(balances, LedgerAccountAttribution.GetPlacementAccountId(transaction, bucket, accountsById, defaults), leg);
+            Add(balances, LedgerAccountAttribution.GetPlacementAccountId(transaction, bucket, accountsById), leg);
         }
     }
 
@@ -124,11 +118,6 @@ public sealed class LedgerAccountBalanceService
 
     private static Dictionary<string, decimal> EmptyBalances(IEnumerable<LedgerAccount> accounts) =>
         accounts.ToDictionary(account => account.Id, _ => 0m, StringComparer.Ordinal);
-
-    private static IReadOnlyDictionary<string, string> DefaultAccounts(IEnumerable<LedgerAccount> accounts) =>
-        accounts.Where(account => account.IsDefault && !account.IsArchived)
-            .GroupBy(account => account.Bucket, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First().Id, StringComparer.OrdinalIgnoreCase);
 
     private static void Add(IDictionary<string, decimal> balances, string? accountId, decimal amount)
     {

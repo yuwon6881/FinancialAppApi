@@ -55,17 +55,15 @@ public class DatabaseInvariantTests
     }
 
     [Fact]
-    public void Model_EnforcesOneLiveDefaultPerBucketAndValidAccountShape()
+    public void Model_UsesExplicitAccountsAndValidAccountShape()
     {
         using var context = TestHelpers.NewInMemoryContext();
         var model = context.GetService<IDesignTimeModel>().Model;
         var entity = model.FindEntityType(typeof(LedgerAccount))!;
 
-        var index = Assert.Single(entity.GetIndexes(), i =>
+        Assert.DoesNotContain(entity.GetIndexes(), i =>
             i.Properties.Select(p => p.Name).SequenceEqual(
                 [nameof(LedgerAccount.UserId), nameof(LedgerAccount.Bucket)]));
-        Assert.True(index.IsUnique);
-        Assert.Equal("\"IsDefault\"", index.GetFilter());
 
         var bucketConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_bucket");
         var kindConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_kind");
@@ -80,6 +78,12 @@ public class DatabaseInvariantTests
         Assert.Contains(transactionEntity.GetForeignKeys(), foreignKey =>
             foreignKey.Properties.Select(property => property.Name).SequenceEqual(
                 [nameof(Transaction.UserId), nameof(Transaction.CounterAccountId)]));
+
+        var recurringEntity = model.FindEntityType(typeof(RecurringPayment))!;
+        Assert.True(recurringEntity.FindProperty(nameof(RecurringPayment.AccountId))!.IsNullable == false);
+        Assert.Contains(recurringEntity.GetForeignKeys(), foreignKey =>
+            foreignKey.Properties.Select(property => property.Name).SequenceEqual(
+                [nameof(RecurringPayment.UserId), nameof(RecurringPayment.AccountId)]));
     }
 
     [Fact]

@@ -22,6 +22,12 @@ public class BootstrapIntegrationTests : IntegrationTestBase
             description = $"seed-{date}-{category}",
             category,
             ledgerCategory,
+            // A plain bucket row names its own account; an Income parent carries none and instead
+            // places each generated child, since placement is explicit and has no default.
+            accountId = LedgerBuckets.Contains(ledgerCategory) ? AccountIdFor(ledgerCategory) : null,
+            splitAccountIds = LedgerBuckets.Contains(ledgerCategory)
+                ? null
+                : LedgerBuckets.ToDictionary(bucket => bucket, bucket => AccountIdFor(bucket)),
             amount = ObfuscationHelper.Obfuscate(amount),
         });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);

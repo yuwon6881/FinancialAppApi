@@ -9,14 +9,12 @@ public class LedgerAccountAttributionTests
     private static LedgerAccount Account(
         string id,
         string bucket,
-        bool isDefault = false,
         bool isArchived = false) => new()
         {
             Id = id,
             Name = id,
             Bucket = bucket,
             Kind = LedgerAccountKind.Bank,
-            IsDefault = isDefault,
             IsArchived = isArchived,
         };
 
@@ -27,8 +25,7 @@ public class LedgerAccountAttributionTests
         var amount = LedgerAccountAttribution.GetAccountAmount(
             new Transaction { LedgerCategory = "Essentials", Amount = -80m, AccountId = account.Id },
             account,
-            new Dictionary<string, LedgerAccount> { [account.Id] = account },
-            new Dictionary<string, string>());
+            new Dictionary<string, LedgerAccount> { [account.Id] = account });
 
         Assert.Equal(-80m, amount);
     }
@@ -36,12 +33,11 @@ public class LedgerAccountAttributionTests
     [Fact]
     public void IncomeSplitUsesTheBucketShareNotTheRawSalaryAmount()
     {
-        var account = Account("essentials", "Essentials", isDefault: true);
+        var account = Account("essentials", "Essentials");
         var amount = LedgerAccountAttribution.GetAccountAmount(
-            new Transaction { LedgerCategory = "IncomeSplit:50,25,15,10", Amount = 1000m },
+            new Transaction { LedgerCategory = "IncomeSplit:50,25,15,10", Amount = 1000m, AccountId = account.Id },
             account,
-            new Dictionary<string, LedgerAccount> { [account.Id] = account },
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Essentials"] = account.Id });
+            new Dictionary<string, LedgerAccount> { [account.Id] = account });
 
         Assert.Equal(500m, amount);
     }
@@ -49,8 +45,8 @@ public class LedgerAccountAttributionTests
     [Fact]
     public void CrossBucketTransferCanUseAccountThenCounterAccountPlacement()
     {
-        var source = Account("source", "Essentials", isDefault: true);
-        var destination = Account("destination", "Rewards", isDefault: true);
+        var source = Account("source", "Essentials");
+        var destination = Account("destination", "Rewards");
         var all = new Dictionary<string, LedgerAccount>
         {
             [source.Id] = source,
@@ -64,21 +60,20 @@ public class LedgerAccountAttributionTests
             CounterAccountId = destination.Id,
         };
 
-        Assert.Equal(-120m, LedgerAccountAttribution.GetAccountAmount(transaction, source, all, new Dictionary<string, string>()));
-        Assert.Equal(120m, LedgerAccountAttribution.GetAccountAmount(transaction, destination, all, new Dictionary<string, string>()));
+        Assert.Equal(-120m, LedgerAccountAttribution.GetAccountAmount(transaction, source, all));
+        Assert.Equal(120m, LedgerAccountAttribution.GetAccountAmount(transaction, destination, all));
     }
 
     [Fact]
     public void IncomeAndDiscardedRowsHaveNoAccountLeg()
     {
-        var account = Account("essentials", "Essentials", isDefault: true);
+        var account = Account("essentials", "Essentials");
         var all = new Dictionary<string, LedgerAccount> { [account.Id] = account };
-        var defaults = new Dictionary<string, string> { ["Essentials"] = account.Id };
 
         Assert.Equal(0m, LedgerAccountAttribution.GetAccountAmount(
-            new Transaction { LedgerCategory = "Income", Amount = 1000m }, account, all, defaults));
+            new Transaction { LedgerCategory = "Income", Amount = 1000m }, account, all));
         Assert.Equal(0m, LedgerAccountAttribution.GetAccountAmount(
-            new Transaction { LedgerCategory = "Discarded", Amount = -100m }, account, all, defaults));
+            new Transaction { LedgerCategory = "Discarded", Amount = -100m }, account, all));
     }
 
     [Fact]
@@ -100,24 +95,22 @@ public class LedgerAccountAttributionTests
             CounterAccountId = destination.Id,
         };
 
-        Assert.Equal(-40m, LedgerAccountAttribution.GetAccountAmount(transaction, source, all, new Dictionary<string, string>()));
-        Assert.Equal(40m, LedgerAccountAttribution.GetAccountAmount(transaction, destination, all, new Dictionary<string, string>()));
+        Assert.Equal(-40m, LedgerAccountAttribution.GetAccountAmount(transaction, source, all));
+        Assert.Equal(40m, LedgerAccountAttribution.GetAccountAmount(transaction, destination, all));
         Assert.Equal(0m, CategoryAttributionService.GetCategoryAmount(transaction, "Essentials"));
     }
 
     [Fact]
-    public void UntrackedLegFallsToTheLiveDefaultAndZeroAccountsRemainUntracked()
+    public void UntrackedLegIsNotAssignedToAnAccount()
     {
-        var account = Account("default", "Essentials", isDefault: true);
-        var defaults = new Dictionary<string, string> { ["Essentials"] = account.Id };
+        var account = Account("account", "Essentials");
         var all = new Dictionary<string, LedgerAccount> { [account.Id] = account };
         var transaction = new Transaction { LedgerCategory = "Essentials", Amount = -25m };
 
-        Assert.Equal(-25m, LedgerAccountAttribution.GetAccountAmount(transaction, account, all, defaults));
+        Assert.Equal(0m, LedgerAccountAttribution.GetAccountAmount(transaction, account, all));
         Assert.Null(LedgerAccountAttribution.GetPlacementAccountId(
             transaction,
             "Rewards",
-            all,
-            defaults));
+            all));
     }
 }

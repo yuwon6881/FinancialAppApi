@@ -42,7 +42,8 @@ public class SavingsGoalServiceTests
             Description = "Essentials allocation",
             Category = "Other",
             LedgerCategory = "Essentials",
-            Amount = 1000m
+            Amount = 1000m,
+            AccountId = "acct-essentials",
         });
         context.SavingsGoals.Add(NewGoal("Home reserve", 500m, new DateOnly(2026, 9, 20), earmarked: 300m, fundingBucket: SavingsGoalFundingBucket.Essentials));
         context.SavingsGoals.Add(NewGoal("Reward", 500m, new DateOnly(2026, 9, 20), earmarked: 200m));
@@ -86,6 +87,7 @@ public class SavingsGoalServiceTests
             Frequency = "Monthly",
             Category = "Entertainment",
             LedgerCategory = "Rewards",
+            AccountId = "acct-rewards",
             StartDate = "2026-01-27",
             NextDueDate = "2026-07-27",
             DueDate = 27,
@@ -101,6 +103,7 @@ public class SavingsGoalServiceTests
             Category = "Entertainment",
             LedgerCategory = "Rewards",
             Amount = -150m,
+            AccountId = "acct-rewards",
             RecurringPaymentId = "chatgpt-plus",
             RecurringOccurrenceDate = new DateOnly(2026, 8, 27)
         });
@@ -130,6 +133,7 @@ public class SavingsGoalServiceTests
             Frequency = "Monthly",
             Category = "Entertainment",
             LedgerCategory = "Rewards",
+            AccountId = "acct-rewards",
             StartDate = "2026-01-27",
             NextDueDate = "2026-07-27",
             DueDate = 27,
@@ -144,6 +148,7 @@ public class SavingsGoalServiceTests
             Category = "Entertainment",
             LedgerCategory = "Rewards",
             Amount = -150m,
+            AccountId = "acct-rewards",
             RecurringPaymentId = "legacy-rewards-bill"
         });
         await context.SaveChangesAsync();
@@ -429,7 +434,8 @@ public class SavingsGoalServiceTests
             Description = "Essentials allocation",
             Category = "Other",
             LedgerCategory = SavingsGoalFundingBucket.Essentials,
-            Amount = 1000m
+            Amount = 1000m,
+            AccountId = "acct-essentials"
         });
         var rewardsGoal = NewGoal("Reward", 500m, new DateOnly(2026, 9, 20));
         var essentialsGoal = NewGoal(
@@ -590,7 +596,7 @@ public class SavingsGoalServiceTests
         await context.SaveChangesAsync();
         var freeBefore = (await NewService(context).GetPoolSummaryAsync()).Unassigned;
 
-        var result = await NewService(context).CompleteGoalAsync(goal.Id);
+        var result = await NewService(context).CompleteGoalAsync(goal.Id, "acct-rewards");
 
         Assert.Equal(SavingsGoalMutationStatus.Success, result.Status);
         var stored = context.SavingsGoals.Single();
@@ -619,7 +625,7 @@ public class SavingsGoalServiceTests
         context.SavingsGoals.Add(goal);
         await context.SaveChangesAsync();
 
-        await NewService(context).CompleteGoalAsync(goal.Id);
+        await NewService(context).CompleteGoalAsync(goal.Id, "acct-rewards");
 
         var stored = context.SavingsGoals.Single();
         Assert.Equal(SavingsGoalStatus.Active, stored.Status);
@@ -643,16 +649,16 @@ public class SavingsGoalServiceTests
         Assert.Equal(SavingsGoalMutationStatus.Success, created.Status);
         Assert.Equal(31, created.Goal!.RecurrenceDayOfMonth);
 
-        await service.CompleteGoalAsync(goal.Id);
+        await service.CompleteGoalAsync(goal.Id, "acct-rewards");
         Assert.Equal(new DateTime(2026, 8, 31), context.SavingsGoals.Single().TargetDate.Date);
         Assert.Equal(31, context.SavingsGoals.Single().RecurrenceDayOfMonth);
 
         await service.ContributeAsync(goal.Id, 1200m);
-        await NewService(context, new DateOnly(2026, 9, 1)).CompleteGoalAsync(goal.Id);
+        await NewService(context, new DateOnly(2026, 9, 1)).CompleteGoalAsync(goal.Id, "acct-rewards");
         Assert.Equal(new DateTime(2026, 9, 30), context.SavingsGoals.Single().TargetDate.Date);
 
         await NewService(context, new DateOnly(2026, 10, 1)).ContributeAsync(goal.Id, 1200m);
-        await NewService(context, new DateOnly(2026, 10, 1)).CompleteGoalAsync(goal.Id);
+        await NewService(context, new DateOnly(2026, 10, 1)).CompleteGoalAsync(goal.Id, "acct-rewards");
         // The September clamp does not permanently turn the 31st into the 30th.
         Assert.Equal(new DateTime(2026, 10, 31), context.SavingsGoals.Single().TargetDate.Date);
     }
@@ -667,7 +673,7 @@ public class SavingsGoalServiceTests
         context.SavingsGoals.Add(goal);
         await context.SaveChangesAsync();
 
-        await NewService(context, new DateOnly(2026, 7, 15)).CompleteGoalAsync(goal.Id);
+        await NewService(context, new DateOnly(2026, 7, 15)).CompleteGoalAsync(goal.Id, "acct-rewards");
 
         // Jan -> Apr -> Jul are already missed (including today's deadline), so one completion
         // advances the active goal to the next actionable quarter.
@@ -683,7 +689,7 @@ public class SavingsGoalServiceTests
         context.SavingsGoals.Add(goal);
         await context.SaveChangesAsync();
 
-        var result = await NewService(context).CompleteGoalAsync(goal.Id);
+        var result = await NewService(context).CompleteGoalAsync(goal.Id, "acct-rewards");
 
         Assert.Equal(SavingsGoalMutationStatus.AlreadyCompleted, result.Status);
     }
@@ -696,7 +702,7 @@ public class SavingsGoalServiceTests
         context.SavingsGoals.Add(goal);
         await context.SaveChangesAsync();
 
-        var result = await NewService(context).CompleteGoalAsync(goal.Id);
+        var result = await NewService(context).CompleteGoalAsync(goal.Id, "acct-rewards");
 
         Assert.Equal(SavingsGoalMutationStatus.NothingEarmarked, result.Status);
         Assert.DoesNotContain(context.Transactions, transaction => transaction.SavingsGoalId == goal.Id);
@@ -714,7 +720,7 @@ public class SavingsGoalServiceTests
         context.SavingsGoals.Add(goal);
         await context.SaveChangesAsync();
 
-        var completed = await NewService(context).CompleteGoalAsync(goal.Id);
+        var completed = await NewService(context).CompleteGoalAsync(goal.Id, "acct-rewards");
         var transactionId = completed.CompletionTransaction!.Id;
         var occurrenceService = new RecurringOccurrenceService(
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance);
@@ -749,7 +755,7 @@ public class SavingsGoalServiceTests
         context.SavingsGoals.Add(goal);
         await context.SaveChangesAsync();
         var service = NewService(context);
-        var completed = await service.CompleteGoalAsync(goal.Id);
+        var completed = await service.CompleteGoalAsync(goal.Id, "acct-rewards");
         await service.ContributeAsync(goal.Id, 100m);
         var occurrenceService = new RecurringOccurrenceService(
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance);
@@ -805,7 +811,8 @@ public class SavingsGoalServiceTests
             Description = "Rewards allocation",
             Category = "Other",
             LedgerCategory = "Rewards",
-            Amount = 250m
+            Amount = 250m,
+            AccountId = "acct-rewards"
         });
         await context.SaveChangesAsync();
 
@@ -820,6 +827,20 @@ public class SavingsGoalServiceTests
     {
         var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = "acct-rewards",
+            Name = "Rewards account",
+            Bucket = "Rewards",
+            Kind = LedgerAccountKind.EWallet,
+        });
+        context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = "acct-essentials",
+            Name = "Essentials account",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+        });
         if (rewardsBalance != 0m)
         {
             context.Transactions.Add(new Transaction
@@ -829,7 +850,8 @@ public class SavingsGoalServiceTests
                 Description = "Rewards allocation",
                 Category = "Other",
                 LedgerCategory = "Rewards",
-                Amount = rewardsBalance
+                Amount = rewardsBalance,
+                AccountId = "acct-rewards",
             });
         }
         context.SaveChanges();

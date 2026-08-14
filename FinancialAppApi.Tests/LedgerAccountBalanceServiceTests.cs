@@ -10,8 +10,8 @@ public sealed class LedgerAccountBalanceServiceTests
     public async Task SnapshotCalculatesCurrentAndCutoffBalancesFromTheSameHistory()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        var essentials = Account("essentials", "Essentials", true);
-        var rewards = Account("rewards", "Rewards", true);
+        var essentials = Account("essentials", "Essentials");
+        var rewards = Account("rewards", "Rewards");
         context.LedgerAccounts.AddRange(essentials, rewards);
         context.Transactions.AddRange(
             Transaction("before", "Transfer:Essentials->Rewards", 50m, new DateOnly(2026, 7, 1), essentials.Id, rewards.Id),
@@ -28,13 +28,12 @@ public sealed class LedgerAccountBalanceServiceTests
         Assert.Equal(40m, snapshot.Current[rewards.Id]);
     }
 
-    private static LedgerAccount Account(string id, string bucket, bool isDefault) => new()
+    private static LedgerAccount Account(string id, string bucket) => new()
     {
         Id = id,
         Name = id,
         Bucket = bucket,
         Kind = LedgerAccountKind.Bank,
-        IsDefault = isDefault,
     };
 
     private static Transaction Transaction(

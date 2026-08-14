@@ -70,6 +70,10 @@ public class RecurringPaymentAlertService
                     : null,
                 category = occurrence.Category ?? string.Empty,
                 ledgerCategory = occurrence.LedgerCategory ?? string.Empty,
+                // The occurrence's frozen account, so confirming settles where this bill was
+                // scheduled rather than wherever the schedule points now. Null on legacy rows;
+                // the client falls back to the parent exactly as the server does.
+                accountId = occurrence.AccountId,
                 billingDate = occurrence.OccurrenceDate.ToString("yyyy-MM-dd"),
                 year,
                 month = monthIndex,

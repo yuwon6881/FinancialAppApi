@@ -28,7 +28,7 @@ public class RecurringPaymentPayEarlyServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context, Today(2026, 7, 10));
 
-        var result = await service.PayEarlyAsync("rec-1");
+        var result = await service.PayEarlyAsync("rec-1", accountId: "acct-essentials");
 
         Assert.Equal(PayEarlyStatus.PaymentInactive, result.Status);
         Assert.Empty(context.Transactions);
@@ -47,7 +47,7 @@ public class RecurringPaymentPayEarlyServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context, Today(2026, 7, 10));
 
-        var result = await service.PayEarlyAsync("rec-1");
+        var result = await service.PayEarlyAsync("rec-1", accountId: "acct-essentials");
 
         Assert.Equal(PayEarlyStatus.AutomaticPayment, result.Status);
         Assert.Empty(context.Transactions);
@@ -65,7 +65,7 @@ public class RecurringPaymentPayEarlyServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context, Today(2026, 7, 10));
 
-        var result = await service.PayEarlyAsync("rec-1", new DateOnly(2026, 7, 15));
+        var result = await service.PayEarlyAsync("rec-1", new DateOnly(2026, 7, 15), accountId: "acct-essentials");
 
         Assert.Equal(PayEarlyStatus.AutomaticPayment, result.Status);
         Assert.Empty(context.Transactions);
@@ -85,7 +85,7 @@ public class RecurringPaymentPayEarlyServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context, Today(2026, 7, 10));
 
-        var result = await service.PayEarlyAsync("rec-1");
+        var result = await service.PayEarlyAsync("rec-1", accountId: "acct-essentials");
 
         Assert.Equal(PayEarlyStatus.Success, result.Status);
         Assert.Equal(new DateOnly(2026, 7, 15), result.SettledOccurrenceDate);
@@ -113,7 +113,7 @@ public class RecurringPaymentPayEarlyServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context, Today(2026, 7, 10));
 
-        var result = await service.PayEarlyAsync("rec-1");
+        var result = await service.PayEarlyAsync("rec-1", accountId: "acct-essentials");
 
         Assert.Equal(PayEarlyStatus.Success, result.Status);
         Assert.Equal(new DateOnly(2026, 7, 20), result.SettledOccurrenceDate);
@@ -133,7 +133,7 @@ public class RecurringPaymentPayEarlyServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context, Today(2026, 7, 10));
 
-        var result = await service.PayEarlyAsync("rec-1");
+        var result = await service.PayEarlyAsync("rec-1", accountId: "acct-essentials");
 
         Assert.Equal(PayEarlyStatus.Success, result.Status);
         var snapshots = await context.CycleBalances.OrderBy(value => value.MonthIndex).ToListAsync();
@@ -165,7 +165,7 @@ public class RecurringPaymentPayEarlyServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context, Today(2026, 7, 10));
 
-        var result = await service.PayEarlyAsync("rec-1");
+        var result = await service.PayEarlyAsync("rec-1", accountId: "acct-essentials");
 
         Assert.Equal(PayEarlyStatus.Success, result.Status);
         Assert.Equal(new DateOnly(2026, 8, 15), result.SettledOccurrenceDate);
@@ -184,7 +184,7 @@ public class RecurringPaymentPayEarlyServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context, Today(2026, 7, 10));
 
-        var result = await service.PayEarlyAsync("rec-1");
+        var result = await service.PayEarlyAsync("rec-1", accountId: "acct-essentials");
 
         Assert.Equal(PayEarlyStatus.NoUpcomingOccurrence, result.Status);
         Assert.Empty(context.Transactions);
@@ -205,8 +205,8 @@ public class RecurringPaymentPayEarlyServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context, Today(2026, 7, 10));
 
-        var first = await service.PayEarlyAsync("rec-1");
-        var second = await service.PayEarlyAsync("rec-1");
+        var first = await service.PayEarlyAsync("rec-1", accountId: "acct-essentials");
+        var second = await service.PayEarlyAsync("rec-1", accountId: "acct-essentials");
 
         Assert.Equal(PayEarlyStatus.Success, first.Status);
         Assert.Equal(PayEarlyStatus.NoUpcomingOccurrence, second.Status);
@@ -222,8 +222,8 @@ public class RecurringPaymentPayEarlyServiceTests
         var service = NewService(context, Today(2026, 7, 10));
         var expected = new DateOnly(2026, 7, 15);
 
-        var first = await service.PayEarlyAsync("rec-1", expected);
-        var replay = await service.PayEarlyAsync("rec-1", expected);
+        var first = await service.PayEarlyAsync("rec-1", expected, accountId: "acct-essentials");
+        var replay = await service.PayEarlyAsync("rec-1", expected, accountId: "acct-essentials");
 
         Assert.Equal(PayEarlyStatus.Success, first.Status);
         Assert.Equal(PayEarlyStatus.Conflict, replay.Status);
@@ -240,8 +240,8 @@ public class RecurringPaymentPayEarlyServiceTests
         var service = NewService(context, Today(2026, 7, 10));
         var expected = new DateOnly(2026, 7, 15);
 
-        var first = await service.PayEarlyAsync("rec-1", expected, CancellationToken.None, "outbox-op-1");
-        var replay = await service.PayEarlyAsync("rec-1", expected, CancellationToken.None, "outbox-op-1");
+        var first = await service.PayEarlyAsync("rec-1", expected, CancellationToken.None, "outbox-op-1", accountId: "acct-essentials");
+        var replay = await service.PayEarlyAsync("rec-1", expected, CancellationToken.None, "outbox-op-1", accountId: "acct-essentials");
 
         Assert.Equal(PayEarlyStatus.Success, first.Status);
         Assert.Equal(PayEarlyStatus.Success, replay.Status);
@@ -349,8 +349,61 @@ public class RecurringPaymentPayEarlyServiceTests
         Assert.Empty(context.Transactions);
     }
 
+    /// <summary>
+    /// Identity is checked against the occurrence's own frozen account rather than the schedule's
+    /// current one. Sending the parent's newer account for an occurrence that was materialised
+    /// against the old one is a stale request, not a valid payment.
+    /// </summary>
+    [Fact]
+    public async Task PayEarlyAsync_RefusesAnAccountTheOccurrenceWasNotScheduledAgainst()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", startDate: "2026-01-01", dueDate: 15));
+        context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = "acct-essentials-2", Name = "Second essentials", Bucket = "Essentials", Kind = LedgerAccountKind.Bank,
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context, Today(2026, 7, 10));
+
+        // The occurrence materialises against the payment's own account, so the second account is
+        // one the schedule could point at later but this occurrence was never scheduled against.
+        var result = await service.PayEarlyAsync("rec-1", new DateOnly(2026, 7, 15), accountId: "acct-essentials-2");
+
+        Assert.Equal(PayEarlyStatus.InvalidAccount, result.Status);
+        Assert.Equal("ledger_account_invalid", result.Code);
+        Assert.Empty(context.Transactions);
+    }
+
+    [Fact]
+    public async Task PayEarlyAsync_WritesTheOccurrenceSAccountOntoTheSettlementRow()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment("rec-1", startDate: "2026-01-01", dueDate: 15));
+        await context.SaveChangesAsync();
+        var service = NewService(context, Today(2026, 7, 10));
+
+        var result = await service.PayEarlyAsync("rec-1", new DateOnly(2026, 7, 15), accountId: "acct-essentials");
+
+        Assert.Equal(PayEarlyStatus.Success, result.Status);
+        var settlement = Assert.Single(context.Transactions);
+        Assert.Equal("acct-essentials", settlement.AccountId);
+    }
+
     private static RecurringPaymentPayEarlyService NewService(AppDbContext context, FinancialClock clock)
     {
+        // The explicit-account contract is seeded by the test helper below.
+        if (context.LedgerAccounts.All(account => account.Id != "acct-essentials"))
+        {
+            context.LedgerAccounts.Add(new LedgerAccount
+            {
+                Id = "acct-essentials",
+                Name = "Essentials account",
+                Bucket = "Essentials",
+                Kind = LedgerAccountKind.Bank,
+            });
+            context.SaveChanges();
+        }
         var occurrenceService = new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
         return new RecurringPaymentPayEarlyService(
             context,
@@ -407,6 +460,7 @@ public class RecurringPaymentPayEarlyServiceTests
             Frequency = frequency,
             Category = category,
             LedgerCategory = ledgerCategory,
+            AccountId = "acct-essentials",
             NextDueDate = startDate,
             DueDate = dueDate,
             StartDate = startDate,

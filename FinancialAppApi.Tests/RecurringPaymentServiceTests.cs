@@ -75,10 +75,10 @@ public class RecurringPaymentServiceTests
         await context.SaveChangesAsync();
         var service = new RecurringPaymentService(context);
 
-        var payment = await service.ToggleActiveAsync("rec-1");
+        var result = await service.ToggleActiveAsync("rec-1");
 
-        Assert.NotNull(payment);
-        Assert.False(payment.Active);
+        Assert.Equal(ToggleRecurringPaymentStatus.Updated, result.Status);
+        Assert.False(result.Payment!.Active);
     }
 
     [Fact]
@@ -95,10 +95,10 @@ public class RecurringPaymentServiceTests
         var first = await service.ToggleActiveAsync("rec-1", active: false);
         var second = await service.ToggleActiveAsync("rec-1", active: false);
 
-        Assert.NotNull(first);
-        Assert.False(first.Active);
-        Assert.NotNull(second);
-        Assert.False(second.Active);
+        Assert.Equal(ToggleRecurringPaymentStatus.Updated, first.Status);
+        Assert.False(first.Payment!.Active);
+        Assert.Equal(ToggleRecurringPaymentStatus.Updated, second.Status);
+        Assert.False(second.Payment!.Active);
     }
 
     [Fact]
@@ -109,10 +109,10 @@ public class RecurringPaymentServiceTests
         await context.SaveChangesAsync();
         var service = new RecurringPaymentService(context);
 
-        var payment = await service.ToggleActiveAsync("rec-1");
+        var result = await service.ToggleActiveAsync("rec-1");
 
-        Assert.NotNull(payment);
-        Assert.False(payment.Active);
+        Assert.Equal(ToggleRecurringPaymentStatus.Updated, result.Status);
+        Assert.False(result.Payment!.Active);
     }
 
     [Fact]
@@ -353,6 +353,7 @@ public class RecurringPaymentServiceTests
             Frequency = "Monthly",
             Category = "Bills",
             LedgerCategory = "Essentials",
+            AccountId = "acct-essentials",
             NextDueDate = "2026-07-15",
             DueDate = 15,
             StartDate = "2026-01-01",
@@ -363,5 +364,12 @@ public class RecurringPaymentServiceTests
     private static void SeedCategories(Database.AppDbContext context)
     {
         context.TransactionCategories.Add(new TransactionCategory { Id = "cat-bills", Name = "Bills" });
+        context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = "acct-essentials",
+            Name = "Essentials account",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+        });
     }
 }

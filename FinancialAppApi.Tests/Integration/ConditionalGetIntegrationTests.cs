@@ -22,6 +22,7 @@ public class ConditionalGetIntegrationTests : IntegrationTestBase
             description = $"seed-{date}-{amount}",
             category,
             ledgerCategory,
+            accountId = AccountIdFor(ledgerCategory),
             amount = ObfuscationHelper.Obfuscate(amount),
         });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
@@ -192,6 +193,7 @@ public class ConditionalGetIntegrationTests : IntegrationTestBase
             description = "no-etag-on-post",
             category = "Food",
             ledgerCategory = "Essentials",
+            accountId = AccountIdFor("Essentials"),
             amount = ObfuscationHelper.Obfuscate(-5m),
         });
 

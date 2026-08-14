@@ -44,8 +44,8 @@ public class MultiUserIsolationIntegrationTests : IntegrationTestBase
         var alice = CreateAuthenticatedClient(await SeedUserWithDefaultsAsync("alice", AliceUserId));
         var bob = CreateAuthenticatedClient(await SeedUserWithDefaultsAsync("bob", BobUserId));
 
-        await CreateRecurringPaymentAsync(alice, "alice-netflix", "Alice Netflix", -15m);
-        await CreateRecurringPaymentAsync(bob, "bob-spotify", "Bob Spotify", -10m);
+        await CreateRecurringPaymentAsync(alice, "alice-netflix", "Alice Netflix", -15m, "alice");
+        await CreateRecurringPaymentAsync(bob, "bob-spotify", "Bob Spotify", -10m, "bob");
 
         Assert.Equal(new[] { "alice-netflix" }, await RecurringIds(alice));
         Assert.Equal(new[] { "bob-spotify" }, await RecurringIds(bob));
@@ -90,10 +90,10 @@ public class MultiUserIsolationIntegrationTests : IntegrationTestBase
         var alice = CreateAuthenticatedClient(await SeedUserWithDefaultsAsync("alice", AliceUserId));
         var bob = CreateAuthenticatedClient(await SeedUserWithDefaultsAsync("bob", BobUserId));
 
-        await CreateTransactionAsync(alice, "alice-ai-transaction", "Alice Private Groceries");
-        await CreateTransactionAsync(bob, "bob-ai-transaction", "Bob Secret Groceries");
-        await CreateRecurringPaymentAsync(alice, "alice-ai-recurring", "Alice Private Streaming", -15m);
-        await CreateRecurringPaymentAsync(bob, "bob-ai-recurring", "Bob Secret Streaming", -10m);
+        await CreateTransactionAsync(alice, "alice-ai-transaction", "Alice Private Groceries", "alice");
+        await CreateTransactionAsync(bob, "bob-ai-transaction", "Bob Secret Groceries", "bob");
+        await CreateRecurringPaymentAsync(alice, "alice-ai-recurring", "Alice Private Streaming", -15m, "alice");
+        await CreateRecurringPaymentAsync(bob, "bob-ai-recurring", "Bob Secret Streaming", -10m, "bob");
         await CreateWishlistItemAsync(alice, "Alice Private Laptop", 1500m);
         await CreateWishlistItemAsync(bob, "Bob Secret Phone", 900m);
 
@@ -132,6 +132,19 @@ public class MultiUserIsolationIntegrationTests : IntegrationTestBase
                 PasswordHash = HashPassword(username, "Password123!"),
             });
             DbSeeder.EnsureUserDefaults(db, userId);
+            // Placement is explicit, so each user needs their own account per bucket before they
+            // can record anything; provisioning no longer creates them.
+            foreach (var bucket in LedgerBuckets)
+            {
+                db.LedgerAccounts.Add(new LedgerAccount
+                {
+                    Id = AccountIdFor(bucket, username),
+                    UserId = userId,
+                    Name = $"{bucket} balance",
+                    Bucket = bucket,
+                    Kind = LedgerAccountKind.Other,
+                });
+            }
             db.UserSessions.Add(new UserSession
             {
                 Token = token,
@@ -157,7 +170,7 @@ public class MultiUserIsolationIntegrationTests : IntegrationTestBase
         return (await create.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
     }
 
-    private static async Task CreateTransactionAsync(HttpClient client, string id, string description)
+    private static async Task CreateTransactionAsync(HttpClient client, string id, string description, string owner)
     {
         var create = await client.PostAsJsonAsync("/api/transactions", new
         {
@@ -166,12 +179,13 @@ public class MultiUserIsolationIntegrationTests : IntegrationTestBase
             description,
             category = "Food",
             ledgerCategory = "Essentials",
+            accountId = AccountIdFor("Essentials", owner),
             amount = ObfuscationHelper.Obfuscate(-25m),
         });
         Assert.Equal(HttpStatusCode.Created, create.StatusCode);
     }
 
-    private static async Task CreateRecurringPaymentAsync(HttpClient client, string id, string name, decimal amount)
+    private static async Task CreateRecurringPaymentAsync(HttpClient client, string id, string name, decimal amount, string owner)
     {
         var create = await client.PostAsJsonAsync("/api/recurring-payments", new
         {
@@ -181,6 +195,7 @@ public class MultiUserIsolationIntegrationTests : IntegrationTestBase
             frequency = "Monthly",
             category = "Food",
             ledgerCategory = "Essentials",
+            accountId = AccountIdFor("Essentials", owner),
             nextDueDate = "2026-08-01",
             dueDate = 1,
             startDate = "2026-01-01",

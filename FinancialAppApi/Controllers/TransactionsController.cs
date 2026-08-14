@@ -158,7 +158,7 @@ public class TransactionsController : ControllerBase
             or TransactionMutationStatus.InvalidLedgerCategory
             or TransactionMutationStatus.InvalidAccount)
         {
-            return BadRequest(new { message = result.Message });
+            return BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets });
         }
         if (result.Status == TransactionMutationStatus.InvalidRecurringOccurrence)
         {
@@ -277,7 +277,7 @@ public class TransactionsController : ControllerBase
             or TransactionMutationStatus.InvalidLedgerCategory
             or TransactionMutationStatus.InvalidAccount)
         {
-            return BadRequest(new { message = result.Message });
+            return BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets });
         }
 
         return NoContent();

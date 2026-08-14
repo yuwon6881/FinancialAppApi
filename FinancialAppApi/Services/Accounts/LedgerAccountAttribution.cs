@@ -12,8 +12,7 @@ public static class LedgerAccountAttribution
     public static decimal GetAccountAmount(
         Transaction transaction,
         LedgerAccount account,
-        IReadOnlyDictionary<string, LedgerAccount> accountsById,
-        IReadOnlyDictionary<string, string> defaultAccountIdByBucket)
+        IReadOnlyDictionary<string, LedgerAccount> accountsById)
     {
         if (string.Equals(transaction.LedgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase))
         {
@@ -27,21 +26,20 @@ public static class LedgerAccountAttribution
         var leg = CategoryAttributionService.GetCategoryAmount(transaction, account.Bucket);
         if (leg == 0m) return 0m;
 
-        var placement = GetPlacementAccountId(transaction, account.Bucket, accountsById, defaultAccountIdByBucket);
+        var placement = GetPlacementAccountId(transaction, account.Bucket, accountsById);
         return string.Equals(placement, account.Id, StringComparison.Ordinal) ? leg : 0m;
     }
 
     public static string? GetPlacementAccountId(
         Transaction transaction,
         string bucket,
-        IReadOnlyDictionary<string, LedgerAccount> accountsById,
-        IReadOnlyDictionary<string, string> defaultAccountIdByBucket)
+        IReadOnlyDictionary<string, LedgerAccount> accountsById)
     {
         if (IsAccountInBucket(transaction.AccountId, bucket, accountsById))
             return transaction.AccountId;
         if (IsAccountInBucket(transaction.CounterAccountId, bucket, accountsById))
             return transaction.CounterAccountId;
-        return defaultAccountIdByBucket.TryGetValue(bucket, out var defaultId) ? defaultId : null;
+        return null;
     }
 
     private static bool IsAccountInBucket(

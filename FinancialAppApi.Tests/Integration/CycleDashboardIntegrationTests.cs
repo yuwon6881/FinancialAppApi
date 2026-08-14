@@ -21,6 +21,7 @@ public class CycleDashboardIntegrationTests : IntegrationTestBase
             description = "seed",
             category,
             ledgerCategory,
+            accountId = AccountIdFor(ledgerCategory),
             amount = ObfuscationHelper.Obfuscate(amount),
         });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);

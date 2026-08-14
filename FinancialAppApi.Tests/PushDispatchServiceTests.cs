@@ -203,6 +203,164 @@ public class PushDispatchServiceTests
     }
 
     [Fact]
+    public async Task DispatchAsync_AutoDeductShortfall_SendsAlertOneDayPrior_EvenWhenPaymentReminderDisabled()
+    {
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        var tomorrow = today.AddDays(1);
+        var account = new LedgerAccount
+        {
+            Id = "acc-main",
+            Name = "Checking Account",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank
+        };
+        await SeedAsync(dbName, "user-a",
+            NewPayment(
+                "rec-rent",
+                dueDate: tomorrow.Day,
+                leadDays: 3,
+                name: "Rent",
+                amount: 1200m,
+                pushReminderEnabled: false,
+                paymentMode: RecurringPaymentMode.AutoDeduct,
+                accountId: "acc-main"),
+            accounts: [account]);
+
+        // Seed an opening balance of 300 in Checking Account (shortfall = 900)
+        await using (var seed = NewSeedContext(dbName))
+        {
+            seed.Transactions.Add(new Transaction
+            {
+                Id = "tx-open",
+                UserId = "user-a",
+                Date = new DateTime(2026, 7, 1),
+                Description = "Initial balance",
+                Category = "Income",
+                LedgerCategory = "Essentials",
+                AccountId = "acc-main",
+                Amount = 300m
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        var sender = new FakeFcmPushSender();
+        var service = NewDispatchService(dbName, Clock(today), sender);
+
+        var summary = await service.DispatchAsync();
+
+        Assert.Equal(1, summary.Sent);
+        Assert.Single(sender.Sent);
+        var message = sender.Sent[0].Content;
+        Assert.Equal("Rent", message.Title);
+        Assert.Contains("needs 900.00 more in Checking Account", message.Body);
+        Assert.Contains("Auto-deducts tomorrow", message.Body);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_AutoDeductShortfall_DoesNotSendWhenBalanceIsSufficient()
+    {
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        var tomorrow = today.AddDays(1);
+        var account = new LedgerAccount
+        {
+            Id = "acc-main",
+            Name = "Checking Account",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank
+        };
+        await SeedAsync(dbName, "user-a",
+            NewPayment(
+                "rec-netflix",
+                dueDate: tomorrow.Day,
+                leadDays: 3,
+                name: "Netflix",
+                amount: 50m,
+                pushReminderEnabled: false,
+                paymentMode: RecurringPaymentMode.AutoDeduct,
+                accountId: "acc-main"),
+            accounts: [account]);
+
+        // Seed 300 balance in Checking Account (bill is 50 -> balance is plenty, no shortfall)
+        await using (var seed = NewSeedContext(dbName))
+        {
+            seed.Transactions.Add(new Transaction
+            {
+                Id = "tx-open",
+                UserId = "user-a",
+                Date = new DateTime(2026, 7, 1),
+                Description = "Initial balance",
+                Category = "Income",
+                LedgerCategory = "Essentials",
+                AccountId = "acc-main",
+                Amount = 300m
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        var sender = new FakeFcmPushSender();
+        var service = NewDispatchService(dbName, Clock(today), sender);
+
+        var summary = await service.DispatchAsync();
+
+        Assert.Equal(0, summary.Sent);
+        Assert.Empty(sender.Sent);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_AutoDeductShortfall_DoesNotSendTwoDaysPrior()
+    {
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        var inTwoDays = today.AddDays(2);
+        var account = new LedgerAccount
+        {
+            Id = "acc-main",
+            Name = "Checking Account",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank
+        };
+        await SeedAsync(dbName, "user-a",
+            NewPayment(
+                "rec-rent",
+                dueDate: inTwoDays.Day,
+                leadDays: 3,
+                name: "Rent",
+                amount: 1200m,
+                pushReminderEnabled: false,
+                paymentMode: RecurringPaymentMode.AutoDeduct,
+                accountId: "acc-main"),
+            accounts: [account]);
+
+        // 300 balance in Checking Account, 2 days prior
+        await using (var seed = NewSeedContext(dbName))
+        {
+            seed.Transactions.Add(new Transaction
+            {
+                Id = "tx-open",
+                UserId = "user-a",
+                Date = new DateTime(2026, 7, 1),
+                Description = "Initial balance",
+                Category = "Income",
+                LedgerCategory = "Essentials",
+                AccountId = "acc-main",
+                Amount = 300m
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        var sender = new FakeFcmPushSender();
+        var service = NewDispatchService(dbName, Clock(today), sender);
+
+        var summary = await service.DispatchAsync();
+
+        // 1 day prior only constraint
+        Assert.Equal(0, summary.Sent);
+        Assert.Empty(sender.Sent);
+    }
+
+    [Fact]
     public async Task DispatchAsync_SkipsOccurrence_AlreadyPaidBeforeDispatchRuns()
     {
         // Regardless of the time of day the payment was recorded (e.g. 08:59, ahead of the
@@ -512,6 +670,10 @@ public class PushDispatchServiceTests
         services.AddLogging();
         services.AddDbContext<AppDbContext>(options =>
             options.UseInMemoryDatabase(dbName).ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
+        services.AddScoped<FinancialAppApi.Services.Accounts.LedgerAccountBalanceService>();
+        services.AddScoped<CycleBalanceService>();
+        services.AddScoped<FinancialAppApi.Services.Accounts.LedgerAccountInterestService>();
+        services.AddScoped<FinancialAppApi.Services.Accounts.LedgerAccountService>();
         services.AddScoped<RecurringOccurrenceService>();
         // The dispatcher resolves the ledger per user scope. It must share the test's fixed
         // clock, or "which occurrence is next" is answered against the wall clock and the
@@ -531,7 +693,8 @@ public class PushDispatchServiceTests
         string userId,
         RecurringPayment payment,
         int cycleDay = 1,
-        PushSubscription[]? subscriptions = null)
+        PushSubscription[]? subscriptions = null,
+        LedgerAccount[]? accounts = null)
     {
         await using var context = NewSeedContext(dbName);
         context.FinancialSettings.Add(new FinancialSetting
@@ -546,6 +709,11 @@ public class PushDispatchServiceTests
             subscription.UserId = userId;
             context.PushSubscriptions.Add(subscription);
         }
+        foreach (var account in accounts ?? [])
+        {
+            account.UserId = userId;
+            context.LedgerAccounts.Add(account);
+        }
         await context.SaveChangesAsync();
     }
 
@@ -559,7 +727,9 @@ public class PushDispatchServiceTests
         bool active = true,
         decimal amount = 100m,
         string frequency = "Monthly",
-        string startDate = "2026-01-01")
+        string startDate = "2026-01-01",
+        string paymentMode = RecurringPaymentMode.Manual,
+        string accountId = "acc-1")
     {
         return new RecurringPayment
         {
@@ -569,6 +739,8 @@ public class PushDispatchServiceTests
             Frequency = frequency,
             Category = "Bills",
             LedgerCategory = "Essentials",
+            AccountId = accountId,
+            PaymentMode = paymentMode,
             NextDueDate = startDate,
             DueDate = dueDate,
             StartDate = startDate,

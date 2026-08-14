@@ -1,8 +1,6 @@
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
 using Microsoft.EntityFrameworkCore;
-using System.Security.Cryptography;
-using System.Text;
 
 namespace FinancialAppApi.Database;
 
@@ -13,8 +11,6 @@ public static class DbSeeder
         "Salary", "Social", "Food", "Hobbies", "Software", "Investment",
         "Entertainment", "Transport", "Other", "Transfer"
     ];
-    private static readonly string[] LedgerBuckets = ["Essentials", "Growth", "Stability", "Rewards"];
-
     public static void Seed(AppDbContext context, FinancialClock? financialClock = null)
     {
         var clock = financialClock ?? FinancialClock.Utc;
@@ -73,31 +69,5 @@ public static class DbSeeder
             }
         }
 
-        var hasLedgerAccounts = context.LedgerAccounts
-            .IgnoreQueryFilters()
-            .Any(account => account.UserId == userId);
-        if (!hasLedgerAccounts)
-        {
-            foreach (var bucket in LedgerBuckets)
-            {
-                context.LedgerAccounts.Add(new LedgerAccount
-                {
-                    Id = CreateDefaultAccountId(userId, bucket),
-                    UserId = userId,
-                    Name = $"{bucket} balance",
-                    Bucket = bucket,
-                    Kind = LedgerAccountKind.Other,
-                    IsDefault = true,
-                    IsArchived = false,
-                });
-            }
-        }
-
-    }
-
-    private static string CreateDefaultAccountId(string userId, string bucket)
-    {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"{userId}:{bucket}"));
-        return $"acct-default-{Convert.ToHexString(hash)[..32].ToLowerInvariant()}";
     }
 }

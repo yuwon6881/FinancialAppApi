@@ -1,6 +1,5 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
-using FinancialAppApi.Services.Accounts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -21,6 +20,7 @@ public enum SavingsGoalMutationStatus
     ExceedsAvailable,
     AlreadyCompleted,
     NothingEarmarked,
+    InvalidAccount,
     Conflict
 }
 
@@ -28,7 +28,9 @@ public sealed record SavingsGoalResult(
     SavingsGoalMutationStatus Status,
     SavingsGoal? Goal = null,
     Transaction? CompletionTransaction = null,
-    string? Message = null);
+    string? Message = null,
+    string? Code = null,
+    IReadOnlyList<string>? MissingBuckets = null);
 
 public sealed record SavingsGoalFundingResult(
     SavingsGoalMutationStatus Status,
@@ -80,7 +82,6 @@ public class SavingsGoalService
     private readonly RecurringOccurrenceService _recurringOccurrenceService;
     private readonly RecurringOccurrenceLedgerService _recurringOccurrenceLedger;
     private readonly SharedPoolMutationLock _sharedPoolMutationLock;
-    private readonly LedgerAccountResolver _accountResolver;
 
     public SavingsGoalService(
         AppDbContext context,
@@ -88,8 +89,7 @@ public class SavingsGoalService
         FinancialClock? financialClock = null,
         RecurringOccurrenceService? recurringOccurrenceService = null,
         RecurringOccurrenceLedgerService? recurringOccurrenceLedger = null,
-        SharedPoolMutationLock? sharedPoolMutationLock = null,
-        LedgerAccountResolver? accountResolver = null)
+        SharedPoolMutationLock? sharedPoolMutationLock = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
@@ -99,7 +99,6 @@ public class SavingsGoalService
         _recurringOccurrenceLedger = recurringOccurrenceLedger ??
             new RecurringOccurrenceLedgerService(context, _recurringOccurrenceService, _financialClock);
         _sharedPoolMutationLock = sharedPoolMutationLock ?? new SharedPoolMutationLock(context);
-        _accountResolver = accountResolver ?? new LedgerAccountResolver(context);
     }
 
     public async Task<List<SavingsGoal>> GetGoalsAsync(CancellationToken cancellationToken = default)
@@ -456,7 +455,10 @@ public class SavingsGoalService
     /// expense. Deleting that transaction restores this snapshot while it is still the latest,
     /// untouched completion. A recurring goal rolls its deadline forward and starts again at zero.
     /// </summary>
-    public async Task<SavingsGoalResult> CompleteGoalAsync(int id, CancellationToken cancellationToken = default)
+    public async Task<SavingsGoalResult> CompleteGoalAsync(
+        int id,
+        string? accountId,
+        CancellationToken cancellationToken = default)
     {
         var goal = await _context.SavingsGoals.FindAsync([id], cancellationToken);
         if (goal == null) return new SavingsGoalResult(SavingsGoalMutationStatus.NotFound);
@@ -472,6 +474,23 @@ public class SavingsGoalService
                 SavingsGoalMutationStatus.NothingEarmarked,
                 Message: $"Set aside some {goal.FundingBucket.ToLowerInvariant()} money before marking this commitment done.");
         }
+
+        var requestedAccountId = string.IsNullOrWhiteSpace(accountId) ? null : accountId.Trim();
+        if (requestedAccountId is null)
+            return new SavingsGoalResult(
+                SavingsGoalMutationStatus.InvalidAccount,
+                Message: "Choose an account for this commitment.",
+                Code: "ledger_account_required",
+                MissingBuckets: [goal.FundingBucket]);
+        var account = await _context.LedgerAccounts.AsNoTracking()
+            .FirstOrDefaultAsync(candidate => candidate.Id == requestedAccountId, cancellationToken);
+        if (account is null || account.IsArchived
+            || !account.Bucket.Equals(goal.FundingBucket, StringComparison.OrdinalIgnoreCase))
+            return new SavingsGoalResult(
+                SavingsGoalMutationStatus.InvalidAccount,
+                Message: "Choose an open account in the commitment's bucket.",
+                Code: "ledger_account_invalid",
+                MissingBuckets: [goal.FundingBucket]);
 
         await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var previousTargetDate = goal.TargetDate;
@@ -490,7 +509,8 @@ public class SavingsGoalService
             LedgerCategory = goal.FundingBucket,
             Amount = -previousEarmarkedAmount,
             ExcludeFromAutocomplete = true,
-            SavingsGoalId = goal.Id
+            SavingsGoalId = goal.Id,
+            AccountId = requestedAccountId,
         };
 
         if (goal.IsRecurring)
@@ -528,7 +548,6 @@ public class SavingsGoalService
         }
 
         goal.LastCompletionTransactionId = transaction.Id;
-        await _accountResolver.ResolveMissingAsync(transaction, cancellationToken);
         _context.Transactions.Add(transaction);
         _context.SavingsGoalCompletions.Add(new SavingsGoalCompletion
         {

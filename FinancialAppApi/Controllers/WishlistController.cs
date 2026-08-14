@@ -85,13 +85,15 @@ public class WishlistController : ControllerBase
             customDate,
             HttpContext.RequestAborted,
             dto?.TransactionId,
-            dto?.PostedAt);
+            dto?.PostedAt,
+            dto?.AccountId);
         return result.Status switch
         {
             WishlistMutationStatus.NotFound => NotFound(),
             WishlistMutationStatus.AlreadyPurchased
                 or WishlistMutationStatus.PriceInvalid
-                or WishlistMutationStatus.DateInvalid => BadRequest(new { message = result.Message }),
+                or WishlistMutationStatus.DateInvalid
+                or WishlistMutationStatus.InvalidAccount => BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets }),
             _ => Ok(new { item = MapToDto(result.Item!), transaction = TransactionsController.MapToDto(result.Transaction!) })
         };
     }
@@ -201,4 +203,5 @@ public class PurchaseWishlistRequestDto
     public string? Date { get; set; }
     public string? TransactionId { get; set; }
     public DateTime? PostedAt { get; set; }
+    public string? AccountId { get; set; }
 }

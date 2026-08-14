@@ -27,6 +27,31 @@ public static class TestHelpers
         return context;
     }
 
+    public static readonly string[] LedgerBuckets = ["Essentials", "Growth", "Stability", "Rewards"];
+
+    /// <summary>
+    /// The account every bucket leg must name. Placement is explicit everywhere — there is no
+    /// default account per bucket and no fallback — so a test that records money has to own an
+    /// account first, and provisioning no longer creates any.
+    /// </summary>
+    public static string AccountIdFor(string bucket) => $"acct-{bucket.ToLowerInvariant()}";
+
+    /// <summary>Adds one open account per bucket, tracked but not saved.</summary>
+    public static void SeedLedgerAccounts(AppDbContext context, string userId = DefaultUserId)
+    {
+        foreach (var bucket in LedgerBuckets)
+        {
+            context.LedgerAccounts.Add(new Models.LedgerAccount
+            {
+                Id = AccountIdFor(bucket),
+                UserId = userId,
+                Name = $"{bucket} balance",
+                Bucket = bucket,
+                Kind = Models.LedgerAccountKind.Other,
+            });
+        }
+    }
+
     public static IConfiguration NewConfiguration(params (string Key, string Value)[] overrides)
     {
         var defaults = new Dictionary<string, string?>

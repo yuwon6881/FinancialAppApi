@@ -28,6 +28,14 @@ public sealed class RecurringPaymentOccurrence : IUserOwnedEntity
     [StringLength(200)]
     public string? LedgerCategory { get; set; }
 
+    // The account this occurrence was scheduled to be paid from, frozen with the rest of the
+    // snapshot. Settlement reads this rather than the parent's current AccountId so re-pointing a
+    // bill moves only its future occurrences; one already materialised still settles where it was
+    // scheduled. Null on legacy rows materialised before the account cutover, where the caller
+    // falls back to the parent.
+    [StringLength(100)]
+    public string? AccountId { get; set; }
+
     [Required]
     [StringLength(20)]
     public string PaymentMode { get; set; } = RecurringPaymentMode.Manual;

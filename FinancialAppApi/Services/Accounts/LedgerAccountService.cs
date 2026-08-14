@@ -18,7 +18,6 @@ public sealed record LedgerAccountMutation(
     string Bucket,
     string Kind,
     bool IsArchived,
-    bool IsDefault,
     decimal OpeningAmount = 0m,
     bool? InterestEnabled = null,
     decimal? InterestRatePercent = null,
@@ -34,7 +33,6 @@ public sealed record LedgerAccountReconcileTarget(
     string? Id,
     string Name,
     string Kind,
-    bool IsDefault,
     bool IsArchived,
     decimal ExpectedCurrent,
     decimal Target,
@@ -46,6 +44,7 @@ public sealed record LedgerAccountReconcileRequest(
     string OperationId,
     string Bucket,
     decimal ExpectedBucketTotal,
+    string? AdjustmentAccountId,
     IReadOnlyList<LedgerAccountReconcileTarget> Targets);
 
 public sealed record LedgerAccountReconcileTransaction(
@@ -185,12 +184,9 @@ public sealed partial class LedgerAccountService
                 ? LedgerAccountInterestFrequency.NextDate(_clock.Today, interest.Frequency)
                 : null,
             IsArchived = false,
-            IsDefault = mutation.IsDefault || !await HasLiveDefaultAsync(mutation.Bucket, cancellationToken),
             CreatedAt = now,
             UpdatedAt = now,
         };
-        if (account.IsDefault)
-            await ClearDefaultAsync(account.Bucket, null, cancellationToken);
 
         _context.LedgerAccounts.Add(account);
         if (mutation.OpeningAmount != 0m)
@@ -249,8 +245,27 @@ public sealed partial class LedgerAccountService
         }
 
         var oldBucket = account.Bucket;
-        var wasDefault = account.IsDefault;
         var wasArchived = account.IsArchived;
+        var bucketChanged = !string.Equals(oldBucket, nextBucket, StringComparison.OrdinalIgnoreCase);
+        var recurringUsesAccount = await _context.RecurringPayments.AnyAsync(
+            payment => payment.AccountId == id,
+            cancellationToken);
+        if (bucketChanged && recurringUsesAccount)
+            return Conflict("A recurring payment uses this account. Reassign it before moving the account.");
+        if (mutation.IsArchived && !account.IsArchived && await _context.RecurringPayments.AnyAsync(
+                    payment => payment.AccountId == id && payment.Active,
+                cancellationToken))
+            return Conflict("An active recurring payment uses this account. Reassign it before closing the account.");
+        if (bucketChanged && !account.IsArchived)
+        {
+            var hasOtherLiveAccount = await _context.LedgerAccounts.AnyAsync(
+                candidate => candidate.Id != id
+                    && candidate.Bucket == account.Bucket
+                    && !candidate.IsArchived,
+                cancellationToken);
+            if (!hasOtherLiveAccount)
+                return Conflict("Every bucket needs one open account. Add another before moving this one.");
+        }
         if (mutation.IsArchived && !account.IsArchived)
         {
             var hasOtherLiveAccount = await _context.LedgerAccounts.AnyAsync(
@@ -285,32 +300,6 @@ public sealed partial class LedgerAccountService
         }
         account.UpdatedAt = DateTime.UtcNow;
 
-        if (mutation.IsDefault && !account.IsArchived)
-        {
-            await ClearDefaultAsync(nextBucket, id, cancellationToken);
-            account.IsDefault = true;
-        }
-        else
-        {
-            account.IsDefault = false;
-        }
-
-        // Top up the bucket this account is leaving, or has just stopped being the default of. It is
-        // excluded from the candidates, so this must not run while it still holds that bucket's
-        // default: with a second live account present, `EnsureDefaultAsync` cannot see the default
-        // it is not allowed to look at, promotes another row, and the save dies on
-        // `IX_LedgerAccounts_UserId_Bucket` -- which is exactly what editing the default account of
-        // a two-account bucket (adding an interest rate to it, say) used to do.
-        var bucketChanged = !string.Equals(oldBucket, nextBucket, StringComparison.OrdinalIgnoreCase);
-        if (bucketChanged || (wasDefault && !account.IsDefault))
-            await EnsureDefaultAsync(oldBucket, id, cancellationToken);
-        if (!account.IsDefault)
-        {
-            await EnsureDefaultAsync(nextBucket, id, cancellationToken);
-            if (!account.IsArchived && !await HasLiveDefaultAsync(nextBucket, cancellationToken))
-                account.IsDefault = true;
-        }
-
         await _context.SaveChangesAsync(cancellationToken);
         return new(LedgerAccountMutationStatus.Success, account);
     }
@@ -333,47 +322,18 @@ public sealed partial class LedgerAccountService
                 activityCount);
         }
 
+        if (await _context.RecurringPayments.AnyAsync(payment => payment.AccountId == id, cancellationToken))
+            return Conflict("A recurring payment uses this account. Reassign it before deleting the account.");
+        if (!account.IsArchived && !await _context.LedgerAccounts.AnyAsync(
+                candidate => candidate.Id != id
+                    && candidate.Bucket == account.Bucket
+                    && !candidate.IsArchived,
+                cancellationToken))
+            return Conflict("Every bucket needs one open account. Add another before deleting this one.");
+
         _context.LedgerAccounts.Remove(account);
-        await EnsureDefaultAsync(account.Bucket, id, cancellationToken);
         await _context.SaveChangesAsync(cancellationToken);
         return new(LedgerAccountMutationStatus.Success, account);
-    }
-
-    private async Task<bool> HasLiveDefaultAsync(string bucket, CancellationToken cancellationToken)
-    {
-        var candidates = await _context.LedgerAccounts
-            .Where(account => account.Bucket == NormalizeBucket(bucket))
-            .ToListAsync(cancellationToken);
-        return candidates.Any(account => account.IsDefault && !account.IsArchived);
-    }
-
-    private async Task ClearDefaultAsync(string bucket, string? exceptId, CancellationToken cancellationToken)
-    {
-        var defaults = await _context.LedgerAccounts
-            .Where(account => account.Bucket == NormalizeBucket(bucket)
-                && account.IsDefault
-                && (exceptId == null || account.Id != exceptId))
-            .ToListAsync(cancellationToken);
-        foreach (var account in defaults) account.IsDefault = false;
-    }
-
-    private async Task EnsureDefaultAsync(string bucket, string? exceptId, CancellationToken cancellationToken)
-    {
-        var candidates = (await _context.LedgerAccounts
-                .Where(account => account.Bucket == NormalizeBucket(bucket))
-                .ToListAsync(cancellationToken))
-            .Where(account => (exceptId == null || account.Id != exceptId) && !account.IsArchived)
-            .OrderBy(account => account.CreatedAt)
-            .ThenBy(account => account.Id)
-            .ToList();
-        if (candidates.Any(account => account.IsDefault)) return;
-        var replacement = candidates.FirstOrDefault();
-        if (replacement is null) return;
-        // Candidates deliberately skip archived rows, but the unique index counts an archived
-        // default just the same, so a marker left on one would collide with this promotion.
-        await ClearDefaultAsync(bucket, replacement.Id, cancellationToken);
-        replacement.IsDefault = true;
-        replacement.UpdatedAt = DateTime.UtcNow;
     }
 
     private async Task<int> GetCycleDayAsync(CancellationToken cancellationToken) =>

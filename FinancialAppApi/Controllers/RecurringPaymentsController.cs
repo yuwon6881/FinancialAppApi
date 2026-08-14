@@ -80,6 +80,7 @@ public class RecurringPaymentsController : ControllerBase
             Frequency = frequency,
             Category = dto.Category,
             LedgerCategory = dto.LedgerCategory,
+            AccountId = dto.AccountId ?? string.Empty,
             NextDueDate = dto.NextDueDate,
             DueDate = dto.DueDate,
             StartDate = dto.StartDate,
@@ -89,9 +90,9 @@ public class RecurringPaymentsController : ControllerBase
         };
 
         var result = await _recurringPaymentService.CreateRecurringPaymentAsync(payment, HttpContext.RequestAborted);
-        if (result.Status == CreateRecurringPaymentStatus.InvalidCategory)
+        if (result.Status is CreateRecurringPaymentStatus.InvalidCategory or CreateRecurringPaymentStatus.InvalidAccount)
         {
-            return BadRequest(new { message = result.Message });
+            return BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets });
         }
         if (result.Status == CreateRecurringPaymentStatus.Existing)
         {
@@ -106,13 +107,15 @@ public class RecurringPaymentsController : ControllerBase
     [HttpPut("{id}/toggle")]
     public async Task<IActionResult> ToggleActive(string id, [FromBody] ToggleActiveDto? dto = null)
     {
-        var payment = await _recurringPaymentService.ToggleActiveAsync(id, dto?.Active, HttpContext.RequestAborted);
-        if (payment == null)
+        var result = await _recurringPaymentService.ToggleActiveAsync(id, dto?.Active, HttpContext.RequestAborted);
+        if (result.Status == ToggleRecurringPaymentStatus.NotFound)
         {
             return NotFound();
         }
+        if (result.Status == ToggleRecurringPaymentStatus.InvalidAccount)
+            return BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets });
 
-        return Ok(MapToDto(payment));
+        return Ok(MapToDto(result.Payment!));
     }
 
     // PUT: api/recurring-payments/{id}
@@ -145,6 +148,7 @@ public class RecurringPaymentsController : ControllerBase
             Frequency = frequency,
             Category = dto.Category,
             LedgerCategory = dto.LedgerCategory,
+            AccountId = dto.AccountId ?? string.Empty,
             NextDueDate = dto.NextDueDate,
             DueDate = dto.DueDate,
             StartDate = dto.StartDate,
@@ -159,9 +163,10 @@ public class RecurringPaymentsController : ControllerBase
             return NotFound();
         }
         if (result.Status is UpdateRecurringPaymentStatus.InvalidCategory
-            or UpdateRecurringPaymentStatus.InvalidLoanTerm)
+            or UpdateRecurringPaymentStatus.InvalidLoanTerm
+            or UpdateRecurringPaymentStatus.InvalidAccount)
         {
-            return BadRequest(new { message = result.Message });
+            return BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets });
         }
 
         return Ok(MapToDto(result.Payment!));
@@ -221,7 +226,12 @@ public class RecurringPaymentsController : ControllerBase
             return BadRequest(new { message = "occurrenceDate must use yyyy-MM-dd format." });
         }
 
-        var result = await _payEarlyService.PayEarlyAsync(id, occurrenceDate, HttpContext.RequestAborted, dto.ClientKey);
+        var result = await _payEarlyService.PayEarlyAsync(
+            id,
+            occurrenceDate,
+            HttpContext.RequestAborted,
+            dto.ClientKey,
+            accountId: dto.AccountId);
 
         return result.Status switch
         {
@@ -229,6 +239,7 @@ public class RecurringPaymentsController : ControllerBase
             PayEarlyStatus.PaymentInactive => BadRequest(new { message = result.Message }),
             PayEarlyStatus.AutomaticPayment => BadRequest(new { message = result.Message }),
             PayEarlyStatus.NoUpcomingOccurrence => BadRequest(new { message = result.Message }),
+            PayEarlyStatus.InvalidAccount => BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets }),
             PayEarlyStatus.Conflict => Conflict(new { message = result.Message }),
             _ => Ok(new
             {
@@ -268,12 +279,13 @@ public class RecurringPaymentsController : ControllerBase
             dto.ClientKey,
             HttpContext.RequestAborted,
             dto.TransactionId,
-            dto.PostedAt);
+            dto.PostedAt,
+            dto.AccountId);
         return result.Status switch
         {
             RecurringSettlementStatus.NotFound => NotFound(),
-            RecurringSettlementStatus.Invalid => BadRequest(new { message = result.Message }),
-            RecurringSettlementStatus.AutomaticPayment => BadRequest(new { message = result.Message }),
+            RecurringSettlementStatus.Invalid => BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets }),
+            RecurringSettlementStatus.AutomaticPayment => BadRequest(new { code = result.Code, message = result.Message }),
             RecurringSettlementStatus.Conflict => Conflict(new { message = result.Message }),
             _ => Ok(new
             {
@@ -319,7 +331,8 @@ public class RecurringPaymentsController : ControllerBase
             ReminderEnabled = rp.PushReminderEnabled,
             ReminderMode = rp.PushReminderMode,
             ReminderLeadDays = rp.PushReminderLeadDays,
-            PaymentMode = rp.PaymentMode
+            PaymentMode = rp.PaymentMode,
+            AccountId = rp.AccountId,
         };
     }
 
@@ -376,6 +389,7 @@ public class RecurringPaymentsController : ControllerBase
             ReminderMode = rp.ReminderMode,
             ReminderLeadDays = rp.ReminderLeadDays,
             PaymentMode = rp.PaymentMode,
+            AccountId = rp.AccountId,
             LinkedLoanId = rp.LinkedLoanId,
             LinkedLoanName = rp.LinkedLoanName
         };
@@ -398,6 +412,7 @@ public class PayEarlyRequestDto
 {
     public string OccurrenceDate { get; set; } = string.Empty;
     public string? ClientKey { get; set; }
+    public string? AccountId { get; set; }
 }
 
 public class RecurringOccurrenceSettlementDto
@@ -407,6 +422,7 @@ public class RecurringOccurrenceSettlementDto
     public string? ClientKey { get; set; }
     public string? TransactionId { get; set; }
     public DateTime? PostedAt { get; set; }
+    public string? AccountId { get; set; }
 }
 
 public class RecurringPaymentDto
@@ -417,6 +433,7 @@ public class RecurringPaymentDto
     public string Frequency { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
     public string LedgerCategory { get; set; } = string.Empty;
+    public string AccountId { get; set; } = string.Empty;
     public string? NextDueDate { get; set; }
     public int DueDate { get; set; }
     public string StartDate { get; set; } = string.Empty;

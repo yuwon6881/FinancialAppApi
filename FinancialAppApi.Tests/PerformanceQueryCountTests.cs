@@ -17,14 +17,6 @@ public sealed class PerformanceQueryCountTests
     public async Task OrdinaryTransactionPage_SkipsFullHistoryStabilityReplay()
     {
         await using var fixture = await SqliteFixture.CreateAsync();
-        fixture.Context.LedgerAccounts.Add(new LedgerAccount
-        {
-            Id = "acct-rewards",
-            Name = "Rewards wallet",
-            Bucket = "Rewards",
-            Kind = LedgerAccountKind.Other,
-            IsDefault = true,
-        });
         fixture.Context.Transactions.Add(new Transaction
         {
             Id = "ordinary-page-row",
@@ -60,14 +52,6 @@ public sealed class PerformanceQueryCountTests
             SelectedMonth = "Jul",
             SelectedYear = 2026,
             CycleDay = 1
-        });
-        fixture.Context.LedgerAccounts.Add(new LedgerAccount
-        {
-            Id = "acct-essentials",
-            Name = "Everyday",
-            Bucket = "Essentials",
-            Kind = LedgerAccountKind.Bank,
-            IsDefault = true,
         });
         await fixture.Context.SaveChangesAsync();
         fixture.Counter.Reset();
@@ -113,6 +97,7 @@ public sealed class PerformanceQueryCountTests
             Amount = 15m,
             Category = "Entertainment",
             LedgerCategory = "Rewards",
+            AccountId = TestHelpers.AccountIdFor("Rewards"),
             Frequency = "Monthly",
             StartDate = "2026-01-05",
             PaymentMode = RecurringPaymentMode.Manual,
@@ -180,6 +165,7 @@ public sealed class PerformanceQueryCountTests
                 Amount = 10m,
                 Category = "Bills",
                 LedgerCategory = "Essentials",
+                AccountId = TestHelpers.AccountIdFor("Essentials"),
                 Frequency = "Monthly",
                 StartDate = "2026-01-01",
                 DueDate = 15,
@@ -241,6 +227,7 @@ public sealed class PerformanceQueryCountTests
                 Frequency = "Monthly",
                 Category = "Bills",
                 LedgerCategory = "Essentials",
+                AccountId = TestHelpers.AccountIdFor("Essentials"),
                 DueDate = 1,
                 StartDate = "2026-01-01",
                 Active = true
@@ -289,6 +276,7 @@ public sealed class PerformanceQueryCountTests
                 Frequency = "Monthly",
                 Category = "Bills",
                 LedgerCategory = "Essentials",
+                AccountId = TestHelpers.AccountIdFor("Essentials"),
                 DueDate = 1,
                 StartDate = "2026-01-01",
                 Active = true
@@ -412,6 +400,10 @@ public sealed class PerformanceQueryCountTests
                 NormalizedUsername = "QUERY-COUNT-USER",
                 PasswordHash = "not-used"
             });
+            // Placement is explicit and (UserId, AccountId) is a real foreign key under SQLite, so
+            // every bucket needs an account before anything can reference one. Seeded before the
+            // counter resets so it never shows up in a measured query count.
+            TestHelpers.SeedLedgerAccounts(context);
             await context.SaveChangesAsync();
             counter.Reset();
             return new SqliteFixture(connection, context, counter);

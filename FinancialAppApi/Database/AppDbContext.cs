@@ -144,9 +144,6 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
             entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
-            entity.HasIndex(e => new { e.UserId, e.Bucket })
-                .IsUnique()
-                .HasFilter("\"IsDefault\"");
             entity.ToTable(table =>
             {
                 table.HasCheckConstraint(
@@ -180,7 +177,14 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.PushReminderMode).HasDefaultValue("Once");
             entity.Property(e => e.PushReminderLeadDays).HasDefaultValue(1);
             entity.Property(e => e.PaymentMode).HasDefaultValue(RecurringPaymentMode.Manual);
+            entity.Property(e => e.AccountId).HasMaxLength(100);
             entity.HasIndex(e => e.UserId);
+            entity.HasIndex(e => new { e.UserId, e.AccountId });
+            entity.HasOne<LedgerAccount>()
+                .WithMany()
+                .HasForeignKey(e => new { e.UserId, e.AccountId })
+                .HasPrincipalKey(e => new { e.UserId, e.Id })
+                .OnDelete(DeleteBehavior.Restrict);
             entity.ToTable(t =>
             {
                 t.HasCheckConstraint("ck_recurringpayments_amount_nonzero", "\"Amount\" <> 0");

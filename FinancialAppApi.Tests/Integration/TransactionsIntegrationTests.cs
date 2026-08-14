@@ -23,6 +23,7 @@ public class TransactionsIntegrationTests : IntegrationTestBase
             description = "Groceries",
             category = "Food",
             ledgerCategory = "Essentials",
+            accountId = AccountIdFor("Essentials"),
             amount = ObfuscationHelper.Obfuscate(-42.50m),
         };
 
@@ -51,6 +52,7 @@ public class TransactionsIntegrationTests : IntegrationTestBase
             description = "Mystery",
             category = "NoSuchCategory",
             ledgerCategory = "Essentials",
+            accountId = AccountIdFor("Essentials"),
             amount = ObfuscationHelper.Obfuscate(-10m),
         };
 
@@ -70,6 +72,7 @@ public class TransactionsIntegrationTests : IntegrationTestBase
             description = "Bad date",
             category = "Food",
             ledgerCategory = "Essentials",
+            accountId = AccountIdFor("Essentials"),
             amount = ObfuscationHelper.Obfuscate(-10m),
         };
 
@@ -90,6 +93,7 @@ public class TransactionsIntegrationTests : IntegrationTestBase
             description = "Coffee",
             category = "Food",
             ledgerCategory = "Essentials",
+            accountId = AccountIdFor("Essentials"),
             amount = ObfuscationHelper.Obfuscate(-4m),
         };
 
@@ -127,6 +131,7 @@ public class TransactionsIntegrationTests : IntegrationTestBase
             description = "Temp",
             category = "Food",
             ledgerCategory = "Essentials",
+            accountId = AccountIdFor("Essentials"),
             amount = ObfuscationHelper.Obfuscate(-1m),
         };
         await client.PostAsJsonAsync("/api/transactions", dto);
@@ -152,6 +157,7 @@ public class TransactionsIntegrationTests : IntegrationTestBase
                 description = id,
                 category = "Food",
                 ledgerCategory = "Essentials",
+                accountId = AccountIdFor("Essentials"),
                 amount = ObfuscationHelper.Obfuscate(-1m),
             });
             Assert.Equal(HttpStatusCode.Created, create.StatusCode);
@@ -212,6 +218,7 @@ public class TransactionsIntegrationTests : IntegrationTestBase
             description = "Alice only",
             category = "Food",
             ledgerCategory = "Essentials",
+            accountId = AccountIdFor("Essentials"),
             amount = ObfuscationHelper.Obfuscate(-12m)
         });
         Assert.Equal(HttpStatusCode.Created, create.StatusCode);

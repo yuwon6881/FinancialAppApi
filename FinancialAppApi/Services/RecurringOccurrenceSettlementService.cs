@@ -20,7 +20,9 @@ public sealed record RecurringSettlementResult(
     RecurringPaymentOccurrence? Occurrence = null,
     Transaction? Transaction = null,
     DateOnly? NextOccurrenceDate = null,
-    string? Message = null);
+    string? Message = null,
+    string? Code = null,
+    IReadOnlyList<string>? MissingBuckets = null);
 
 public sealed class RecurringOccurrenceSettlementService
 {
@@ -52,7 +54,8 @@ public sealed class RecurringOccurrenceSettlementService
         string? clientKey,
         CancellationToken cancellationToken = default,
         string? transactionId = null,
-        DateTime? postedAt = null)
+        DateTime? postedAt = null,
+        string? accountId = null)
     {
         if (status is not (RecurringOccurrenceStatus.Paid or RecurringOccurrenceStatus.Discarded))
         {
@@ -91,6 +94,40 @@ public sealed class RecurringOccurrenceSettlementService
             return new RecurringSettlementResult(RecurringSettlementStatus.Conflict, Message: "This occurrence was already reviewed.");
         }
 
+        // The occurrence's frozen snapshot is the authority on where this payment comes from, not
+        // the schedule's current AccountId: re-pointing a bill moves its future occurrences, while
+        // one already materialised still settles where it was scheduled. Checked after the
+        // already-reviewed short-circuit so an idempotent replay of a settled occurrence is not
+        // refused for an account that has since moved. Legacy rows materialised before the account
+        // cutover carry none and fall back to the parent, exactly as Name and LedgerCategory do.
+        var scheduledBucket = occurrence.LedgerCategory ?? payment.LedgerCategory;
+        if (status == RecurringOccurrenceStatus.Paid)
+        {
+            var scheduledAccountId = occurrence.AccountId ?? payment.AccountId;
+            var requestedAccountId = string.IsNullOrWhiteSpace(accountId) ? null : accountId.Trim();
+            if (requestedAccountId is null)
+                return new RecurringSettlementResult(
+                    RecurringSettlementStatus.Invalid,
+                    Message: "Choose the account assigned to this recurring payment.",
+                    Code: "ledger_account_required",
+                    MissingBuckets: [scheduledBucket]);
+            if (!string.Equals(requestedAccountId, scheduledAccountId, StringComparison.Ordinal))
+                return new RecurringSettlementResult(
+                    RecurringSettlementStatus.Invalid,
+                    Message: "The account for this bill changed. Refresh and try again.",
+                    Code: "ledger_account_invalid",
+                    MissingBuckets: [scheduledBucket]);
+            var account = await _context.LedgerAccounts.AsNoTracking()
+                .FirstOrDefaultAsync(candidate => candidate.Id == requestedAccountId, cancellationToken);
+            if (account is null || account.IsArchived
+                || !account.Bucket.Equals(scheduledBucket, StringComparison.OrdinalIgnoreCase))
+                return new RecurringSettlementResult(
+                    RecurringSettlementStatus.Invalid,
+                    Message: "Choose an open account in the recurring payment's bucket.",
+                    Code: "ledger_account_invalid",
+                    MissingBuckets: [scheduledBucket]);
+        }
+
         // Ensure the natural occurrence key exists before the compatibility transaction path
         // resolves it again. The status change and Ledger insert still commit together below.
         await _context.SaveChangesAsync(cancellationToken);
@@ -112,7 +149,7 @@ public sealed class RecurringOccurrenceSettlementService
                     Message: "This bill is deducted automatically, so it can't be paid ahead of time.");
             }
             var early = await _payEarly.PayEarlyAsync(
-                paymentId, occurrenceDate, cancellationToken, clientKey, transactionId, postedAt);
+                paymentId, occurrenceDate, cancellationToken, clientKey, transactionId, postedAt, accountId);
             return early.Status == PayEarlyStatus.Success
                 ? new RecurringSettlementResult(
                     RecurringSettlementStatus.Success,
@@ -141,7 +178,12 @@ public sealed class RecurringOccurrenceSettlementService
                 : -Math.Abs(occurrence.ScheduledAmount ?? payment.Amount)),
             payment.Id,
             null,
-            occurrenceDate.ToString("yyyy-MM-dd")), cancellationToken);
+            occurrenceDate.ToString("yyyy-MM-dd"),
+            // A Discarded row is a marker, not a bucket leg, and the account-tracking check
+            // constraint requires both placement columns null on one. Dropping the account here
+            // rather than trusting the caller keeps a client that sends one from turning a
+            // discard into an opaque constraint violation.
+            AccountId: status == RecurringOccurrenceStatus.Discarded ? null : accountId), cancellationToken);
 
         if (mutation.Status is not (TransactionMutationStatus.Created or TransactionMutationStatus.Existing))
         {

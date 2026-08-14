@@ -1,5 +1,7 @@
+using System.Globalization;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Accounts;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services.Push;
@@ -8,7 +10,8 @@ public sealed record PushDispatchSummary(int Sent, int Skipped, int Disabled);
 
 // The daily fan-out job: for every user with push reminders enabled who has at least one
 // enabled device subscription, finds each of their recurring payments' next due (unpaid)
-// occurrence and, if it falls inside that payment's configured lead window, sends exactly one
+// occurrence and, if it falls inside that payment's configured lead window (or is an upcoming
+// auto-deduct bill with insufficient account balance 1 day prior), sends exactly one
 // reminder per device — using an insert-before-send claim row so retries/concurrent runs can
 // never double-send. Runs one user at a time in its own DbContext scope (mirroring
 // ReceiptScanProcessor) so per-user tenancy invariants on AppDbContext are respected even though
@@ -62,6 +65,7 @@ public partial class PushDispatchService
                 using var userScope = _scopeFactory.CreateScope();
                 var context = userScope.ServiceProvider.GetRequiredService<AppDbContext>();
                 var occurrenceLedger = userScope.ServiceProvider.GetRequiredService<RecurringOccurrenceLedgerService>();
+                var accountService = userScope.ServiceProvider.GetRequiredService<LedgerAccountService>();
                 var fcmSender = userScope.ServiceProvider.GetRequiredService<IFcmPushSender>();
                 context.SetCurrentUser(userId);
 
@@ -76,6 +80,10 @@ public partial class PushDispatchService
                     continue;
                 }
 
+                var userAccounts = await accountService.GetAccountsAsync(cancellationToken);
+                var userBalances = await accountService.GetBalancesAsync(userAccounts, cancellationToken);
+                var userAccountsById = userAccounts.ToDictionary(a => a.Id, StringComparer.Ordinal);
+
                 foreach (var payment in candidate.Payments)
                 {
                     var due = await ResolveDueOccurrenceAsync(occurrenceLedger, payment, today, cancellationToken);
@@ -86,13 +94,23 @@ public partial class PushDispatchService
 
                     var (occurrenceDate, offsetDays) = due.Value;
                     var isDaily = string.Equals(payment.PushReminderMode, "Daily", StringComparison.OrdinalIgnoreCase);
-                    var shouldSend = isDaily
+                    var isAutoDeduct = payment.PaymentMode == RecurringPaymentMode.AutoDeduct;
+                    var account = payment.AccountId != null ? userAccountsById.GetValueOrDefault(payment.AccountId) : null;
+                    var accountBalance = payment.AccountId != null && userBalances.TryGetValue(payment.AccountId, out var bal) ? bal : 0m;
+                    var scheduledAmount = payment.Amount;
+                    var isShortfallOneDayPrior = isAutoDeduct && offsetDays == 1 && accountBalance < scheduledAmount;
+
+                    var shouldSendStandard = payment.PushReminderEnabled && (isDaily
                         ? offsetDays <= payment.PushReminderLeadDays
-                        : offsetDays == payment.PushReminderLeadDays;
-                    if (!shouldSend)
+                        : offsetDays == payment.PushReminderLeadDays);
+
+                    if (!isShortfallOneDayPrior && !shouldSendStandard)
                     {
                         continue;
                     }
+
+                    decimal? shortfallAmount = isShortfallOneDayPrior ? (scheduledAmount - accountBalance) : null;
+                    string? accountName = isShortfallOneDayPrior ? account?.Name : null;
 
                     foreach (var subscription in subscriptions)
                     {
@@ -111,6 +129,8 @@ public partial class PushDispatchService
                                 subscription,
                                 today,
                                 localNow,
+                                shortfallAmount,
+                                accountName,
                                 cancellationToken);
 
                             sent += sentIncrement;
@@ -154,12 +174,17 @@ public partial class PushDispatchService
         PushSubscription subscription,
         DateOnly today,
         DateTime localNow,
+        decimal? shortfallAmount,
+        string? accountName,
         CancellationToken cancellationToken)
     {
+        var isShortfall = shortfallAmount.HasValue && shortfallAmount.Value > 0;
         // Once sends a single catch-up reminder anywhere inside the lead window, so "already
         // sent" ignores the offset it was originally claimed at. Countdown sends once per day,
         // so the offset is part of the dedupe key and no backfill ever happens for a missed day.
-        var alreadySent = isDaily
+        // Shortfall alerts check exact offsetDays so a prior countdown reminder does not suppress
+        // a 1-day shortfall alert.
+        var alreadySent = (isDaily || isShortfall)
             ? await context.PushReminderDeliveries.AnyAsync(d =>
                 d.RecurringPaymentId == payment.Id &&
                 d.OccurrenceDate == occurrenceDate &&
@@ -199,7 +224,7 @@ public partial class PushDispatchService
             return ("RaceLost", 0, 1, 0);
         }
 
-        var content = BuildContent(payment, occurrenceDate, offsetDays, today, localNow);
+        var content = BuildContent(payment, occurrenceDate, offsetDays, today, localNow, shortfallAmount, accountName);
         var result = await fcmSender.SendAsync(subscription.FcmToken, content, cancellationToken);
 
         switch (result.Status)
@@ -234,14 +259,40 @@ public partial class PushDispatchService
         DateOnly occurrenceDate,
         int offsetDays,
         DateOnly today,
-        DateTime localNow)
+        DateTime localNow,
+        decimal? shortfall = null,
+        string? accountName = null)
     {
-        var body = offsetDays switch
+        string body;
+        var data = new Dictionary<string, string>
         {
-            0 => "Due today",
-            1 => "Due tomorrow",
-            _ => $"Due in {offsetDays} days"
+            ["recurringPaymentId"] = payment.Id,
+            ["occurrenceDate"] = occurrenceDate.ToString("yyyy-MM-dd")
         };
+
+        if (shortfall.HasValue && shortfall.Value > 0)
+        {
+            body = offsetDays switch
+            {
+                0 => $"Auto-deducts today: needs {shortfall.Value:N2} more in {accountName ?? "account"}",
+                1 => $"Auto-deducts tomorrow: needs {shortfall.Value:N2} more in {accountName ?? "account"}",
+                _ => $"Auto-deducts in {offsetDays} days: needs {shortfall.Value:N2} more in {accountName ?? "account"}"
+            };
+            data["shortfall"] = shortfall.Value.ToString("F2", CultureInfo.InvariantCulture);
+            if (!string.IsNullOrWhiteSpace(accountName))
+            {
+                data["accountName"] = accountName;
+            }
+        }
+        else
+        {
+            body = offsetDays switch
+            {
+                0 => "Due today",
+                1 => "Due tomorrow",
+                _ => $"Due in {offsetDays} days"
+            };
+        }
 
         // Short TTL: the reminder should never survive past the end of the Malaysia calendar day
         // it was generated for, so a delayed delivery never arrives as a stale/wrong-day message.
@@ -261,11 +312,7 @@ public partial class PushDispatchService
             Tag: $"payment:{payment.Id}:{occurrenceDate:yyyy-MM-dd}",
             Route: $"/recurring?subscription={Uri.EscapeDataString(payment.Id)}",
             TimeToLive: timeToLive,
-            Data: new Dictionary<string, string>
-            {
-                ["recurringPaymentId"] = payment.Id,
-                ["occurrenceDate"] = occurrenceDate.ToString("yyyy-MM-dd")
-            });
+            Data: data);
     }
 
     private async Task<(DateOnly OccurrenceDate, int OffsetDays)?> ResolveDueOccurrenceAsync(
@@ -314,7 +361,7 @@ public partial class PushDispatchService
         var enabledUserIds = settings.Select(s => s.UserId).ToHashSet();
         var payments = await context.RecurringPayments
             .IgnoreQueryFilters()
-            .Where(p => p.Active && p.PushReminderEnabled && enabledUserIds.Contains(p.UserId))
+            .Where(p => p.Active && (p.PushReminderEnabled || p.PaymentMode == RecurringPaymentMode.AutoDeduct) && enabledUserIds.Contains(p.UserId))
             .ToListAsync(cancellationToken);
 
         var result = new Dictionary<string, DispatchCandidateUser>();

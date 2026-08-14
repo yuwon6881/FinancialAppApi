@@ -27,6 +27,14 @@ public class RecurringPayment : IUserOwnedEntity
     [StringLength(200)]
     public string LedgerCategory { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The live ledger account that pays this recurring item. The bucket and account are both
+    /// stored so a settlement never has to infer placement from a bucket default.
+    /// </summary>
+    [Required]
+    [StringLength(100)]
+    public string AccountId { get; set; } = string.Empty;
+
     public string? NextDueDate { get; set; }
 
     // Existing schedules start authoritative pending-occurrence tracking at the ledger migration;

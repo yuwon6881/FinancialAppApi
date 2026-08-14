@@ -34,7 +34,6 @@ public class TransactionPersistenceServiceTests
             Name = "Essentials bank",
             Bucket = "Essentials",
             Kind = LedgerAccountKind.Bank,
-            IsDefault = true,
         });
         await context.SaveChangesAsync();
 
@@ -57,7 +56,6 @@ public class TransactionPersistenceServiceTests
                 Name = "Essentials bank",
                 Bucket = "Essentials",
                 Kind = LedgerAccountKind.Bank,
-                IsDefault = true,
             },
             new LedgerAccount
             {
@@ -65,7 +63,6 @@ public class TransactionPersistenceServiceTests
                 Name = "Rewards wallet",
                 Bucket = "Rewards",
                 Kind = LedgerAccountKind.EWallet,
-                IsDefault = true,
             },
             new LedgerAccount
             {
@@ -148,7 +145,13 @@ public class TransactionPersistenceServiceTests
         var result = await NewService(context).CreateTransactionAsync(
             NewRequest("salary-account", ledgerCategory: "Income", amount: 1000m) with
             {
-                AccountId = "rewards-wallet",
+                SplitAccountIds = new Dictionary<string, string>
+                {
+                    ["Essentials"] = "default-essentials",
+                    ["Growth"] = "default-growth",
+                    ["Stability"] = "default-stability",
+                    ["Rewards"] = "rewards-wallet",
+                },
             });
 
         Assert.Equal(TransactionMutationStatus.Created, result.Status);
@@ -182,6 +185,7 @@ public class TransactionPersistenceServiceTests
                 {
                     ["Essentials"] = "essentials-custom",
                     ["Growth"] = "growth-custom",
+                    ["Stability"] = "default-stability",
                     ["Rewards"] = "rewards-custom",
                 },
             });
@@ -999,7 +1003,6 @@ public class TransactionPersistenceServiceTests
                 Name = $"{bucket} balance",
                 Bucket = bucket,
                 Kind = LedgerAccountKind.Other,
-                IsDefault = true,
             });
         }
     }
@@ -1026,7 +1029,34 @@ public class TransactionPersistenceServiceTests
             StabilityRecoveryTopUpAmount: recoveryTopUp.HasValue
                 ? ObfuscationHelper.Obfuscate(recoveryTopUp.Value)
                 : null,
-            StabilityReloadIntent: reloadIntent);
+            StabilityReloadIntent: reloadIntent,
+            AccountId: ResolveAccountIds(ledgerCategory).AccountId,
+            CounterAccountId: ResolveAccountIds(ledgerCategory).CounterAccountId,
+            SplitAccountIds: ledgerCategory.Equals("Income", StringComparison.OrdinalIgnoreCase)
+                || ledgerCategory.StartsWith("IncomeSplit:", StringComparison.OrdinalIgnoreCase)
+                ? FinancialConstants.BudgetCategories.ToDictionary(
+                    bucket => bucket,
+                    bucket => $"default-{bucket.ToLowerInvariant()}")
+                : null);
+    }
+
+    private static (string? AccountId, string? CounterAccountId) ResolveAccountIds(string ledgerCategory)
+    {
+        var normalized = new string(ledgerCategory.Where(character => !char.IsWhiteSpace(character)).ToArray());
+        if (FinancialConstants.BudgetCategories.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            return ($"default-{normalized.ToLowerInvariant()}", null);
+        if (!normalized.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase))
+            return (null, null);
+
+        var route = normalized["Transfer:".Length..].Split("->", StringSplitOptions.None);
+        if (route.Length != 2) return (null, null);
+        var source = route[0];
+        var target = route[1];
+        return (
+            source.Equals("Income", StringComparison.OrdinalIgnoreCase)
+                ? $"default-{target.ToLowerInvariant()}"
+                : $"default-{source.ToLowerInvariant()}",
+            source.Equals("Income", StringComparison.OrdinalIgnoreCase) ? null : $"default-{target.ToLowerInvariant()}");
     }
 
     private static Transaction NewTransaction(
@@ -1043,6 +1073,8 @@ public class TransactionPersistenceServiceTests
             Category = "Other",
             LedgerCategory = ledgerCategory,
             Amount = amount,
+            AccountId = ResolveAccountIds(ledgerCategory).AccountId,
+            CounterAccountId = ResolveAccountIds(ledgerCategory).CounterAccountId,
             WishlistItemId = wishlistItemId
         };
     }
