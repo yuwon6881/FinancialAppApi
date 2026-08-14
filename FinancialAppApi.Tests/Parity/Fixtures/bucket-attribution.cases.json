@@ -1,0 +1,18 @@
+{
+  "domain": "bucket-attribution",
+  "version": 1,
+  "cases": [
+    { "id": "plain-bucket", "why": "A plain bucket row contributes its own amount.", "input": { "transaction": { "amount": -120, "ledgerCategory": "Stability", "category": "Food" }, "bucket": "Stability" }, "expected": -120 },
+    { "id": "plain-bucket-mismatch", "why": "A row in another bucket contributes nothing here.", "input": { "transaction": { "amount": -120, "ledgerCategory": "Stability", "category": "Food" }, "bucket": "Growth" }, "expected": 0 },
+    { "id": "income-split", "why": "An income split contributes only its bucket percentage.", "input": { "transaction": { "amount": 4000, "ledgerCategory": "IncomeSplit:50,25,15,10", "category": "Income" }, "bucket": "Stability" }, "expected": 600 },
+    { "id": "income-split-case-insensitive", "why": "Legacy casing must still route an income split.", "input": { "transaction": { "amount": 4000, "ledgerCategory": "incomesplit:50,25,15,10", "category": "Income" }, "bucket": "Essentials" }, "expected": 2000 },
+    { "id": "transfer-source", "why": "The source side of a transfer is negative to that bucket.", "input": { "transaction": { "amount": 300, "ledgerCategory": "Transfer:Stability->Essentials", "category": "Transfer" }, "bucket": "Stability" }, "expected": -300 },
+    { "id": "transfer-target", "why": "The target side of a transfer is positive to that bucket.", "input": { "transaction": { "amount": 300, "ledgerCategory": "Transfer:Stability->Essentials", "category": "Transfer" }, "bucket": "Essentials" }, "expected": 300 },
+    { "id": "negative-transfer-normalized", "why": "Transfer direction determines sign even when the stored amount is negative.", "input": { "transaction": { "amount": -75, "ledgerCategory": "Transfer:Essentials->Rewards", "category": "Transfer" }, "bucket": "Rewards" }, "expected": 75 },
+    { "id": "malformed-split", "why": "A malformed split is ignored instead of guessed.", "input": { "transaction": { "amount": 4000, "ledgerCategory": "IncomeSplit:50,25,15", "category": "Income" }, "bucket": "Stability" }, "expected": 0 },
+    { "id": "account-move", "why": "An internal account move does not change a bucket total.", "input": { "transaction": { "amount": 500, "ledgerCategory": "AccountMove", "category": "Transfer" }, "bucket": "Rewards" }, "expected": 0 },
+    { "id": "downward-adjustment", "why": "A downward adjustment still moves a bucket because placement ignores display category.", "input": { "transaction": { "amount": -45, "ledgerCategory": "Stability", "category": "Adjustment" }, "bucket": "Stability" }, "expected": -45 },
+    { "id": "missing-ledger-category", "why": "A missing ledger category has no bucket effect.", "input": { "transaction": { "amount": 100, "ledgerCategory": null, "category": "Salary" }, "bucket": "Essentials" }, "expected": 0 },
+    { "id": "unknown-bucket", "why": "An unknown bucket label does not receive a routed amount.", "input": { "transaction": { "amount": 100, "ledgerCategory": "IncomeSplit:50,25,15,10", "category": "Income" }, "bucket": "Unknown" }, "expected": 0 }
+  ]
+}

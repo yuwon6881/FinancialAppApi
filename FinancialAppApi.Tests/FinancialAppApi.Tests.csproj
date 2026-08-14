@@ -24,6 +24,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="Parity\Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Parity\manifest.sha256" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\FinancialAppApi\FinancialAppApi.csproj" />
   </ItemGroup>
 
