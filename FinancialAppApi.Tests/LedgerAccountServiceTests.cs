@@ -53,6 +53,36 @@ public class LedgerAccountServiceTests
     }
 
     [Fact]
+    public async Task ReconcileAsync_RepeatedOperationReturnsTheOriginalAdjustment()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+        await service.CreateAsync(Mutation("acct-main", "Main bank"));
+        var request = new LedgerAccountReconcileRequest(
+            "setup-1",
+            "Essentials",
+            0m,
+            [new(
+                "acct-main",
+                "Main bank",
+                LedgerAccountKind.Bank,
+                true,
+                false,
+                0m,
+                25m)]);
+
+        var first = await service.ReconcileAsync(request);
+        var repeated = await service.ReconcileAsync(request);
+
+        Assert.Equal(LedgerAccountMutationStatus.Success, first.Status);
+        Assert.Equal(LedgerAccountMutationStatus.Success, repeated.Status);
+        var adjustment = Assert.Single(first.Transactions!);
+        Assert.Equal("reconcile-setup-1-adjustment", adjustment.Id);
+        Assert.Equal(adjustment, Assert.Single(repeated.Transactions!));
+        Assert.Single(context.Transactions.Where(transaction => transaction.Id == adjustment.Id));
+    }
+
+    [Fact]
     public async Task ArchivingTheDefaultAssignsTheOldestRemainingOpenAccountInTheSameSave()
     {
         await using var context = TestHelpers.NewInMemoryContext();
