@@ -101,6 +101,55 @@ public class LedgerAccountServiceTests
     }
 
     [Fact]
+    public async Task EditingTheDefaultOfAMultiAccountBucketKeepsExactlyOneDefault()
+    {
+        // The old-bucket top-up excludes the edited account, so while that account was still the
+        // bucket's default it promoted a second one and the save died on the unique
+        // (UserId, Bucket) WHERE IsDefault index -- reached by something as ordinary as adding an
+        // interest rate to the default account of a bucket that has two. The InMemory provider does
+        // not enforce the index, so assert the state the index protects.
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+        await service.CreateAsync(Mutation("acct-first", "Main bank"));
+        await service.CreateAsync(Mutation("acct-second", "Cash tin"));
+
+        var result = await service.UpdateAsync(
+            "acct-first",
+            Mutation("acct-first", "Main bank", isDefault: true) with
+            {
+                InterestEnabled = true,
+                InterestRatePercent = 3.5m,
+                InterestFrequency = LedgerAccountInterestFrequency.Monthly,
+            });
+
+        Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
+        var accounts = await service.GetAccountsAsync();
+        var defaults = accounts.Where(account => account.Bucket == "Essentials" && account.IsDefault).ToList();
+        Assert.Equal("acct-first", Assert.Single(defaults).Id);
+        var edited = accounts.Single(account => account.Id == "acct-first");
+        Assert.True(edited.InterestEnabled);
+        Assert.Equal(3.5m, edited.InterestRatePercent);
+    }
+
+    [Fact]
+    public async Task EditingANonDefaultAccountLeavesTheExistingDefaultAlone()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+        await service.CreateAsync(Mutation("acct-first", "Main bank"));
+        await service.CreateAsync(Mutation("acct-second", "Cash tin"));
+
+        var result = await service.UpdateAsync(
+            "acct-second",
+            Mutation("acct-second", "Cash tin") with { InterestEnabled = true, InterestRatePercent = 1m });
+
+        Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
+        var accounts = await service.GetAccountsAsync();
+        var defaults = accounts.Where(account => account.Bucket == "Essentials" && account.IsDefault).ToList();
+        Assert.Equal("acct-first", Assert.Single(defaults).Id);
+    }
+
+    [Fact]
     public async Task ArchivingTheLastOpenAccountReturnsConflict()
     {
         await using var context = TestHelpers.NewInMemoryContext();

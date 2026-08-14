@@ -295,8 +295,15 @@ public sealed partial class LedgerAccountService
             account.IsDefault = false;
         }
 
-        if (wasDefault || !string.Equals(oldBucket, nextBucket, StringComparison.OrdinalIgnoreCase))
-            await EnsureDefaultAsync(oldBucket, string.Equals(oldBucket, nextBucket, StringComparison.OrdinalIgnoreCase) ? id : null, cancellationToken);
+        // Top up the bucket this account is leaving, or has just stopped being the default of. It is
+        // excluded from the candidates, so this must not run while it still holds that bucket's
+        // default: with a second live account present, `EnsureDefaultAsync` cannot see the default
+        // it is not allowed to look at, promotes another row, and the save dies on
+        // `IX_LedgerAccounts_UserId_Bucket` -- which is exactly what editing the default account of
+        // a two-account bucket (adding an interest rate to it, say) used to do.
+        var bucketChanged = !string.Equals(oldBucket, nextBucket, StringComparison.OrdinalIgnoreCase);
+        if (bucketChanged || (wasDefault && !account.IsDefault))
+            await EnsureDefaultAsync(oldBucket, id, cancellationToken);
         if (!account.IsDefault)
         {
             await EnsureDefaultAsync(nextBucket, id, cancellationToken);
@@ -362,6 +369,9 @@ public sealed partial class LedgerAccountService
         if (candidates.Any(account => account.IsDefault)) return;
         var replacement = candidates.FirstOrDefault();
         if (replacement is null) return;
+        // Candidates deliberately skip archived rows, but the unique index counts an archived
+        // default just the same, so a marker left on one would collide with this promotion.
+        await ClearDefaultAsync(bucket, replacement.Id, cancellationToken);
         replacement.IsDefault = true;
         replacement.UpdatedAt = DateTime.UtcNow;
     }
