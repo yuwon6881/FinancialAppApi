@@ -180,6 +180,22 @@ public static class SavingsGoalPacing
         return Math.Max(0m, rewardsBalance - totalEarmarked - Math.Max(0m, pendingRewardsCommitted));
     }
 
+    /// <summary>
+    /// Returns the exact pending recurring amount held out of one bucket's free balance.
+    /// Occurrence status is authoritative; the display/category fields are deliberately ignored.
+    /// </summary>
+    public static decimal PendingAmount(
+        IEnumerable<RecurringPaymentOccurrence> occurrences,
+        string fundingBucket)
+    {
+        var pending = occurrences
+            .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.Pending
+                && string.Equals(occurrence.LedgerCategory, fundingBucket, StringComparison.OrdinalIgnoreCase))
+            .Sum(occurrence => Math.Abs(occurrence.ScheduledAmount ?? 0m));
+
+        return Math.Round(pending, 2, MidpointRounding.AwayFromZero);
+    }
+
     // Contributions are rounded UP to the cent so that N cycles of the required amount always
     // reaches the target. Rounding down leaves a few cents short on the deadline cycle.
     private static decimal RoundUpToCent(decimal value)

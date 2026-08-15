@@ -1,0 +1,166 @@
+{
+  "domain": "loan-amortization",
+  "version": 1,
+  "cases": [
+    {
+      "id": "flat-interest-monthly",
+      "why": "Flat interest distributes the total loan term interest equally across every monthly period.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 12000.0,
+          "annualRatePercent": 5.0,
+          "termPeriods": 12,
+          "interestMethod": "Flat"
+        },
+        "frequency": "Monthly",
+        "occurrenceDate": "2026-08-15",
+        "balanceBefore": 12000.0,
+        "payment": 1050.0,
+        "paymentNumber": 1,
+        "flatInterestPaidBefore": 0.0,
+        "previousAccrualDate": "2026-07-15"
+      },
+      "expected": {
+        "scheduledPayment": 1050.0,
+        "totalScheduledInterest": 600.0,
+        "split": {
+          "payment": 1050.0,
+          "interest": 50.0,
+          "principal": 1000.0,
+          "balanceBefore": 12000.0,
+          "balanceAfter": 11000.0,
+          "surplus": 0.0,
+          "paymentDidNotCoverInterest": false
+        }
+      }
+    },
+    {
+      "id": "reducing-balance-monthly",
+      "why": "Reducing balance calculates interest per period on remaining balance and remainder goes to principal.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 10000.0,
+          "annualRatePercent": 12.0,
+          "termPeriods": 12,
+          "interestMethod": "ReducingBalance"
+        },
+        "frequency": "Monthly",
+        "occurrenceDate": "2026-08-15",
+        "balanceBefore": 10000.0,
+        "payment": 888.49,
+        "paymentNumber": 1,
+        "flatInterestPaidBefore": 0.0,
+        "previousAccrualDate": "2026-07-15"
+      },
+      "expected": {
+        "scheduledPayment": 888.49,
+        "totalScheduledInterest": 661.88,
+        "split": {
+          "payment": 888.49,
+          "interest": 100.0,
+          "principal": 788.49,
+          "balanceBefore": 10000.0,
+          "balanceAfter": 9211.51,
+          "surplus": 0.0,
+          "paymentDidNotCoverInterest": false
+        }
+      }
+    },
+    {
+      "id": "interest-only-monthly",
+      "why": "Interest only payments cover interest only and principal remains unchanged.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 50000.0,
+          "annualRatePercent": 6.0,
+          "termPeriods": 24,
+          "interestMethod": "InterestOnly"
+        },
+        "frequency": "Monthly",
+        "occurrenceDate": "2026-08-15",
+        "balanceBefore": 50000.0,
+        "payment": 250.0,
+        "paymentNumber": 1,
+        "flatInterestPaidBefore": 0.0,
+        "previousAccrualDate": "2026-07-15"
+      },
+      "expected": {
+        "scheduledPayment": 250.0,
+        "totalScheduledInterest": 6000.0,
+        "split": {
+          "payment": 250.0,
+          "interest": 250.0,
+          "principal": 0.0,
+          "balanceBefore": 50000.0,
+          "balanceAfter": 50000.0,
+          "surplus": 0.0,
+          "paymentDidNotCoverInterest": false
+        }
+      }
+    },
+    {
+      "id": "zero-interest-loan",
+      "why": "Zero interest loan divides principal equally over term with 0 interest.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 1200.0,
+          "annualRatePercent": 0.0,
+          "termPeriods": 12,
+          "interestMethod": "ReducingBalance"
+        },
+        "frequency": "Monthly",
+        "occurrenceDate": "2026-08-15",
+        "balanceBefore": 1200.0,
+        "payment": 100.0,
+        "paymentNumber": 1,
+        "flatInterestPaidBefore": 0.0,
+        "previousAccrualDate": "2026-07-15"
+      },
+      "expected": {
+        "scheduledPayment": 100.0,
+        "totalScheduledInterest": 0.0,
+        "split": {
+          "payment": 100.0,
+          "interest": 0.0,
+          "principal": 100.0,
+          "balanceBefore": 1200.0,
+          "balanceAfter": 1100.0,
+          "surplus": 0.0,
+          "paymentDidNotCoverInterest": false
+        }
+      }
+    },
+    {
+      "id": "overpayment-with-surplus",
+      "why": "Payment exceeding principal plus interest generates a surplus.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 500.0,
+          "annualRatePercent": 12.0,
+          "termPeriods": 12,
+          "interestMethod": "ReducingBalance"
+        },
+        "frequency": "Monthly",
+        "occurrenceDate": "2026-08-15",
+        "balanceBefore": 500.0,
+        "payment": 600.0,
+        "paymentNumber": 1,
+        "flatInterestPaidBefore": 0.0,
+        "previousAccrualDate": "2026-07-15"
+      },
+      "expected": {
+        "scheduledPayment": 44.42,
+        "totalScheduledInterest": 33.04,
+        "split": {
+          "payment": 600.0,
+          "interest": 5.0,
+          "principal": 500.0,
+          "balanceBefore": 500.0,
+          "balanceAfter": 0.0,
+          "surplus": 95.0,
+          "paymentDidNotCoverInterest": false
+        }
+      }
+    }
+  ]
+}

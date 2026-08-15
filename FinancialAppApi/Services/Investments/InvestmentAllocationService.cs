@@ -241,7 +241,8 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         string? sleeve,
         CancellationToken cancellationToken)
     {
-        var instrument = await context.InvestmentInstruments.FindAsync([instrumentId], cancellationToken);
+        var instrument = await context.InvestmentInstruments
+            .SingleOrDefaultAsync(value => value.Id == instrumentId, cancellationToken);
         if (instrument is null) return false;
 
         instrument.AllocationSleeve = sleeve is null
@@ -416,7 +417,7 @@ public sealed class InvestmentAllocationService(AppDbContext context)
     /// A routine on-track amount may be too small to close every gap, so its gaps are scaled
     /// proportionally. An off-track plan instead raises the amount to the exact no-sale total.
     /// </summary>
-    private static InvestmentContributionPlanDto? BuildContributionPlan(
+    internal static InvestmentContributionPlanDto? BuildContributionPlan(
         string appCurrency,
         decimal investedValue,
         IReadOnlyDictionary<string, decimal> values,

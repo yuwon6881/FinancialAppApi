@@ -98,6 +98,8 @@ public sealed class InvestmentAccountingService
                 }
                 case "Dividend":
                 {
+                    if (position.Units <= 0)
+                        throw new InvestmentValidationException("A dividend cannot be recorded before any units are held.");
                     var net = (transaction.CashAmount ?? 0) - feesAndTaxes;
                     if (net < 0) throw new InvestmentValidationException("Dividend cash cannot be less than fees and taxes.");
                     position.Dividends += net;

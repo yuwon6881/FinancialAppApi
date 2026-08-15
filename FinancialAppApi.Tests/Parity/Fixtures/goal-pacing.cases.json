@@ -1,0 +1,9 @@
+{
+  "domain": "goal-pacing",
+  "version": 1,
+  "cases": [
+    { "id": "spread-remainder-over-cycles", "why": "A goal's remaining amount is spread across whole cycles and rounded up to cents.", "input": { "today": "2026-07-15", "targetDate": "2026-09-20", "cycleDay": 1, "currentCycleKey": "2026-07", "goal": { "id": 1, "targetAmount": 1200, "earmarkedAmount": 400, "cycleFundedKey": null, "cycleFundedAmount": 0, "status": "active" } }, "expected": { "remaining": 800, "cyclesRemaining": 3, "requiredPerCycle": 266.67, "fundedThisCycle": 0, "outstandingThisCycle": 266.67, "isOverdue": false, "isFunded": false } },
+    { "id": "already-funded-cycle-is-zero", "why": "Money already set aside this cycle satisfies that cycle's pace without shrinking the quoted pace.", "input": { "today": "2026-07-15", "targetDate": "2026-09-20", "cycleDay": 1, "currentCycleKey": "2026-07", "goal": { "id": 2, "targetAmount": 1200, "earmarkedAmount": 666.67, "cycleFundedKey": "2026-07", "cycleFundedAmount": 266.67, "status": "active" } }, "expected": { "remaining": 533.33, "cyclesRemaining": 3, "requiredPerCycle": 266.67, "fundedThisCycle": 266.67, "outstandingThisCycle": 0, "isOverdue": false, "isFunded": false } },
+    { "id": "overdue-goal-demands-remainder", "why": "A missed deadline makes the whole remaining amount due now instead of hiding it in a new schedule.", "input": { "today": "2026-07-15", "targetDate": "2026-05-10", "cycleDay": 1, "currentCycleKey": "2026-07", "goal": { "id": 3, "targetAmount": 500, "earmarkedAmount": 100, "cycleFundedKey": null, "cycleFundedAmount": 0, "status": "active" } }, "expected": { "remaining": 400, "cyclesRemaining": -1, "requiredPerCycle": 400, "fundedThisCycle": 0, "outstandingThisCycle": 400, "isOverdue": true, "isFunded": false } }
+  ]
+}

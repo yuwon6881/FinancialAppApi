@@ -1,0 +1,128 @@
+{
+  "domain": "cycle-math",
+  "version": 1,
+  "cases": [
+    {
+      "id": "cycle-range-first-of-month",
+      "why": "cycleDay=1 corresponds to the exact calendar month from day 1 to last day.",
+      "input": {
+        "kind": "range",
+        "year": 2026,
+        "monthIndex": 1,
+        "cycleDay": 1
+      },
+      "expected": {
+        "startDate": "2026-01-01",
+        "endDate": "2026-01-31"
+      }
+    },
+    {
+      "id": "cycle-range-mid-month-standard",
+      "why": "cycleDay=15 spans from 15th of month to 14th of next month.",
+      "input": {
+        "kind": "range",
+        "year": 2026,
+        "monthIndex": 3,
+        "cycleDay": 15
+      },
+      "expected": {
+        "startDate": "2026-03-15",
+        "endDate": "2026-04-14"
+      }
+    },
+    {
+      "id": "cycle-range-december-rollover",
+      "why": "December cycle with mid-month cycleDay rolls over to January next year.",
+      "input": {
+        "kind": "range",
+        "year": 2026,
+        "monthIndex": 12,
+        "cycleDay": 20
+      },
+      "expected": {
+        "startDate": "2026-12-20",
+        "endDate": "2027-01-19"
+      }
+    },
+    {
+      "id": "cycle-range-clamped-february",
+      "why": "cycleDay=31 clamps start in February to 28th and ends before next clamped start.",
+      "input": {
+        "kind": "range",
+        "year": 2026,
+        "monthIndex": 2,
+        "cycleDay": 31
+      },
+      "expected": {
+        "startDate": "2026-02-28",
+        "endDate": "2026-03-30"
+      }
+    },
+    {
+      "id": "cycle-range-clamped-30-day-month",
+      "why": "cycleDay=31 clamps in 30-day months such as April and tiles cleanly into May.",
+      "input": {
+        "kind": "range",
+        "year": 2026,
+        "monthIndex": 4,
+        "cycleDay": 31
+      },
+      "expected": {
+        "startDate": "2026-04-30",
+        "endDate": "2026-05-30"
+      }
+    },
+    {
+      "id": "date-to-cycle-on-start-day",
+      "why": "A date on cycleDay belongs to the new cycle.",
+      "input": {
+        "kind": "forDate",
+        "date": "2026-08-15",
+        "cycleDay": 15
+      },
+      "expected": {
+        "year": 2026,
+        "monthIndex": 8
+      }
+    },
+    {
+      "id": "date-to-cycle-before-start-day",
+      "why": "A date before cycleDay belongs to the previous cycle.",
+      "input": {
+        "kind": "forDate",
+        "date": "2026-08-14",
+        "cycleDay": 15
+      },
+      "expected": {
+        "year": 2026,
+        "monthIndex": 7
+      }
+    },
+    {
+      "id": "date-to-cycle-january-pre-cycle-day-rollover",
+      "why": "A January date before cycleDay belongs to December of the previous year.",
+      "input": {
+        "kind": "forDate",
+        "date": "2026-01-05",
+        "cycleDay": 10
+      },
+      "expected": {
+        "year": 2025,
+        "monthIndex": 12
+      }
+    },
+    {
+      "id": "date-to-cycle-clamped-february-end",
+      "why": "Feb 28 with cycleDay=31 belongs to February cycle because start is clamped to Feb 28.",
+      "input": {
+        "kind": "forDate",
+        "date": "2026-02-28",
+        "cycleDay": 31
+      },
+      "expected": {
+        "year": 2026,
+        "monthIndex": 2
+      }
+    }
+  ]
+}

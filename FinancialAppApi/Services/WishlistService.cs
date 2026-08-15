@@ -47,14 +47,14 @@ public class WishlistService
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly SavingsGoalService _savingsGoalService;
     private readonly FinancialClock _financialClock;
-    private readonly SharedPoolMutationLock _sharedPoolMutationLock;
+    private readonly ISharedPoolMutationLock _sharedPoolMutationLock;
 
     public WishlistService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
         SavingsGoalService savingsGoalService,
         FinancialClock? financialClock = null,
-        SharedPoolMutationLock? sharedPoolMutationLock = null)
+        ISharedPoolMutationLock? sharedPoolMutationLock = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
@@ -176,6 +176,7 @@ public class WishlistService
 
     public async Task<WishlistMutationStatus> DeleteWishlistItemAsync(int id, CancellationToken cancellationToken = default)
     {
+        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var item = await _context.WishlistItems.FindAsync([id], cancellationToken);
         if (item == null)
         {
@@ -242,6 +243,7 @@ public class WishlistService
         DateTime? postedAt = null,
         string? accountId = null)
     {
+        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var item = await _context.WishlistItems.FindAsync([id], cancellationToken);
         if (item == null)
         {
@@ -282,7 +284,6 @@ public class WishlistService
                 Message: "A wishlist claim date cannot be in the future.");
         }
 
-        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var poolSummary = await _savingsGoalService.GetPoolSummaryAsync(cancellationToken);
         if (poolSummary.Unassigned < item.Price)
         {
@@ -368,6 +369,7 @@ public class WishlistService
 
     public async Task<WishlistPurchaseResult> UnpurchaseWishlistItemAsync(int id, CancellationToken cancellationToken = default)
     {
+        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var item = await _context.WishlistItems.FindAsync([id], cancellationToken);
         if (item == null)
         {

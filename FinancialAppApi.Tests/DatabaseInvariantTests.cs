@@ -124,6 +124,39 @@ public class DatabaseInvariantTests
     }
 
     [Fact]
+    public void DesignTimeModel_ConstrainsEveryStringBackedContractWithADatabaseGuard()
+    {
+        using var context = TestHelpers.NewInMemoryContext();
+        // Runtime metadata intentionally omits relational check constraints. The design-time
+        // model is the contract migrations consume and is therefore the only model this guard may
+        // inspect.
+        var model = context.GetService<IDesignTimeModel>().Model;
+        var expected = new[]
+        {
+            (typeof(Transaction), "ck_transactions_stabilityreloadintent", "\"StabilityReloadIntent\" IN ('Unanswered', 'Required', 'NotRequired')"),
+            (typeof(LedgerAccount), "ck_ledgeraccounts_bucket", "\"Bucket\" IN ('Essentials', 'Growth', 'Stability', 'Rewards')"),
+            (typeof(LedgerAccount), "ck_ledgeraccounts_kind", "\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'Other')"),
+            (typeof(LedgerAccount), "ck_ledgeraccounts_interestfrequency", "\"InterestFrequency\" IN ('Daily', 'Monthly', 'Yearly')"),
+            (typeof(RecurringPayment), "ck_recurringpayments_paymentmode", "\"PaymentMode\" IN ('AutoDeduct', 'Manual')"),
+            (typeof(RecurringPayment), "ck_recurringpayments_pushremindermode", "\"PushReminderMode\" IN ('Once', 'Daily')"),
+            (typeof(RecurringPaymentOccurrence), "ck_recurringpaymentoccurrences_status", "\"Status\" IN ('Pending', 'Paid', 'Discarded')"),
+            (typeof(SavingsGoal), "ck_savingsgoals_fundingbucket", "\"FundingBucket\" IN ('Essentials', 'Rewards')"),
+            (typeof(Loan), "ck_loans_interestmethod", "\"InterestMethod\" IN ('ReducingBalance', 'Flat', 'ReducingBalanceDaily', 'InterestOnly')"),
+            (typeof(Loan), "ck_loans_ratebasis", "\"RateBasis\" IN ('Yearly', 'Monthly')"),
+            (typeof(Loan), "ck_loans_schedulestatus", "\"ScheduleStatus\" IN ('Complete', 'Incomplete')"),
+            (typeof(InvestmentInstrument), "ck_investmentinstruments_allocationsleeve", "\"AllocationSleeve\" IS NULL OR \"AllocationSleeve\" IN ('USEquity', 'InternationalExUS', 'Bonds')"),
+        };
+
+        foreach (var (entityType, name, sql) in expected)
+        {
+            var entity = model.FindEntityType(entityType);
+            Assert.NotNull(entity);
+            var constraint = Assert.Single(entity!.GetCheckConstraints(), item => item.Name == name);
+            Assert.Equal(sql, constraint.Sql);
+        }
+    }
+
+    [Fact]
     public void Model_EnforcesOnePushSubscriptionPerUserAndDevice()
     {
         using var context = TestHelpers.NewInMemoryContext();

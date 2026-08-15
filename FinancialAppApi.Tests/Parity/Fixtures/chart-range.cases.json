@@ -1,0 +1,11 @@
+{
+  "cases": [
+    { "id": "one-month", "range": "1m", "today": "2026-08-15", "expectedStart": "2026-07-15", "inputPoints": 31, "expectedPoints": 31 },
+    { "id": "three-month", "range": "3m", "today": "2026-08-15", "expectedStart": "2026-05-15", "inputPoints": 92, "expectedPoints": 92 },
+    { "id": "six-month", "range": "6m", "today": "2026-08-15", "expectedStart": "2026-02-15", "inputPoints": 181, "expectedPoints": 91 },
+    { "id": "one-year", "range": "1y", "today": "2026-08-15", "expectedStart": "2025-08-15", "inputPoints": 365, "expectedPoints": 123 },
+    { "id": "three-year", "range": "3y", "today": "2026-08-15", "expectedStart": "2023-08-15", "inputPoints": 1095, "expectedPoints": 158 },
+    { "id": "five-year", "range": "5y", "today": "2026-08-15", "expectedStart": "2021-08-15", "inputPoints": 1825, "expectedPoints": 167 },
+    { "id": "all", "range": "all", "today": "2026-08-15", "expectedStart": null, "inputPoints": 500, "expectedPoints": 168 }
+  ]
+}

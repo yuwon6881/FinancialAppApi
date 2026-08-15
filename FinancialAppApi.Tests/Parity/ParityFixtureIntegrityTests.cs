@@ -5,20 +5,34 @@ namespace FinancialAppApi.Tests.Parity;
 public sealed class ParityFixtureIntegrityTests
 {
     [Fact]
-    public void BucketAttributionFixtureMatchesManifest()
+    public void AllFixturesMatchManifestExactly()
     {
-        var fixture = File.ReadAllBytes(FixturePath);
-        var hash = Convert.ToHexString(SHA256.HashData(fixture)).ToLowerInvariant();
-        var manifest = File.ReadAllText(ManifestPath);
+        var fixtureNames = Directory.GetFiles(FixturesDirectory, "*.cases.json")
+            .Select(Path.GetFileName)
+            .Where(name => name is not null)
+            .Cast<string>()
+            .OrderBy(name => name)
+            .ToArray();
+        var expectedManifest = fixtureNames
+            .Select(name =>
+            {
+                var hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(FixturesDirectory, name))))
+                    .ToLowerInvariant();
+                return $"{hash}  {name}";
+            })
+            .OrderBy(line => line)
+            .ToArray();
+        var actualManifest = File.ReadAllLines(ManifestPath)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .OrderBy(line => line)
+            .ToArray();
 
-        Assert.Contains($"{hash}  bucket-attribution.cases.json", manifest);
+        Assert.Equal(expectedManifest, actualManifest);
     }
 
-    private static string FixturePath => Path.Combine(
+    private static string FixturesDirectory => Path.Combine(
         AppContext.BaseDirectory,
-        "Parity",
-        "Fixtures",
-        "bucket-attribution.cases.json");
+        "Parity", "Fixtures");
 
     private static string ManifestPath => Path.Combine(AppContext.BaseDirectory, "Parity", "manifest.sha256");
 }

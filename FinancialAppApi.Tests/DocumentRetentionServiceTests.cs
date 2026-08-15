@@ -55,6 +55,25 @@ public class DocumentRetentionServiceTests
         Assert.True(review.NoticeWindowDays is > 0 and < 400);
     }
 
+    [Theory]
+    [InlineData(-1, true)]
+    [InlineData(0, true)]
+    [InlineData(179, true)]
+    [InlineData(181, false)]
+    public async Task ReviewUsesTheServerWindowForPastTodayAndApproachingRecords(int days, bool expected)
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        context.VaultDocuments.Add(Document(1, 2022, Today.AddDays(days)));
+        await context.SaveChangesAsync();
+
+        var review = await new DocumentRetentionService(context).GetReviewAsync();
+
+        Assert.Equal(expected, review.TaxYears.Count == 1);
+        if (expected)
+            Assert.Equal(days, Assert.Single(review.TaxYears).DaysUntilKeepUntil);
+    }
+
     [Fact]
     public async Task OneTaxYearReportsOnceCarryingTheEarliestKeepUntilAndTheSummedSize()
     {

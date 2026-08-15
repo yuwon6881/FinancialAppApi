@@ -1,0 +1,136 @@
+{
+  "domain": "stability-reload",
+  "version": 1,
+  "cases": [
+    {
+      "id": "single-marked-drawdown",
+      "why": "A single marked emergency fund withdrawal creates an obligation in the FIFO queue.",
+      "input": {
+        "opening": {
+          "outstanding": 0.0,
+          "oldestOutstandingDate": null,
+          "obligations": []
+        },
+        "openingBalance": 1000.0,
+        "target": 2000.0,
+        "movements": [
+          {
+            "id": "tx-drawdown-1",
+            "date": "2026-08-05",
+            "change": -200.0,
+            "repayment": 0.0,
+            "marked": true
+          }
+        ]
+      },
+      "expected": {
+        "outstanding": 200.0,
+        "oldestOutstandingDate": "2026-08-05",
+        "markedThisRun": 200.0,
+        "repaidThisRun": 0.0,
+        "obligations": [
+          {
+            "transactionId": "tx-drawdown-1",
+            "originalAmount": 200.0,
+            "remainingAmount": 200.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "fifo-partial-repayment",
+      "why": "Repayments discharge the oldest marked obligations first (FIFO order).",
+      "input": {
+        "opening": {
+          "outstanding": 0.0,
+          "oldestOutstandingDate": null,
+          "obligations": []
+        },
+        "openingBalance": 1000.0,
+        "target": 2000.0,
+        "movements": [
+          {
+            "id": "tx-drawdown-1",
+            "date": "2026-08-05",
+            "change": -100.0,
+            "repayment": 0.0,
+            "marked": true
+          },
+          {
+            "id": "tx-drawdown-2",
+            "date": "2026-08-08",
+            "change": -150.0,
+            "repayment": 0.0,
+            "marked": true
+          },
+          {
+            "id": "tx-repay",
+            "date": "2026-08-10",
+            "change": 120.0,
+            "repayment": 120.0,
+            "marked": false
+          }
+        ]
+      },
+      "expected": {
+        "outstanding": 130.0,
+        "oldestOutstandingDate": "2026-08-08",
+        "markedThisRun": 250.0,
+        "repaidThisRun": 120.0,
+        "obligations": [
+          {
+            "transactionId": "tx-drawdown-1",
+            "originalAmount": 100.0,
+            "remainingAmount": 0.0
+          },
+          {
+            "transactionId": "tx-drawdown-2",
+            "originalAmount": 150.0,
+            "remainingAmount": 130.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "clear-at-target",
+      "why": "When the running balance reaches or exceeds the target stability fund, all obligations are cleared.",
+      "input": {
+        "opening": {
+          "outstanding": 300.0,
+          "oldestOutstandingDate": "2026-07-15",
+          "obligations": [
+            {
+              "transactionId": "tx-old",
+              "originalAmount": 300.0,
+              "remainingAmount": 300.0
+            }
+          ]
+        },
+        "openingBalance": 1800.0,
+        "target": 2000.0,
+        "movements": [
+          {
+            "id": "tx-deposit",
+            "date": "2026-08-15",
+            "change": 300.0,
+            "repayment": 0.0,
+            "marked": false
+          }
+        ]
+      },
+      "expected": {
+        "outstanding": 0.0,
+        "oldestOutstandingDate": null,
+        "markedThisRun": 0.0,
+        "repaidThisRun": 0.0,
+        "obligations": [
+          {
+            "transactionId": "tx-old",
+            "originalAmount": 300.0,
+            "remainingAmount": 0.0
+          }
+        ]
+      }
+    }
+  ]
+}

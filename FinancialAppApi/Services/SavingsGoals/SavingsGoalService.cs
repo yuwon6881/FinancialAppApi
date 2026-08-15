@@ -81,7 +81,7 @@ public class SavingsGoalService
     private readonly FinancialClock _financialClock;
     private readonly RecurringOccurrenceService _recurringOccurrenceService;
     private readonly RecurringOccurrenceLedgerService _recurringOccurrenceLedger;
-    private readonly SharedPoolMutationLock _sharedPoolMutationLock;
+    private readonly ISharedPoolMutationLock _sharedPoolMutationLock;
 
     public SavingsGoalService(
         AppDbContext context,
@@ -89,7 +89,7 @@ public class SavingsGoalService
         FinancialClock? financialClock = null,
         RecurringOccurrenceService? recurringOccurrenceService = null,
         RecurringOccurrenceLedgerService? recurringOccurrenceLedger = null,
-        SharedPoolMutationLock? sharedPoolMutationLock = null)
+        ISharedPoolMutationLock? sharedPoolMutationLock = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
@@ -161,6 +161,8 @@ public class SavingsGoalService
 
     public async Task<SavingsGoalResult> CreateGoalAsync(SavingsGoal goal, CancellationToken cancellationToken = default)
     {
+        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
+
         // Idempotency: an offline create can be replayed after a lost response. Dedupe on the
         // client-supplied key and return the existing row rather than inserting a second goal.
         if (!string.IsNullOrWhiteSpace(goal.ClientKey))
@@ -188,7 +190,6 @@ public class SavingsGoalService
         goal.RecurrenceDayOfMonth = goal.IsRecurring ? goal.TargetDate.Day : null;
         goal.LastCompletionTransactionId = null;
 
-        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         // A goal may be seeded with money already set aside. That still has to fit in the pool.
         if (goal.EarmarkedAmount > 0m)
         {
@@ -214,6 +215,7 @@ public class SavingsGoalService
             return new SavingsGoalResult(SavingsGoalMutationStatus.IdMismatch, Message: "ID mismatch.");
         }
 
+        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var goal = await _context.SavingsGoals.FindAsync([id], cancellationToken);
         if (goal == null) return new SavingsGoalResult(SavingsGoalMutationStatus.NotFound);
         if (goal.Status != SavingsGoalStatus.Active)
@@ -226,7 +228,6 @@ public class SavingsGoalService
         var validation = Validate(updated);
         if (validation != null) return validation;
 
-        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var nextFundingBucket = updated.FundingBucket;
         if (!string.Equals(goal.FundingBucket, nextFundingBucket, StringComparison.Ordinal)
             && goal.EarmarkedAmount > 0m)
@@ -287,10 +288,10 @@ public class SavingsGoalService
     /// </summary>
     public async Task<SavingsGoalMutationStatus> DeleteGoalAsync(int id, CancellationToken cancellationToken = default)
     {
+        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var goal = await _context.SavingsGoals.FindAsync([id], cancellationToken);
         if (goal == null) return SavingsGoalMutationStatus.NotFound;
 
-        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         _context.SavingsGoals.Remove(goal);
         try
         {
@@ -321,6 +322,7 @@ public class SavingsGoalService
                 Message: "Contribution amount must be a non-zero number.");
         }
 
+        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var goal = await _context.SavingsGoals.FindAsync([id], cancellationToken);
         if (goal == null) return new SavingsGoalResult(SavingsGoalMutationStatus.NotFound);
         if (goal.Status != SavingsGoalStatus.Active)
@@ -330,7 +332,6 @@ public class SavingsGoalService
                 Message: "This goal is already completed.");
         }
 
-        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         if (amount > 0m)
         {
             var headroom = await GetUnassignedAsync(goal.FundingBucket, cancellationToken: cancellationToken);
@@ -401,13 +402,13 @@ public class SavingsGoalService
         var today = _financialClock.Today;
         var cycleKey = CurrentCycleKey(today, cycleDay);
 
+        var available = await GetUnassignedAsync(fundingBucket, cycleDay, cancellationToken);
         var active = await _context.SavingsGoals
             .Where(goal => goal.Status == SavingsGoalStatus.Active && goal.FundingBucket == fundingBucket)
             .ToListAsync(cancellationToken);
 
         var byId = active.ToDictionary(goal => goal.Id);
         var totalGranted = 0m;
-        var available = await GetUnassignedAsync(fundingBucket, cycleDay, cancellationToken);
         var waterfall = SavingsGoalPacing.Distribute(active, available, today, cycleDay, cycleKey);
         totalGranted = waterfall.TotalGranted;
         foreach (var grant in waterfall.Grants)
@@ -460,6 +461,7 @@ public class SavingsGoalService
         string? accountId,
         CancellationToken cancellationToken = default)
     {
+        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var goal = await _context.SavingsGoals.FindAsync([id], cancellationToken);
         if (goal == null) return new SavingsGoalResult(SavingsGoalMutationStatus.NotFound);
         if (goal.Status != SavingsGoalStatus.Active)
@@ -492,7 +494,6 @@ public class SavingsGoalService
                 Code: "ledger_account_invalid",
                 MissingBuckets: [goal.FundingBucket]);
 
-        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var previousTargetDate = goal.TargetDate;
         var previousEarmarkedAmount = goal.EarmarkedAmount;
         var previousCycleFundedKey = goal.CycleFundedKey;
@@ -676,12 +677,7 @@ public class SavingsGoalService
 
         var occurrences = await _recurringOccurrenceLedger.GetRangeAsync(
             payments, startOnly, endOnly, cancellationToken: cancellationToken);
-        var pending = occurrences
-            .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.Pending
-                && string.Equals(occurrence.LedgerCategory, fundingBucket, StringComparison.OrdinalIgnoreCase))
-            .Sum(occurrence => Math.Abs(occurrence.ScheduledAmount ?? 0m));
-
-        return Math.Round(pending, 2, MidpointRounding.AwayFromZero);
+        return SavingsGoalPacing.PendingAmount(occurrences, fundingBucket);
     }
 
     private async Task<int> GetCycleDayAsync(CancellationToken cancellationToken)

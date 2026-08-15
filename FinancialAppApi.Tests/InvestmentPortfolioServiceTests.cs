@@ -216,11 +216,22 @@ public sealed class InvestmentPortfolioServiceTests
             AccountId = account.Id, Currency = "USD", Type = "Deposit",
             Amount = 1000, Date = today.AddDays(-365)
         });
-        context.InvestmentTransactions.Add(new InvestmentTransaction
-        {
-            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
-            Type = "Dividend", TradeDate = today, CashAmount = 100
-        });
+        context.InvestmentTransactions.AddRange(
+            new InvestmentTransaction
+            {
+                AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+                Type = "Buy", TradeDate = today.AddDays(-3), Units = 1, UnitPrice = 1, CashAmount = 1
+            },
+            new InvestmentTransaction
+            {
+                AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+                Type = "Dividend", TradeDate = today.AddDays(-2), CashAmount = 100
+            },
+            new InvestmentTransaction
+            {
+                AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+                Type = "Sell", TradeDate = today.AddDays(-1), Units = 1, UnitPrice = 1, CashAmount = 1
+            });
         await context.SaveChangesAsync();
 
         var shortRange = await NewService(context).GetPortfolioAsync("1m", CancellationToken.None);
@@ -244,16 +255,24 @@ public sealed class InvestmentPortfolioServiceTests
         context.InvestmentCashFlows.AddRange(
             new InvestmentCashFlow { AccountId = account.Id, Currency = "USD", Type = "Deposit", Amount = 100, Date = new DateOnly(2025, 1, 1) },
             new InvestmentCashFlow { AccountId = account.Id, Currency = "USD", Type = "Withdrawal", Amount = -30, Date = new DateOnly(2025, 2, 1) });
-        context.InvestmentTransactions.Add(new InvestmentTransaction
-        {
-            AccountId = account.Id,
-            InstrumentId = instrument.Id,
-            Instrument = instrument,
-            Type = "Dividend",
-            TradeDate = new DateOnly(2025, 3, 1),
-            CashAmount = 50,
-            Taxes = 5
-        });
+        // The round trip leaves no holding or cash effect, while giving the dividend a valid
+        // held-units history for the accounting lifecycle invariant.
+        context.InvestmentTransactions.AddRange(
+            new InvestmentTransaction
+            {
+                AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+                Type = "Buy", TradeDate = new DateOnly(2025, 2, 15), Units = 1, UnitPrice = 1, CashAmount = 1
+            },
+            new InvestmentTransaction
+            {
+                AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+                Type = "Dividend", TradeDate = new DateOnly(2025, 3, 1), CashAmount = 50, Taxes = 5
+            },
+            new InvestmentTransaction
+            {
+                AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+                Type = "Sell", TradeDate = new DateOnly(2025, 3, 15), Units = 1, UnitPrice = 1, CashAmount = 1
+            });
         await context.SaveChangesAsync();
 
         var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);

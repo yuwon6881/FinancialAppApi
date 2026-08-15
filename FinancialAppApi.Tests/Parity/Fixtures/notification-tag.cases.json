@@ -1,0 +1,53 @@
+{
+  "domain": "notification-tag",
+  "version": 1,
+  "cases": [
+    {
+      "id": "recurring-reminder-standard-tag",
+      "why": "A recurring payment reminder tag is deterministically composed of the payment id and occurrence date.",
+      "input": {
+        "kind": "recurring-payment",
+        "recurringPaymentId": "rec-netflix-1",
+        "occurrenceDate": "2026-08-15"
+      },
+      "expected": {
+        "tag": "recurring-reminder-rec-netflix-1-2026-08-15"
+      }
+    },
+    {
+      "id": "recurring-reminder-different-occurrence-same-payment",
+      "why": "Different occurrences of the same recurring payment yield distinct tags.",
+      "input": {
+        "kind": "recurring-payment",
+        "recurringPaymentId": "rec-netflix-1",
+        "occurrenceDate": "2026-09-15"
+      },
+      "expected": {
+        "tag": "recurring-reminder-rec-netflix-1-2026-09-15"
+      }
+    },
+    {
+      "id": "category-limit-cycle-tag",
+      "why": "Category limit alert tags are scoped to the cycle key alone to avoid stacking in the notification tray.",
+      "input": {
+        "kind": "category-limit",
+        "cycleKey": "2026-08",
+        "categoryName": "Food"
+      },
+      "expected": {
+        "tag": "category-limit-2026-08"
+      }
+    },
+    {
+      "id": "category-limit-summary-tag",
+      "why": "A multi-category summary alert produces the same cycle-scoped tag as a single-category crossing.",
+      "input": {
+        "kind": "category-limit",
+        "cycleKey": "2026-08"
+      },
+      "expected": {
+        "tag": "category-limit-2026-08"
+      }
+    }
+  ]
+}

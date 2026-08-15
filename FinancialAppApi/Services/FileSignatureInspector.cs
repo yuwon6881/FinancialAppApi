@@ -6,6 +6,15 @@ namespace FinancialAppApi.Services;
 /// </summary>
 public static class FileSignatureInspector
 {
+    private static readonly HashSet<string> SafeImageMimeTypes = new(StringComparer.Ordinal)
+    {
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/heic",
+        "image/heif",
+    };
+
     /// <summary>
     /// Inspects the leading bytes of a file and returns its MIME type, or null if unrecognised.
     /// </summary>
@@ -47,17 +56,26 @@ public static class FileSignatureInspector
             return "application/pdf";
         }
 
-        if (data.Length >= 5 && data[..5].SequenceEqual("<?xml"u8))
+        var firstContentIndex = 0;
+        if (data.Length >= 3 && data[..3].SequenceEqual("\uFEFF"u8))
+        {
+            firstContentIndex = 3;
+        }
+        while (firstContentIndex < data.Length && data[firstContentIndex] is 0x20 or 0x09 or 0x0A or 0x0D)
+        {
+            firstContentIndex++;
+        }
+
+        if (data[firstContentIndex..].StartsWith("<?xml"u8) ||
+            (data.Length > firstContentIndex && data[firstContentIndex] == (byte)'<'))
         {
             return "application/xml";
         }
 
-        for (int i = 0; i < data.Length; i++)
+        if (firstContentIndex < data.Length)
         {
-            var b = data[i];
-            if (b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0D) continue; // Skip whitespace
+            var b = data[firstContentIndex];
             if (b == '{' || b == '[') return "application/json";
-            break;
         }
 
         return null;
@@ -82,5 +100,6 @@ public static class FileSignatureInspector
     /// <summary>
     /// Returns true when the MIME type belongs to the image/* family.
     /// </summary>
-    public static bool IsImage(string mimeType) => mimeType.StartsWith("image/", StringComparison.Ordinal);
+    public static bool IsImage(string mimeType) =>
+        SafeImageMimeTypes.Contains(mimeType.Trim().ToLowerInvariant());
 }

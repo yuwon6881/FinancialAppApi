@@ -1,0 +1,78 @@
+{
+  "domain": "loan-term-schedule",
+  "version": 1,
+  "cases": [
+    {
+      "id": "monthly-loan-end-date",
+      "why": "A 12-period monthly loan starting on 2026-08-01 with dueDay 1 ends on 2027-07-01.",
+      "input": {
+        "kind": "endDate",
+        "loan": {
+          "trackingStartDate": "2026-08-01",
+          "scheduleFrequency": "Monthly",
+          "scheduleDueDay": 1,
+          "scheduleStartDate": "2026-08-01",
+          "scheduleStatus": "Complete",
+          "termPeriods": 12
+        }
+      },
+      "expected": {
+        "endDate": "2027-07-01"
+      }
+    },
+    {
+      "id": "monthly-loan-count-payments-through",
+      "why": "Counting payments through 2027-07-01 on a 1-year monthly cadence returns 12 payments.",
+      "input": {
+        "kind": "countThrough",
+        "loan": {
+          "trackingStartDate": "2026-08-01",
+          "scheduleFrequency": "Monthly",
+          "scheduleDueDay": 1,
+          "scheduleStartDate": "2026-08-01",
+          "scheduleStatus": "Complete"
+        },
+        "endDate": "2027-07-01"
+      },
+      "expected": {
+        "count": 12
+      }
+    },
+    {
+      "id": "annual-loan-end-date",
+      "why": "A 5-period annual loan starting on 2026-08-15 ends on 2030-08-15.",
+      "input": {
+        "kind": "endDate",
+        "loan": {
+          "trackingStartDate": "2026-08-15",
+          "scheduleFrequency": "Annually",
+          "scheduleDueDay": 15,
+          "scheduleStartDate": "2026-08-15",
+          "scheduleStatus": "Complete",
+          "termPeriods": 5
+        }
+      },
+      "expected": {
+        "endDate": "2030-08-15"
+      }
+    },
+    {
+      "id": "incomplete-schedule-status",
+      "why": "An incomplete schedule status returns null for endDate and count.",
+      "input": {
+        "kind": "endDate",
+        "loan": {
+          "trackingStartDate": "2026-08-01",
+          "scheduleFrequency": "Monthly",
+          "scheduleDueDay": 1,
+          "scheduleStartDate": "2026-08-01",
+          "scheduleStatus": "Incomplete",
+          "termPeriods": 12
+        }
+      },
+      "expected": {
+        "endDate": null
+      }
+    }
+  ]
+}

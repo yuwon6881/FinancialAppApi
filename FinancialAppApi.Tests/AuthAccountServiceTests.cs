@@ -294,6 +294,41 @@ public class AuthAccountServiceTests
     }
 
     [Fact]
+    public async Task EnableTotpAsync_RevokesOtherSessionsButKeepsTheCurrentSession()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedUser(context, "alice", "password123");
+        context.UserSessions.AddRange(
+            new UserSession
+            {
+                Token = "current-token",
+                Username = "alice",
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddDays(7)
+            },
+            new UserSession
+            {
+                Token = "other-token",
+                Username = "alice",
+                CreatedAt = DateTime.UtcNow.AddMinutes(-1),
+                ExpiresAt = DateTime.UtcNow.AddDays(7)
+            });
+        await context.SaveChangesAsync();
+
+        var service = NewService(context);
+        var setup = ResultBody(await service.SetupTotpAsync("alice"));
+        var secret = setup.GetProperty("secret").GetString()!;
+        var code = new Totp(Base32Encoding.ToBytes(secret)).ComputeTotp();
+
+        var result = await service.EnableTotpAsync("alice", code, "current-token");
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.Contains(context.UserSessions, session => session.Token == "current-token");
+        Assert.DoesNotContain(context.UserSessions, session => session.Token == "other-token");
+        Assert.True(context.AppUsers.Single().TotpEnabled);
+    }
+
+    [Fact]
     public async Task LoginAsync_SweepsAbandonedExpiredTwoFactorTokens()
     {
         await using var context = TestHelpers.NewInMemoryContext();

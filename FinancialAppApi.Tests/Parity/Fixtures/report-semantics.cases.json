@@ -1,0 +1,142 @@
+{
+  "domain": "report-semantics",
+  "version": 1,
+  "cases": [
+    {
+      "id": "ordinary-expense",
+      "why": "A normal negative expense is reportable outflow and not transfer/adjustment/income.",
+      "input": {
+        "amount": -45.0,
+        "category": "Food",
+        "ledgerCategory": "Essentials"
+      },
+      "expected": {
+        "isTransfer": false,
+        "isBalanceAdjustment": false,
+        "isReportableCashMovement": true,
+        "isReportableInflow": false,
+        "isReportableOutflow": true,
+        "isReportableIncome": false
+      }
+    },
+    {
+      "id": "ordinary-income",
+      "why": "A positive salary transaction with Income ledger category is reportable inflow and reportable income.",
+      "input": {
+        "amount": 3500.0,
+        "category": "Salary",
+        "ledgerCategory": "Income"
+      },
+      "expected": {
+        "isTransfer": false,
+        "isBalanceAdjustment": false,
+        "isReportableCashMovement": true,
+        "isReportableInflow": true,
+        "isReportableOutflow": false,
+        "isReportableIncome": true
+      }
+    },
+    {
+      "id": "income-split-parent",
+      "why": "An IncomeSplit transaction is reportable inflow and reportable income.",
+      "input": {
+        "amount": 4000.0,
+        "category": "Salary",
+        "ledgerCategory": "IncomeSplit:50,25,15,10"
+      },
+      "expected": {
+        "isTransfer": false,
+        "isBalanceAdjustment": false,
+        "isReportableCashMovement": true,
+        "isReportableInflow": true,
+        "isReportableOutflow": false,
+        "isReportableIncome": true
+      }
+    },
+    {
+      "id": "cross-bucket-transfer",
+      "why": "A Transfer:A->B transaction is marked as transfer and excluded from reportable cash movement.",
+      "input": {
+        "amount": 200.0,
+        "category": "Transfer",
+        "ledgerCategory": "Transfer:Essentials->Rewards"
+      },
+      "expected": {
+        "isTransfer": true,
+        "isBalanceAdjustment": false,
+        "isReportableCashMovement": false,
+        "isReportableInflow": false,
+        "isReportableOutflow": false,
+        "isReportableIncome": false
+      }
+    },
+    {
+      "id": "in-bucket-account-move",
+      "why": "An AccountMove transaction is marked as transfer and excluded from reportable cash movement.",
+      "input": {
+        "amount": 100.0,
+        "category": "Transfer",
+        "ledgerCategory": "AccountMove"
+      },
+      "expected": {
+        "isTransfer": true,
+        "isBalanceAdjustment": false,
+        "isReportableCashMovement": false,
+        "isReportableInflow": false,
+        "isReportableOutflow": false,
+        "isReportableIncome": false
+      }
+    },
+    {
+      "id": "balance-adjustment",
+      "why": "An adjustment category is a balance adjustment and excluded from reportable cash movement.",
+      "input": {
+        "amount": 50.0,
+        "category": "Adjustment",
+        "ledgerCategory": "Stability"
+      },
+      "expected": {
+        "isTransfer": false,
+        "isBalanceAdjustment": true,
+        "isReportableCashMovement": false,
+        "isReportableInflow": false,
+        "isReportableOutflow": false,
+        "isReportableIncome": false
+      }
+    },
+    {
+      "id": "discarded-row",
+      "why": "A discarded row is excluded from reportable cash movement.",
+      "input": {
+        "amount": 0.0,
+        "category": "Bills",
+        "ledgerCategory": "Discarded"
+      },
+      "expected": {
+        "isTransfer": false,
+        "isBalanceAdjustment": false,
+        "isReportableCashMovement": false,
+        "isReportableInflow": false,
+        "isReportableOutflow": false,
+        "isReportableIncome": false
+      }
+    },
+    {
+      "id": "zero-amount-row",
+      "why": "Zero amount is not a reportable cash movement.",
+      "input": {
+        "amount": 0.0,
+        "category": "General",
+        "ledgerCategory": "Essentials"
+      },
+      "expected": {
+        "isTransfer": false,
+        "isBalanceAdjustment": false,
+        "isReportableCashMovement": false,
+        "isReportableInflow": false,
+        "isReportableOutflow": false,
+        "isReportableIncome": false
+      }
+    }
+  ]
+}

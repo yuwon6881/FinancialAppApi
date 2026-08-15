@@ -1,0 +1,67 @@
+{
+  "cases": [
+    {
+      "id": "balanced-routine-and-cash",
+      "why": "Available broker cash is invested alongside the observed routine deposit.",
+      "input": {
+        "appCurrency": "USD",
+        "investedValue": 1000,
+        "values": { "USEquity": 340, "InternationalExUS": 330, "Bonds": 330 },
+        "targets": { "USEquity": 34, "InternationalExUS": 33, "Bonds": 33 },
+        "minimumNewMoney": 0,
+        "restoreTarget": false,
+        "routineContribution": 1000,
+        "cyclesObserved": 1,
+        "availableCash": 50
+      },
+      "expected": {
+        "amount": 1050,
+        "routineContribution": 1000,
+        "isEstimated": false,
+        "sleeves": { "USEquity": 357, "InternationalExUS": 346.5, "Bonds": 346.5 }
+      }
+    },
+    {
+      "id": "large-drift-raises-to-no-sale",
+      "why": "An off-target portfolio raises the contribution to the exact no-sale amount.",
+      "input": {
+        "appCurrency": "USD",
+        "investedValue": 1000,
+        "values": { "USEquity": 500, "InternationalExUS": 400, "Bonds": 100 },
+        "targets": { "USEquity": 34, "InternationalExUS": 33, "Bonds": 33 },
+        "minimumNewMoney": 470.5882352941,
+        "restoreTarget": true,
+        "routineContribution": 100,
+        "cyclesObserved": 1,
+        "availableCash": 370
+      },
+      "expected": {
+        "amount": 470.59,
+        "routineContribution": 100,
+        "isEstimated": false,
+        "sleeves": { "USEquity": 0, "InternationalExUS": 85.29, "Bonds": 385.3 }
+      }
+    },
+    {
+      "id": "recovery-cycle-depressed-routine",
+      "why": "A lower observed recovery-cycle contribution stays separate from one-off cash.",
+      "input": {
+        "appCurrency": "USD",
+        "investedValue": 1000,
+        "values": { "USEquity": 600, "InternationalExUS": 300, "Bonds": 100 },
+        "targets": { "USEquity": 60, "InternationalExUS": 30, "Bonds": 10 },
+        "minimumNewMoney": 0,
+        "restoreTarget": false,
+        "routineContribution": 25,
+        "cyclesObserved": 3,
+        "availableCash": 75
+      },
+      "expected": {
+        "amount": 100,
+        "routineContribution": 25,
+        "isEstimated": false,
+        "sleeves": { "USEquity": 60, "InternationalExUS": 30, "Bonds": 10 }
+      }
+    }
+  ]
+}

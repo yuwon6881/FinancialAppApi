@@ -130,6 +130,35 @@ public class RecurringOccurrenceLedgerServiceTests
         Assert.All(future, occurrence => Assert.Equal("acct-essentials-2", occurrence.AccountId));
     }
 
+    [Fact]
+    public async Task LegacyOccurrenceWithNullAccountId_PreservesStructure_AndFallsBackToParent()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var payment = Payment();
+        context.RecurringPayments.Add(payment);
+        context.RecurringPaymentOccurrences.Add(new RecurringPaymentOccurrence
+        {
+            Id = "occ-legacy",
+            RecurringPaymentId = payment.Id,
+            OccurrenceDate = new DateOnly(2026, 8, 5),
+            Name = "Legacy Occurrence",
+            Status = RecurringOccurrenceStatus.Pending,
+            AccountId = null, // legacy occurrence
+            UserId = TestHelpers.DefaultUserId,
+        });
+        await context.SaveChangesAsync();
+
+        var clock = ClockAt(2026, 8, 9);
+        var dates = new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
+        var ledger = new RecurringOccurrenceLedgerService(context, dates, clock);
+
+        var rows = await ledger.GetRangeAsync([payment], new DateOnly(2026, 8, 1), new DateOnly(2026, 8, 31));
+        var occ = Assert.Single(rows);
+        Assert.Equal("occ-legacy", occ.Id);
+        Assert.Null(occ.AccountId); // persisted row remains null until re-settled or re-materialised
+    }
+
+
     private static RecurringPayment Payment() => new()
     {
         Id = "rp-1", Name = "Original bill", Amount = 50m, Frequency = "Monthly",

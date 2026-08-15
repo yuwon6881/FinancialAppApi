@@ -111,7 +111,8 @@ public sealed class InvestmentsController(
     {
         var error = ValidateAccount(dto);
         if (error is not null) return BadRequest(new { message = error });
-        var account = await context.InvestmentAccounts.FindAsync([id], HttpContext.RequestAborted);
+        var account = await context.InvestmentAccounts
+            .SingleOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
         if (account is null) return NotFound();
         if (dto.IsArchived && !account.IsArchived)
         {
@@ -136,7 +137,8 @@ public sealed class InvestmentsController(
     [HttpPost("accounts/{id:guid}/archive")]
     public async Task<IActionResult> ArchiveAccount(Guid id)
     {
-        var account = await context.InvestmentAccounts.FindAsync([id], HttpContext.RequestAborted);
+        var account = await context.InvestmentAccounts
+            .SingleOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
         if (account is null) return NotFound();
         var reason = await AccountArchiveUnavailableReason(id);
         if (reason is not null) return Conflict(new { message = reason });
@@ -149,7 +151,8 @@ public sealed class InvestmentsController(
     [HttpDelete("accounts/{id:guid}")]
     public async Task<ActionResult<InvestmentAccount>> DeleteAccount(Guid id)
     {
-        var account = await context.InvestmentAccounts.FindAsync([id], HttpContext.RequestAborted);
+        var account = await context.InvestmentAccounts
+            .SingleOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
         if (account is null) return NotFound();
         if (await context.InvestmentTransactions.AnyAsync(value => value.AccountId == id, HttpContext.RequestAborted) ||
             await context.InvestmentCashFlows.AnyAsync(value => value.AccountId == id, HttpContext.RequestAborted))
@@ -197,7 +200,8 @@ public sealed class InvestmentsController(
     {
         var error = ValidateInstrument(dto);
         if (error is not null) return BadRequest(new { message = error });
-        var instrument = await context.InvestmentInstruments.FindAsync([id], HttpContext.RequestAborted);
+        var instrument = await context.InvestmentInstruments
+            .SingleOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
         if (instrument is null) return NotFound();
         if (dto.IsArchived && !instrument.IsArchived)
         {
@@ -236,7 +240,8 @@ public sealed class InvestmentsController(
     [HttpDelete("instruments/{id:guid}")]
     public async Task<ActionResult<InvestmentInstrument>> DeleteInstrument(Guid id)
     {
-        var instrument = await context.InvestmentInstruments.FindAsync([id], HttpContext.RequestAborted);
+        var instrument = await context.InvestmentInstruments
+            .SingleOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
         if (instrument is null) return NotFound();
         if (await context.InvestmentTransactions.AnyAsync(value => value.InstrumentId == id, HttpContext.RequestAborted))
             return Conflict(new { message = "Investments with activity cannot be deleted. Archive this investment after closing all units." });
@@ -400,7 +405,8 @@ public sealed class InvestmentsController(
     [HttpDelete("cash-flows/{id:guid}")]
     public async Task<ActionResult<InvestmentCashFlowDto>> DeleteCashFlow(Guid id)
     {
-        var flow = await context.InvestmentCashFlows.FindAsync([id], HttpContext.RequestAborted);
+        var flow = await context.InvestmentCashFlows
+            .SingleOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
         if (flow is null) return NotFound();
         var snapshot = InvestmentPortfolioService.ToDto(flow);
         context.InvestmentCashFlows.Remove(flow);
@@ -471,7 +477,8 @@ public sealed class InvestmentsController(
     {
         if (!InvestmentKinds.CashFlowTypes.Contains(dto.Type))
             return (null, "Cash flow type must be Deposit, Withdrawal, or Conversion.");
-        var account = await context.InvestmentAccounts.FindAsync([dto.AccountId], HttpContext.RequestAborted);
+        var account = await context.InvestmentAccounts
+            .SingleOrDefaultAsync(value => value.Id == dto.AccountId, HttpContext.RequestAborted);
         if (account is null || account.IsArchived) return (null, "Select an active investment account.");
         if (!ValidCurrency(dto.Currency)) return (null, "Select a supported currency from the list.");
         if (dto.Amount <= 0) return (null, "Enter a positive amount.");
@@ -520,9 +527,11 @@ public sealed class InvestmentsController(
     {
         if (!InvestmentKinds.TransactionTypes.Contains(dto.Type))
             return (null, "Unsupported transaction type.");
-        var account = await context.InvestmentAccounts.FindAsync([dto.AccountId], HttpContext.RequestAborted);
+        var account = await context.InvestmentAccounts
+            .SingleOrDefaultAsync(value => value.Id == dto.AccountId, HttpContext.RequestAborted);
         if (account is null || account.IsArchived) return (null, "Select an active investment account.");
-        var instrument = await context.InvestmentInstruments.FindAsync([dto.InstrumentId], HttpContext.RequestAborted);
+        var instrument = await context.InvestmentInstruments
+            .SingleOrDefaultAsync(value => value.Id == dto.InstrumentId, HttpContext.RequestAborted);
         if (instrument is null || instrument.IsArchived) return (null, "Select an active investment.");
         if (dto.TradeDate == default || dto.TradeDate > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)))
             return (null, "Enter a valid trade date.");

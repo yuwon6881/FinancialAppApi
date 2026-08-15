@@ -277,6 +277,51 @@ public class SavingsGoalPacingTests
         Assert.Equal(0m, SavingsGoalPacing.Unassigned(-50m, 0m));
     }
 
+    [Fact]
+    public void Unassigned_IncludesMoneyAlreadyFreeInThePool()
+    {
+        // A 1,000 goal due over two cycles is reachable when 5,000 is already free. The pace
+        // warning must not look only at future inflow and call this shortfall unreachable.
+        Assert.Equal(5000m, SavingsGoalPacing.Unassigned(5000m, 0m));
+    }
+
+    [Fact]
+    public void PendingAmount_MatchesOnlyPendingOccurrencesByLedgerBucket()
+    {
+        var pendingRewards = new RecurringPaymentOccurrence
+        {
+            Id = "rewards",
+            RecurringPaymentId = "payment-1",
+            Name = "Rewards bill",
+            Status = RecurringOccurrenceStatus.Pending,
+            LedgerCategory = "rewards",
+            Category = "Rewards",
+            ScheduledAmount = -150m,
+        };
+        var paidRewards = new RecurringPaymentOccurrence
+        {
+            Id = "paid",
+            RecurringPaymentId = "payment-2",
+            Name = "Paid bill",
+            Status = RecurringOccurrenceStatus.Paid,
+            LedgerCategory = "Rewards",
+            ScheduledAmount = 90m,
+        };
+        var pendingEssentials = new RecurringPaymentOccurrence
+        {
+            Id = "essentials",
+            RecurringPaymentId = "payment-3",
+            Name = "Essentials bill",
+            Status = RecurringOccurrenceStatus.Pending,
+            LedgerCategory = "Essentials",
+            ScheduledAmount = 40m,
+        };
+
+        Assert.Equal(150m, SavingsGoalPacing.PendingAmount(
+            [pendingRewards, paidRewards, pendingEssentials],
+            SavingsGoalFundingBucket.Rewards));
+    }
+
     private static SavingsGoal NewGoal(
         decimal target,
         DateOnly targetDate,

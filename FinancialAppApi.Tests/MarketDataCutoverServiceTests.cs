@@ -41,6 +41,86 @@ public sealed class MarketDataCutoverServiceTests
         Assert.Single(context.MarketPriceBars);
     }
 
+    [Fact]
+    public async Task ReadinessRefusesPortfolioDifferencesAboveTolerance()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "USD" });
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var instrument = new InvestmentInstrument
+        {
+            Symbol = "VOO", Name = "Fund", Type = "ETF", Currency = "USD"
+        };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id,
+            InstrumentId = instrument.Id,
+            Instrument = instrument,
+            Type = "Buy",
+            TradeDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-2)),
+            Units = 1,
+            UnitPrice = 100,
+            CashAmount = 100
+        });
+        context.InvestmentInstrumentMarketMappings.AddRange(
+            new InvestmentInstrumentMarketMapping
+            {
+                InvestmentInstrumentId = instrument.Id,
+                InvestmentInstrument = instrument,
+                ProviderId = "active",
+                ExternalInstrumentId = "active-voo",
+                DisplaySymbol = "VOO"
+            },
+            new InvestmentInstrumentMarketMapping
+            {
+                InvestmentInstrumentId = instrument.Id,
+                InvestmentInstrument = instrument,
+                ProviderId = "candidate",
+                ExternalInstrumentId = "candidate-voo",
+                DisplaySymbol = "VOO"
+            });
+        context.MarketPriceBars.AddRange(
+            Bar("active", "active-voo", 100),
+            Bar("candidate", "candidate-voo", 110));
+        await context.SaveChangesAsync();
+
+        var options = Options.Create(new MarketDataOptions
+        {
+            ActiveProvider = "active",
+            CutoverTolerancePercent = 2,
+            FreshnessMinutes = 60
+        });
+        var registry = new MarketDataProviderRegistry(
+            [
+                new MarketDataProviderRegistration(new ComparisonProvider("active")),
+                new MarketDataProviderRegistration(new ComparisonProvider("candidate"))
+            ], options);
+        var report = await new MarketDataCutoverService(
+            context,
+            registry,
+            options,
+            NullLogger<MarketDataCutoverService>.Instance)
+            .ValidateAsync("candidate", approveDifferences: false, CancellationToken.None);
+
+        Assert.Equal(1, report.PortfoliosCompared);
+        Assert.Equal(1, report.PortfolioDifferencesAboveTolerance);
+        Assert.False(report.Ready);
+        Assert.False(report.DifferencesApproved);
+    }
+
+    private static MarketPriceBar Bar(string provider, string externalId, decimal close) => new()
+    {
+        Provider = provider,
+        ExternalInstrumentId = externalId,
+        Symbol = "VOO",
+        MarketDate = DateOnly.FromDateTime(DateTime.UtcNow),
+        Close = close,
+        FetchedAt = DateTime.UtcNow
+    };
+
     private sealed class StubProvider : IMarketDataProvider
     {
         public MarketDataProviderDescriptor Descriptor => new(
@@ -62,6 +142,26 @@ public sealed class MarketDataCutoverServiceTests
         public Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(
             string baseCurrency, string quoteCurrency, DateOnly startDate, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<ProviderFxBar>>([new ProviderFxBar(startDate, 1m)]);
+
+        public MarketInstrumentReference? TryResolveLegacyReference(string? symbol, string? mic) => null;
+    }
+
+    private sealed class ComparisonProvider(string id) : IMarketDataProvider
+    {
+        public MarketDataProviderDescriptor Descriptor => new(
+            id, id, true, MarketDataCapabilities.RequiredForActivation,
+            new MarketDataQuotaPolicy(10, 100, 100));
+
+        public Task<IReadOnlyList<InstrumentSearchResult>> SearchAsync(string query, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<InstrumentSearchResult>>([]);
+
+        public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(
+            MarketInstrumentReference instrument, DateOnly startDate, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<ProviderPriceBar>>([]);
+
+        public Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(
+            string baseCurrency, string quoteCurrency, DateOnly startDate, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<ProviderFxBar>>([]);
 
         public MarketInstrumentReference? TryResolveLegacyReference(string? symbol, string? mic) => null;
     }

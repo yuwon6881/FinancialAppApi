@@ -1,0 +1,135 @@
+{
+  "domain": "income-split-projection",
+  "version": 1,
+  "cases": [
+    {
+      "id": "four-way-split-with-accounts",
+      "why": "A standard salary row with encoded split generates 4 transfer child rows with largest remainder cents and assigned accounts.",
+      "input": {
+        "transaction": {
+          "id": "tx-salary-1",
+          "date": "2026-08-15",
+          "postedAt": "2026-08-15T08:00:00.000Z",
+          "description": "August Salary",
+          "ledgerCategory": "IncomeSplit:50,25,15,10",
+          "amount": 3500.0,
+          "stabilityRecoveryTopUpAmount": null,
+          "splitAccountIds": {
+            "Essentials": "acct-essentials",
+            "Growth": "acct-growth",
+            "Stability": "acct-stability",
+            "Rewards": "acct-rewards"
+          }
+        },
+        "allocations": {
+          "essentialsAlloc": 0.5,
+          "growthAlloc": 0.25,
+          "stabilityAlloc": 0.15,
+          "rewardsAlloc": 0.1
+        }
+      },
+      "expected": [
+        {
+          "id": "tx-salary-1-split-Essentials",
+          "description": "[Split: Essentials] August Salary",
+          "category": "Transfer",
+          "ledgerCategory": "Transfer:Income->Essentials",
+          "amount": 1750.0,
+          "accountId": "acct-essentials"
+        },
+        {
+          "id": "tx-salary-1-split-Growth",
+          "description": "[Split: Growth] August Salary",
+          "category": "Transfer",
+          "ledgerCategory": "Transfer:Income->Growth",
+          "amount": 875.0,
+          "accountId": "acct-growth"
+        },
+        {
+          "id": "tx-salary-1-split-Stability",
+          "description": "[Split: Stability] August Salary",
+          "category": "Transfer",
+          "ledgerCategory": "Transfer:Income->Stability",
+          "amount": 525.0,
+          "accountId": "acct-stability"
+        },
+        {
+          "id": "tx-salary-1-split-Rewards",
+          "description": "[Split: Rewards] August Salary",
+          "category": "Transfer",
+          "ledgerCategory": "Transfer:Income->Rewards",
+          "amount": 350.0,
+          "accountId": "acct-rewards"
+        }
+      ]
+    },
+    {
+      "id": "zero-share-bucket-omitted",
+      "why": "A bucket with 0% allocation produces no generated split row.",
+      "input": {
+        "transaction": {
+          "id": "tx-salary-2",
+          "date": "2026-08-15",
+          "postedAt": "2026-08-15T08:00:00.000Z",
+          "description": "Bonus",
+          "ledgerCategory": "IncomeSplit:50,50,0,0",
+          "amount": 1000.0,
+          "stabilityRecoveryTopUpAmount": null,
+          "splitAccountIds": {
+            "Essentials": "acct-essentials",
+            "Growth": "acct-growth",
+            "Stability": "acct-stability",
+            "Rewards": "acct-rewards"
+          }
+        },
+        "allocations": {
+          "essentialsAlloc": 0.5,
+          "growthAlloc": 0.5,
+          "stabilityAlloc": 0.0,
+          "rewardsAlloc": 0.0
+        }
+      },
+      "expected": [
+        {
+          "id": "tx-salary-2-split-Essentials",
+          "description": "[Split: Essentials] Bonus",
+          "category": "Transfer",
+          "ledgerCategory": "Transfer:Income->Essentials",
+          "amount": 500.0,
+          "accountId": "acct-essentials"
+        },
+        {
+          "id": "tx-salary-2-split-Growth",
+          "description": "[Split: Growth] Bonus",
+          "category": "Transfer",
+          "ledgerCategory": "Transfer:Income->Growth",
+          "amount": 500.0,
+          "accountId": "acct-growth"
+        }
+      ]
+    },
+    {
+      "id": "expense-produces-no-split-rows",
+      "why": "An expense (negative amount) never generates split rows.",
+      "input": {
+        "transaction": {
+          "id": "tx-expense",
+          "date": "2026-08-15",
+          "postedAt": "2026-08-15T08:00:00.000Z",
+          "description": "Shopping",
+          "ledgerCategory": "Essentials",
+          "amount": -100.0,
+          "stabilityRecoveryTopUpAmount": null,
+          "splitAccountIds": null
+        },
+        "allocations": {
+          "essentialsAlloc": 0.5,
+          "growthAlloc": 0.25,
+          "stabilityAlloc": 0.15,
+          "rewardsAlloc": 0.1
+        }
+      },
+      "expected": []
+    }
+  ]
+}

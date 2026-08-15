@@ -1,0 +1,193 @@
+{
+  "domain": "account-attribution",
+  "version": 1,
+  "cases": [
+    {
+      "id": "ordinary-bucket-leg",
+      "why": "An ordinary bucket transaction is attributed to its designated account.",
+      "input": {
+        "transaction": {
+          "amount": -50.0,
+          "ledgerCategory": "Essentials",
+          "accountId": "acct-essentials",
+          "counterAccountId": null
+        },
+        "account": {
+          "id": "acct-essentials",
+          "bucket": "Essentials"
+        },
+        "accounts": [
+          { "id": "acct-essentials", "bucket": "Essentials" },
+          { "id": "acct-cash", "bucket": "Essentials" }
+        ]
+      },
+      "expected": -50.0
+    },
+    {
+      "id": "ordinary-bucket-leg-unmatched-account",
+      "why": "An ordinary bucket transaction does not affect other accounts in the same bucket.",
+      "input": {
+        "transaction": {
+          "amount": -50.0,
+          "ledgerCategory": "Essentials",
+          "accountId": "acct-essentials",
+          "counterAccountId": null
+        },
+        "account": {
+          "id": "acct-cash",
+          "bucket": "Essentials"
+        },
+        "accounts": [
+          { "id": "acct-essentials", "bucket": "Essentials" },
+          { "id": "acct-cash", "bucket": "Essentials" }
+        ]
+      },
+      "expected": 0.0
+    },
+    {
+      "id": "account-move-source",
+      "why": "An AccountMove subtracts from the source account.",
+      "input": {
+        "transaction": {
+          "amount": 40.0,
+          "ledgerCategory": "AccountMove",
+          "accountId": "acct-bank",
+          "counterAccountId": "acct-cash"
+        },
+        "account": {
+          "id": "acct-bank",
+          "bucket": "Essentials"
+        },
+        "accounts": [
+          { "id": "acct-bank", "bucket": "Essentials" },
+          { "id": "acct-cash", "bucket": "Essentials" }
+        ]
+      },
+      "expected": -40.0
+    },
+    {
+      "id": "account-move-destination",
+      "why": "An AccountMove adds to the destination counter-account.",
+      "input": {
+        "transaction": {
+          "amount": 40.0,
+          "ledgerCategory": "AccountMove",
+          "accountId": "acct-bank",
+          "counterAccountId": "acct-cash"
+        },
+        "account": {
+          "id": "acct-cash",
+          "bucket": "Essentials"
+        },
+        "accounts": [
+          { "id": "acct-bank", "bucket": "Essentials" },
+          { "id": "acct-cash", "bucket": "Essentials" }
+        ]
+      },
+      "expected": 40.0
+    },
+    {
+      "id": "income-split-child",
+      "why": "A generated IncomeSplit child contributes to its assigned account in that bucket.",
+      "input": {
+        "transaction": {
+          "amount": 500.0,
+          "ledgerCategory": "Stability",
+          "accountId": "acct-stability",
+          "counterAccountId": null
+        },
+        "account": {
+          "id": "acct-stability",
+          "bucket": "Stability"
+        },
+        "accounts": [
+          { "id": "acct-stability", "bucket": "Stability" }
+        ]
+      },
+      "expected": 500.0
+    },
+    {
+      "id": "transfer-source-account",
+      "why": "The source side of a cross-bucket transfer reduces the source account balance.",
+      "input": {
+        "transaction": {
+          "amount": 100.0,
+          "ledgerCategory": "Transfer:Essentials->Rewards",
+          "accountId": "acct-essentials",
+          "counterAccountId": "acct-rewards"
+        },
+        "account": {
+          "id": "acct-essentials",
+          "bucket": "Essentials"
+        },
+        "accounts": [
+          { "id": "acct-essentials", "bucket": "Essentials" },
+          { "id": "acct-rewards", "bucket": "Rewards" }
+        ]
+      },
+      "expected": -100.0
+    },
+    {
+      "id": "transfer-target-account",
+      "why": "The target side of a cross-bucket transfer increases the destination account balance.",
+      "input": {
+        "transaction": {
+          "amount": 100.0,
+          "ledgerCategory": "Transfer:Essentials->Rewards",
+          "accountId": "acct-essentials",
+          "counterAccountId": "acct-rewards"
+        },
+        "account": {
+          "id": "acct-rewards",
+          "bucket": "Rewards"
+        },
+        "accounts": [
+          { "id": "acct-essentials", "bucket": "Essentials" },
+          { "id": "acct-rewards", "bucket": "Rewards" }
+        ]
+      },
+      "expected": 100.0
+    },
+    {
+      "id": "opening-balance-row",
+      "why": "An opening balance adjustment is placed into the designated account.",
+      "input": {
+        "transaction": {
+          "amount": 250.0,
+          "ledgerCategory": "Growth",
+          "accountId": "acct-broker",
+          "counterAccountId": null
+        },
+        "account": {
+          "id": "acct-broker",
+          "bucket": "Growth"
+        },
+        "accounts": [
+          { "id": "acct-broker", "bucket": "Growth" }
+        ]
+      },
+      "expected": 250.0
+    },
+    {
+      "id": "archived-account-history",
+      "why": "Transactions tied to an archived account still attribute to that account in historical replay.",
+      "input": {
+        "transaction": {
+          "amount": -30.0,
+          "ledgerCategory": "Rewards",
+          "accountId": "acct-old-wallet",
+          "counterAccountId": null
+        },
+        "account": {
+          "id": "acct-old-wallet",
+          "bucket": "Rewards"
+        },
+        "accounts": [
+          { "id": "acct-old-wallet", "bucket": "Rewards" },
+          { "id": "acct-new-wallet", "bucket": "Rewards" }
+        ]
+      },
+      "expected": -30.0
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "domain": "constants",
+  "version": 1,
+  "sets": {
+    "LoanInterestMethod": ["ReducingBalance", "ReducingBalanceDaily", "Flat", "InterestOnly"],
+    "LoanRateBasis": ["Yearly", "Monthly"],
+    "RecurringPaymentMode": ["AutoDeduct", "Manual"],
+    "CategoryFlowType": ["both", "inflow", "outflow"],
+    "SavingsGoalStatus": ["active", "completed"],
+    "StabilityReloadIntent": ["Unanswered", "Required", "NotRequired"],
+    "StabilityOverflowRedirect": [
+      "Essentials 100%",
+      "Growth 100%",
+      "Rewards 100%",
+      "Split: Essentials 50%, Growth 50%",
+      "Split: Essentials 50%, Rewards 50%",
+      "Split: Growth 50%, Rewards 50%"
+    ],
+    "FundingBucket": ["Essentials", "Rewards"],
+    "LedgerBucket": ["Essentials", "Growth", "Stability", "Rewards"],
+    "PushChannel": ["billReminders", "categoryAlerts"],
+    "InvestmentChartRange": ["1m", "3m", "6m", "1y", "3y", "5y", "all"]
+  }
+}

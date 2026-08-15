@@ -1,0 +1,107 @@
+{
+  "domain": "loan-replay",
+  "version": 1,
+  "cases": [
+    {
+      "id": "fresh-flat-loan-no-payments",
+      "why": "A newly added loan with no payments has outstanding balance equal to opening principal and full future schedule.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 1200.0,
+          "annualRatePercent": 10.0,
+          "termPeriods": 12,
+          "interestMethod": "Flat",
+          "trackingStartDate": "2026-08-01",
+          "scheduleFrequency": "Monthly",
+          "scheduleDueDay": 1,
+          "scheduleStartDate": "2026-08-01",
+          "scheduleStatus": "Complete"
+        },
+        "inputs": []
+      },
+      "expected": {
+        "outstandingBalance": 1200.0,
+        "scheduledPayment": 110.0,
+        "totalScheduledInterest": 120.0,
+        "totalInterestPaid": 0.0,
+        "payoffDate": "2027-07-01",
+        "lastOccurrenceDate": null,
+        "paymentCount": 0,
+        "futureScheduleCount": 12
+      }
+    },
+    {
+      "id": "partially-paid-reducing-balance",
+      "why": "A loan with 2 payments made replays the payment splits, updates outstanding balance and schedules remaining periods.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 600.0,
+          "annualRatePercent": 0.0,
+          "termPeriods": 6,
+          "interestMethod": "ReducingBalance",
+          "trackingStartDate": "2026-08-01",
+          "scheduleFrequency": "Monthly",
+          "scheduleDueDay": 1,
+          "scheduleStartDate": "2026-08-01",
+          "scheduleStatus": "Complete"
+        },
+        "inputs": [
+          {
+            "occurrenceDate": "2026-08-01",
+            "amount": 100.0,
+            "isDiscarded": false
+          },
+          {
+            "occurrenceDate": "2026-09-01",
+            "amount": 100.0,
+            "isDiscarded": false
+          }
+        ]
+      },
+      "expected": {
+        "outstandingBalance": 400.0,
+        "scheduledPayment": 100.0,
+        "totalScheduledInterest": 0.0,
+        "totalInterestPaid": 0.0,
+        "payoffDate": "2027-01-01",
+        "lastOccurrenceDate": "2026-09-01",
+        "paymentCount": 2,
+        "futureScheduleCount": 4
+      }
+    },
+    {
+      "id": "early-payoff-lump-sum",
+      "why": "A lump-sum payment that clears the outstanding balance leaves futureSchedule empty and sets payoffDate.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 1000.0,
+          "annualRatePercent": 0.0,
+          "termPeriods": 10,
+          "interestMethod": "ReducingBalance",
+          "trackingStartDate": "2026-08-01",
+          "scheduleFrequency": "Monthly",
+          "scheduleDueDay": 1,
+          "scheduleStartDate": "2026-08-01",
+          "scheduleStatus": "Complete"
+        },
+        "inputs": [
+          {
+            "occurrenceDate": "2026-08-01",
+            "amount": 1000.0,
+            "isDiscarded": false
+          }
+        ]
+      },
+      "expected": {
+        "outstandingBalance": 0.0,
+        "scheduledPayment": 100.0,
+        "totalScheduledInterest": 0.0,
+        "totalInterestPaid": 0.0,
+        "payoffDate": "2026-08-01",
+        "lastOccurrenceDate": "2026-08-01",
+        "paymentCount": 1,
+        "futureScheduleCount": 0
+      }
+    }
+  ]
+}

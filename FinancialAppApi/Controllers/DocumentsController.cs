@@ -221,8 +221,13 @@ public class DocumentsController : ControllerBase
         // Nothing is lost — the preview sheet fetches XML/JSON itself and renders them as escaped
         // text, so it never depended on the browser opening them. The filename stays exposed either
         // way for the download helper, which reads Content-Disposition before saving the file.
-        var isViewable = FileSignatureInspector.IsImage(document.ContentType) || document.ContentType == "application/pdf";
-        var safeFileName = document.FileName.Replace("\"", string.Empty, StringComparison.Ordinal);
+        var normalizedContentType = document.ContentType.Trim().ToLowerInvariant();
+        var isViewable = FileSignatureInspector.IsImage(normalizedContentType) || normalizedContentType == "application/pdf";
+        // OriginalFileName is user-controlled and legacy rows predate the current upload checks.
+        // Keep the encoded filename useful for downloads, but never copy controls or quotes into
+        // the fallback filename parameter where they could split the response header.
+        var safeFileName = string.Concat(document.FileName.Select(character =>
+            char.IsControl(character) || character == '"' ? '_' : character));
         var disposition = isViewable ? "inline" : "attachment";
         Response.Headers.ContentDisposition = $"{disposition}; filename=\"{safeFileName}\"; filename*=UTF-8''{Uri.EscapeDataString(document.FileName)}";
         return File(data, document.ContentType, enableRangeProcessing: true);
