@@ -14,9 +14,11 @@ public sealed partial class LedgerAccountService
             return new(LedgerAccountMutationStatus.Invalid, "Choose a valid ledger bucket.");
         if (string.IsNullOrWhiteSpace(request.OperationId) || request.OperationId.Trim().Length > 80)
             return new(LedgerAccountMutationStatus.Invalid, "The reconciliation operation id is invalid.");
+        if (request.Description?.Trim().Length > 100)
+            return new(LedgerAccountMutationStatus.Invalid, "The balance adjustment description is too long.");
         if (request.Targets is null || request.Targets.Count == 0)
             return new(LedgerAccountMutationStatus.Invalid, "At least one account target is required.");
-        if (request.Targets.Any(target => !LedgerAccountKind.IsValid(target.Kind)))
+        if (request.Targets.Any(target => target.Kind is not null && !LedgerAccountKind.IsValid(target.Kind)))
             return new(LedgerAccountMutationStatus.Invalid, "Choose a valid account kind for every row.");
         if (request.Targets.Any(target => target.InterestFrequency is not null
                 && !LedgerAccountInterestFrequency.IsValid(target.InterestFrequency)))
@@ -37,7 +39,7 @@ public sealed partial class LedgerAccountService
             {
                 Id = string.IsNullOrWhiteSpace(target.Id) ? null : target.Id.Trim(),
                 Name = target.Name.Trim(),
-                Kind = LedgerAccountKind.Normalize(target.Kind),
+                Kind = target.Kind is null ? null : LedgerAccountKind.Normalize(target.Kind),
                 ExpectedCurrent = RoundMoney(target.ExpectedCurrent),
                 Target = RoundMoney(target.Target),
                 InterestRatePercent = target.InterestRatePercent is null
@@ -125,7 +127,7 @@ public sealed partial class LedgerAccountService
                             Id = target.Id ?? $"acct-{Guid.NewGuid():N}",
                             Name = target.Name,
                             Bucket = bucket,
-                            Kind = target.Kind,
+                            Kind = target.Kind ?? LedgerAccountKind.Other,
                             InterestEnabled = interest.Enabled,
                             InterestRatePercent = interest.RatePercent,
                             InterestFrequency = interest.Frequency,
@@ -153,7 +155,7 @@ public sealed partial class LedgerAccountService
                                 return await ConflictAsync(databaseTransaction, "Every bucket needs one open account. Add another before closing this one.");
                         }
                         account.Name = target.Name;
-                        account.Kind = target.Kind;
+                        if (target.Kind is not null) account.Kind = target.Kind;
                         account.IsArchived = target.IsArchived;
                         if (target.InterestEnabled.HasValue
                             || target.InterestRatePercent.HasValue
@@ -201,63 +203,23 @@ public sealed partial class LedgerAccountService
                 foreach (var target in resolvedTargets.Where(target => !balances.ContainsKey(target.Id!)))
                     working[target.Id!] = 0m;
 
-                var targetTotal = RoundMoney(resolvedTargets.Sum(target => target.Target));
-                var bucketDelta = RoundMoney(targetTotal - actualBucketTotal);
                 var createdTransactions = new List<LedgerAccountReconcileTransaction>();
-                if (!NearlyEqual(bucketDelta, 0m))
+                var adjustmentIndex = 0;
+                foreach (var target in resolvedTargets)
                 {
-                    var adjustmentAccountId = request.AdjustmentAccountId?.Trim();
-                    var adjustmentAccount = adjustmentAccountId is null
-                        ? null
-                        : bucketAccounts.FirstOrDefault(account => account.Id == adjustmentAccountId);
-                    if (adjustmentAccount is null || adjustmentAccount.IsArchived)
-                        return await ConflictAsync(databaseTransaction, "Choose an open account in this bucket for the total correction.");
-                    var id = $"reconcile-{operationKey}-adjustment";
+                    var difference = RoundMoney(target.Target - working.GetValueOrDefault(target.Id!));
+                    if (NearlyEqual(difference, 0m)) continue;
+
                     var adjustment = await AddOrGetAdjustmentAsync(
-                        id,
+                        $"reconcile-{operationKey}-adjustment-{adjustmentIndex++}",
                         bucket,
-                        bucketDelta,
-                        adjustmentAccount.Id,
+                        request.Description,
+                        target.Name,
+                        difference,
+                        target.Id!,
                         cancellationToken);
                     createdTransactions.Add(adjustment);
-                    working[adjustmentAccount.Id] = RoundMoney(working.GetValueOrDefault(adjustmentAccount.Id) + bucketDelta);
-                }
-
-                var differences = resolvedTargets
-                    .Select(target => new
-                    {
-                        AccountId = target.Id!,
-                        Difference = RoundMoney(target.Target - working.GetValueOrDefault(target.Id!)),
-                    })
-                    .Where(item => !NearlyEqual(item.Difference, 0m))
-                    .ToList();
-                var sourceRemaining = differences
-                    .Where(item => item.Difference < 0m)
-                    .ToDictionary(item => item.AccountId, item => item.Difference, StringComparer.Ordinal);
-                var destinations = differences.Where(item => item.Difference > 0m).ToList();
-                var moveIndex = 0;
-                foreach (var destination in destinations)
-                {
-                    var remaining = destination.Difference;
-                    foreach (var sourceId in sourceRemaining.Keys.ToList())
-                    {
-                        var available = Math.Abs(sourceRemaining[sourceId]);
-                        var amount = RoundMoney(Math.Min(remaining, available));
-                        if (amount <= 0m) continue;
-                        var id = $"reconcile-{operationKey}-move-{moveIndex++}";
-                        var move = await AddOrGetAccountMoveAsync(
-                            id,
-                            amount,
-                            sourceId,
-                            destination.AccountId,
-                            cancellationToken);
-                        createdTransactions.Add(move);
-                        remaining = RoundMoney(remaining - amount);
-                        sourceRemaining[sourceId] = RoundMoney(sourceRemaining[sourceId] + amount);
-                        if (NearlyEqual(remaining, 0m)) break;
-                    }
-                    if (!NearlyEqual(remaining, 0m))
-                        return await ConflictAsync(databaseTransaction, "The requested account amounts cannot be reconciled.");
+                    working[target.Id!] = RoundMoney(working.GetValueOrDefault(target.Id!) + difference);
                 }
 
                 await _context.SaveChangesAsync(cancellationToken);

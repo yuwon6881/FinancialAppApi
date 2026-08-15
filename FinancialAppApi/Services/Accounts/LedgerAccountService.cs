@@ -32,7 +32,7 @@ public sealed record LedgerAccountMutationResult(
 public sealed record LedgerAccountReconcileTarget(
     string? Id,
     string Name,
-    string Kind,
+    string? Kind,
     bool IsArchived,
     decimal ExpectedCurrent,
     decimal Target,
@@ -45,7 +45,8 @@ public sealed record LedgerAccountReconcileRequest(
     string Bucket,
     decimal ExpectedBucketTotal,
     string? AdjustmentAccountId,
-    IReadOnlyList<LedgerAccountReconcileTarget> Targets);
+    IReadOnlyList<LedgerAccountReconcileTarget> Targets,
+    string? Description = null);
 
 public sealed record LedgerAccountReconcileTransaction(
     string Id,
@@ -55,7 +56,9 @@ public sealed record LedgerAccountReconcileTransaction(
     string LedgerCategory,
     decimal Amount,
     string? AccountId,
-    string? CounterAccountId);
+    string? CounterAccountId,
+    bool IsAccountBalanceAdjustment = false,
+    string? StabilityReloadIntent = null);
 
 public sealed record LedgerAccountReconcileResult(
     LedgerAccountMutationStatus Status,
@@ -201,8 +204,9 @@ public sealed partial class LedgerAccountService
                 LedgerCategory = account.Bucket,
                 Amount = Math.Round(mutation.OpeningAmount, 2, MidpointRounding.AwayFromZero),
                 ExcludeFromAutocomplete = true,
+                IsAccountBalanceAdjustment = true,
                 AccountId = account.Id,
-                StabilityReloadIntent = StabilityReloadIntent.Unanswered,
+                StabilityReloadIntent = StabilityReloadIntent.NotRequired,
             });
         }
 

@@ -76,7 +76,7 @@ public class LedgerAccountServiceTests
         Assert.Equal(LedgerAccountMutationStatus.Success, first.Status);
         Assert.Equal(LedgerAccountMutationStatus.Success, repeated.Status);
         var adjustment = Assert.Single(first.Transactions!);
-        Assert.Equal("reconcile-setup-1-adjustment", adjustment.Id);
+        Assert.Equal("reconcile-setup-1-adjustment-0", adjustment.Id);
         Assert.Equal(adjustment, Assert.Single(repeated.Transactions!));
         Assert.Single(context.Transactions.Where(transaction => transaction.Id == adjustment.Id));
     }

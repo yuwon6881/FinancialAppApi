@@ -4,13 +4,12 @@
   "cases": [
     {
       "id": "pure-redistribution",
-      "why": "When target balances sum to the expected bucket total, only AccountMove transfers are generated.",
+      "why": "Every changed account receives its own visible balance adjustment row, even when the bucket total is unchanged.",
       "input": {
         "operationId": "test-redistrib",
         "createdAt": 1755225600000,
         "bucket": "Essentials",
         "expectedBucketTotal": 100.0,
-        "adjustmentAccountId": null,
         "targets": [
           { "id": "acct-1", "name": "Bank", "expectedCurrent": 100.0, "target": 60.0, "isArchived": false },
           { "id": "acct-2", "name": "Cash", "expectedCurrent": 0.0, "target": 40.0, "isArchived": false }
@@ -18,25 +17,35 @@
       },
       "expected": [
         {
-          "id": "reconcile-test-redistrib-move-0",
-          "description": "Move between accounts",
-          "category": "Transfer",
-          "ledgerCategory": "AccountMove",
-          "amount": 40.0,
+          "id": "reconcile-test-redistrib-adjustment-0",
+          "description": "Account balance adjustment - Bank",
+          "category": "Adjustment",
+          "ledgerCategory": "Essentials",
+          "amount": -40.0,
           "accountId": "acct-1",
-          "counterAccountId": "acct-2"
+          "counterAccountId": null,
+          "isAccountBalanceAdjustment": true
+        },
+        {
+          "id": "reconcile-test-redistrib-adjustment-1",
+          "description": "Account balance adjustment - Cash",
+          "category": "Adjustment",
+          "ledgerCategory": "Essentials",
+          "amount": 40.0,
+          "accountId": "acct-2",
+          "counterAccountId": null,
+          "isAccountBalanceAdjustment": true
         }
       ]
     },
     {
       "id": "genuine-total-correction-upward",
-      "why": "When target total exceeds bucket total, an Adjustment transaction is generated on the chosen account before moves.",
+      "why": "When target total exceeds the bucket total, each changed account receives its own adjustment.",
       "input": {
         "operationId": "test-upward",
         "createdAt": 1755225600000,
         "bucket": "Essentials",
         "expectedBucketTotal": 100.0,
-        "adjustmentAccountId": "acct-1",
         "targets": [
           { "id": "acct-1", "name": "Bank", "expectedCurrent": 100.0, "target": 120.0, "isArchived": false },
           { "id": "acct-2", "name": "Cash", "expectedCurrent": 0.0, "target": 30.0, "isArchived": false }
@@ -44,47 +53,49 @@
       },
       "expected": [
         {
-          "id": "reconcile-test-upward-adjustment",
-          "description": "Account balance adjustment - Essentials",
+          "id": "reconcile-test-upward-adjustment-0",
+          "description": "Account balance adjustment - Bank",
           "category": "Adjustment",
           "ledgerCategory": "Essentials",
-          "amount": 50.0,
+          "amount": 20.0,
           "accountId": "acct-1",
-          "counterAccountId": null
+          "counterAccountId": null,
+          "isAccountBalanceAdjustment": true
         },
         {
-          "id": "reconcile-test-upward-move-0",
-          "description": "Move between accounts",
-          "category": "Transfer",
-          "ledgerCategory": "AccountMove",
+          "id": "reconcile-test-upward-adjustment-1",
+          "description": "Account balance adjustment - Cash",
+          "category": "Adjustment",
+          "ledgerCategory": "Essentials",
           "amount": 30.0,
-          "accountId": "acct-1",
-          "counterAccountId": "acct-2"
+          "accountId": "acct-2",
+          "counterAccountId": null,
+          "isAccountBalanceAdjustment": true
         }
       ]
     },
     {
       "id": "genuine-total-correction-downward",
-      "why": "When target total is below bucket total, a negative Adjustment transaction is generated.",
+      "why": "When target total is below the bucket total, the changed account receives a negative adjustment.",
       "input": {
         "operationId": "test-downward",
         "createdAt": 1755225600000,
         "bucket": "Stability",
         "expectedBucketTotal": 200.0,
-        "adjustmentAccountId": "acct-stab",
         "targets": [
           { "id": "acct-stab", "name": "Savings", "expectedCurrent": 200.0, "target": 150.0, "isArchived": false }
         ]
       },
       "expected": [
         {
-          "id": "reconcile-test-downward-adjustment",
-          "description": "Account balance adjustment - Stability",
+          "id": "reconcile-test-downward-adjustment-0",
+          "description": "Account balance adjustment - Savings",
           "category": "Adjustment",
           "ledgerCategory": "Stability",
           "amount": -50.0,
           "accountId": "acct-stab",
-          "counterAccountId": null
+          "counterAccountId": null,
+          "isAccountBalanceAdjustment": true
         }
       ]
     },
@@ -96,7 +107,6 @@
         "createdAt": 1755225600000,
         "bucket": "Growth",
         "expectedBucketTotal": 300.0,
-        "adjustmentAccountId": null,
         "targets": [
           { "id": "acct-growth", "name": "Investments", "expectedCurrent": 300.0, "target": 300.0, "isArchived": false }
         ]

@@ -30,9 +30,9 @@ public sealed class AccountReconcileParityTests
         var operationId = input.GetProperty("operationId").GetString()!;
         var bucket = input.GetProperty("bucket").GetString()!;
         var expectedBucketTotal = input.GetProperty("expectedBucketTotal").GetDecimal();
-        var adjustmentAccountId = input.GetProperty("adjustmentAccountId").ValueKind == JsonValueKind.Null
-            ? null
-            : input.GetProperty("adjustmentAccountId").GetString();
+        var description = input.TryGetProperty("description", out var descriptionProperty)
+            ? descriptionProperty.GetString()
+            : null;
 
         var targets = new List<LedgerAccountReconcileTarget>();
         foreach (var target in input.GetProperty("targets").EnumerateArray())
@@ -83,8 +83,9 @@ public sealed class AccountReconcileParityTests
             operationId,
             bucket,
             expectedBucketTotal,
-            adjustmentAccountId,
-            targets);
+            AdjustmentAccountId: null,
+            Targets: targets,
+            Description: description);
 
         var result = await service.ReconcileAsync(request, CancellationToken.None);
 
@@ -103,6 +104,10 @@ public sealed class AccountReconcileParityTests
             Assert.Equal(exp.GetProperty("ledgerCategory").GetString(), act.LedgerCategory);
             Assert.Equal(exp.GetProperty("amount").GetDecimal(), act.Amount);
             Assert.Equal(exp.GetProperty("accountId").GetString(), act.AccountId);
+            if (exp.TryGetProperty("isAccountBalanceAdjustment", out var expBalanceAdjustment))
+            {
+                Assert.Equal(expBalanceAdjustment.GetBoolean(), act.IsAccountBalanceAdjustment);
+            }
             if (exp.TryGetProperty("counterAccountId", out var expCounter) && expCounter.ValueKind != JsonValueKind.Null)
             {
                 Assert.Equal(expCounter.GetString(), act.CounterAccountId);

@@ -285,12 +285,12 @@ public static class StabilityReloadLedger
         decimal normalSalaryShare,
         decimal? storedRepayment)
     {
-        var repayment = change > 0m
+        var repayment = !transaction.IsAccountBalanceAdjustment && change > 0m
             ? storedRepayment.HasValue
                 ? Math.Max(0m, storedRepayment.Value)
                 : Math.Max(0m, change - normalSalaryShare)
             : 0m;
-        var marked = change < 0m
+        var marked = !transaction.IsAccountBalanceAdjustment && change < 0m
             && !string.Equals(
                 StabilityReloadIntent.Normalize(transaction.StabilityReloadIntent),
                 StabilityReloadIntent.NotRequired,

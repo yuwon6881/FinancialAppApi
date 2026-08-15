@@ -90,7 +90,7 @@ public sealed class LedgerAccountReconciliationTests
     }
 
     [Fact]
-    public async Task ReconcileAsync_PureRedistribution_CreatesAccountMovesWithoutBucketAdjustment()
+    public async Task ReconcileAsync_PureRedistribution_CreatesOneAdjustmentPerChangedAccount()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         var service = Service(context);
@@ -119,17 +119,32 @@ public sealed class LedgerAccountReconciliationTests
         Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
         Assert.NotNull(result.Transactions);
 
-        // Should have exactly 1 move transaction from acct-1 to acct-2 for 40m, no Adjustment
-        var tx = Assert.Single(result.Transactions);
-        Assert.Equal("AccountMove", tx.LedgerCategory);
-        Assert.Equal("Transfer", tx.Category);
-        Assert.Equal(40m, tx.Amount);
-        Assert.Equal("acct-1", tx.AccountId);
-        Assert.Equal("acct-2", tx.CounterAccountId);
+        var transactions = result.Transactions!;
+        Assert.Equal(2, transactions.Count);
+        Assert.Collection(
+            transactions,
+            tx =>
+            {
+                Assert.Equal("reconcile-op-redistribute-adjustment-0", tx.Id);
+                Assert.Equal("Adjustment", tx.Category);
+                Assert.Equal("Essentials", tx.LedgerCategory);
+                Assert.Equal(-40m, tx.Amount);
+                Assert.Equal("acct-1", tx.AccountId);
+                Assert.True(tx.IsAccountBalanceAdjustment);
+            },
+            tx =>
+            {
+                Assert.Equal("reconcile-op-redistribute-adjustment-1", tx.Id);
+                Assert.Equal("Adjustment", tx.Category);
+                Assert.Equal("Essentials", tx.LedgerCategory);
+                Assert.Equal(40m, tx.Amount);
+                Assert.Equal("acct-2", tx.AccountId);
+                Assert.True(tx.IsAccountBalanceAdjustment);
+            });
     }
 
     [Fact]
-    public async Task ReconcileAsync_GenuineTotalCorrection_CreatesAdjustmentAndMoves()
+    public async Task ReconcileAsync_GenuineTotalCorrection_CreatesOneAdjustmentPerChangedAccount()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         var service = Service(context);
@@ -157,19 +172,47 @@ public sealed class LedgerAccountReconciliationTests
         Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
         Assert.NotNull(result.Transactions);
 
-        // 1 Adjustment (+50 on acct-1) and 1 AccountMove (30 from acct-1 to acct-2)
+        // Each changed account receives its own visible adjustment row.
         Assert.Equal(2, result.Transactions.Count);
 
-        var adjustment = result.Transactions.Single(t => t.Category == "Adjustment");
-        Assert.Equal("reconcile-op-correction-adjustment", adjustment.Id);
-        Assert.Equal(50m, adjustment.Amount);
+        var adjustment = result.Transactions.Single(t => t.AccountId == "acct-1");
+        Assert.Equal("reconcile-op-correction-adjustment-0", adjustment.Id);
+        Assert.Equal(20m, adjustment.Amount);
         Assert.Equal("acct-1", adjustment.AccountId);
         Assert.Equal("Essentials", adjustment.LedgerCategory);
+        Assert.True(adjustment.IsAccountBalanceAdjustment);
 
-        var move = result.Transactions.Single(t => t.Category == "Transfer");
-        Assert.Equal("AccountMove", move.LedgerCategory);
-        Assert.Equal(30m, move.Amount);
-        Assert.Equal("acct-1", move.AccountId);
-        Assert.Equal("acct-2", move.CounterAccountId);
+        var second = result.Transactions.Single(t => t.AccountId == "acct-2");
+        Assert.Equal("reconcile-op-correction-adjustment-1", second.Id);
+        Assert.Equal(30m, second.Amount);
+        Assert.Equal("acct-2", second.AccountId);
+        Assert.True(second.IsAccountBalanceAdjustment);
+    }
+
+    [Fact]
+    public async Task ReconcileAsync_OmittedKindPreservesExistingAccountKind()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+        var account = new LedgerAccount
+        {
+            Id = "acct-cash",
+            Name = "Cash",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Cash,
+            UserId = TestHelpers.DefaultUserId,
+        };
+        context.LedgerAccounts.Add(account);
+        await context.SaveChangesAsync();
+
+        var result = await service.ReconcileAsync(new LedgerAccountReconcileRequest(
+            "op-preserve-kind",
+            "Essentials",
+            0m,
+            null,
+            [new("acct-cash", "Cash", null, false, 0m, 25m)]));
+
+        Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
+        Assert.Equal(LedgerAccountKind.Cash, context.LedgerAccounts.Single().Kind);
     }
 }

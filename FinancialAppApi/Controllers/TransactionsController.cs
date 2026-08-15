@@ -344,6 +344,7 @@ public class TransactionsController : ControllerBase
             WishlistItemId = t.WishlistItemId,
             SavingsGoalId = t.SavingsGoalId,
             ExcludeFromAutocomplete = t.ExcludeFromAutocomplete,
+            IsAccountBalanceAdjustment = t.IsAccountBalanceAdjustment,
             StabilityReloadStatus = stabilityReloadStatus
         };
     }
@@ -370,6 +371,7 @@ public class TransactionsController : ControllerBase
             WishlistItemId = t.WishlistItemId,
             SavingsGoalId = t.SavingsGoalId,
             ExcludeFromAutocomplete = t.ExcludeFromAutocomplete,
+            IsAccountBalanceAdjustment = t.IsAccountBalanceAdjustment,
             StabilityReloadStatus = t.StabilityReloadStatus
         };
     }
@@ -394,6 +396,7 @@ public class TransactionDto
     public int? WishlistItemId { get; set; }
     public int? SavingsGoalId { get; set; }
     public bool ExcludeFromAutocomplete { get; set; }
+    public bool IsAccountBalanceAdjustment { get; set; }
     public string? StabilityReloadStatus { get; set; }
 }
 

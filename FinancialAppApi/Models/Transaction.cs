@@ -32,6 +32,11 @@ public class Transaction : IUserOwnedEntity
     // role by the server and is not accepted as client authority.
     public bool ExcludeFromAutocomplete { get; set; }
 
+    // True when the row records an account-balance correction/opening balance rather than a
+    // real Stability movement. The Stability replay uses this marker to keep bookkeeping
+    // corrections out of the put-back lifecycle while still applying their balance change.
+    public bool IsAccountBalanceAdjustment { get; set; }
+
     // Placement for the bucket leg this row represents. A same-user restrictive composite FK
     // preserves historical attribution and prevents removal while transactions reference it.
     [StringLength(100)]

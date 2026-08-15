@@ -24,7 +24,8 @@ public sealed record TransactionProjection(
     string? StabilityReloadStatus = null,
     string? AccountId = null,
     string? CounterAccountId = null,
-    bool ExcludeFromAutocomplete = false);
+    bool ExcludeFromAutocomplete = false,
+    bool IsAccountBalanceAdjustment = false);
 
 public sealed record TransactionListResult(
     IReadOnlyList<TransactionProjection> Items,
@@ -111,10 +112,11 @@ public partial class TransactionQueryService
                     t.RecurringOccurrenceDate,
                     t.WishlistItemId,
                     t.SavingsGoalId,
-                    null,
-                    t.AccountId,
-                    t.CounterAccountId,
-                    t.ExcludeFromAutocomplete
+                null,
+                t.AccountId,
+                t.CounterAccountId,
+                t.ExcludeFromAutocomplete,
+                t.IsAccountBalanceAdjustment
                 ))
                 .ToListAsync(cancellationToken);
 
@@ -153,7 +155,8 @@ public partial class TransactionQueryService
                     null,
                     t.AccountId,
                     t.CounterAccountId,
-                    t.ExcludeFromAutocomplete
+                    t.ExcludeFromAutocomplete,
+                    t.IsAccountBalanceAdjustment
                 ))
                 .ToListAsync(cancellationToken);
             return new TransactionListResult(
@@ -193,7 +196,8 @@ public partial class TransactionQueryService
                 null,
                 t.AccountId,
                 t.CounterAccountId,
-                t.ExcludeFromAutocomplete
+                    t.ExcludeFromAutocomplete,
+                    t.IsAccountBalanceAdjustment
             ))
             .ToListAsync(cancellationToken);
 

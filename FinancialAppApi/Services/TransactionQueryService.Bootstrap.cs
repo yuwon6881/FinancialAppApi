@@ -42,7 +42,8 @@ public partial class TransactionQueryService
                     : null,
                 AccountId: transaction.AccountId,
                 CounterAccountId: transaction.CounterAccountId,
-                ExcludeFromAutocomplete: transaction.ExcludeFromAutocomplete))
+                ExcludeFromAutocomplete: transaction.ExcludeFromAutocomplete,
+                IsAccountBalanceAdjustment: transaction.IsAccountBalanceAdjustment))
             .ToList();
         return new TransactionListResult(items);
     }

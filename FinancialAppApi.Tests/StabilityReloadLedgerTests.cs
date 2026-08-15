@@ -85,6 +85,19 @@ public class StabilityReloadLedgerTests
     }
 
     [Fact]
+    public void Describe_AccountBalanceCorrectionMovesMoneyWithoutPutBackLifecycle()
+    {
+        var movement = StabilityReloadLedger.Describe(
+            Transaction("balance-correction", "Stability", 125m, isAccountBalanceAdjustment: true),
+            stabilityAlloc: 0.15m);
+
+        Assert.NotNull(movement);
+        Assert.Equal(125m, movement.Value.Change);
+        Assert.Equal(0m, movement.Value.Repayment);
+        Assert.False(movement.Value.Marked);
+    }
+
+    [Fact]
     public void Replay_ReachingTheTargetClearsTheQueue()
     {
         var state = StabilityReloadLedger.Replay(
@@ -324,7 +337,8 @@ public class StabilityReloadLedgerTests
         string id,
         string ledgerCategory,
         decimal amount,
-        decimal? stabilityRecoveryTopUp = null) => new()
+        decimal? stabilityRecoveryTopUp = null,
+        bool isAccountBalanceAdjustment = false) => new()
     {
         Id = id,
         Date = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
@@ -334,6 +348,7 @@ public class StabilityReloadLedgerTests
         LedgerCategory = ledgerCategory,
         Amount = amount,
         StabilityRecoveryTopUpAmount = stabilityRecoveryTopUp,
+        IsAccountBalanceAdjustment = isAccountBalanceAdjustment,
         StabilityReloadIntent = StabilityReloadIntent.Required
     };
 }

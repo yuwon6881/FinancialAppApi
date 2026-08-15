@@ -84,13 +84,14 @@ public sealed class LedgerAccountsController : ControllerBase
             dto.Targets.Select(target => new LedgerAccountReconcileTarget(
                 target.Id,
                 target.Name ?? string.Empty,
-                target.Kind ?? LedgerAccountKind.Other,
+                target.Kind,
                 target.IsArchived,
                 ReadAmount(target.ExpectedCurrent),
                 ReadAmount(target.Target),
                 target.InterestEnabled,
                 target.InterestRatePercent,
-                target.InterestFrequency)).ToList());
+                target.InterestFrequency)).ToList(),
+            dto.Description);
         var result = await _accountService.ReconcileAsync(request, HttpContext.RequestAborted);
         if (result.Status == LedgerAccountMutationStatus.Conflict)
             return Conflict(new { message = result.Message });
@@ -112,6 +113,8 @@ public sealed class LedgerAccountsController : ControllerBase
                 amount = ObfuscationHelper.Obfuscate(transaction.Amount),
                 accountId = transaction.AccountId,
                 counterAccountId = transaction.CounterAccountId,
+                isAccountBalanceAdjustment = transaction.IsAccountBalanceAdjustment,
+                stabilityReloadIntent = transaction.StabilityReloadIntent,
             }).ToList(),
         });
     }
@@ -192,6 +195,7 @@ public sealed class LedgerAccountReconcileDto
     public string? OperationId { get; set; }
     public string? Bucket { get; set; }
     public JsonElement ExpectedBucketTotal { get; set; }
+    public string? Description { get; set; }
     public string? AdjustmentAccountId { get; set; }
     public List<LedgerAccountReconcileTargetDto>? Targets { get; set; }
 }

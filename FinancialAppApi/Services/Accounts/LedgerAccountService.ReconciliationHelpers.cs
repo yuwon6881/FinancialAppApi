@@ -9,6 +9,8 @@ public sealed partial class LedgerAccountService
     private async Task<LedgerAccountReconcileTransaction> AddOrGetAdjustmentAsync(
         string id,
         string bucket,
+        string? baseDescription,
+        string accountName,
         decimal amount,
         string accountId,
         CancellationToken cancellationToken)
@@ -21,7 +23,8 @@ public sealed partial class LedgerAccountService
                 || !string.Equals(existing.Category, "Adjustment", StringComparison.OrdinalIgnoreCase)
                 || existing.Amount != amount
                 || existing.AccountId != accountId
-                || existing.CounterAccountId is not null)
+                || existing.CounterAccountId is not null
+                || !existing.IsAccountBalanceAdjustment)
                 throw new InvalidOperationException("A reconciliation operation id is already used for another transaction.");
             return ToReconcileTransaction(existing);
         }
@@ -32,52 +35,14 @@ public sealed partial class LedgerAccountService
             UserId = _context.RequireCurrentUserId(),
             Date = TransactionDate.StartOfDate(_clock.Today),
             PostedAt = DateTime.UtcNow,
-            Description = $"Account balance adjustment - {bucket}",
+            Description = $"{(string.IsNullOrWhiteSpace(baseDescription) ? "Account balance adjustment" : baseDescription.Trim())} - {accountName}",
             Category = "Adjustment",
             LedgerCategory = bucket,
             Amount = amount,
             ExcludeFromAutocomplete = true,
+            IsAccountBalanceAdjustment = true,
             AccountId = accountId,
-            StabilityReloadIntent = StabilityReloadIntent.Unanswered,
-        };
-        _context.Transactions.Add(transaction);
-        return ToReconcileTransaction(transaction);
-    }
-
-    private async Task<LedgerAccountReconcileTransaction> AddOrGetAccountMoveAsync(
-        string id,
-        decimal amount,
-        string sourceAccountId,
-        string destinationAccountId,
-        CancellationToken cancellationToken)
-    {
-        var existing = await _context.Transactions
-            .FirstOrDefaultAsync(transaction => transaction.Id == id, cancellationToken);
-        if (existing is not null)
-        {
-            if (!string.Equals(existing.LedgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(existing.Category, "Transfer", StringComparison.OrdinalIgnoreCase)
-                || existing.Amount != amount
-                || existing.AccountId != sourceAccountId
-                || existing.CounterAccountId != destinationAccountId)
-                throw new InvalidOperationException("A reconciliation operation id is already used for another transaction.");
-            return ToReconcileTransaction(existing);
-        }
-
-        var transaction = new Transaction
-        {
-            Id = id,
-            UserId = _context.RequireCurrentUserId(),
-            Date = TransactionDate.StartOfDate(_clock.Today),
-            PostedAt = DateTime.UtcNow,
-            Description = "Move between accounts",
-            Category = "Transfer",
-            LedgerCategory = "AccountMove",
-            Amount = amount,
-            ExcludeFromAutocomplete = true,
-            AccountId = sourceAccountId,
-            CounterAccountId = destinationAccountId,
-            StabilityReloadIntent = StabilityReloadIntent.Unanswered,
+            StabilityReloadIntent = StabilityReloadIntent.NotRequired,
         };
         _context.Transactions.Add(transaction);
         return ToReconcileTransaction(transaction);
@@ -92,7 +57,9 @@ public sealed partial class LedgerAccountService
             transaction.LedgerCategory,
             transaction.Amount,
             transaction.AccountId,
-            transaction.CounterAccountId);
+            transaction.CounterAccountId,
+            transaction.IsAccountBalanceAdjustment,
+            transaction.StabilityReloadIntent);
 
     private static async Task<LedgerAccountReconcileResult> ConflictAsync(
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction,
