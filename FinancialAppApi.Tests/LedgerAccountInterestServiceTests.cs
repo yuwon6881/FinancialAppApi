@@ -200,6 +200,122 @@ public sealed class LedgerAccountInterestServiceTests
         Assert.Equal(0.00m, day2.Remainder);
     }
 
+    [Fact]
+    public void SubCentRemainderSurvivesAPeriodThatEarnsNothing()
+    {
+        // A day at zero balance must not destroy what earlier days banked: the carry belongs to
+        // the account, and wiping it meant a low-balance account could earn fractions for weeks
+        // and post nothing the first time the balance touched zero.
+        var banked = LedgerAccountInterestService.CalculateAccrual(
+            50m, 3.65m, LedgerAccountInterestFrequency.Daily, 0m);
+        Assert.Equal(0.005m, banked.Remainder);
+
+        var emptied = LedgerAccountInterestService.CalculateAccrual(
+            0m, 3.65m, LedgerAccountInterestFrequency.Daily, banked.Remainder);
+        Assert.Equal(0.00m, emptied.PostedAmount);
+        Assert.Equal(0.005m, emptied.Remainder);
+
+        var unrated = LedgerAccountInterestService.CalculateAccrual(
+            50m, 0m, LedgerAccountInterestFrequency.Daily, banked.Remainder);
+        Assert.Equal(0.005m, unrated.Remainder);
+
+        // ...and the carry still completes a cent once earning resumes.
+        var resumed = LedgerAccountInterestService.CalculateAccrual(
+            50m, 3.65m, LedgerAccountInterestFrequency.Daily, emptied.Remainder);
+        Assert.Equal(0.01m, resumed.PostedAmount);
+    }
+
+    [Fact]
+    public async Task PostingInterestProvisionsItsCategoryExactlyOnce()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var today = FinancialClock.Utc.Today;
+        var account = new LedgerAccount
+        {
+            Id = "acct-category",
+            Name = "Interest account",
+            UserId = TestHelpers.DefaultUserId,
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+            InterestEnabled = true,
+            InterestRatePercent = 12m,
+            InterestFrequency = LedgerAccountInterestFrequency.Daily,
+            InterestNextAccrualDate = today.AddDays(-1),
+        };
+        context.LedgerAccounts.Add(account);
+        context.Transactions.Add(new Transaction
+        {
+            Id = "acct-category-opening",
+            Date = TransactionDate.StartOfDate(today.AddDays(-3)),
+            Description = "Opening balance",
+            Category = "Adjustment",
+            LedgerCategory = "Essentials",
+            Amount = 1_000m,
+            AccountId = account.Id,
+        });
+        await context.SaveChangesAsync();
+
+        Assert.Empty(context.TransactionCategories.Where(
+            category => category.Name == LedgerAccountInterestService.CategoryName));
+
+        var service = new LedgerAccountInterestService(
+            context,
+            new LedgerAccountBalanceService(context),
+            FinancialClock.Utc);
+        await service.ApplyDueInterestAsync();
+
+        // Interest rows are filed under a category the user must actually have, or they surface in
+        // reports under a name that is missing from Settings, from the category filters and from
+        // /api/categories/usage.
+        var categories = context.TransactionCategories
+            .Where(category => category.Name == LedgerAccountInterestService.CategoryName)
+            .ToList();
+        var provisioned = Assert.Single(categories);
+        Assert.Equal(CategoryFlowType.Inflow, provisioned.Type);
+        Assert.Equal(TestHelpers.DefaultUserId, provisioned.UserId);
+        Assert.All(
+            context.Transactions.Where(t => t.AccountId == account.Id && t.Id.Contains("-interest-")),
+            row => Assert.Equal(LedgerAccountInterestService.CategoryName, row.Category));
+
+        // A second account posting through a fresh service instance must not add a duplicate: the
+        // once-per-scope guard is an optimisation, and the existence query is the real check.
+        context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = "acct-category-second",
+            Name = "Second interest account",
+            UserId = TestHelpers.DefaultUserId,
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+            InterestEnabled = true,
+            InterestRatePercent = 12m,
+            InterestFrequency = LedgerAccountInterestFrequency.Daily,
+            InterestNextAccrualDate = today,
+        });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "acct-category-second-opening",
+            Date = TransactionDate.StartOfDate(today.AddDays(-3)),
+            Description = "Opening balance",
+            Category = "Adjustment",
+            LedgerCategory = "Essentials",
+            Amount = 1_000m,
+            AccountId = "acct-category-second",
+        });
+        await context.SaveChangesAsync();
+
+        var later = new LedgerAccountInterestService(
+            context,
+            new LedgerAccountBalanceService(context),
+            FinancialClock.Utc);
+        await later.ApplyDueInterestAsync();
+        Assert.Contains(
+            context.Transactions,
+            row => row.Id.StartsWith("acct-category-second-interest-"));
+
+        Assert.Single(context.TransactionCategories.Where(
+            category => category.Name == LedgerAccountInterestService.CategoryName));
+    }
+
     private sealed class FixedTimeProvider(DateTimeOffset value) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => value;

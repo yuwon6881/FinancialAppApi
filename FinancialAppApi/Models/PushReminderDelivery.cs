@@ -27,6 +27,22 @@ public class PushReminderDelivery : IUserOwnedEntity
     [Required]
     public string SubscriptionId { get; set; } = string.Empty;
 
+    // What this claim covers. A shortfall alert and an ordinary reminder are different messages
+    // answering different questions, so they claim separately: without this column a shortfall
+    // claimed at offset 1 satisfied the offset-agnostic "Once" reminder lookup, and the reminder
+    // the user actually configured was silently dropped.
+    [Required]
+    [StringLength(20)]
+    public string Kind { get; set; } = PushReminderDeliveryKind.Reminder;
+
     [Required]
     public DateTime SentAt { get; set; }
+}
+
+public static class PushReminderDeliveryKind
+{
+    public const string Reminder = "Reminder";
+    public const string Shortfall = "Shortfall";
+
+    public static readonly string[] Values = [Reminder, Shortfall];
 }

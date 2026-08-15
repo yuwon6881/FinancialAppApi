@@ -92,13 +92,29 @@ public partial class PushDispatchService
                         continue;
                     }
 
-                    var (occurrenceDate, offsetDays) = due.Value;
+                    var occurrenceDate = due.OccurrenceDate;
+                    var offsetDays = occurrenceDate.DayNumber - today.DayNumber;
                     var isDaily = string.Equals(payment.PushReminderMode, "Daily", StringComparison.OrdinalIgnoreCase);
                     var isAutoDeduct = payment.PaymentMode == RecurringPaymentMode.AutoDeduct;
-                    var account = payment.AccountId != null ? userAccountsById.GetValueOrDefault(payment.AccountId) : null;
-                    var accountBalance = payment.AccountId != null && userBalances.TryGetValue(payment.AccountId, out var bal) ? bal : 0m;
-                    var scheduledAmount = payment.Amount;
-                    var isShortfallOneDayPrior = isAutoDeduct && offsetDays == 1 && accountBalance < scheduledAmount;
+
+                    // The occurrence snapshot is authoritative for both the amount and the account,
+                    // exactly as settlement reads them: re-pointing or re-pricing a bill must not
+                    // change what an already-materialised occurrence will actually deduct. Math.Abs
+                    // because the sign of a stored recurring amount is not a contract — every other
+                    // reader defends against it the same way.
+                    var accountId = string.IsNullOrWhiteSpace(due.AccountId) ? payment.AccountId : due.AccountId;
+                    var account = string.IsNullOrWhiteSpace(accountId)
+                        ? null
+                        : userAccountsById.GetValueOrDefault(accountId);
+                    var scheduledAmount = Math.Abs(due.ScheduledAmount ?? payment.Amount);
+                    // Without a resolvable account there is no balance to compare against. Treating
+                    // a missing one as a zero balance reported a full-amount shortfall against an
+                    // account that does not exist, for every legacy bill carrying no placement.
+                    var accountBalance = account is null ? 0m : userBalances.GetValueOrDefault(account.Id);
+                    var isShortfallOneDayPrior = isAutoDeduct
+                        && offsetDays == 1
+                        && account is not null
+                        && accountBalance < scheduledAmount;
 
                     var shouldSendStandard = payment.PushReminderEnabled && (isDaily
                         ? offsetDays <= payment.PushReminderLeadDays
@@ -126,6 +142,7 @@ public partial class PushDispatchService
                                 occurrenceDate,
                                 offsetDays,
                                 isDaily,
+                                shouldSendStandard,
                                 subscription,
                                 today,
                                 localNow,
@@ -171,6 +188,7 @@ public partial class PushDispatchService
         DateOnly occurrenceDate,
         int offsetDays,
         bool isDaily,
+        bool sendStandard,
         PushSubscription subscription,
         DateOnly today,
         DateTime localNow,
@@ -179,37 +197,60 @@ public partial class PushDispatchService
         CancellationToken cancellationToken)
     {
         var isShortfall = shortfallAmount.HasValue && shortfallAmount.Value > 0;
-        // Once sends a single catch-up reminder anywhere inside the lead window, so "already
-        // sent" ignores the offset it was originally claimed at. Countdown sends once per day,
-        // so the offset is part of the dedupe key and no backfill ever happens for a missed day.
-        // Shortfall alerts check exact offsetDays so a prior countdown reminder does not suppress
-        // a 1-day shortfall alert.
-        var alreadySent = (isDaily || isShortfall)
-            ? await context.PushReminderDeliveries.AnyAsync(d =>
-                d.RecurringPaymentId == payment.Id &&
-                d.OccurrenceDate == occurrenceDate &&
-                d.ActualOffsetDays == offsetDays &&
-                d.SubscriptionId == subscription.Id, cancellationToken)
-            : await context.PushReminderDeliveries.AnyAsync(d =>
-                d.RecurringPaymentId == payment.Id &&
-                d.OccurrenceDate == occurrenceDate &&
-                d.SubscriptionId == subscription.Id, cancellationToken);
 
-        if (alreadySent)
+        // A single send can discharge both claims: a shortfall alert going out on the same day the
+        // configured reminder is due already says everything that reminder would have. So it claims
+        // every kind it covers, and the send is skipped only when nothing is left unclaimed —
+        // otherwise a shortfall claimed at offset 1 would satisfy the offset-agnostic Once lookup
+        // and silently swallow the reminder the user actually asked for.
+        var kinds = new List<string>(2);
+        if (isShortfall) kinds.Add(PushReminderDeliveryKind.Shortfall);
+        if (sendStandard) kinds.Add(PushReminderDeliveryKind.Reminder);
+
+        var unclaimed = new List<string>(kinds.Count);
+        foreach (var kind in kinds)
+        {
+            // Once sends a single catch-up reminder anywhere inside the lead window, so "already
+            // sent" ignores the offset it was originally claimed at. Countdown sends once per day,
+            // and a shortfall alert is about one specific day, so both keep the offset in the key
+            // and no backfill ever happens for a missed day.
+            var offsetScoped = isDaily || kind == PushReminderDeliveryKind.Shortfall;
+            var claimed = offsetScoped
+                ? await context.PushReminderDeliveries.AnyAsync(d =>
+                    d.RecurringPaymentId == payment.Id &&
+                    d.OccurrenceDate == occurrenceDate &&
+                    d.ActualOffsetDays == offsetDays &&
+                    d.SubscriptionId == subscription.Id &&
+                    d.Kind == kind, cancellationToken)
+                : await context.PushReminderDeliveries.AnyAsync(d =>
+                    d.RecurringPaymentId == payment.Id &&
+                    d.OccurrenceDate == occurrenceDate &&
+                    d.SubscriptionId == subscription.Id &&
+                    d.Kind == kind, cancellationToken);
+            if (!claimed)
+            {
+                unclaimed.Add(kind);
+            }
+        }
+
+        if (unclaimed.Count == 0)
         {
             return ("AlreadySent", 0, 1, 0);
         }
 
-        var claim = new PushReminderDelivery
-        {
-            Id = $"prd-{Guid.NewGuid():N}",
-            RecurringPaymentId = payment.Id,
-            OccurrenceDate = occurrenceDate,
-            ActualOffsetDays = offsetDays,
-            SubscriptionId = subscription.Id,
-            SentAt = DateTime.UtcNow
-        };
-        context.PushReminderDeliveries.Add(claim);
+        var claims = unclaimed
+            .Select(kind => new PushReminderDelivery
+            {
+                Id = $"prd-{Guid.NewGuid():N}",
+                RecurringPaymentId = payment.Id,
+                OccurrenceDate = occurrenceDate,
+                ActualOffsetDays = offsetDays,
+                SubscriptionId = subscription.Id,
+                Kind = kind,
+                SentAt = DateTime.UtcNow
+            })
+            .ToList();
+        context.PushReminderDeliveries.AddRange(claims);
 
         try
         {
@@ -220,7 +261,10 @@ public partial class PushDispatchService
         }
         catch (DbUpdateException ex) when (ex.IsUniqueViolation())
         {
-            context.Entry(claim).State = EntityState.Detached;
+            foreach (var claim in claims)
+            {
+                context.Entry(claim).State = EntityState.Detached;
+            }
             return ("RaceLost", 0, 1, 0);
         }
 
@@ -244,7 +288,7 @@ public partial class PushDispatchService
             default:
                 // Never logs the token or any payment amount — just that a send failed. The
                 // claim above already stands, so a same-day retry will not resend this one.
-                context.PushReminderDeliveries.Remove(claim);
+                context.PushReminderDeliveries.RemoveRange(claims);
                 await context.SaveChangesAsync(cancellationToken);
                 _logger.LogWarning(
                     "Push reminder send failed for recurring payment {RecurringPaymentId} occurrence {OccurrenceDate}.",
@@ -315,18 +359,14 @@ public partial class PushDispatchService
             Data: data);
     }
 
-    private async Task<(DateOnly OccurrenceDate, int OffsetDays)?> ResolveDueOccurrenceAsync(
+    // Returns the occurrence itself, not just its date: its snapshotted amount and account are
+    // what settlement will actually use, so a shortfall must be measured against those.
+    private static async Task<RecurringPaymentOccurrence?> ResolveDueOccurrenceAsync(
         RecurringOccurrenceLedgerService occurrenceLedger,
         RecurringPayment payment,
         DateOnly today,
-        CancellationToken cancellationToken)
-    {
-        var occurrence = await occurrenceLedger.GetNextPendingAsync(
-            payment, today, includeFrom: true, cancellationToken);
-        return occurrence == null
-            ? null
-            : (occurrence.OccurrenceDate, occurrence.OccurrenceDate.DayNumber - today.DayNumber);
-    }
+        CancellationToken cancellationToken) =>
+        await occurrenceLedger.GetNextPendingAsync(payment, today, includeFrom: true, cancellationToken);
 
     private async Task<Dictionary<string, DispatchCandidateUser>> LoadCandidatesAsync(
         AppDbContext context,

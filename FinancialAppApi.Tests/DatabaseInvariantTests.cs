@@ -99,7 +99,10 @@ public class DatabaseInvariantTests
                 nameof(PushReminderDelivery.RecurringPaymentId),
                 nameof(PushReminderDelivery.OccurrenceDate),
                 nameof(PushReminderDelivery.ActualOffsetDays),
-                nameof(PushReminderDelivery.SubscriptionId)
+                nameof(PushReminderDelivery.SubscriptionId),
+                // Kind is part of the claim key: a shortfall alert and the bill's own reminder are
+                // two different messages that can both be owed for the same occurrence and offset.
+                nameof(PushReminderDelivery.Kind)
             ]));
 
         Assert.True(index.IsUnique);
@@ -140,6 +143,7 @@ public class DatabaseInvariantTests
             (typeof(RecurringPayment), "ck_recurringpayments_paymentmode", "\"PaymentMode\" IN ('AutoDeduct', 'Manual')"),
             (typeof(RecurringPayment), "ck_recurringpayments_pushremindermode", "\"PushReminderMode\" IN ('Once', 'Daily')"),
             (typeof(RecurringPaymentOccurrence), "ck_recurringpaymentoccurrences_status", "\"Status\" IN ('Pending', 'Paid', 'Discarded')"),
+            (typeof(PushReminderDelivery), "ck_pushreminderdeliveries_kind", "\"Kind\" IN ('Reminder', 'Shortfall')"),
             (typeof(SavingsGoal), "ck_savingsgoals_fundingbucket", "\"FundingBucket\" IN ('Essentials', 'Rewards')"),
             (typeof(Loan), "ck_loans_interestmethod", "\"InterestMethod\" IN ('ReducingBalance', 'Flat', 'ReducingBalanceDaily', 'InterestOnly')"),
             (typeof(Loan), "ck_loans_ratebasis", "\"RateBasis\" IN ('Yearly', 'Monthly')"),

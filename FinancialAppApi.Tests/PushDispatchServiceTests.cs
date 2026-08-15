@@ -642,6 +642,160 @@ public class PushDispatchServiceTests
         Assert.True(ttl > TimeSpan.Zero);
     }
 
+    [Fact]
+    public async Task DispatchAsync_AutoDeductShortfall_UsesTheOccurrenceSnapshotAmount_NotTheParent()
+    {
+        // The parent has since been re-priced down to 100, but the occurrence due tomorrow was
+        // materialised at 1200 and that is what will actually be deducted. Reading the parent said
+        // a 300 balance was plenty and sent nothing.
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        var tomorrow = today.AddDays(1);
+        await SeedShortfallFixtureAsync(dbName, tomorrow, amount: 100m, balance: 300m);
+        await using (var seed = NewSeedContext(dbName))
+        {
+            seed.RecurringPaymentOccurrences.Add(new RecurringPaymentOccurrence
+            {
+                Id = $"occ-rec-rent-{tomorrow:yyyyMMdd}",
+                UserId = "user-a",
+                RecurringPaymentId = "rec-rent",
+                OccurrenceDate = tomorrow,
+                Name = "Rent",
+                ScheduledAmount = 1200m,
+                LedgerCategory = "Essentials",
+                AccountId = "acc-main",
+                PaymentMode = RecurringPaymentMode.AutoDeduct,
+                Status = RecurringOccurrenceStatus.Pending
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        var sender = new FakeFcmPushSender();
+        var summary = await NewDispatchService(dbName, Clock(today), sender).DispatchAsync();
+
+        Assert.Equal(1, summary.Sent);
+        Assert.Contains("needs 900.00 more in Checking Account", sender.Sent.Single().Content.Body);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_AutoDeductShortfall_TreatsANegativeStoredAmountAsItsMagnitude()
+    {
+        // Every other reader defends the sign with Math.Abs; comparing a 300 balance against a
+        // stored -1200 made the shortfall unreachable for any positive balance.
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        await SeedShortfallFixtureAsync(dbName, today.AddDays(1), amount: -1200m, balance: 300m);
+
+        var sender = new FakeFcmPushSender();
+        var summary = await NewDispatchService(dbName, Clock(today), sender).DispatchAsync();
+
+        Assert.Equal(1, summary.Sent);
+        Assert.Contains("needs 900.00 more in Checking Account", sender.Sent.Single().Content.Body);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_AutoDeductShortfall_DoesNotFireWhenTheAccountCannotBeResolved()
+    {
+        // A missing account used to read as a zero balance, so every legacy auto-deduct bill
+        // carrying no placement reported a full-amount shortfall against "account".
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        await SeedShortfallFixtureAsync(
+            dbName, today.AddDays(1), amount: 1200m, balance: 300m, paymentAccountId: "acc-missing");
+
+        var sender = new FakeFcmPushSender();
+        var summary = await NewDispatchService(dbName, Clock(today), sender).DispatchAsync();
+
+        Assert.Equal(0, summary.Sent);
+        Assert.Empty(sender.Sent);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ShortfallAlert_DoesNotConsumeTheConfiguredOnceReminder()
+    {
+        // The shortfall goes out a day early; the bill's own "Once" reminder is configured for the
+        // due date itself. They are two different messages, so claiming the first must not make the
+        // offset-agnostic Once lookup believe the second was already sent.
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        var tomorrow = today.AddDays(1);
+        await SeedShortfallFixtureAsync(
+            dbName, tomorrow, amount: 1200m, balance: 300m, leadDays: 0, pushReminderEnabled: true);
+
+        var sender = new FakeFcmPushSender();
+        var dayBefore = await NewDispatchService(dbName, Clock(today), sender).DispatchAsync();
+
+        Assert.Equal(1, dayBefore.Sent);
+        Assert.Contains("Auto-deducts tomorrow", sender.Sent.Single().Content.Body);
+
+        var dueDay = await NewDispatchService(dbName, Clock(tomorrow), sender).DispatchAsync();
+
+        Assert.Equal(1, dueDay.Sent);
+        Assert.Equal(2, sender.Sent.Count);
+        Assert.Equal("Due today", sender.Sent[1].Content.Body);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ShortfallAlert_IsStillSentOnlyOncePerDay()
+    {
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        await SeedShortfallFixtureAsync(dbName, today.AddDays(1), amount: 1200m, balance: 300m);
+
+        var sender = new FakeFcmPushSender();
+        var first = await NewDispatchService(dbName, Clock(today), sender).DispatchAsync();
+        var second = await NewDispatchService(dbName, Clock(today), sender).DispatchAsync();
+
+        Assert.Equal(1, first.Sent);
+        Assert.Equal(0, second.Sent);
+        Assert.Single(sender.Sent);
+    }
+
+    private static async Task SeedShortfallFixtureAsync(
+        string dbName,
+        DateOnly dueOn,
+        decimal amount,
+        decimal balance,
+        int leadDays = 3,
+        bool pushReminderEnabled = false,
+        string paymentAccountId = "acc-main")
+    {
+        await SeedAsync(dbName, "user-a",
+            NewPayment(
+                "rec-rent",
+                dueDate: dueOn.Day,
+                leadDays: leadDays,
+                name: "Rent",
+                amount: amount,
+                pushReminderEnabled: pushReminderEnabled,
+                paymentMode: RecurringPaymentMode.AutoDeduct,
+                accountId: paymentAccountId),
+            accounts:
+            [
+                new LedgerAccount
+                {
+                    Id = "acc-main",
+                    Name = "Checking Account",
+                    Bucket = "Essentials",
+                    Kind = LedgerAccountKind.Bank
+                }
+            ]);
+
+        await using var seed = NewSeedContext(dbName);
+        seed.Transactions.Add(new Transaction
+        {
+            Id = "tx-open",
+            UserId = "user-a",
+            Date = new DateTime(2026, 7, 1),
+            Description = "Initial balance",
+            Category = "Income",
+            LedgerCategory = "Essentials",
+            AccountId = "acc-main",
+            Amount = balance
+        });
+        await seed.SaveChangesAsync();
+    }
+
     private static string NewDbName() => "push-dispatch-" + Guid.NewGuid().ToString("N");
 
     private static FinancialClock Clock(DateOnly today)

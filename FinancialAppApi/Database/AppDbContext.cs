@@ -266,15 +266,22 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         {
             // The claim key: an insert into this unique tuple IS the concurrency-safe "has this
             // exact reminder already been sent" check, so retries/races can never double-send.
+            // Kind is part of it because a shortfall alert and an ordinary reminder are two
+            // different messages that may both be owed for the same occurrence and offset.
+            entity.Property(e => e.Kind).HasDefaultValue(PushReminderDeliveryKind.Reminder);
+            entity.ToTable(t => t.HasCheckConstraint(
+                "ck_pushreminderdeliveries_kind",
+                "\"Kind\" IN ('Reminder', 'Shortfall')"));
             entity.HasIndex(e => new
             {
                 e.UserId,
                 e.RecurringPaymentId,
                 e.OccurrenceDate,
                 e.ActualOffsetDays,
-                e.SubscriptionId
+                e.SubscriptionId,
+                e.Kind
             }).IsUnique();
-            entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId, e.OccurrenceDate, e.SubscriptionId });
+            entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId, e.OccurrenceDate, e.SubscriptionId, e.Kind });
         });
 
         modelBuilder.Entity<CategoryLimitAlertEvaluation>(entity =>

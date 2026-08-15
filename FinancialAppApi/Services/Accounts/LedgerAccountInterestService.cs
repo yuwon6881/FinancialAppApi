@@ -20,6 +20,18 @@ public sealed class LedgerAccountInterestService
     private readonly AppDbContext _context;
     private readonly LedgerAccountBalanceService _balanceService;
     private readonly FinancialClock _clock;
+    private bool _categoryEnsured;
+
+    private const string CategoryNameLower = "interest";
+
+    /// <summary>
+    /// The transaction category every interest credit is filed under. It is provisioned on demand
+    /// rather than seeded, because <see cref="DbSeeder"/> deliberately never tops up individual
+    /// missing names — a re-seed would resurrect defaults the user deleted on purpose. Enabling
+    /// interest is an explicit user action, so creating the one category its rows need is a
+    /// provisioning step for that action, not a re-seed.
+    /// </summary>
+    public const string CategoryName = "Interest";
 
     public LedgerAccountInterestService(
         AppDbContext context,
@@ -101,6 +113,7 @@ public sealed class LedgerAccountInterestService
                     var existing = await _context.Transactions.FindAsync([id], cancellationToken);
                     if (existing is null)
                     {
+                        await EnsureCategoryAsync(cancellationToken);
                         _context.Transactions.Add(new Transaction
                         {
                             Id = id,
@@ -136,14 +149,41 @@ public sealed class LedgerAccountInterestService
     public static string InterestTransactionId(string accountId, DateOnly date) =>
         $"{accountId}-interest-{date:yyyyMMdd}";
 
+    /// <summary>
+    /// Interest rows used to be filed under a category name no user actually had, so they showed
+    /// up in reports as a category that was missing from Settings, from the category filters and
+    /// from <c>/api/categories/usage</c>. The category is inflow-only: interest is money coming
+    /// in, and a spending guide over it would be meaningless.
+    /// </summary>
+    private async Task EnsureCategoryAsync(CancellationToken cancellationToken)
+    {
+        if (_categoryEnsured) return;
+        _categoryEnsured = true;
+
+        var exists = await _context.TransactionCategories
+            .AnyAsync(category => category.Name.ToLower() == CategoryNameLower, cancellationToken);
+        if (exists) return;
+
+        _context.TransactionCategories.Add(new TransactionCategory
+        {
+            Id = $"cat-{_context.RequireCurrentUserId()}-interest",
+            Name = CategoryName,
+            Type = CategoryFlowType.Inflow,
+        });
+    }
+
     public static InterestAccrual CalculateAccrual(
         decimal balance,
         decimal annualRatePercent,
         string frequency,
         decimal remainder)
     {
+        // A period that earns nothing must still *carry* what earlier periods banked. Returning a
+        // zero remainder here quietly destroyed the accumulated sub-cent whenever the balance
+        // touched zero for a day, so a low-balance account could earn fractions for weeks and post
+        // nothing. Only the earning is skipped; the carry is not the account's to lose.
         if (balance <= 0m || annualRatePercent <= 0m)
-            return new(0m, 0m);
+            return new(0m, Math.Max(0m, remainder));
 
         var annualFraction = annualRatePercent / 100m;
         var periodsPerYear = frequency switch
