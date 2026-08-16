@@ -92,6 +92,8 @@ public class TransactionCategoriesController : ControllerBase
         if (result.Status == UpdateCategoryCycleLimitStatus.NotFound) return NotFound();
         if (result.Status == UpdateCategoryCycleLimitStatus.InvalidAmount)
             return BadRequest(new { message = result.Message });
+        if (result.Status == UpdateCategoryCycleLimitStatus.ReservedName)
+            return BadRequest(new { message = result.Message });
 
         return Ok(ToResponse(result.Category!));
     }
@@ -116,6 +118,8 @@ public class TransactionCategoriesController : ControllerBase
         var result = await _categoryService.UpdateCategoryAsync(id, type: null, limit, updateLimit: true);
         if (result.Status == UpdateCategoryCycleLimitStatus.NotFound) return NotFound();
         if (result.Status == UpdateCategoryCycleLimitStatus.InvalidAmount)
+            return BadRequest(new { message = result.Message });
+        if (result.Status == UpdateCategoryCycleLimitStatus.ReservedName)
             return BadRequest(new { message = result.Message });
 
         return Ok(ToResponse(result.Category!));

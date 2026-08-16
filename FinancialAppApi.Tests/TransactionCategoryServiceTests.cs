@@ -111,6 +111,54 @@ public class TransactionCategoryServiceTests
         Assert.Equal("Category 'food' already exists.", result.Message);
     }
 
+    [Theory]
+    [InlineData("Transfer")]
+    [InlineData("Adjustment")]
+    [InlineData("Interest")]
+    public async Task CreateCategoryAsync_RejectsSystemOwnedNames(string name)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = NewService(context);
+
+        var result = await service.CreateCategoryAsync(new TransactionCategory { Name = name });
+
+        Assert.Equal(CreateTransactionCategoryStatus.ReservedName, result.Status);
+        Assert.Empty(await context.TransactionCategories.ToListAsync());
+    }
+
+    [Theory]
+    [InlineData("Transfer")]
+    [InlineData("Adjustment")]
+    [InlineData("Interest")]
+    public async Task DeleteCategoryAsync_RejectsSystemOwnedNames(string name)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.TransactionCategories.Add(new TransactionCategory { Id = "cat-system", Name = name });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.DeleteCategoryAsync("cat-system");
+
+        Assert.Equal(DeleteTransactionCategoryStatus.ReservedName, result.Status);
+        Assert.True(await context.TransactionCategories.AnyAsync(category => category.Id == "cat-system"));
+    }
+
+    [Fact]
+    public async Task UpdateCategoryAsync_RejectsInterestCategory()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.TransactionCategories.Add(new TransactionCategory { Id = "cat-interest", Name = "Interest", Type = CategoryFlowType.Inflow });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var result = await service.UpdateCategoryAsync("cat-interest", CategoryFlowType.Both, 100m, updateLimit: true);
+
+        Assert.Equal(UpdateCategoryCycleLimitStatus.ReservedName, result.Status);
+        var category = await context.TransactionCategories.SingleAsync();
+        Assert.Equal(CategoryFlowType.Inflow, category.Type);
+        Assert.Null(category.CycleLimit);
+    }
+
     [Fact]
     public async Task DeleteCategoryAsync_DeletesCategory()
     {

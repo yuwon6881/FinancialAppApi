@@ -38,7 +38,8 @@ public enum UpdateCategoryCycleLimitStatus
 {
     Updated,
     NotFound,
-    InvalidAmount
+    InvalidAmount,
+    ReservedName
 }
 
 public sealed record UpdateCategoryCycleLimitResult(
@@ -244,6 +245,13 @@ public class TransactionCategoryService
             return new UpdateCategoryCycleLimitResult(UpdateCategoryCycleLimitStatus.NotFound);
         }
 
+        if (IsReservedName(category.Name))
+        {
+            return new UpdateCategoryCycleLimitResult(
+                UpdateCategoryCycleLimitStatus.ReservedName,
+                Message: "Cannot edit system-reserved categories.");
+        }
+
         var normalizedType = CategoryFlowType.Normalize(category.Type);
         if (type != null)
         {
@@ -307,7 +315,8 @@ public class TransactionCategoryService
     public static bool IsReservedName(string name)
     {
         return string.Equals(name, "Transfer", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "Adjustment", StringComparison.OrdinalIgnoreCase);
+            string.Equals(name, "Adjustment", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "Interest", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task UpsertCurrentCycleGuideAsync(string categoryName, decimal? limitAmount)
