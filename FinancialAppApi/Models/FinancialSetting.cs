@@ -46,9 +46,6 @@ public class FinancialSetting : IUserOwnedEntity
     [Required]
     public string Currency { get; set; } = "USD";
 
-    [Required]
-    public bool VibrationEnabled { get; set; } = true;
-
     // The current-cycle key ("yyyy-MM", e.g. "2026-08") the user last acknowledged an
     // end-of-cycle summary for. Null means the user has never seen one, so the client
     // silently adopts the current cycle instead of surfacing a summary for a cycle the

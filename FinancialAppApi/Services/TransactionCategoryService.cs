@@ -232,11 +232,6 @@ public class TransactionCategoryService
         return new DeleteTransactionCategoryResult(DeleteTransactionCategoryStatus.Deleted);
     }
 
-    public async Task<UpdateCategoryCycleLimitResult> UpdateCycleLimitAsync(string id, decimal? cycleLimit)
-    {
-        return await UpdateCategoryAsync(id, type: null, cycleLimit, updateLimit: true);
-    }
-
     public async Task<UpdateCategoryCycleLimitResult> UpdateCategoryAsync(string id, string? type, decimal? cycleLimit, bool updateLimit)
     {
         var category = await _context.TransactionCategories.FindAsync(id);

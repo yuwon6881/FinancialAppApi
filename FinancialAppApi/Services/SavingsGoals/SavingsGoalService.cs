@@ -610,9 +610,6 @@ public class SavingsGoalService
     /// bucket ledger movement. Mirrors how the dashboard and the AI context loader derive it, so
     /// the number the invariant is checked against is the number the user sees.
     /// </summary>
-    public Task<decimal> GetRewardsBalanceAsync(int cycleDay, CancellationToken cancellationToken = default)
-        => GetBucketBalanceAsync(SavingsGoalFundingBucket.Rewards, cycleDay, cancellationToken);
-
     public async Task<decimal> GetBucketBalanceAsync(
         string fundingBucket,
         int cycleDay,

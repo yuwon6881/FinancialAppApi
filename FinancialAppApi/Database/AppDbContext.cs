@@ -217,7 +217,6 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 .HasDefaultValue("Split: Growth 50%, Rewards 50%");
             entity.Property(e => e.HideSensitive).HasDefaultValue(true);
             entity.Property(e => e.Currency).HasDefaultValue("USD");
-            entity.Property(e => e.VibrationEnabled).HasDefaultValue(true);
             entity.HasIndex(e => e.UserId).IsUnique();
         });
 

@@ -8,3 +8,10 @@ FinancialAppApi/publish/
 FinancialAppApi/appsettings.Local.json
 FinancialAppApi/appsettings.*.Local.json
 TestResults/
+
+# Local audit scratch artifacts
+check.js
+check.ps1
+check_frontend.js
+diff.txt
+status.txt

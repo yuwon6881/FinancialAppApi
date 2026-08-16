@@ -271,23 +271,11 @@ public class RecurringPaymentPayEarlyService
             : (occurrence, null);
     }
 
-    public async Task<DateOnly?> GetNextUnpaidOccurrenceAsync(
-        string recurringPaymentId,
-        CancellationToken cancellationToken = default)
-    {
-        var payment = await _context.RecurringPayments.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == recurringPaymentId, cancellationToken);
-        if (payment == null || !payment.Active) return null;
-        return (await _occurrenceLedger.GetNextPendingAsync(
-            payment, _financialClock.Today, includeFrom: true, cancellationToken))?.OccurrenceDate;
-    }
-
     /// <summary>
     /// The next unpaid occurrence for every payment, resolved in two queries rather than three per payment.
     /// </summary>
     /// <remarks>
-    /// The per-payment overload is the right shape when settling one bill, but the list endpoints
-    /// (and the composite boot payload behind them) need this for every row, and each call there was
+    /// The list endpoints (and the composite boot payload behind them) need this for every row, and each call there was
     /// re-reading the payment it had already been handed plus the one FinancialSettings row that
     /// cannot differ between them. Twenty bills cost sixty-one round trips; they now cost two.
     /// The scan itself is unchanged — it is the same pure walk over the same settled set.

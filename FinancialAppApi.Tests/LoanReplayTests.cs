@@ -9,7 +9,7 @@ public sealed class LoanReplayTests
     public void OrdersByOccurrenceDateBeforePostedAt()
     {
         var loan = NewLoan(rate: 12m);
-        var result = LoanReplay.Replay(loan, "Monthly", [
+        var result = LoanReplay.Replay(loan, [
             new(new DateOnly(2026, 2, 1), new DateTime(2026, 2, 1), 100m, TransactionId: "feb"),
             new(new DateOnly(2026, 1, 1), new DateTime(2026, 3, 1), 100m, TransactionId: "jan"),
         ]);
@@ -23,7 +23,7 @@ public sealed class LoanReplayTests
     public void DiscardedOccurrenceSkipsPaymentButMovesTheScheduleForward()
     {
         var loan = NewLoan(rate: 0m);
-        var result = LoanReplay.Replay(loan, "Monthly", [
+        var result = LoanReplay.Replay(loan, [
             new(new DateOnly(2026, 1, 1), DateTime.MinValue, 0m, IsDiscarded: true),
         ]);
 
@@ -35,11 +35,11 @@ public sealed class LoanReplayTests
     public void DeletingAnEarlierSettlementRecomputesLaterInterestAndPayoff()
     {
         var loan = NewLoan(rate: 12m);
-        var withBoth = LoanReplay.Replay(loan, "Monthly", [
+        var withBoth = LoanReplay.Replay(loan, [
             new(new DateOnly(2026, 1, 1), DateTime.MinValue, 100m, TransactionId: "one"),
             new(new DateOnly(2026, 2, 1), DateTime.MinValue, 100m, TransactionId: "two"),
         ]);
-        var afterDelete = LoanReplay.Replay(loan, "Monthly", [
+        var afterDelete = LoanReplay.Replay(loan, [
             new(new DateOnly(2026, 2, 1), DateTime.MinValue, 100m, TransactionId: "two"),
         ]);
 
@@ -51,7 +51,7 @@ public sealed class LoanReplayTests
     public void PaymentThatDoesNotCoverInterestDoesNotPoisonALaterPayoff()
     {
         var loan = NewLoan(rate: 12m);
-        var result = LoanReplay.Replay(loan, "Monthly", [
+        var result = LoanReplay.Replay(loan, [
             new(new DateOnly(2026, 1, 1), DateTime.MinValue, 5m, TransactionId: "under"),
         ]);
 
@@ -82,9 +82,10 @@ public sealed class LoanReplayTests
     public void MonthlyScheduleClampsToTheRecurringPaymentAnchorDay()
     {
         var loan = NewLoan(rate: 0m);
-        var result = LoanReplay.Replay(loan, "Monthly", [
+        loan.ScheduleDueDay = 31;
+        var result = LoanReplay.Replay(loan, [
             new(new DateOnly(2026, 1, 31), DateTime.MinValue, 0m, IsDiscarded: true),
-        ], dueDay: 31);
+        ]);
 
         Assert.Equal(new DateOnly(2026, 2, 28), result.FutureSchedule[0].OccurrenceDate);
         Assert.Equal(new DateOnly(2026, 5, 31), result.FutureSchedule[3].OccurrenceDate);
@@ -94,7 +95,7 @@ public sealed class LoanReplayTests
     public void PayoffDateStaysAtTheFirstDebtFreeOccurrence()
     {
         var loan = NewLoan(rate: 0m);
-        var result = LoanReplay.Replay(loan, "Monthly", [
+        var result = LoanReplay.Replay(loan, [
             new(new DateOnly(2026, 1, 1), DateTime.MinValue, 1000m, TransactionId: "payoff"),
             new(new DateOnly(2026, 2, 1), DateTime.MinValue, 50m, TransactionId: "surplus"),
         ]);
@@ -109,7 +110,8 @@ public sealed class LoanReplayTests
         var loan = NewLoan(rate: 0m);
         loan.TrackingStartDate = new DateOnly(2026, 1, 12);
 
-        var result = LoanReplay.Replay(loan, "Monthly", [], dueDay: 15);
+        loan.ScheduleDueDay = 15;
+        var result = LoanReplay.Replay(loan, []);
 
         Assert.Equal(new DateOnly(2026, 1, 15), result.FutureSchedule[0].OccurrenceDate);
     }
@@ -120,8 +122,10 @@ public sealed class LoanReplayTests
         var loan = NewLoan(rate: 0m);
         loan.TrackingStartDate = new DateOnly(2026, 4, 1);
         loan.ScheduleStartDate = new DateOnly(2026, 1, 1);
+        loan.ScheduleFrequency = "Annually";
+        loan.ScheduleDueDay = 15;
 
-        var result = LoanReplay.Replay(loan, "Annually", [], dueDay: 15);
+        var result = LoanReplay.Replay(loan, []);
 
         Assert.Equal(new DateOnly(2027, 1, 15), result.FutureSchedule[0].OccurrenceDate);
     }
@@ -131,10 +135,10 @@ public sealed class LoanReplayTests
     {
         var loan = NewLoan(rate: 12m);
         loan.InterestMethod = LoanInterestMethod.ReducingBalanceDaily;
-        var result = LoanReplay.Replay(loan, "Monthly", [
+        var result = LoanReplay.Replay(loan, [
             new(new DateOnly(2026, 2, 1), DateTime.MinValue, 0m, IsDiscarded: true),
             new(new DateOnly(2026, 3, 1), DateTime.MinValue, 100m, TransactionId: "march"),
-        ], dueDay: 1);
+        ]);
 
         Assert.Equal(19.4m, result.Payments[0].Interest);
     }
@@ -146,7 +150,7 @@ public sealed class LoanReplayTests
         loan.InterestMethod = LoanInterestMethod.InterestOnly;
         loan.TermPeriods = 3;
 
-        var result = LoanReplay.Replay(loan, "Monthly", [], dueDay: 1);
+        var result = LoanReplay.Replay(loan, []);
 
         Assert.Equal(3, result.FutureSchedule.Count);
         Assert.Null(result.PayoffDate);
@@ -160,6 +164,10 @@ public sealed class LoanReplayTests
         RecurringPaymentId = "bill-test",
         OpeningPrincipal = 1000m,
         TrackingStartDate = new DateOnly(2026, 1, 1),
+        ScheduleStatus = LoanScheduleStatus.Complete,
+        ScheduleFrequency = "Monthly",
+        ScheduleDueDay = 1,
+        ScheduleStartDate = new DateOnly(2026, 1, 1),
         AnnualRatePercent = rate,
         TermPeriods = 12,
         InterestMethod = LoanInterestMethod.ReducingBalance

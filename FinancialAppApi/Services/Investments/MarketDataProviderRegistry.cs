@@ -37,9 +37,6 @@ public sealed class MarketDataProviderRegistry
             ? provider
             : throw new InvalidOperationException($"Unknown market-data provider '{providerId}'.");
 
-    public bool TryGet(string providerId, out IMarketDataProvider? provider)
-        => _providers.TryGetValue(providerId, out provider);
-
     public IReadOnlyList<MarketDataProviderDescriptor> Providers
         => _providers.Values.Select(value => value.Descriptor).OrderBy(value => value.Id).ToList();
 }

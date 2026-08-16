@@ -122,20 +122,6 @@ public class RecurringOccurrenceService
     private static DateOnly AnchoredDate(int year, int month, int dueDay) =>
         new(year, month, Math.Min(dueDay, DateTime.DaysInMonth(year, month)));
 
-    /// <summary>
-    /// Returns whether a transaction settles a particular occurrence. Callers must first scope
-    /// their transaction set to the relevant cycle/occurrence range; a null occurrence date is the
-    /// documented legacy fallback and is therefore accepted for the scoped posting date.
-    /// </summary>
-    public static bool MatchesOccurrence(
-        Transaction transaction,
-        string recurringPaymentId,
-        DateOnly occurrenceDate)
-    {
-        return string.Equals(transaction.RecurringPaymentId, recurringPaymentId, StringComparison.Ordinal) &&
-            (transaction.RecurringOccurrenceDate == null || transaction.RecurringOccurrenceDate == occurrenceDate);
-    }
-
     private static bool TryParseDate(string? value, out DateTime date)
     {
         if (DateOnly.TryParseExact(

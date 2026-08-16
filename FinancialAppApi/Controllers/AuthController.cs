@@ -299,14 +299,6 @@ public class AuthController : ControllerBase
             request.Password,
             HttpContext.RequestAborted);
 
-    // GET: api/auth/security-questions/setup-status
-    [AuthorizeToken]
-    [HttpGet("security-questions/setup-status")]
-    public async Task<IActionResult> GetSecurityQuestionsSetupStatus() =>
-        await _authAccountService.GetSecurityQuestionsSetupStatusAsync(
-            Username,
-            HttpContext.RequestAborted);
-
     // GET: api/auth/security-questions/available
     [HttpGet("security-questions/available")]
     public IActionResult GetAvailableSecurityQuestions() =>

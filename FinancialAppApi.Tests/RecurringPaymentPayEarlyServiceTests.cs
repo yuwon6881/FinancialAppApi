@@ -251,14 +251,16 @@ public class RecurringPaymentPayEarlyServiceTests
     }
 
     [Fact]
-    public async Task GetNextUnpaidOccurrenceAsync_IncludesDueTodayButSkipsItAfterSettlement()
+    public async Task GetNextUnpaidOccurrencesAsync_IncludesDueTodayButSkipsItAfterSettlement()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.RecurringPayments.Add(NewPayment("rec-1", dueDate: 10));
         await context.SaveChangesAsync();
         var service = NewService(context, Today(2026, 7, 10));
+        var projections = await new RecurringPaymentService(context).GetRecurringPaymentsAsync();
 
-        Assert.Equal(new DateOnly(2026, 7, 10), await service.GetNextUnpaidOccurrenceAsync("rec-1"));
+        var first = await service.GetNextUnpaidOccurrencesAsync(projections);
+        Assert.Equal(new DateOnly(2026, 7, 10), first["rec-1"]);
         var settlement = new Transaction
         {
             Id = "tx-paid",
@@ -279,14 +281,13 @@ public class RecurringPaymentPayEarlyServiceTests
             settlement);
         await context.SaveChangesAsync();
 
-        Assert.Equal(new DateOnly(2026, 8, 10), await service.GetNextUnpaidOccurrenceAsync("rec-1"));
+        var next = await service.GetNextUnpaidOccurrencesAsync(projections);
+        Assert.Equal(new DateOnly(2026, 8, 10), next["rec-1"]);
     }
 
     // The batch overload exists purely to stop the list endpoints issuing three queries per row.
-    // It is only worth having if it answers identically, so assert it against the per-payment
-    // method rather than against dates restated by hand.
     [Fact]
-    public async Task GetNextUnpaidOccurrencesAsync_MatchesThePerPaymentLookupForEveryPayment()
+    public async Task GetNextUnpaidOccurrencesAsync_ResolvesEveryActivePayment()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         var settled = NewPayment("rec-1", dueDate: 10);
@@ -315,12 +316,6 @@ public class RecurringPaymentPayEarlyServiceTests
         var service = NewService(context, Today(2026, 7, 10));
         var projections = await new RecurringPaymentService(context).GetRecurringPaymentsAsync();
         var batch = await service.GetNextUnpaidOccurrencesAsync(projections);
-
-        foreach (var projection in projections)
-        {
-            var single = await service.GetNextUnpaidOccurrenceAsync(projection.Id);
-            Assert.Equal(single, batch.TryGetValue(projection.Id, out var found) ? found : null);
-        }
 
         // Guards the settled-occurrence grouping: a settlement on one payment must not be
         // read as a settlement on another.

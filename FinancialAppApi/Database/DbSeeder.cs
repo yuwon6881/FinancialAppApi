@@ -43,8 +43,7 @@ public static class DbSeeder
                 StabilityAlloc = 0.15m,
                 RewardsAlloc = 0.10m,
                 CycleDay = 28,
-                HideSensitive = false,
-                VibrationEnabled = true
+                HideSensitive = false
             });
         }
 

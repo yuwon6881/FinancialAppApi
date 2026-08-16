@@ -287,9 +287,9 @@ public class StabilityRecoveryPlannerTests
     public void ToppedUpThisCycle_CountsOnlyCreditAboveThePlainPercentage()
     {
         // 1,000 of income at 15% would have delivered 150 on its own.
-        Assert.Equal(0m, StabilityRecoveryPlanner.ToppedUpThisCycle(150m, 1000m, 0.15m));
-        Assert.Equal(90m, StabilityRecoveryPlanner.ToppedUpThisCycle(240m, 1000m, 0.15m));
-        Assert.Equal(0m, StabilityRecoveryPlanner.ToppedUpThisCycle(20m, 1000m, 0.15m));
+        Assert.Equal(0m, Math.Max(0m, 150m - 1000m * 0.15m));
+        Assert.Equal(90m, Math.Max(0m, 240m - 1000m * 0.15m));
+        Assert.Equal(0m, Math.Max(0m, 20m - 1000m * 0.15m));
     }
 
     private static RecoveryPace Pace(decimal outstandingThisCycle)

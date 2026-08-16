@@ -134,20 +134,6 @@ public sealed class InvestmentsController(
         return NoContent();
     }
 
-    [HttpPost("accounts/{id:guid}/archive")]
-    public async Task<IActionResult> ArchiveAccount(Guid id)
-    {
-        var account = await context.InvestmentAccounts
-            .SingleOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
-        if (account is null) return NotFound();
-        var reason = await AccountArchiveUnavailableReason(id);
-        if (reason is not null) return Conflict(new { message = reason });
-        account.IsArchived = true;
-        account.UpdatedAt = DateTime.UtcNow;
-        await context.SaveChangesAsync(HttpContext.RequestAborted);
-        return NoContent();
-    }
-
     [HttpDelete("accounts/{id:guid}")]
     public async Task<ActionResult<InvestmentAccount>> DeleteAccount(Guid id)
     {

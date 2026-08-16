@@ -33,8 +33,6 @@ public sealed record TransactionListResult(
     int? Page = null,
     int? PageSize = null);
 
-public sealed record CsvExportResult(byte[] Bytes, string FileName);
-
 public partial class TransactionQueryService
 {
     private readonly AppDbContext _context;
@@ -273,40 +271,6 @@ public partial class TransactionQueryService
         }
 
         return suggestions;
-    }
-
-    public async Task<CsvExportResult> ExportTransactionsAsync(
-        string? search = null,
-        string? ledgerCategory = null,
-        string? category = null,
-        string? txType = null,
-        string? startDate = null,
-        string? endDate = null,
-        decimal? minAmount = null,
-        decimal? maxAmount = null,
-        bool recurringOnly = false,
-        bool wishlistOnly = false,
-        string? recurringFilter = null,
-        string? wishlistFilter = null,
-        CancellationToken cancellationToken = default)
-    {
-        await using var output = new MemoryStream();
-        await WriteTransactionsCsvAsync(
-            output,
-            search,
-            ledgerCategory,
-            category,
-            txType,
-            startDate,
-            endDate,
-            minAmount,
-            maxAmount,
-            recurringOnly,
-            wishlistOnly,
-            recurringFilter,
-            wishlistFilter,
-            cancellationToken);
-        return new CsvExportResult(output.ToArray(), GetTransactionsExportFileName());
     }
 
     public async Task WriteTransactionsCsvAsync(

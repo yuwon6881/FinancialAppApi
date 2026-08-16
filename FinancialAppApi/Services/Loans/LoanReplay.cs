@@ -29,29 +29,6 @@ public static class LoanReplay
             loan.ScheduleStartDate,
             scheduleAvailable: loan.ScheduleStatus != LoanScheduleStatus.Incomplete);
 
-    // Kept as an explicit-cadence overload for pure arithmetic callers and compatibility with
-    // older tests. Production read models use the immutable cadence stored on Loan above.
-    public static LoanReplayResult Replay(
-        Loan loan,
-        string? frequency,
-        IEnumerable<LoanPaymentInput> inputs,
-        int? dueDay = null)
-    {
-        var resolvedFrequency = frequency ?? loan.ScheduleFrequency;
-        var resolvedDueDay = dueDay ?? loan.ScheduleDueDay ?? loan.TrackingStartDate.Day;
-        var scheduleStartDate = loan.ScheduleStartDate ?? loan.TrackingStartDate;
-        return ReplayCore(
-            loan,
-            resolvedFrequency,
-            inputs,
-            resolvedDueDay,
-            scheduleStartDate,
-            scheduleAvailable: frequency != null || dueDay != null
-                ? HasValidCadence(resolvedFrequency, resolvedDueDay, scheduleStartDate)
-                : loan.ScheduleStatus != LoanScheduleStatus.Incomplete
-                    && HasValidCadence(resolvedFrequency, resolvedDueDay, scheduleStartDate));
-    }
-
     private static LoanReplayResult ReplayCore(
         Loan loan,
         string? frequency,

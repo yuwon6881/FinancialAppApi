@@ -16,6 +16,10 @@ public sealed class LoansControllerTests
             RecurringPaymentId = "bill-controller-test",
             OpeningPrincipal = 1000m,
             TrackingStartDate = new DateOnly(2026, 1, 31),
+            ScheduleStatus = LoanScheduleStatus.Complete,
+            ScheduleFrequency = "Monthly",
+            ScheduleDueDay = 31,
+            ScheduleStartDate = new DateOnly(2026, 1, 31),
             AnnualRatePercent = 3.8875m,
             TermPeriods = 360,
             InterestMethod = LoanInterestMethod.ReducingBalance,
@@ -28,7 +32,7 @@ public sealed class LoansControllerTests
             Frequency = "Monthly",
             DueDate = 31
         };
-        var replay = LoanReplay.Replay(loan, payment.Frequency, [], payment.DueDate);
+        var replay = LoanReplay.Replay(loan, []);
 
         var dto = LoansController.MapToDto(new LoanView(loan, payment, replay));
 

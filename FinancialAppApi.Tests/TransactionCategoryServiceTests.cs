@@ -224,7 +224,7 @@ public class TransactionCategoryServiceTests
     }
 
     [Fact]
-    public async Task UpdateCycleLimitAsync_UpsertsAnEffectiveDatedGuideAndCanDisableIt()
+    public async Task UpdateCategoryAsync_UpsertsAnEffectiveDatedGuideAndCanDisableIt()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
@@ -232,8 +232,8 @@ public class TransactionCategoryServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context, new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero));
 
-        var enabled = await service.UpdateCycleLimitAsync("cat-transport", 400m);
-        var revised = await service.UpdateCycleLimitAsync("cat-transport", 450m);
+        var enabled = await service.UpdateCategoryAsync("cat-transport", type: null, cycleLimit: 400m, updateLimit: true);
+        var revised = await service.UpdateCategoryAsync("cat-transport", type: null, cycleLimit: 450m, updateLimit: true);
 
         Assert.Equal(UpdateCategoryCycleLimitStatus.Updated, enabled.Status);
         Assert.Equal(UpdateCategoryCycleLimitStatus.Updated, revised.Status);
@@ -242,7 +242,7 @@ public class TransactionCategoryServiceTests
         Assert.Equal("2026-07", guide.EffectiveFromCycleKey);
         Assert.Equal(450m, guide.LimitAmount);
 
-        var disabled = await service.UpdateCycleLimitAsync("cat-transport", null);
+        var disabled = await service.UpdateCategoryAsync("cat-transport", type: null, cycleLimit: null, updateLimit: true);
 
         Assert.Equal(UpdateCategoryCycleLimitStatus.Updated, disabled.Status);
         Assert.Null((await context.TransactionCategories.SingleAsync()).CycleLimit);
@@ -250,7 +250,7 @@ public class TransactionCategoryServiceTests
     }
 
     [Fact]
-    public async Task UpdateCycleLimitAsync_RejectsAnInflowCategory()
+    public async Task UpdateCategoryAsync_RejectsAnInflowCategoryLimit()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
@@ -263,7 +263,7 @@ public class TransactionCategoryServiceTests
         await context.SaveChangesAsync();
         var service = NewService(context, new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero));
 
-        var result = await service.UpdateCycleLimitAsync("cat-salary", 400m);
+        var result = await service.UpdateCategoryAsync("cat-salary", type: null, cycleLimit: 400m, updateLimit: true);
 
         Assert.Equal(UpdateCategoryCycleLimitStatus.InvalidAmount, result.Status);
         Assert.Contains("Inflow categories", result.Message);

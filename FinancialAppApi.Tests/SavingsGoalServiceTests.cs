@@ -794,7 +794,7 @@ public class SavingsGoalServiceTests
     }
 
     [Fact]
-    public async Task GetRewardsBalanceAsync_CarriesTheOpeningBalanceForwardAndAddsThisCyclesMovement()
+    public async Task GetBucketBalanceAsync_CarriesTheOpeningBalanceForwardAndAddsThisCyclesMovement()
     {
         await using var context = NewContext(rewardsBalance: 0m);
         // Closing balance of the cycle before the current one (July 2026 with cycleDay 1).
@@ -816,7 +816,7 @@ public class SavingsGoalServiceTests
         });
         await context.SaveChangesAsync();
 
-        var balance = await NewService(context).GetRewardsBalanceAsync(cycleDay: 1);
+        var balance = await NewService(context).GetBucketBalanceAsync(SavingsGoalFundingBucket.Rewards, cycleDay: 1);
 
         Assert.Equal(1050m, balance);
     }

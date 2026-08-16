@@ -200,16 +200,6 @@ public static class StabilityRecoveryPlanner
         return draws;
     }
 
-    /// <summary>
-    /// Compatibility inference for a current-cycle legacy salary whose intent field is null.
-    /// New salaries use their persisted applied reimbursement instead, so later allocation changes
-    /// cannot rewrite recovery history.
-    /// </summary>
-    public static decimal ToppedUpThisCycle(decimal stabilityCredit, decimal incomeThisCycle, decimal stabilityAlloc)
-    {
-        return Math.Max(0m, stabilityCredit - incomeThisCycle * stabilityAlloc);
-    }
-
     public static string CycleKey(int year, int monthIndex) => $"{year:0000}-{monthIndex:00}";
 
     private static bool TryParseCycleKey(string? key, out int year, out int monthIndex)

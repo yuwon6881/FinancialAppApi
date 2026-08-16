@@ -69,7 +69,6 @@ public class FinancialController : ControllerBase
             updateDto.CycleDay,
             updateDto.DarkMode,
             updateDto.HideSensitive,
-            updateDto.VibrationEnabled,
             updateDto.Currency,
             updateDto.StabilityOverflowRedirect),
             HttpContext.RequestAborted);
@@ -93,14 +92,6 @@ public class FinancialController : ControllerBase
     public async Task<IActionResult> UpdateHideSensitive([FromBody] UpdateHideSensitiveDto dto)
     {
         await _financialService.UpdateHideSensitiveAsync(dto.HideSensitive, HttpContext.RequestAborted);
-        return NoContent();
-    }
-
-    // PUT: api/financial/vibration
-    [HttpPut("vibration")]
-    public async Task<IActionResult> UpdateVibration([FromBody] UpdateVibrationDto dto)
-    {
-        await _financialService.UpdateVibrationAsync(dto.VibrationEnabled, HttpContext.RequestAborted);
         return NoContent();
     }
 
@@ -148,7 +139,6 @@ public class UpdateSettingsDto
     public int CycleDay { get; set; }
     public bool? DarkMode { get; set; }
     public bool? HideSensitive { get; set; }
-    public bool? VibrationEnabled { get; set; }
     public string Currency { get; set; } = "USD";
     [System.Text.Json.Serialization.JsonPropertyName("stabilityOverflowRedirect")]
     public string? StabilityOverflowRedirect { get; set; }
@@ -162,11 +152,6 @@ public class UpdateDarkModeDto
 public class UpdateHideSensitiveDto
 {
     public bool HideSensitive { get; set; }
-}
-
-public class UpdateVibrationDto
-{
-    public bool VibrationEnabled { get; set; }
 }
 
 public class UpdateSummarySeenDto

@@ -19,7 +19,7 @@ public sealed class InvestmentsControllerTests
                 .Select(attribute => $"{attribute.HttpMethods.Single()} {attribute.Template}"))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        Assert.Equal(23, routes.Count);
+        Assert.Equal(22, routes.Count);
         Assert.Contains("GET portfolio", routes);
         Assert.Contains("GET accounts", routes);
         Assert.Contains("GET transactions", routes);
@@ -61,7 +61,7 @@ public sealed class InvestmentsControllerTests
     }
 
     [Fact]
-    public async Task AccountRoutesCreateUpdateArchiveAndDeleteOnlyCurrentUsersRows()
+    public async Task AccountRoutesCreateUpdateCloseAndDeleteOnlyCurrentUsersRows()
     {
         await using var context = TestHelpers.NewInMemoryContext("alice");
         var bobAccount = new InvestmentAccount { UserId = "bob", Name = "Bob broker", BaseCurrency = "USD" };
@@ -80,7 +80,8 @@ public sealed class InvestmentsControllerTests
             bobAccount.Id, new AccountMutationDto("Changed", "USD")));
         Assert.IsType<NoContentResult>(await controller.UpdateAccount(
             account.Id, new AccountMutationDto("Alice updated", "USD")));
-        Assert.IsType<NoContentResult>(await controller.ArchiveAccount(account.Id));
+        Assert.IsType<NoContentResult>(await controller.UpdateAccount(
+            account.Id, new AccountMutationDto("Alice closed", "USD", IsArchived: true)));
         Assert.IsType<OkObjectResult>((await controller.DeleteAccount(account.Id)).Result);
 
         var accounts = await controller.GetAccounts();

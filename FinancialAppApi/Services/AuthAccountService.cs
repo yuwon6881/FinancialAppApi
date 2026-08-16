@@ -945,17 +945,6 @@ public class AuthAccountService
         };
     }
 
-    public async Task<IActionResult> GetSecurityQuestionsSetupStatusAsync(
-        string? username,
-        CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrEmpty(username)) return new UnauthorizedResult();
-        var user = await _context.AppUsers
-            .FirstOrDefaultAsync(u => u.Username == username, cancellationToken);
-        if (user == null) return new UnauthorizedResult();
-        return new OkObjectResult(new { hasSetupSecurityQuestions = user.HasSetupSecurityQuestions });
-    }
-
     public async Task<IActionResult> SetupSecurityQuestionsAsync(
         string? username,
         List<QuestionAnswerDto> answers,
