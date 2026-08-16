@@ -38,13 +38,15 @@ public sealed record LedgerAccountReconcileTarget(
     decimal Target,
     bool? InterestEnabled = null,
     decimal? InterestRatePercent = null,
-    string? InterestFrequency = null);
+    string? InterestFrequency = null,
+    string? ExpectedName = null,
+    string? ExpectedKind = null,
+    bool? ExpectedIsArchived = null);
 
 public sealed record LedgerAccountReconcileRequest(
     string OperationId,
     string Bucket,
     decimal ExpectedBucketTotal,
-    string? AdjustmentAccountId,
     IReadOnlyList<LedgerAccountReconcileTarget> Targets,
     string? Description = null);
 
@@ -183,8 +185,9 @@ public sealed partial class LedgerAccountService
             InterestEnabled = interest.Enabled,
             InterestRatePercent = interest.RatePercent,
             InterestFrequency = interest.Frequency,
+            InterestAnchorDay = interest.Enabled ? _clock.Today.Day : null,
             InterestNextAccrualDate = interest.Enabled
-                ? LedgerAccountInterestFrequency.NextDate(_clock.Today, interest.Frequency)
+                ? LedgerAccountInterestFrequency.NextDate(_clock.Today, interest.Frequency, _clock.Today.Day)
                 : null,
             IsArchived = false,
             CreatedAt = now,
@@ -202,7 +205,7 @@ public sealed partial class LedgerAccountService
                 Description = $"Opening Balance — {account.Name}",
                 Category = "Adjustment",
                 LedgerCategory = account.Bucket,
-                Amount = Math.Round(mutation.OpeningAmount, 2, MidpointRounding.AwayFromZero),
+                Amount = MoneyRounding.RoundMoney(mutation.OpeningAmount),
                 ExcludeFromAutocomplete = true,
                 IsAccountBalanceAdjustment = true,
                 AccountId = account.Id,
@@ -281,10 +284,11 @@ public sealed partial class LedgerAccountService
                 return Conflict("Every bucket needs one open account. Add another before closing this one.");
         }
         await ApplyDueInterestAsync(cancellationToken);
+        var wasInterestEnabled = account.InterestEnabled;
+        var previousAnchorDay = account.InterestAnchorDay
+            ?? account.InterestNextAccrualDate?.Day
+            ?? _clock.Today.Day;
         var interest = NormalizeInterest(mutation, account);
-        var interestChanged = account.InterestEnabled != interest.Enabled
-            || account.InterestRatePercent != interest.RatePercent
-            || !string.Equals(account.InterestFrequency, interest.Frequency, StringComparison.OrdinalIgnoreCase);
         account.Name = mutation.Name.Trim();
         account.Bucket = nextBucket;
         account.Kind = LedgerAccountKind.Normalize(mutation.Kind);
@@ -297,10 +301,17 @@ public sealed partial class LedgerAccountService
             account.InterestNextAccrualDate = null;
             account.InterestRemainder = 0m;
         }
-        else if (interestChanged || wasArchived || account.InterestNextAccrualDate is null)
+        else if (!wasInterestEnabled || wasArchived || account.InterestNextAccrualDate is null)
         {
-            account.InterestNextAccrualDate = LedgerAccountInterestFrequency.NextDate(_clock.Today, interest.Frequency);
-            account.InterestRemainder = 0m;
+            account.InterestAnchorDay = previousAnchorDay;
+            account.InterestNextAccrualDate = LedgerAccountInterestFrequency.NextDate(
+                _clock.Today,
+                interest.Frequency,
+                previousAnchorDay);
+        }
+        else
+        {
+            account.InterestAnchorDay = previousAnchorDay;
         }
         account.UpdatedAt = DateTime.UtcNow;
 

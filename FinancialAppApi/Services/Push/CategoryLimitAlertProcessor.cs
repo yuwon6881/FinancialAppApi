@@ -206,6 +206,7 @@ public sealed class CategoryLimitAlertProcessor
         var now = DateTime.UtcNow;
         if (setting == null || !setting.CategoryLimitAlertsEnabled)
         {
+            await ReleaseMilestonesAsync(events.Select(item => item.Id), cancellationToken);
             foreach (var item in events) item.CompletedAt = now;
             await _context.SaveChangesAsync(cancellationToken);
             return new CategoryLimitAlertDispatchSummary(0, events.Count, 0);
@@ -218,6 +219,7 @@ public sealed class CategoryLimitAlertProcessor
             .ToListAsync(cancellationToken);
         if (subscriptions.Count == 0)
         {
+            await ReleaseMilestonesAsync(events.Select(item => item.Id), cancellationToken);
             foreach (var item in events) item.CompletedAt = now;
             await _context.SaveChangesAsync(cancellationToken);
             return new CategoryLimitAlertDispatchSummary(0, events.Count, 0);
@@ -230,6 +232,7 @@ public sealed class CategoryLimitAlertProcessor
         {
             if (alertEvent.ExpiresAt <= now)
             {
+                await ReleaseMilestonesAsync([alertEvent.Id], cancellationToken);
                 alertEvent.CompletedAt = now;
                 skipped++;
                 continue;
@@ -297,6 +300,12 @@ public sealed class CategoryLimitAlertProcessor
                     subscription.BillRemindersEnabled = false;
                     subscription.CategoryAlertsEnabled = false;
                     subscription.FcmToken = string.Empty;
+                    if (setting != null && !await _context.PushSubscriptions.AnyAsync(
+                            candidate => candidate.Enabled && candidate.CategoryAlertsEnabled,
+                            cancellationToken))
+                    {
+                        setting.CategoryLimitAlertsEnabled = false;
+                    }
                     disabled++;
                     await _context.SaveChangesAsync(cancellationToken);
                 }
@@ -310,7 +319,7 @@ public sealed class CategoryLimitAlertProcessor
             }
 
             var hasUndeliveredEnabledDevice = await _context.PushSubscriptions
-                .Where(subscription => subscription.Enabled)
+                .Where(subscription => subscription.Enabled && subscription.CategoryAlertsEnabled)
                 .AnyAsync(subscription => !_context.CategoryLimitAlertDeliveries.Any(delivery =>
                     delivery.EventId == alertEvent.Id && delivery.SubscriptionId == subscription.Id), cancellationToken);
             if (!hasUndeliveredEnabledDevice)
@@ -321,6 +330,19 @@ public sealed class CategoryLimitAlertProcessor
 
         await _context.SaveChangesAsync(cancellationToken);
         return new CategoryLimitAlertDispatchSummary(sent, skipped, disabled);
+    }
+
+    private async Task ReleaseMilestonesAsync(
+        IEnumerable<string> eventIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = eventIds.Distinct(StringComparer.Ordinal).ToList();
+        if (ids.Count == 0) return;
+
+        var milestones = await _context.CategoryLimitAlertMilestones
+            .Where(item => ids.Contains(item.EventId))
+            .ToListAsync(cancellationToken);
+        _context.CategoryLimitAlertMilestones.RemoveRange(milestones);
     }
 
     private static Dictionary<string, decimal> BuildCurrentCycleDeltas(

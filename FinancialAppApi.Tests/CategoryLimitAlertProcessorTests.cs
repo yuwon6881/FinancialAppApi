@@ -171,6 +171,44 @@ public class CategoryLimitAlertProcessorTests
     }
 
     [Fact]
+    public async Task ProcessPendingAsync_ReleasesMilestonesWhenAnUnconsentedEventIsDropped()
+    {
+        var dbName = NewDbName();
+        await SeedAsync(dbName, [("Dining", 100m, 79m)], categoryAlertsEnabled: false);
+        await using (var setup = NewContext(dbName, authenticated: true))
+        {
+            setup.CategoryLimitAlertEvents.Add(new CategoryLimitAlertEvent
+            {
+                Id = "event-dropped",
+                UserId = "user-a",
+                CycleKey = "2026-08",
+                Title = "Category spending alert",
+                Body = "Dining has reached your guide.",
+                Tag = "category-limits:2026-08",
+                CategoryName = "Dining",
+                CreatedAt = CurrentDate,
+                ExpiresAt = CurrentDate.AddDays(1)
+            });
+            setup.CategoryLimitAlertMilestones.Add(new CategoryLimitAlertMilestone
+            {
+                Id = "milestone-dropped",
+                UserId = "user-a",
+                EventId = "event-dropped",
+                CycleKey = "2026-08",
+                CategoryName = "Dining",
+                Milestone = "Limit"
+            });
+            await setup.SaveChangesAsync();
+        }
+
+        await using var context = NewContext(dbName, authenticated: true);
+        await NewProcessor(context, new FakeSender()).ProcessPendingAsync();
+
+        Assert.Empty(await context.CategoryLimitAlertMilestones.ToListAsync());
+        Assert.NotNull((await context.CategoryLimitAlertEvents.SingleAsync()).CompletedAt);
+    }
+
+    [Fact]
     public async Task ProcessPendingAsync_IgnoresHistoricalAndTransferRows()
     {
         var dbName = NewDbName();

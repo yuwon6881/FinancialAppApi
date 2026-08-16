@@ -84,6 +84,7 @@ public partial class PushDispatchService
                 var userBalances = await accountService.GetBalancesAsync(userAccounts, cancellationToken);
                 var userAccountsById = userAccounts.ToDictionary(a => a.Id, StringComparer.Ordinal);
 
+                var duePayments = new List<(RecurringPayment Payment, RecurringPaymentOccurrence Due)>();
                 foreach (var payment in candidate.Payments)
                 {
                     var due = await ResolveDueOccurrenceAsync(occurrenceLedger, payment, today, cancellationToken);
@@ -91,6 +92,40 @@ public partial class PushDispatchService
                     {
                         continue;
                     }
+
+                    duePayments.Add((payment, due));
+                }
+
+                var projectedDebits = duePayments
+                    .Where(item => item.Payment.PaymentMode == RecurringPaymentMode.AutoDeduct)
+                    .Select(item =>
+                    {
+                        var accountId = string.IsNullOrWhiteSpace(item.Due.AccountId)
+                            ? item.Payment.AccountId
+                            : item.Due.AccountId;
+                        var account = string.IsNullOrWhiteSpace(accountId)
+                            ? null
+                            : userAccountsById.GetValueOrDefault(accountId);
+                        return new
+                        {
+                            item.Due,
+                            AccountId = accountId,
+                            Account = account,
+                            Amount = Math.Abs(item.Due.ScheduledAmount ?? item.Payment.Amount),
+                            OffsetDays = item.Due.OccurrenceDate.DayNumber - today.DayNumber
+                        };
+                    })
+                    .Where(item => item.Account is not null && !string.IsNullOrWhiteSpace(item.AccountId)
+                        && item.OffsetDays is >= 0 and <= 31)
+                    .Select(item => new RecurringAccountDebit(
+                        item.Due.Id,
+                        item.AccountId!,
+                        item.Due.OccurrenceDate,
+                        item.Amount));
+                var projections = RecurringAccountBalanceProjection.Project(projectedDebits, userBalances);
+
+                foreach (var (payment, due) in duePayments)
+                {
 
                     var occurrenceDate = due.OccurrenceDate;
                     var offsetDays = occurrenceDate.DayNumber - today.DayNumber;
@@ -107,14 +142,12 @@ public partial class PushDispatchService
                         ? null
                         : userAccountsById.GetValueOrDefault(accountId);
                     var scheduledAmount = Math.Abs(due.ScheduledAmount ?? payment.Amount);
-                    // Without a resolvable account there is no balance to compare against. Treating
-                    // a missing one as a zero balance reported a full-amount shortfall against an
-                    // account that does not exist, for every legacy bill carrying no placement.
-                    var accountBalance = account is null ? 0m : userBalances.GetValueOrDefault(account.Id);
+                    projections.TryGetValue(due.Id, out var projection);
                     var isShortfallOneDayPrior = isAutoDeduct
                         && offsetDays == 1
                         && account is not null
-                        && accountBalance < scheduledAmount;
+                        && projection is not null
+                        && projection.Shortfall > 0m;
 
                     var shouldSendStandard = payment.PushReminderEnabled && (isDaily
                         ? offsetDays <= payment.PushReminderLeadDays
@@ -125,7 +158,7 @@ public partial class PushDispatchService
                         continue;
                     }
 
-                    decimal? shortfallAmount = isShortfallOneDayPrior ? (scheduledAmount - accountBalance) : null;
+                    decimal? shortfallAmount = isShortfallOneDayPrior ? projection!.Shortfall : null;
                     string? accountName = isShortfallOneDayPrior ? account?.Name : null;
 
                     foreach (var subscription in subscriptions)
@@ -283,11 +316,18 @@ public partial class PushDispatchService
                 subscription.BillRemindersEnabled = false;
                 subscription.CategoryAlertsEnabled = false;
                 subscription.FcmToken = string.Empty;
+                var setting = await context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
+                if (setting != null && !await context.PushSubscriptions.AnyAsync(
+                        candidate => candidate.Enabled && candidate.CategoryAlertsEnabled,
+                        cancellationToken))
+                {
+                    setting.CategoryLimitAlertsEnabled = false;
+                }
                 await context.SaveChangesAsync(cancellationToken);
                 return ("Disabled", 0, 0, 1);
             default:
                 // Never logs the token or any payment amount — just that a send failed. The
-                // claim above already stands, so a same-day retry will not resend this one.
+                // the claim above is removed, so a same-day retry may send this reminder again.
                 context.PushReminderDeliveries.RemoveRange(claims);
                 await context.SaveChangesAsync(cancellationToken);
                 _logger.LogWarning(
@@ -387,37 +427,27 @@ public partial class PushDispatchService
 
         // Enabled device subscriptions, rather than the legacy account flag, are authoritative.
         // This preserves delivery to mobile when an older desktop client previously cleared the
-        // account flag and left the mobile subscription intact.
-        var settings = await context.FinancialSettings
-            .IgnoreQueryFilters()
-            .Where(s => subscribedUserIds.Contains(s.UserId))
-            .Select(s => new { s.UserId, s.CycleDay })
-            .ToListAsync(cancellationToken);
-        if (settings.Count == 0)
-        {
-            return new Dictionary<string, DispatchCandidateUser>();
-        }
-
-        var enabledUserIds = settings.Select(s => s.UserId).ToHashSet();
+        // account flag and left the mobile subscription intact. FinancialSettings is not part of
+        // the subscription contract; a user with a missing settings row must still receive push.
         var payments = await context.RecurringPayments
             .IgnoreQueryFilters()
-            .Where(p => p.Active && (p.PushReminderEnabled || p.PaymentMode == RecurringPaymentMode.AutoDeduct) && enabledUserIds.Contains(p.UserId))
+            .Where(p => p.Active && (p.PushReminderEnabled || p.PaymentMode == RecurringPaymentMode.AutoDeduct) && subscribedUserIds.Contains(p.UserId))
             .ToListAsync(cancellationToken);
 
         var result = new Dictionary<string, DispatchCandidateUser>();
-        foreach (var setting in settings)
+        foreach (var userId in subscribedUserIds)
         {
-            var userPayments = payments.Where(p => p.UserId == setting.UserId).ToList();
+            var userPayments = payments.Where(p => p.UserId == userId).ToList();
             if (userPayments.Count == 0)
             {
                 continue;
             }
 
-            result[setting.UserId] = new DispatchCandidateUser(setting.CycleDay, userPayments);
+            result[userId] = new DispatchCandidateUser(userPayments);
         }
 
         return result;
     }
 
-    private sealed record DispatchCandidateUser(int CycleDay, List<RecurringPayment> Payments);
+    private sealed record DispatchCandidateUser(List<RecurringPayment> Payments);
 }

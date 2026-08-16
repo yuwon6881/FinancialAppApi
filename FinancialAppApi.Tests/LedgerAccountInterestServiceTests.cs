@@ -31,6 +31,7 @@ public sealed class LedgerAccountInterestServiceTests
         Assert.True(result.Account!.InterestEnabled);
         Assert.Equal(5m, result.Account.InterestRatePercent);
         Assert.Equal(LedgerAccountInterestFrequency.Monthly, result.Account.InterestFrequency);
+        Assert.Equal(FinancialClock.Utc.Today.Day, result.Account.InterestAnchorDay);
         Assert.Equal(FinancialClock.Utc.Today.AddMonths(1), result.Account.InterestNextAccrualDate);
 
         var update = await service.UpdateAsync(
@@ -71,6 +72,70 @@ public sealed class LedgerAccountInterestServiceTests
         Assert.Equal(0.32m, daily.PostedAmount);
         Assert.Equal(120m, yearly.PostedAmount);
         Assert.True(daily.Remainder > 0m);
+    }
+
+    [Fact]
+    public void NextDatePreservesTheOriginalCalendarDayAcrossClampedMonths()
+    {
+        Assert.Equal(
+            new DateOnly(2026, 2, 28),
+            LedgerAccountInterestFrequency.NextDate(new DateOnly(2026, 1, 31), LedgerAccountInterestFrequency.Monthly, 31));
+        Assert.Equal(
+            new DateOnly(2026, 3, 31),
+            LedgerAccountInterestFrequency.NextDate(new DateOnly(2026, 2, 28), LedgerAccountInterestFrequency.Monthly, 31));
+        Assert.Equal(
+            new DateOnly(2028, 2, 29),
+            LedgerAccountInterestFrequency.NextDate(new DateOnly(2028, 1, 31), LedgerAccountInterestFrequency.Monthly, 31));
+        Assert.Equal(
+            new DateOnly(2025, 2, 28),
+            LedgerAccountInterestFrequency.NextDate(new DateOnly(2024, 2, 29), LedgerAccountInterestFrequency.Yearly, 29));
+        Assert.Equal(
+            new DateOnly(2026, 2, 28),
+            LedgerAccountInterestFrequency.NextDate(new DateOnly(2025, 2, 28), LedgerAccountInterestFrequency.Yearly, 29));
+    }
+
+    [Fact]
+    public async Task EditingInterestTermsPreservesTheFutureScheduleAndRemainder()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var today = FinancialClock.Utc.Today;
+        var nextDate = today.AddDays(10);
+        var account = new LedgerAccount
+        {
+            Id = "acct-interest-edit",
+            Name = "Interest edit",
+            UserId = TestHelpers.DefaultUserId,
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+            InterestEnabled = true,
+            InterestRatePercent = 4m,
+            InterestFrequency = LedgerAccountInterestFrequency.Monthly,
+            InterestAnchorDay = 31,
+            InterestNextAccrualDate = nextDate,
+            InterestRemainder = 0.004m,
+        };
+        context.LedgerAccounts.Add(account);
+        await context.SaveChangesAsync();
+
+        var service = new LedgerAccountService(
+            context,
+            new LedgerAccountBalanceService(context),
+            new CycleBalanceService(context),
+            FinancialClock.Utc);
+        var result = await service.UpdateAsync(account.Id, new LedgerAccountMutation(
+            account.Id,
+            account.Name,
+            account.Bucket,
+            account.Kind,
+            false,
+            InterestEnabled: true,
+            InterestRatePercent: 4.25m,
+            InterestFrequency: LedgerAccountInterestFrequency.Yearly));
+
+        Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
+        Assert.Equal(nextDate, result.Account!.InterestNextAccrualDate);
+        Assert.Equal(31, result.Account.InterestAnchorDay);
+        Assert.Equal(0.004m, result.Account.InterestRemainder);
     }
 
     [Fact]
@@ -314,6 +379,56 @@ public sealed class LedgerAccountInterestServiceTests
 
         Assert.Single(context.TransactionCategories.Where(
             category => category.Name == LedgerAccountInterestService.CategoryName));
+    }
+
+    [Fact]
+    public async Task PostingInterestUsesTheExistingCategorySpelling()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var today = FinancialClock.Utc.Today;
+        context.TransactionCategories.Add(new TransactionCategory
+        {
+            Id = "cat-existing-interest",
+            Name = "interest",
+            Type = CategoryFlowType.Inflow,
+            UserId = TestHelpers.DefaultUserId,
+        });
+        var account = new LedgerAccount
+        {
+            Id = "acct-existing-category",
+            Name = "Existing category",
+            UserId = TestHelpers.DefaultUserId,
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+            InterestEnabled = true,
+            InterestRatePercent = 12m,
+            InterestFrequency = LedgerAccountInterestFrequency.Daily,
+            InterestNextAccrualDate = today,
+        };
+        context.LedgerAccounts.Add(account);
+        context.Transactions.Add(new Transaction
+        {
+            Id = "acct-existing-category-opening",
+            Date = TransactionDate.StartOfDate(today.AddDays(-1)),
+            PostedAt = DateTime.UtcNow,
+            Description = "Opening balance",
+            Category = "Adjustment",
+            LedgerCategory = "Essentials",
+            Amount = 1_000m,
+            AccountId = account.Id,
+        });
+        await context.SaveChangesAsync();
+
+        var service = new LedgerAccountInterestService(
+            context,
+            new LedgerAccountBalanceService(context),
+            FinancialClock.Utc);
+        await service.ApplyDueInterestAsync();
+
+        var row = Assert.Single(context.Transactions.Where(
+            transaction => transaction.Id.StartsWith("acct-existing-category-interest-")));
+        Assert.Equal("interest", row.Category);
+        Assert.Single(context.TransactionCategories.Where(category => category.Name.ToLower() == "interest"));
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset value) : TimeProvider

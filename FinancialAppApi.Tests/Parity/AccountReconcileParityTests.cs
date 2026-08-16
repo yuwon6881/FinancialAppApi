@@ -83,7 +83,6 @@ public sealed class AccountReconcileParityTests
             operationId,
             bucket,
             expectedBucketTotal,
-            AdjustmentAccountId: null,
             Targets: targets,
             Description: description);
 

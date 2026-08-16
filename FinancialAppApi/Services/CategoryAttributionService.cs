@@ -63,15 +63,6 @@ public static class CategoryAttributionService
         return (year, monthIdx);
     }
 
-    public static DateTime GetBillingDateForCycle(DateTime cycleStart, DateTime cycleEnd, int cycleDay, int dueDate)
-    {
-        if (cycleDay == 1 || dueDate >= cycleStart.Day)
-        {
-            return new DateTime(cycleStart.Year, cycleStart.Month, Math.Min(dueDate, DateTime.DaysInMonth(cycleStart.Year, cycleStart.Month)));
-        }
-        return new DateTime(cycleEnd.Year, cycleEnd.Month, Math.Min(dueDate, DateTime.DaysInMonth(cycleEnd.Year, cycleEnd.Month)));
-    }
-
     public static decimal GetCategoryAmount(Transaction t, string categoryName)
     {
         // AccountMove is an in-bucket movement and intentionally has no effect on any of the

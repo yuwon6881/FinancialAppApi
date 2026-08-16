@@ -769,7 +769,7 @@ public class SavingsGoalServiceTests
         var deleted = await persistence.DeleteTransactionAsync(completed.CompletionTransaction!.Id);
 
         Assert.Equal(TransactionMutationStatus.Conflict, deleted.Status);
-        Assert.Contains("changed after", deleted.Message);
+        Assert.Contains("can no longer restore", deleted.Message);
         Assert.Contains(context.Transactions, transaction => transaction.Id == completed.CompletionTransaction.Id);
         Assert.Equal(100m, context.SavingsGoals.Single().EarmarkedAmount);
     }

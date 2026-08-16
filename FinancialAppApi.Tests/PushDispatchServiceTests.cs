@@ -309,6 +309,65 @@ public class PushDispatchServiceTests
     }
 
     [Fact]
+    public async Task DispatchAsync_AutoDeductShortfall_ProjectsEarlierBillsAgainstTheSameAccount()
+    {
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        var tomorrow = today.AddDays(1);
+        var account = new LedgerAccount
+        {
+            Id = "acc-main",
+            Name = "Checking Account",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank
+        };
+        await SeedAsync(dbName, "user-a",
+            NewPayment(
+                "rec-first",
+                dueDate: tomorrow.Day,
+                leadDays: 3,
+                name: "First bill",
+                amount: 500m,
+                pushReminderEnabled: false,
+                paymentMode: RecurringPaymentMode.AutoDeduct,
+                accountId: account.Id),
+            accounts: [account]);
+        await using (var seed = NewSeedContext(dbName))
+        {
+            var second = NewPayment(
+                "rec-second",
+                dueDate: tomorrow.Day,
+                leadDays: 3,
+                name: "Second bill",
+                amount: 450m,
+                pushReminderEnabled: false,
+                paymentMode: RecurringPaymentMode.AutoDeduct,
+                accountId: account.Id);
+            second.UserId = "user-a";
+            seed.RecurringPayments.Add(second);
+            seed.Transactions.Add(new Transaction
+            {
+                Id = "tx-open",
+                UserId = "user-a",
+                Date = new DateTime(2026, 7, 1),
+                Description = "Initial balance",
+                Category = "Income",
+                LedgerCategory = "Essentials",
+                AccountId = account.Id,
+                Amount = 800m
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        var sender = new FakeFcmPushSender();
+        var summary = await NewDispatchService(dbName, Clock(today), sender).DispatchAsync();
+
+        Assert.Equal(1, summary.Sent);
+        Assert.Contains("needs 150.00 more in Checking Account", sender.Sent.Single().Content.Body);
+        Assert.Equal("Second bill", sender.Sent.Single().Content.Title);
+    }
+
+    [Fact]
     public async Task DispatchAsync_AutoDeductShortfall_DoesNotSendTwoDaysPrior()
     {
         var dbName = NewDbName();

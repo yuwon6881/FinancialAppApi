@@ -236,6 +236,32 @@ public class WishlistServiceTests
         Assert.Null(await context.Transactions.FindAsync("tx-1"));
     }
 
+    [Fact]
+    public async Task UnpurchaseWishlistItemAsync_FindsLegacyTransactionByWishlistItemId()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var item = NewItem(1, "Headphones", active: false, price: 80m);
+        item.IsPurchased = true;
+        item.PurchaseTransactionId = null;
+        context.WishlistItems.Add(item);
+        context.Transactions.Add(new Transaction
+        {
+            Id = "legacy-purchase",
+            Date = DateTime.UtcNow,
+            Description = "Purchased: Headphones (Wish List)",
+            Category = "Other",
+            LedgerCategory = "Rewards",
+            Amount = -80m,
+            WishlistItemId = 1
+        });
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).UnpurchaseWishlistItemAsync(1);
+
+        Assert.Equal(WishlistMutationStatus.Success, result.Status);
+        Assert.Null(await context.Transactions.FindAsync("legacy-purchase"));
+    }
+
     private static WishlistService NewService(Database.AppDbContext context)
     {
         if (context.LedgerAccounts.All(account => account.Id != "acct-rewards"))

@@ -216,6 +216,49 @@ public class StabilityRecoveryServiceTests
     }
 
     [Fact]
+    public async Task BuildAsync_IncludesCarriedFifoDrawdownsInTheCurrentReportingWindow()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 5, 4), "Stability", 1000m);
+        Add(context, "old-drawdown", new DateTime(2026, 6, 4), "Stability", -500m);
+        var currentDrawdown = Add(context, "current-drawdown", new DateTime(2027, 1, 4), "Stability", -300m);
+        var repayment = Add(
+            context,
+            "current-repayment",
+            new DateTime(2027, 1, 4),
+            "Stability",
+            600m,
+            "Reimbursement");
+        // Build starts from the persisted previous-cycle queue. Seed the carried 500 explicitly so
+        // this test isolates the cross-cycle reporting window from the cache-building path.
+        context.CycleBalances.Add(new CycleBalance
+        {
+            Year = 2026,
+            MonthIndex = 12,
+            StabilityBalance = 500m,
+            StabilityReloadOutstanding = 500m,
+            StabilityReloadOldestDate = new DateOnly(2026, 6, 4)
+        });
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(
+            context,
+            setting,
+            2027,
+            1,
+            opening: 500m,
+            current: 800m,
+            currentDrawdown,
+            repayment);
+
+        Assert.Equal(800m, Money(recovery.MarkedTotal));
+        Assert.Equal(600m, Money(recovery.RepaidTotal));
+        Assert.Equal(200m, Money(recovery.OutstandingShortfall));
+        Assert.Equal("2026-06-04", recovery.RecoveryFromDate);
+    }
+
+    [Fact]
     public async Task BuildAsync_IgnoresMoneyMovingIntoTheFund()
     {
         await using var context = NewContext();

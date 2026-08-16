@@ -141,6 +141,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.InterestFrequency)
                 .HasMaxLength(10)
                 .HasDefaultValue(LedgerAccountInterestFrequency.Monthly);
+            entity.Property(e => e.InterestAnchorDay).HasColumnType("integer");
             entity.Property(e => e.InterestRemainder).HasColumnType("numeric(12,8)").HasDefaultValue(0m);
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
@@ -162,6 +163,9 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                 table.HasCheckConstraint(
                     "ck_ledgeraccounts_interestremainder",
                     "\"InterestRemainder\" >= 0");
+                table.HasCheckConstraint(
+                    "ck_ledgeraccounts_interestanchorday",
+                    "\"InterestAnchorDay\" IS NULL OR \"InterestAnchorDay\" BETWEEN 1 AND 31");
             });
             entity.HasAlternateKey(e => new { e.UserId, e.Id });
         });

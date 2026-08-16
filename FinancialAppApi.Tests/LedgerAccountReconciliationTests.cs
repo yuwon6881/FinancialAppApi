@@ -46,7 +46,6 @@ public sealed class LedgerAccountReconciliationTests
             "op-stale-bucket",
             "Essentials",
             ExpectedBucketTotal: 50m,
-            AdjustmentAccountId: "acct-main",
             Targets:
             [
                 new("acct-main", "Main", LedgerAccountKind.Bank, false, ExpectedCurrent: 50m, Target: 60m)
@@ -77,7 +76,6 @@ public sealed class LedgerAccountReconciliationTests
             "op-stale-account",
             "Essentials",
             ExpectedBucketTotal: 100m,
-            AdjustmentAccountId: null,
             Targets:
             [
                 new("acct-1", "Account 1", LedgerAccountKind.Bank, false, ExpectedCurrent: 70m, Target: 50m),
@@ -108,7 +106,6 @@ public sealed class LedgerAccountReconciliationTests
             "op-redistribute",
             "Essentials",
             ExpectedBucketTotal: 100m,
-            AdjustmentAccountId: null,
             Targets:
             [
                 new("acct-1", "Bank", LedgerAccountKind.Bank, false, ExpectedCurrent: 100m, Target: 60m),
@@ -161,7 +158,6 @@ public sealed class LedgerAccountReconciliationTests
             "op-correction",
             "Essentials",
             ExpectedBucketTotal: 100m,
-            AdjustmentAccountId: "acct-1",
             Targets:
             [
                 new("acct-1", "Bank", LedgerAccountKind.Bank, false, ExpectedCurrent: 100m, Target: 120m),
@@ -209,10 +205,86 @@ public sealed class LedgerAccountReconciliationTests
             "op-preserve-kind",
             "Essentials",
             0m,
-            null,
             [new("acct-cash", "Cash", null, false, 0m, 25m)]));
 
         Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
         Assert.Equal(LedgerAccountKind.Cash, context.LedgerAccounts.Single().Kind);
+    }
+
+    [Fact]
+    public async Task ReconcileAsync_DoesNotMixAnUndoOperationWithItsOriginal()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+        var account = new LedgerAccount
+        {
+            Id = "acct-idempotency",
+            Name = "Main",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+            UserId = TestHelpers.DefaultUserId,
+        };
+        context.LedgerAccounts.Add(account);
+        await context.SaveChangesAsync();
+
+        var original = new LedgerAccountReconcileRequest(
+            "K",
+            "Essentials",
+            0m,
+            [new("acct-idempotency", "Main", LedgerAccountKind.Bank, false, 0m, 25m)]);
+        var first = await service.ReconcileAsync(original);
+        Assert.Equal(LedgerAccountMutationStatus.Success, first.Status);
+
+        var undo = await service.ReconcileAsync(new LedgerAccountReconcileRequest(
+            "K-undo",
+            "Essentials",
+            25m,
+            [new("acct-idempotency", "Main", LedgerAccountKind.Bank, false, 25m, 0m)]));
+        Assert.Equal(LedgerAccountMutationStatus.Success, undo.Status);
+
+        var retry = await service.ReconcileAsync(original);
+        Assert.Equal(LedgerAccountMutationStatus.Success, retry.Status);
+        Assert.Collection(
+            retry.Transactions!,
+            transaction => Assert.Equal("reconcile-K-adjustment-0", transaction.Id));
+    }
+
+    [Fact]
+    public async Task ReconcileAsync_ReturnsConflictWhenAccountIdentityChangedUnderneathPreview()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+        var account = new LedgerAccount
+        {
+            Id = "acct-stale-identity",
+            Name = "Main",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+            UserId = TestHelpers.DefaultUserId,
+        };
+        context.LedgerAccounts.Add(account);
+        await context.SaveChangesAsync();
+
+        account.Name = "Renamed elsewhere";
+        await context.SaveChangesAsync();
+
+        var result = await service.ReconcileAsync(new LedgerAccountReconcileRequest(
+            "op-stale-identity",
+            "Essentials",
+            0m,
+            [new(
+                "acct-stale-identity",
+                "Main",
+                LedgerAccountKind.Bank,
+                false,
+                0m,
+                10m,
+                ExpectedName: "Main",
+                ExpectedKind: LedgerAccountKind.Bank,
+                ExpectedIsArchived: false)]));
+
+        Assert.Equal(LedgerAccountMutationStatus.Conflict, result.Status);
+        Assert.Contains("account changed", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Renamed elsewhere", context.LedgerAccounts.Single().Name);
     }
 }

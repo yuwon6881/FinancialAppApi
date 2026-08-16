@@ -4,7 +4,7 @@ namespace FinancialAppApi.Models;
 
 // A claim row written BEFORE the FCM call is attempted (never after), so a retried or
 // concurrent dispatch run can never double-send the same reminder. The unique index on
-// (UserId, RecurringPaymentId, OccurrenceDate, ActualOffsetDays, SubscriptionId) is what makes
+// (UserId, RecurringPaymentId, OccurrenceDate, ActualOffsetDays, SubscriptionId, Kind) is what makes
 // the claim atomic: the insert itself is the concurrency guard, not a separate lock.
 public class PushReminderDelivery : IUserOwnedEntity
 {
@@ -43,6 +43,4 @@ public static class PushReminderDeliveryKind
 {
     public const string Reminder = "Reminder";
     public const string Shortfall = "Shortfall";
-
-    public static readonly string[] Values = [Reminder, Shortfall];
 }

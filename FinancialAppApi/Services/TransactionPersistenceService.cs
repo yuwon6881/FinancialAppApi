@@ -54,6 +54,7 @@ public class TransactionPersistenceService
     private readonly Stability.StabilityPlanRevisionService _stabilityPlanRevisionService;
     private readonly RecurringOccurrenceLedgerService _occurrenceLedger;
     private readonly FinancialClock _clock;
+    private readonly SavingsGoals.ISharedPoolMutationLock _sharedPoolMutationLock;
 
     public TransactionPersistenceService(
         AppDbContext context,
@@ -62,7 +63,8 @@ public class TransactionPersistenceService
         Stability.StabilityRecoveryService stabilityRecoveryService,
         RecurringOccurrenceLedgerService? occurrenceLedger = null,
         FinancialClock? clock = null,
-        Stability.StabilityPlanRevisionService? stabilityPlanRevisionService = null)
+        Stability.StabilityPlanRevisionService? stabilityPlanRevisionService = null,
+        SavingsGoals.ISharedPoolMutationLock? sharedPoolMutationLock = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
@@ -72,6 +74,7 @@ public class TransactionPersistenceService
             ?? new Stability.StabilityPlanRevisionService(context);
         _clock = clock ?? FinancialClock.Utc;
         _occurrenceLedger = occurrenceLedger ?? new RecurringOccurrenceLedgerService(context, occurrenceService, _clock);
+        _sharedPoolMutationLock = sharedPoolMutationLock ?? new SavingsGoals.SharedPoolMutationLock(context);
     }
 
     public async Task<TransactionMutationResult> CreateTransactionAsync(
@@ -228,6 +231,10 @@ public class TransactionPersistenceService
             return new TransactionMutationResult(TransactionMutationStatus.NotFound);
         }
 
+        await using var poolLock = transaction.SavingsGoalId.HasValue
+            ? await _sharedPoolMutationLock.AcquireAsync(cancellationToken)
+            : NoOpPoolLock.Instance;
+
         // Completion entries carry a snapshot whose amount/date must remain exact for deletion to
         // reverse the commitment safely. Let users delete (undo) them, but never edit them into a
         // ledger row that no longer matches the saved goal transition.
@@ -314,6 +321,7 @@ public class TransactionPersistenceService
         var preserveHistoricalRecovery = settingForCycle != null
             && originalRecoveryTopUp > 0m
             && nextRecoveryTopUp > 0m
+            && originalRecoveryTopUp == nextRecoveryTopUp
             && originalAmount == amount
             && originalTransactionCycle != currentCycle;
 
@@ -1126,7 +1134,7 @@ public class TransactionPersistenceService
 
             if (!isUntouchedLatestCompletion)
             {
-                return "This commitment changed after it was completed. Undo its newer changes before deleting this completion entry.";
+                return "This completion can no longer restore the commitment because it has newer changes. Keep the completion entry or delete the commitment separately.";
             }
 
             goal.TargetDate = completion.PreviousTargetDate;
@@ -1140,6 +1148,13 @@ public class TransactionPersistenceService
 
         _context.SavingsGoalCompletions.Remove(completion);
         return null;
+    }
+
+    private sealed class NoOpPoolLock : IAsyncDisposable
+    {
+        public static readonly NoOpPoolLock Instance = new();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private static TransactionMutationResult InvalidDate(string? message = null)

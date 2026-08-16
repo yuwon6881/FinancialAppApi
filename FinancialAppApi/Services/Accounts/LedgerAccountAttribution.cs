@@ -16,11 +16,12 @@ public static class LedgerAccountAttribution
     {
         if (string.Equals(transaction.LedgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase))
         {
+            var amount = 0m;
             if (string.Equals(account.Id, transaction.AccountId, StringComparison.Ordinal))
-                return -Math.Abs(transaction.Amount);
+                amount -= Math.Abs(transaction.Amount);
             if (string.Equals(account.Id, transaction.CounterAccountId, StringComparison.Ordinal))
-                return Math.Abs(transaction.Amount);
-            return 0m;
+                amount += Math.Abs(transaction.Amount);
+            return amount;
         }
 
         var leg = CategoryAttributionService.GetCategoryAmount(transaction, account.Bucket);

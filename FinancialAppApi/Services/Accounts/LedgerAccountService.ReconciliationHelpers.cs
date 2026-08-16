@@ -70,7 +70,7 @@ public sealed partial class LedgerAccountService
     }
 
     private static decimal RoundMoney(decimal value) =>
-        Math.Round(value, 2, MidpointRounding.AwayFromZero);
+        MoneyRounding.RoundMoney(value);
 
     private static (bool Enabled, decimal RatePercent, string Frequency) NormalizeReconcileInterest(
         LedgerAccountReconcileTarget target,

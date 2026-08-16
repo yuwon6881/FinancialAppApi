@@ -12,7 +12,7 @@ public sealed partial class LedgerAccountService
     {
         if (!FinancialConstants.BudgetCategories.Contains(request.Bucket, StringComparer.OrdinalIgnoreCase))
             return new(LedgerAccountMutationStatus.Invalid, "Choose a valid ledger bucket.");
-        if (string.IsNullOrWhiteSpace(request.OperationId) || request.OperationId.Trim().Length > 80)
+        if (string.IsNullOrWhiteSpace(request.OperationId) || request.OperationId.Trim().Length > 60)
             return new(LedgerAccountMutationStatus.Invalid, "The reconciliation operation id is invalid.");
         if (request.Description?.Trim().Length > 100)
             return new(LedgerAccountMutationStatus.Invalid, "The balance adjustment description is too long.");
@@ -67,18 +67,24 @@ public sealed partial class LedgerAccountService
             {
                 var accounts = await _context.LedgerAccounts.ToListAsync(cancellationToken);
                 var bucketAccounts = accounts.Where(account => account.Bucket.Equals(bucket, StringComparison.OrdinalIgnoreCase)).ToList();
-                var operationPrefix = $"reconcile-{operationKey}-";
+                var operationTransactionIds = Enumerable.Range(0, targets.Count)
+                    .Select(index => $"reconcile-{operationKey}-adjustment-{index}")
+                    .ToArray();
                 var existingOperationTransactions = await _context.Transactions
-                    .Where(transaction => transaction.UserId == userId && transaction.Id.StartsWith(operationPrefix))
+                    .Where(transaction => transaction.UserId == userId && operationTransactionIds.Contains(transaction.Id))
                     .ToListAsync(cancellationToken);
                 if (existingOperationTransactions.Count > 0)
                 {
                     var existingAccounts = await GetAccountsAsync(cancellationToken);
                     await databaseTransaction.CommitAsync(cancellationToken);
+                    var existingById = existingOperationTransactions.ToDictionary(transaction => transaction.Id);
                     return new(
                         LedgerAccountMutationStatus.Success,
                         Accounts: existingAccounts,
-                        Transactions: existingOperationTransactions.Select(ToReconcileTransaction).ToList());
+                        Transactions: operationTransactionIds
+                            .Where(existingById.ContainsKey)
+                            .Select(id => ToReconcileTransaction(existingById[id]))
+                            .ToList());
                 }
                 var balances = await _balanceService.GetBalancesAsync(accounts, cancellationToken);
                 var actualBucketTotal = RoundMoney(bucketAccounts.Sum(account => balances.GetValueOrDefault(account.Id)));
@@ -92,6 +98,14 @@ public sealed partial class LedgerAccountService
                     var current = RoundMoney(balances.GetValueOrDefault(existing.Id));
                     if (!NearlyEqual(current, target.ExpectedCurrent))
                         return await ConflictAsync(databaseTransaction, "An account balance changed while this setup was open.");
+                    if (target.ExpectedName is not null
+                        && !string.Equals(existing.Name, target.ExpectedName.Trim(), StringComparison.Ordinal))
+                        return await ConflictAsync(databaseTransaction, "An account changed while this setup was open. Refresh and try again.");
+                    if (target.ExpectedKind is not null
+                        && !string.Equals(existing.Kind, LedgerAccountKind.Normalize(target.ExpectedKind), StringComparison.Ordinal))
+                        return await ConflictAsync(databaseTransaction, "An account changed while this setup was open. Refresh and try again.");
+                    if (target.ExpectedIsArchived.HasValue && existing.IsArchived != target.ExpectedIsArchived.Value)
+                        return await ConflictAsync(databaseTransaction, "An account changed while this setup was open. Refresh and try again.");
                     if (existing.IsArchived && !NearlyEqual(current, target.Target))
                         return await ConflictAsync(databaseTransaction, "Closed accounts cannot receive a new balance. Reopen the account first.");
                 }
@@ -131,8 +145,9 @@ public sealed partial class LedgerAccountService
                             InterestEnabled = interest.Enabled,
                             InterestRatePercent = interest.RatePercent,
                             InterestFrequency = interest.Frequency,
+                            InterestAnchorDay = interest.Enabled && !target.IsArchived ? _clock.Today.Day : null,
                             InterestNextAccrualDate = interest.Enabled && !target.IsArchived
-                                ? LedgerAccountInterestFrequency.NextDate(_clock.Today, interest.Frequency)
+                                ? LedgerAccountInterestFrequency.NextDate(_clock.Today, interest.Frequency, _clock.Today.Day)
                                 : null,
                             IsArchived = target.IsArchived,
                             CreatedAt = DateTime.UtcNow,
@@ -145,6 +160,10 @@ public sealed partial class LedgerAccountService
                     else
                     {
                         var wasArchived = account.IsArchived;
+                        var wasInterestEnabled = account.InterestEnabled;
+                        var previousAnchorDay = account.InterestAnchorDay
+                            ?? account.InterestNextAccrualDate?.Day
+                            ?? _clock.Today.Day;
                         if (!wasArchived && target.IsArchived)
                         {
                             if (await _context.RecurringPayments.AnyAsync(
@@ -162,9 +181,6 @@ public sealed partial class LedgerAccountService
                             || target.InterestFrequency is not null)
                         {
                             var interest = NormalizeReconcileInterest(target, account);
-                            var interestChanged = account.InterestEnabled != interest.Enabled
-                                || account.InterestRatePercent != interest.RatePercent
-                                || !string.Equals(account.InterestFrequency, interest.Frequency, StringComparison.OrdinalIgnoreCase);
                             account.InterestEnabled = interest.Enabled;
                             account.InterestRatePercent = interest.RatePercent;
                             account.InterestFrequency = interest.Frequency;
@@ -173,10 +189,17 @@ public sealed partial class LedgerAccountService
                                 account.InterestNextAccrualDate = null;
                                 account.InterestRemainder = 0m;
                             }
-                            else if (interestChanged || account.InterestNextAccrualDate is null)
+                            else if (!wasInterestEnabled || account.InterestNextAccrualDate is null)
                             {
-                                account.InterestNextAccrualDate = LedgerAccountInterestFrequency.NextDate(_clock.Today, interest.Frequency);
-                                account.InterestRemainder = 0m;
+                                account.InterestAnchorDay = previousAnchorDay;
+                                account.InterestNextAccrualDate = LedgerAccountInterestFrequency.NextDate(
+                                    _clock.Today,
+                                    interest.Frequency,
+                                    previousAnchorDay);
+                            }
+                            else
+                            {
+                                account.InterestAnchorDay = previousAnchorDay;
                             }
                         }
                         if (account.IsArchived)
@@ -186,8 +209,11 @@ public sealed partial class LedgerAccountService
                         }
                         else if (wasArchived && account.InterestEnabled && account.InterestNextAccrualDate is null)
                         {
-                            account.InterestNextAccrualDate = LedgerAccountInterestFrequency.NextDate(_clock.Today, account.InterestFrequency);
-                            account.InterestRemainder = 0m;
+                            account.InterestAnchorDay ??= _clock.Today.Day;
+                            account.InterestNextAccrualDate = LedgerAccountInterestFrequency.NextDate(
+                                _clock.Today,
+                                account.InterestFrequency,
+                                account.InterestAnchorDay);
                         }
                         account.UpdatedAt = DateTime.UtcNow;
                     }

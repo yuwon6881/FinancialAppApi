@@ -17,7 +17,6 @@ public sealed record FinancialSettingsUpdate(
     int CycleDay,
     bool? DarkMode,
     bool? HideSensitive,
-    bool? VibrationEnabled,
     string Currency,
     string? StabilityOverflowRedirect);
 
@@ -343,6 +342,7 @@ public class FinancialService
             {
                 id = account.Id,
                 name = account.Name,
+                kind = account.Kind,
                 remaining = ObfuscationHelper.Obfuscate(
                     ledgerAccountBalances.TryGetValue(account.Id, out var balance) ? balance : 0m),
                 isArchived = account.IsArchived,
@@ -641,10 +641,6 @@ public class FinancialService
         {
             setting.HideSensitive = update.HideSensitive.Value;
         }
-        if (update.VibrationEnabled.HasValue)
-        {
-            setting.VibrationEnabled = update.VibrationEnabled.Value;
-        }
         if (update.StabilityOverflowRedirect != null)
         {
             setting.StabilityOverflowRedirect = update.StabilityOverflowRedirect;
@@ -694,13 +690,6 @@ public class FinancialService
     {
         var setting = await GetOrCreateSettingAsync(cancellationToken);
         setting.HideSensitive = hideSensitive;
-        await _context.SaveChangesAsync(cancellationToken);
-    }
-
-    public async Task UpdateVibrationAsync(bool vibrationEnabled, CancellationToken cancellationToken = default)
-    {
-        var setting = await GetOrCreateSettingAsync(cancellationToken);
-        setting.VibrationEnabled = vibrationEnabled;
         await _context.SaveChangesAsync(cancellationToken);
     }
 

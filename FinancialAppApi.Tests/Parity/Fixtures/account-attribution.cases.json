@@ -87,6 +87,26 @@
       "expected": 40.0
     },
     {
+      "id": "account-move-self-referential",
+      "why": "A malformed self-referential AccountMove subtracts and adds the same amount, leaving the account unchanged.",
+      "input": {
+        "transaction": {
+          "amount": 40.0,
+          "ledgerCategory": "AccountMove",
+          "accountId": "acct-bank",
+          "counterAccountId": "acct-bank"
+        },
+        "account": {
+          "id": "acct-bank",
+          "bucket": "Essentials"
+        },
+        "accounts": [
+          { "id": "acct-bank", "bucket": "Essentials" }
+        ]
+      },
+      "expected": 0.0
+    },
+    {
       "id": "income-split-child",
       "why": "A generated IncomeSplit child contributes to its assigned account in that bucket.",
       "input": {

@@ -4,7 +4,6 @@ using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services.Accounts;
 
-public sealed record LedgerAccountBalance(string AccountId, decimal Remaining);
 public sealed record LedgerAccountBalanceSnapshot(
     IReadOnlyDictionary<string, decimal> Current,
     IReadOnlyDictionary<string, decimal> ThroughExclusive);

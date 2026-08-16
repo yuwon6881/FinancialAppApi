@@ -20,7 +20,7 @@ public sealed class LedgerAccountInterestService
     private readonly AppDbContext _context;
     private readonly LedgerAccountBalanceService _balanceService;
     private readonly FinancialClock _clock;
-    private bool _categoryEnsured;
+    private string? _categoryName;
 
     private const string CategoryNameLower = "interest";
 
@@ -97,6 +97,10 @@ public sealed class LedgerAccountInterestService
                 cancellationToken,
                 TransactionDate.ExclusiveEndOfDate(dueDate));
 
+            // Interest is an "as known at the time" ledger record. A later transaction dated before
+            // this posting does not rewrite the deterministic interest row or reopen a completed
+            // period; only future periods observe the corrected balance. Replaying history here
+            // would make a backdated edit mutate already-reported cycles and break idempotency.
             foreach (var account in dueAccounts)
             {
                 var balance = balances.GetValueOrDefault(account.Id);
@@ -113,14 +117,14 @@ public sealed class LedgerAccountInterestService
                     var existing = await _context.Transactions.FindAsync([id], cancellationToken);
                     if (existing is null)
                     {
-                        await EnsureCategoryAsync(cancellationToken);
+                        var categoryName = await EnsureCategoryAsync(cancellationToken);
                         _context.Transactions.Add(new Transaction
                         {
                             Id = id,
                             Date = TransactionDate.StartOfDate(dueDate),
                             PostedAt = DateTime.UtcNow,
                             Description = $"Interest earned - {account.Name}",
-                            Category = "Interest",
+                            Category = categoryName,
                             LedgerCategory = account.Bucket,
                             Amount = accrual.PostedAmount,
                             ExcludeFromAutocomplete = true,
@@ -135,7 +139,8 @@ public sealed class LedgerAccountInterestService
 
                 account.InterestNextAccrualDate = LedgerAccountInterestFrequency.NextDate(
                     dueDate,
-                    account.InterestFrequency);
+                    account.InterestFrequency,
+                    account.InterestAnchorDay);
             }
 
             // Saving each calendar date makes the next balance query include earlier compounded
@@ -155,14 +160,17 @@ public sealed class LedgerAccountInterestService
     /// from <c>/api/categories/usage</c>. The category is inflow-only: interest is money coming
     /// in, and a spending guide over it would be meaningless.
     /// </summary>
-    private async Task EnsureCategoryAsync(CancellationToken cancellationToken)
+    private async Task<string> EnsureCategoryAsync(CancellationToken cancellationToken)
     {
-        if (_categoryEnsured) return;
-        _categoryEnsured = true;
+        if (_categoryName is not null) return _categoryName;
 
-        var exists = await _context.TransactionCategories
-            .AnyAsync(category => category.Name.ToLower() == CategoryNameLower, cancellationToken);
-        if (exists) return;
+        var existing = await _context.TransactionCategories
+            .FirstOrDefaultAsync(category => category.Name.ToLower() == CategoryNameLower, cancellationToken);
+        if (existing is not null)
+        {
+            _categoryName = existing.Name;
+            return _categoryName;
+        }
 
         _context.TransactionCategories.Add(new TransactionCategory
         {
@@ -170,6 +178,17 @@ public sealed class LedgerAccountInterestService
             Name = CategoryName,
             Type = CategoryFlowType.Inflow,
         });
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            _categoryName = CategoryName;
+            return _categoryName;
+        }
+        catch
+        {
+            _categoryName = null;
+            throw;
+        }
     }
 
     public static InterestAccrual CalculateAccrual(
@@ -193,6 +212,8 @@ public sealed class LedgerAccountInterestService
             LedgerAccountInterestFrequency.Yearly => 1m,
             _ => throw new ArgumentOutOfRangeException(nameof(frequency), frequency, "Unsupported interest frequency."),
         };
+        // Daily uses Actual/365-Fixed: every calendar day contributes one 365th of the annual
+        // rate, including leap years. Monthly and yearly remain the configured period rates.
         var earned = (balance * annualFraction / periodsPerYear) + Math.Max(0m, remainder);
         var posted = Math.Floor((earned + 0.00000001m) * 100m) / 100m;
         return new(posted, Math.Round(earned - posted, 8, MidpointRounding.AwayFromZero));

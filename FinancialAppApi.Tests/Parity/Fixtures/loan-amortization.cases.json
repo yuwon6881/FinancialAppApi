@@ -161,6 +161,38 @@
           "paymentDidNotCoverInterest": false
         }
       }
+    },
+    {
+      "id": "fractional-reducing-balance-monthly",
+      "why": "A fractional annual rate and principal exercise the shared half-away-from-zero money rounding.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 8350.0,
+          "annualRatePercent": 3.7,
+          "termPeriods": 19,
+          "interestMethod": "ReducingBalance"
+        },
+        "frequency": "Monthly",
+        "occurrenceDate": "2026-08-15",
+        "balanceBefore": 8350.0,
+        "payment": 453.15,
+        "paymentNumber": 1,
+        "flatInterestPaidBefore": 0.0,
+        "previousAccrualDate": "2026-07-15"
+      },
+      "expected": {
+        "scheduledPayment": 453.15,
+        "totalScheduledInterest": 259.85,
+        "split": {
+          "payment": 453.15,
+          "interest": 25.75,
+          "principal": 427.4,
+          "balanceBefore": 8350.0,
+          "balanceAfter": 7922.6,
+          "surplus": 0.0,
+          "paymentDidNotCoverInterest": false
+        }
+      }
     }
   ]
 }

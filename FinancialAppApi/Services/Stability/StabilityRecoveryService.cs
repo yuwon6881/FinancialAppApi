@@ -185,10 +185,11 @@ public class StabilityRecoveryService
                 0m);
         var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, setting.CycleDay);
         var cycleStartUtc = DateTime.SpecifyKind(cycleStart, DateTimeKind.Utc);
-        var cycleEndUtc = DateTime.SpecifyKind(cycleEnd, DateTimeKind.Utc);
+        var cycleEndExclusiveUtc = DateTime.SpecifyKind(cycleEnd.Date.AddDays(1), DateTimeKind.Utc);
+        var cycleEndInclusiveUtc = cycleEndExclusiveUtc.AddTicks(-1);
         var planAtStart = StabilityPlanRevisionService.At(planRevisions, cycleStartUtc);
         var cyclePlanPoints = planRevisions
-            .Where(revision => revision.EffectiveAt > cycleStartUtc && revision.EffectiveAt <= cycleEndUtc)
+            .Where(revision => revision.EffectiveAt > cycleStartUtc && revision.EffectiveAt < cycleEndExclusiveUtc)
             .Select(revision => new ReloadPlanPoint(revision.EffectiveAt, revision.TargetStabilityFund))
             .Prepend(new ReloadPlanPoint(planAtStart.EffectiveAt, planAtStart.TargetStabilityFund))
             .ToList();
@@ -216,16 +217,22 @@ public class StabilityRecoveryService
             cyclesRemaining,
             replay.RepaidThisRun);
 
-        // The reporting window is the earlier of what is still outstanding and what this run marked.
-        // FIFO repayment retires the oldest entries first, so a drawdown fully paid off this cycle
-        // leaves the queue: anchoring only on the outstanding head dropped that row from the window
-        // and understated both totals by it. Reading 801.77 marked and 450 back beside a 520 that
-        // had visibly gone in is the same 70 missing twice.
-        var windowStart = replay.OldestMarkedThisRunDate.HasValue
-            && (!replay.OldestOutstandingDate.HasValue
-                || replay.OldestMarkedThisRunDate.Value < replay.OldestOutstandingDate.Value)
-            ? replay.OldestMarkedThisRunDate
-            : replay.OldestOutstandingDate;
+        // FIFO repayment can consume part of a carried drawdown before touching one marked in the
+        // current cycle. Keep the carried queue head in the reporting window as well: otherwise a
+        // December 500 drawdown carried into January, followed by a January 300 drawdown and 600
+        // reimbursement, would show only 300 marked and 100 repaid beside 200 outstanding.
+        var windowDates = new[]
+        {
+            openingReload.OldestOutstandingDate,
+            replay.OldestMarkedThisRunDate,
+            replay.OldestOutstandingDate
+        }
+            .Where(date => date.HasValue)
+            .Select(date => date!.Value)
+            .ToList();
+        var windowStart = replay.Outstanding > 0m && windowDates.Count > 0
+            ? windowDates.Min()
+            : (DateOnly?)null;
 
         var reloadTotals = replay.Outstanding > 0m && windowStart.HasValue
             ? await GetReloadTotalsAsync(
@@ -246,7 +253,7 @@ public class StabilityRecoveryService
             replay.Outstanding > 0m,
             ObfuscationHelper.Obfuscate(reloadTotals.MarkedTotal),
             ObfuscationHelper.Obfuscate(
-                StabilityPlanRevisionService.At(planRevisions, cycleEndUtc).TargetStabilityFund),
+                StabilityPlanRevisionService.At(planRevisions, cycleEndInclusiveUtc).TargetStabilityFund),
             ObfuscationHelper.Obfuscate(currentStability),
             ObfuscationHelper.Obfuscate(replay.Outstanding),
             ObfuscationHelper.Obfuscate(openingReload.Outstanding),
@@ -380,10 +387,10 @@ public class StabilityRecoveryService
                 0m,
                 0m);
         var cycleStartUtc = DateTime.SpecifyKind(start, DateTimeKind.Utc);
-        var cycleEndUtc = DateTime.SpecifyKind(end, DateTimeKind.Utc);
+        var cycleEndExclusiveUtc = DateTime.SpecifyKind(end.Date.AddDays(1), DateTimeKind.Utc);
         var planAtStart = StabilityPlanRevisionService.At(planRevisions, cycleStartUtc);
         var cyclePlanPoints = planRevisions
-            .Where(revision => revision.EffectiveAt > cycleStartUtc && revision.EffectiveAt <= cycleEndUtc)
+            .Where(revision => revision.EffectiveAt > cycleStartUtc && revision.EffectiveAt < cycleEndExclusiveUtc)
             .Select(revision => new ReloadPlanPoint(revision.EffectiveAt, revision.TargetStabilityFund))
             .Prepend(new ReloadPlanPoint(planAtStart.EffectiveAt, planAtStart.TargetStabilityFund))
             .ToList();

@@ -42,7 +42,7 @@ public static class LoanAmortization
         string.Equals(frequency, "Annually", StringComparison.OrdinalIgnoreCase) ? 1 : 12;
 
     public static decimal RoundMoney(decimal value) =>
-        Math.Round(value, 2, MidpointRounding.AwayFromZero);
+        MoneyRounding.RoundMoney(value);
 
     public static decimal AnnualRate(decimal annualRatePercent) => annualRatePercent / 100m;
 

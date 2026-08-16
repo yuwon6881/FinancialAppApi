@@ -1,3 +1,4 @@
+using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
 
@@ -5,6 +6,75 @@ namespace FinancialAppApi.Tests;
 
 public sealed class RecurringAccountShortfallEvaluatorTests
 {
+    [Fact]
+    public void EvaluatesShortfallsAgainstTheBalanceLeftByEarlierAutoDeducts()
+    {
+        var today = new DateOnly(2026, 8, 15);
+        var account = new LedgerAccount
+        {
+            Id = "acct-shared",
+            Name = "Main Bank",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank
+        };
+        var recurring = new List<RecurringPayment>
+        {
+            new()
+            {
+                Id = "rec-first",
+                Name = "Rent",
+                Amount = 500m,
+                PaymentMode = RecurringPaymentMode.AutoDeduct,
+                AccountId = account.Id,
+                LedgerCategory = "Essentials"
+            },
+            new()
+            {
+                Id = "rec-second",
+                Name = "Utilities",
+                Amount = 450m,
+                PaymentMode = RecurringPaymentMode.AutoDeduct,
+                AccountId = account.Id,
+                LedgerCategory = "Essentials"
+            }
+        };
+        var occurrences = new List<RecurringPaymentOccurrence>
+        {
+            new()
+            {
+                Id = "occ-second",
+                RecurringPaymentId = "rec-second",
+                Name = "Utilities",
+                ScheduledAmount = 450m,
+                OccurrenceDate = today.AddDays(2),
+                Status = RecurringOccurrenceStatus.Pending,
+                AccountId = account.Id
+            },
+            new()
+            {
+                Id = "occ-first",
+                RecurringPaymentId = "rec-first",
+                Name = "Rent",
+                ScheduledAmount = 500m,
+                OccurrenceDate = today.AddDays(1),
+                Status = RecurringOccurrenceStatus.Pending,
+                AccountId = account.Id
+            }
+        };
+
+        var shortfalls = RecurringAccountShortfallEvaluator.EvaluateShortfalls(
+            occurrences,
+            recurring,
+            [account],
+            new Dictionary<string, decimal> { [account.Id] = 800m },
+            today);
+
+        dynamic result = Assert.Single(shortfalls);
+        Assert.Equal("rec-second", (string)result.recurringPaymentId);
+        Assert.Equal(150m, ObfuscationHelper.Deobfuscate((string)result.shortfall));
+        Assert.Equal(300m, ObfuscationHelper.Deobfuscate((string)result.accountBalance));
+    }
+
     [Fact]
     public void EvaluatesShortfalls_ForUpcomingAutoDeductOccurrencesWithInsufficientBalance()
     {

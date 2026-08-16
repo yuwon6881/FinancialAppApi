@@ -13,41 +13,55 @@ public static class RecurringAccountShortfallEvaluator
         DateOnly today)
     {
         var accountsById = accounts.ToDictionary(a => a.Id, StringComparer.Ordinal);
+        var parentById = allRecurring.ToDictionary(payment => payment.Id, StringComparer.Ordinal);
+        var eligible = occurrences
+            .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.Pending)
+            .Select(occurrence =>
+            {
+                var parent = parentById.GetValueOrDefault(occurrence.RecurringPaymentId);
+                var accountId = occurrence.AccountId ?? parent?.AccountId;
+                return new { Occurrence = occurrence, Parent = parent, AccountId = accountId };
+            })
+            .Where(item => item.Parent?.PaymentMode == RecurringPaymentMode.AutoDeduct
+                && !string.IsNullOrWhiteSpace(item.AccountId))
+            .Select(item => new
+            {
+                item.Occurrence,
+                item.Parent,
+                AccountId = item.AccountId!,
+                Amount = Math.Abs(item.Occurrence.ScheduledAmount ?? item.Parent!.Amount),
+                OffsetDays = item.Occurrence.OccurrenceDate.DayNumber - today.DayNumber
+            })
+            .Where(item => item.OffsetDays is >= 0 and <= 31)
+            .ToList();
+        var projections = RecurringAccountBalanceProjection.Project(
+            eligible.Select(item => new RecurringAccountDebit(
+                item.Occurrence.Id,
+                item.AccountId,
+                item.Occurrence.OccurrenceDate,
+                item.Amount)),
+            accountBalances);
         var shortfalls = new List<(int OffsetDays, object Shortfall)>();
 
-        foreach (var occ in occurrences)
+        foreach (var item in eligible)
         {
-            if (occ.Status != RecurringOccurrenceStatus.Pending) continue;
+            var occ = item.Occurrence;
+            var projection = projections[occ.Id];
+            if (projection.Shortfall <= 0m) continue;
 
-            var parent = allRecurring.FirstOrDefault(p => p.Id == occ.RecurringPaymentId);
-            var paymentMode = parent?.PaymentMode ?? RecurringPaymentMode.Manual;
-            if (paymentMode != RecurringPaymentMode.AutoDeduct) continue;
-
-            var accountId = occ.AccountId ?? parent?.AccountId;
-            if (string.IsNullOrWhiteSpace(accountId)) continue;
-
-            var account = accountsById.GetValueOrDefault(accountId);
-            var accountBal = accountBalances.TryGetValue(accountId, out var b) ? b : 0m;
-            var scheduledAmt = Math.Abs(occ.ScheduledAmount ?? parent?.Amount ?? 0m);
-            if (accountBal >= scheduledAmt) continue;
-
-            var offsetDays = occ.OccurrenceDate.DayNumber - today.DayNumber;
-            // Include shortfalls due today or in upcoming cycle days
-            if (offsetDays < 0 || offsetDays > 31) continue;
-
-            var shortfall = scheduledAmt - accountBal;
-            shortfalls.Add((offsetDays, new
+            var account = accountsById.GetValueOrDefault(item.AccountId);
+            shortfalls.Add((item.OffsetDays, new
             {
                 recurringPaymentId = occ.RecurringPaymentId,
                 name = occ.Name,
-                amount = ObfuscationHelper.Obfuscate(scheduledAmt),
+                amount = ObfuscationHelper.Obfuscate(item.Amount),
                 dueDate = occ.OccurrenceDate.ToString("yyyy-MM-dd"),
                 dueDay = occ.OccurrenceDate.Day,
-                offsetDays,
-                accountId,
+                offsetDays = item.OffsetDays,
+                accountId = item.AccountId,
                 accountName = account?.Name ?? "Account",
-                accountBalance = ObfuscationHelper.Obfuscate(accountBal),
-                shortfall = ObfuscationHelper.Obfuscate(shortfall)
+                accountBalance = ObfuscationHelper.Obfuscate(projection.BalanceBefore),
+                shortfall = ObfuscationHelper.Obfuscate(projection.Shortfall)
             }));
         }
 

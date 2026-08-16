@@ -56,7 +56,6 @@ public class FinancialServiceTests
             0,
             true,
             false,
-            true,
             "USD",
             "Rewards"));
 
@@ -85,7 +84,7 @@ public class FinancialServiceTests
 
         await NewService(context).UpdateSettingsAsync(new FinancialSettingsUpdate(
             ObfuscationHelper.Obfuscate(5000m), .5m, .25m, .15m, .1m, 28,
-            null, null, null, "USD", null));
+            null, null, "USD", null));
 
         Assert.Empty(context.CycleBalances);
     }
@@ -108,7 +107,7 @@ public class FinancialServiceTests
 
         await NewService(context).UpdateSettingsAsync(new FinancialSettingsUpdate(
             ObfuscationHelper.Obfuscate(10000m), .45m, .25m, .2m, .1m, 28,
-            null, null, null, "USD", null));
+            null, null, "USD", null));
 
         Assert.Empty(context.CycleBalances);
     }
@@ -134,7 +133,6 @@ public class FinancialServiceTests
             0.15m,
             0.20m,
             28,
-            null,
             null,
             null,
             "USD",

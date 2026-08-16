@@ -61,7 +61,6 @@ public class LedgerAccountServiceTests
             "setup-1",
             "Essentials",
             0m,
-            "acct-main",
             [new(
                 "acct-main",
                 "Main bank",

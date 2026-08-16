@@ -379,7 +379,9 @@ public class WishlistService
         var purchaseTransactionId = item.PurchaseTransactionId;
         var transaction = !string.IsNullOrWhiteSpace(purchaseTransactionId)
             ? await _context.Transactions.FindAsync([purchaseTransactionId], cancellationToken)
-            : null;
+            : await _context.Transactions.FirstOrDefaultAsync(
+                candidate => candidate.WishlistItemId == item.Id,
+                cancellationToken);
 
         DateTime? affectedDate = transaction?.Date;
 

@@ -35,6 +35,11 @@ public sealed class LedgerAccount : IUserOwnedEntity
     [StringLength(10)]
     public string InterestFrequency { get; set; } = LedgerAccountInterestFrequency.Monthly;
 
+    // Monthly and yearly schedules keep this original day even when a shorter month clamps the
+    // posting date (31st -> 30th/28th). Without the anchor, every catch-up permanently drifts to
+    // the clamped day.
+    public int? InterestAnchorDay { get; set; }
+
     // The next posting date is server-owned. Keeping it on the account makes catch-up posting
     // idempotent even when nobody opens the app for several periods or a period earns less than
     // one cent. The remainder preserves sub-cent daily accrual until it can be posted.
@@ -67,14 +72,20 @@ public static class LedgerAccountInterestFrequency
     public static string Normalize(string value) =>
         Values.First(candidate => candidate.Equals(value, StringComparison.OrdinalIgnoreCase));
 
-    public static DateOnly NextDate(DateOnly date, string frequency) =>
-        Normalize(frequency) switch
-        {
-            Daily => date.AddDays(1),
-            Monthly => date.AddMonths(1),
-            Yearly => date.AddYears(1),
-            _ => throw new ArgumentOutOfRangeException(nameof(frequency), frequency, "Unsupported interest frequency."),
-        };
+    public static DateOnly NextDate(DateOnly date, string frequency, int? anchorDay = null)
+    {
+        var normalized = Normalize(frequency);
+        if (normalized == Daily) return date.AddDays(1);
+
+        var day = Math.Clamp(anchorDay ?? date.Day, 1, 31);
+        var target = normalized == Monthly
+            ? date.AddMonths(1)
+            : date.AddYears(1);
+        return new DateOnly(
+            target.Year,
+            target.Month,
+            Math.Min(day, DateTime.DaysInMonth(target.Year, target.Month)));
+    }
 }
 
 /// <summary>

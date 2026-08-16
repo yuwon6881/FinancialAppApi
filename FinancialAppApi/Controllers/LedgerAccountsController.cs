@@ -80,7 +80,6 @@ public sealed class LedgerAccountsController : ControllerBase
             dto.OperationId ?? string.Empty,
             dto.Bucket ?? string.Empty,
             ReadAmount(dto.ExpectedBucketTotal),
-            dto.AdjustmentAccountId,
             dto.Targets.Select(target => new LedgerAccountReconcileTarget(
                 target.Id,
                 target.Name ?? string.Empty,
@@ -90,7 +89,10 @@ public sealed class LedgerAccountsController : ControllerBase
                 ReadAmount(target.Target),
                 target.InterestEnabled,
                 target.InterestRatePercent,
-                target.InterestFrequency)).ToList(),
+                target.InterestFrequency,
+                target.ExpectedName,
+                target.ExpectedKind,
+                target.ExpectedIsArchived)).ToList(),
             dto.Description);
         var result = await _accountService.ReconcileAsync(request, HttpContext.RequestAborted);
         if (result.Status == LedgerAccountMutationStatus.Conflict)
@@ -196,7 +198,6 @@ public sealed class LedgerAccountReconcileDto
     public string? Bucket { get; set; }
     public JsonElement ExpectedBucketTotal { get; set; }
     public string? Description { get; set; }
-    public string? AdjustmentAccountId { get; set; }
     public List<LedgerAccountReconcileTargetDto>? Targets { get; set; }
 }
 
@@ -208,6 +209,9 @@ public sealed class LedgerAccountReconcileTargetDto
     public bool? InterestEnabled { get; set; }
     public decimal? InterestRatePercent { get; set; }
     public string? InterestFrequency { get; set; }
+    public string? ExpectedName { get; set; }
+    public string? ExpectedKind { get; set; }
+    public bool? ExpectedIsArchived { get; set; }
     public bool IsArchived { get; set; }
     public JsonElement ExpectedCurrent { get; set; }
     public JsonElement Target { get; set; }

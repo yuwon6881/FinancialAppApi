@@ -101,6 +101,25 @@ public class LedgerAccountAttributionTests
     }
 
     [Fact]
+    public void SelfReferentialAccountMoveHasNoNetAccountEffect()
+    {
+        var account = Account("same", "Essentials");
+        var transaction = new Transaction
+        {
+            Category = "Transfer",
+            LedgerCategory = "AccountMove",
+            Amount = 40m,
+            AccountId = account.Id,
+            CounterAccountId = account.Id,
+        };
+
+        Assert.Equal(0m, LedgerAccountAttribution.GetAccountAmount(
+            transaction,
+            account,
+            new Dictionary<string, LedgerAccount> { [account.Id] = account }));
+    }
+
+    [Fact]
     public void UntrackedLegIsNotAssignedToAnAccount()
     {
         var account = Account("account", "Essentials");
