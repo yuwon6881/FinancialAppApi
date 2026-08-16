@@ -8,6 +8,7 @@ public class AiIntentContractsTests
 {
     [Theory]
     [InlineData("ledger.activity_count", Intent.LedgerActivityCount)]
+    [InlineData("ledger.account", Intent.LedgerAccount)]
     [InlineData("wishlist.forecast", Intent.WishlistForecast)]
     [InlineData("allocation.performance", Intent.AllocationPerformance)]
     [InlineData("navigation", Intent.Navigation)]

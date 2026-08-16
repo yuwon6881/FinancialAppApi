@@ -508,14 +508,45 @@ public partial class AiAssistantService
             return source != null && target != null &&
                 new[] { "Essentials", "Growth", "Stability", "Rewards" }.Contains(source, StringComparer.OrdinalIgnoreCase) &&
                 new[] { "Essentials", "Growth", "Stability", "Rewards" }.Contains(target, StringComparer.OrdinalIgnoreCase) &&
-                !source.Equals(target, StringComparison.OrdinalIgnoreCase);
+                !source.Equals(target, StringComparison.OrdinalIgnoreCase) &&
+                HasValidAccountPlacement(record, context, txType, source, target);
         }
 
         var normalCategories = context.Categories
             .Where(category => !TransactionCategoryService.IsReservedName(category))
             .ToList();
+        var ledgerCategory = ReadPayloadString(record, "ledgerCategory");
         return !HasUnknownOrMissingString(record, "category", normalCategories) &&
-            !HasUnknownOrMissingString(record, "ledgerCategory", ["Essentials", "Growth", "Stability", "Rewards", "Income"]);
+            !HasUnknownOrMissingString(record, "ledgerCategory", ["Essentials", "Growth", "Stability", "Rewards", "Income"]) &&
+            HasValidAccountPlacement(record, context, txType, ledgerCategory, null);
+    }
+
+    private static bool HasValidAccountPlacement(
+        IReadOnlyDictionary<string, object?> record,
+        AiContext context,
+        string txType,
+        string? sourceOrLedger,
+        string? target)
+    {
+        var accountId = ReadPayloadString(record, "accountId");
+        var counterAccountId = ReadPayloadString(record, "counterAccountId");
+        if (accountId == null && counterAccountId == null) return true;
+        var accounts = context.LedgerAccountContext?.Accounts;
+        if (accounts == null) return false;
+        AiLedgerAccountRow? Find(string? id) => id == null
+            ? null
+            : accounts.FirstOrDefault(account => account.Id.Equals(id, StringComparison.Ordinal));
+        var account = Find(accountId);
+        var counter = Find(counterAccountId);
+        if (accountId != null && (account == null || account.IsArchived)) return false;
+        if (counterAccountId != null && (counter == null || counter.IsArchived)) return false;
+        if (txType.Equals("transfer", StringComparison.OrdinalIgnoreCase))
+        {
+            return (account == null || account.Bucket.Equals(sourceOrLedger, StringComparison.OrdinalIgnoreCase)) &&
+                (counter == null || counter.Bucket.Equals(target, StringComparison.OrdinalIgnoreCase));
+        }
+        if (string.Equals(sourceOrLedger, "Income", StringComparison.OrdinalIgnoreCase)) return account == null && counter == null;
+        return counter == null && (account == null || account.Bucket.Equals(sourceOrLedger, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool HasUnknownOrMissingString(

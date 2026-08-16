@@ -63,7 +63,8 @@ public sealed record AiConversationState(
     string? LastInvestmentRange = null,
     Guid? LastInvestmentInstrumentId = null,
     string? LastReportCycleKey = null,
-    string? LastLoanId = null);
+    string? LastLoanId = null,
+    string? LastLedgerAccountId = null);
 
 public sealed record AiInvocationContext(
     string Surface,
@@ -164,6 +165,7 @@ public partial class AiAssistantService
     private readonly SavingsGoals.SavingsGoalService _savingsGoalService;
     private readonly Investments.InvestmentPortfolioService? _investmentPortfolioService;
     private readonly Loans.LoanService _loanService;
+    private readonly Accounts.LedgerAccountService _ledgerAccountService;
 
     public AiAssistantService(
         AiClient aiClient,
@@ -177,7 +179,8 @@ public partial class AiAssistantService
         SavingsGoals.SavingsGoalService? savingsGoalService = null,
         Investments.InvestmentPortfolioService? investmentPortfolioService = null,
         RecurringOccurrenceLedgerService? recurringOccurrenceLedger = null,
-        Loans.LoanService? loanService = null)
+        Loans.LoanService? loanService = null,
+        Accounts.LedgerAccountService? ledgerAccountService = null)
     {
         _logger = logger ?? NullLogger<AiAssistantService>.Instance;
         _aiClient = aiClient;
@@ -197,6 +200,11 @@ public partial class AiAssistantService
             _recurringOccurrenceService);
         _investmentPortfolioService = investmentPortfolioService;
         _loanService = loanService ?? new Loans.LoanService(context);
+        _ledgerAccountService = ledgerAccountService ?? new Accounts.LedgerAccountService(
+            context,
+            new Accounts.LedgerAccountBalanceService(context),
+            new CycleBalanceService(context),
+            _financialClock);
     }
 
     public async Task<AiChatOutcome> ChatAsync(AiChatRequest request, CancellationToken cancellationToken = default)
@@ -352,6 +360,10 @@ public partial class AiAssistantService
 
         var contextResult = await BuildContextAsync(intentPlan, request.ForceSensitiveMode, cancellationToken);
         var context = contextResult.Context;
+        if (context.LedgerAccountSelectionIssue is { } accountIssue)
+        {
+            return Ok(new AiChatResponse(accountIssue, [], State: contextResult.OutgoingState));
+        }
         if (context.SensitiveMode && RequiresSensitiveFinancialReveal(intentPlan))
         {
             return Ok(new AiChatResponse(
@@ -501,7 +513,7 @@ public partial class AiAssistantService
         if (deterministic.Intents.Any(intent => intent is AiIntent.RewardsSummary or AiIntent.SavingsGoalList or
                 AiIntent.SavingsGoalPacing or AiIntent.SavingsGoalScenario or AiIntent.SavingsGoalAdd or
                 AiIntent.SavingsGoalEdit or AiIntent.InvestmentSummary or AiIntent.InvestmentHolding or
-                AiIntent.InvestmentAllocation or AiIntent.ReportReview)) return true;
+                AiIntent.InvestmentAllocation or AiIntent.ReportReview or AiIntent.LedgerAccount)) return true;
         var wordCount = message.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
         return wordCount <= 5 && !Regex.IsMatch(
             message,

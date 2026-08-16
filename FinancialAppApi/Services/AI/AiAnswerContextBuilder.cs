@@ -33,7 +33,8 @@ public partial class AiAssistantService
 
         var needsLedgerAggregates = has("ledger.activity_count", "ledger.merchant_search", "ledger.spending_total",
             "ledger.comparison", "ledger.transaction_list", "ledger.anomaly", "ledger.duplicates",
-            "category_limits.analysis", "cycle.insights", "allocation.balance", "allocation.performance");
+            "category_limits.analysis", "cycle.insights", "allocation.balance", "allocation.performance",
+            "ledger.account");
         if (needsLedgerAggregates)
         {
             result["dataScope"] = context.DataScope;
@@ -47,9 +48,13 @@ public partial class AiAssistantService
         {
             result["derivedMetrics"] = context.DerivedMetrics;
         }
-        if (has("ledger.transaction_list", "ledger.merchant_search", "ledger.anomaly", "ledger.duplicates", "ledger.edit"))
+        if (has("ledger.transaction_list", "ledger.merchant_search", "ledger.anomaly", "ledger.duplicates", "ledger.edit", "ledger.account"))
         {
             result["recentTransactions"] = context.RecentTransactions;
+        }
+        if (has("ledger.account"))
+        {
+            result["ledgerAccounts"] = context.LedgerAccounts;
         }
         if (has("recurring.list", "recurring.upcoming", "recurring.add", "recurring.edit"))
         {

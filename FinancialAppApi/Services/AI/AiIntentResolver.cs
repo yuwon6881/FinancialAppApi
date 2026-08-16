@@ -10,6 +10,15 @@ namespace FinancialAppApi.Services;
 // resolution and query plan are the sole routing contracts.
 public partial class AiAssistantService
 {
+    private static readonly Regex LedgerAccountSignal = new(
+        @"\b(account|accounts|bank|banking|wallet|e-?wallet|cash\s+(?:account|wallet)|debit card|credit card)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static bool WantsLedgerAccountActivity(string message) =>
+        Regex.IsMatch(message,
+            @"\b(spend|spent|spending|activity|transaction|transactions|purchase|purchases|paid|payment|payments|inflow|outflow|deposit|debit|credit|history|how much did)\b",
+            RegexOptions.IgnoreCase);
+
     // The typed plan handed to context loading. Intents are typed; every data-loading decision
     // lives on QueryPlan; Constraints/ConversationState travel alongside.
     internal sealed record AiIntentPlan(
@@ -221,6 +230,11 @@ public partial class AiAssistantService
             clauses.Add($"{priorState.LastLedgerCategory} ledger");
         if (!MessageMentionsTransactionType(message) && !string.IsNullOrWhiteSpace(priorState.LastTransactionType))
             clauses.Add(CanonicalTransactionType(priorState.LastTransactionType));
+        // An account question followed by a short cycle/filter continuation must keep the
+        // selected account in the query plan. The account id is carried as validated state and
+        // resolved again against the tenant's live rows; this marker only reactivates the intent.
+        if (priorState.LastLedgerAccountId is { Length: > 0 } && !LedgerAccountSignal.IsMatch(message))
+            clauses.Add("ledger account");
         if (priorState.LastTargetAmount is > 0m &&
             priorState.LastQueryFacets?.Contains("ledger_forecast", StringComparer.Ordinal) == true &&
             !Regex.IsMatch(message, @"[\p{Sc}$]?\d[\d,]*(?:\.\d+)?"))
@@ -352,6 +366,7 @@ public partial class AiAssistantService
 
         var intents = new List<AiIntent>();
         if (LooksLikeLedgerEditCommand(message)) intents.Add(AiIntent.LedgerEdit);
+        if (LedgerAccountSignal.IsMatch(lower)) intents.Add(AiIntent.LedgerAccount);
         if (deleteVerb && !s.NeedsWishlist && !s.NeedsRecurring && TransactionDetailSignal.IsMatch(lower)) intents.Add(AiIntent.LedgerEdit);
         if ((Regex.IsMatch(lower, @"\b(add|create|record|log|enter)\b") && TransactionDetailSignal.IsMatch(lower)) ||
             LooksLikeLedgerDraftList(message)) intents.Add(AiIntent.LedgerAdd);
@@ -420,7 +435,8 @@ public partial class AiAssistantService
         // Keep aggregate questions aggregate-only even though incidental wording such as "did I"
         // may also add LedgerTransactionList. A genuine list follow-up carries the canonical word
         // "transactions", so ComputeSignalNeeds already raises detail for it.
-        var needsTransactionDetail = s.NeedsTransactionDetail || distinct.Contains(AiIntent.LedgerMerchantSearch) || distinct.Contains(AiIntent.LedgerEdit);
+        var needsAccountActivity = distinct.Contains(AiIntent.LedgerAccount) && WantsLedgerAccountActivity(lower);
+        var needsTransactionDetail = s.NeedsTransactionDetail || needsAccountActivity || distinct.Contains(AiIntent.LedgerMerchantSearch) || distinct.Contains(AiIntent.LedgerEdit);
 
         var intentNames = distinct.Select(ToIntentName).ToList();
         // A short follow-up carries no real search term of its own -- discard noise extractions
@@ -441,7 +457,7 @@ public partial class AiAssistantService
         var transactionIds = UsesPriorTransactionState(message) ? priorState?.LastMatchedTransactionIds : null;
         var needsWishlist = s.NeedsWishlist || distinct.Any(i => i is AiIntent.WishlistList or AiIntent.WishlistForecast or AiIntent.WishlistAdd or AiIntent.WishlistEdit);
         var needsRecurring = s.NeedsRecurring || distinct.Any(i => i is AiIntent.RecurringList or AiIntent.RecurringUpcoming or AiIntent.RecurringAdd or AiIntent.RecurringEdit);
-        var needsCycleSummary = s.NeedsCycleSummary || distinct.Any(i => i is AiIntent.LedgerActivityCount or AiIntent.LedgerSpendingTotal or AiIntent.LedgerComparison or AiIntent.LedgerAnomaly or AiIntent.LedgerDuplicates or AiIntent.CategoryLimits or AiIntent.CycleInsights or AiIntent.AllocationBalance or AiIntent.AllocationPerformance);
+        var needsCycleSummary = s.NeedsCycleSummary || needsAccountActivity || distinct.Any(i => i is AiIntent.LedgerActivityCount or AiIntent.LedgerSpendingTotal or AiIntent.LedgerComparison or AiIntent.LedgerAnomaly or AiIntent.LedgerDuplicates or AiIntent.CategoryLimits or AiIntent.CycleInsights or AiIntent.AllocationBalance or AiIntent.AllocationPerformance);
         var needsBudgetTargets = s.NeedsBudgetTargets || distinct.Any(i => i is AiIntent.AllocationBalance or AiIntent.AllocationPerformance or AiIntent.WishlistForecast);
         var needsWishlistForecast = s.NeedsWishlistForecast || distinct.Contains(AiIntent.WishlistForecast);
         var wishlistItemId = needsWishlist || UsesPriorTransactionState(message) ? priorState?.LastWishlistItemId : null;
@@ -454,7 +470,8 @@ public partial class AiAssistantService
             needsWishlist, needsWishlistForecast, needsRecurring, needsBudgetTargets,
             s.NeedsCategoryLimits || distinct.Contains(AiIntent.CategoryLimits),
             s.NeedsCycleInsights || distinct.Contains(AiIntent.CycleInsights),
-            searchText, cycleHint, queryText, transactionIds, wishlistItemId);
+            searchText, cycleHint, queryText, transactionIds, wishlistItemId,
+            needsLedgerAccounts: distinct.Contains(AiIntent.LedgerAccount));
         return new AiIntentPlan(
             distinct,
             confidence,
@@ -464,7 +481,8 @@ public partial class AiAssistantService
             constraints,
             new AiIntentEntities(searchText, cycleHint, null, null, null, null, wishlistItemId,
                 priorState?.LastWishlistReference, null, transactionIds ?? [],
-                constraints.ExcludedCategories.Concat(constraints.ExcludeTransfers ? ["transfers"] : []).ToList()));
+                constraints.ExcludedCategories.Concat(constraints.ExcludeTransfers ? ["transfers"] : []).ToList(),
+                LedgerAccountReference: priorState?.LastLedgerAccountId));
     }
 
     // Merges a validated classifier result over the deterministic signal baseline. The classifier
@@ -495,14 +513,20 @@ public partial class AiAssistantService
 
         var typedIntents = CarryAnalyticalIntents(ParseIntents(classification.Intents).ToList(), message, priorState);
         if (s.NeedsLoans && !typedIntents.Contains(AiIntent.LoanSummary)) typedIntents.Add(AiIntent.LoanSummary);
+        // Preserve the deterministic account marker in the classifier merge. A terse follow-up
+        // can cause the model to return only a generic transaction intent even though the expanded
+        // query still carries the selected account frame.
+        if (LedgerAccountSignal.IsMatch(baseQueryText) && !typedIntents.Contains(AiIntent.LedgerAccount))
+            typedIntents.Add(AiIntent.LedgerAccount);
         bool Has(AiIntent i) => typedIntents.Contains(i);
         var queryText = string.Join(" ", new[] { baseQueryText, classification.SearchText, classification.CycleHint,
                 classification.Date?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) }
             .Where(part => !string.IsNullOrWhiteSpace(part)));
 
-        var needsTransactionDetail = s.NeedsTransactionDetail || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerMerchantSearch) ||
+        var needsAccountActivity = Has(AiIntent.LedgerAccount) && WantsLedgerAccountActivity(baseQueryText);
+        var needsTransactionDetail = s.NeedsTransactionDetail || needsAccountActivity || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerMerchantSearch) ||
             Has(AiIntent.LedgerTransactionList) || Has(AiIntent.LedgerEdit) || Has(AiIntent.LedgerAnomaly) || Has(AiIntent.LedgerDuplicates);
-        var needsCycleSummary = s.NeedsCycleSummary || Has(AiIntent.ReportReview) || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerSpendingTotal) ||
+        var needsCycleSummary = s.NeedsCycleSummary || needsAccountActivity || Has(AiIntent.ReportReview) || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerSpendingTotal) ||
             Has(AiIntent.LedgerComparison) || Has(AiIntent.LedgerAnomaly) || Has(AiIntent.LedgerDuplicates) ||
             Has(AiIntent.WishlistForecast) || Has(AiIntent.CategoryLimits) ||
             Has(AiIntent.CycleInsights) || Has(AiIntent.AllocationBalance) || Has(AiIntent.AllocationPerformance);
@@ -528,7 +552,8 @@ public partial class AiAssistantService
             typedIntents, needsTransactionDetail, needsCycleSummary, needsCycleComparison,
             needsWishlist, needsWishlistForecast, needsRecurring, needsBudgetTargets,
             needsCategoryLimits, needsCycleInsights,
-            searchText, cycleHint, queryText, transactionIds, wishlistItemId);
+            searchText, cycleHint, queryText, transactionIds, wishlistItemId,
+            needsLedgerAccounts: Has(AiIntent.LedgerAccount));
         return new AiIntentPlan(
             typedIntents,
             classification.Confidence,
@@ -539,7 +564,8 @@ public partial class AiAssistantService
             new AiIntentEntities(searchText, cycleHint, classification.Date, classification.Category,
                 classification.LedgerCategory, classification.Amount, wishlistItemId, classification.WishlistReference,
                 classification.TransactionReference, transactionIds ?? [],
-                constraints.ExcludedCategories.Concat(constraints.ExcludeTransfers ? ["transfers"] : []).ToList()));
+                constraints.ExcludedCategories.Concat(constraints.ExcludeTransfers ? ["transfers"] : []).ToList(),
+                classification.LedgerAccountReference ?? priorState?.LastLedgerAccountId));
     }
 
 }

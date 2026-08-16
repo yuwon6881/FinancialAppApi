@@ -72,6 +72,8 @@ internal static class AiResponseSchemas
                                 ["ledgerCategorySpecified"] = Bool(),
                                 ["transferSource"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
                                 ["transferTarget"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
+                                ["accountId"] = Str("Exact active ledger account id from ledgerAccounts when explicitly named."),
+                                ["counterAccountId"] = Str("Exact active destination ledger account id for an explicitly named transfer."),
                                 ["date"] = Str("Posting date in YYYY-MM-DD when supplied by the user.")
                             },
                             ["description", "amount", "txType", "category", "ledgerCategory", "ledgerCategorySpecified"])
@@ -148,12 +150,13 @@ internal static class AiResponseSchemas
                     ["cycleHint"] = NullableString("Relative or explicit cycle wording; null when not applicable."),
                     ["wishlistReference"] = NullableString("Wishlist item name the user referenced; null otherwise."),
                     ["transactionReference"] = NullableString("Specific transaction the user referenced; null otherwise."),
+                    ["ledgerAccountReference"] = NullableString("Named ledger account the user referenced; null otherwise."),
                     ["category"] = NullableString("Category name the user referenced; null otherwise."),
                     ["ledgerCategory"] = NullableString("Ledger category; null otherwise."),
                     ["date"] = NullableString("Explicit date in YYYY-MM-DD format; null otherwise."),
                     ["amount"] = NullableNumber("Non-negative amount mentioned by the user; null otherwise.")
                 },
-                ["searchText", "cycleHint", "date", "wishlistReference", "transactionReference", "category", "ledgerCategory", "amount"]),
+                ["searchText", "cycleHint", "date", "wishlistReference", "transactionReference", "ledgerAccountReference", "category", "ledgerCategory", "amount"]),
             ["constraints"] = Obj(
                 new Dictionary<string, object>
                 {
@@ -335,6 +338,8 @@ internal static class AiResponseSchemas
         ["txType"] = Str(enums: ["inflow", "outflow", "transfer"]),
         ["transferSource"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
         ["transferTarget"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
+        ["accountId"] = Str("Exact active ledger account id from ledgerAccounts when explicitly named."),
+        ["counterAccountId"] = Str("Exact active destination ledger account id for an explicitly named transfer."),
         ["active"] = Bool(),
         ["frequency"] = Str(enums: ["Monthly", "Annually"]),
         ["search"] = Str(),

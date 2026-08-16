@@ -36,23 +36,25 @@ public class SecretProtectorTests
         Directory.CreateDirectory(directory);
         try
         {
-            using var services = new ServiceCollection()
-                .AddDataProtection()
-                .PersistKeysToFileSystem(new DirectoryInfo(directory))
-                .SetApplicationName("FinancialAppApi.Tests")
-                .Services
-                .BuildServiceProvider();
-            var provider = services.GetRequiredService<IDataProtectionProvider>();
-            var keyManager = services.GetRequiredService<IKeyManager>();
-            var protector = new SecretProtector(provider);
-            var ciphertext = protector.Protect("rotatable-secret");
+            using (var services = new ServiceCollection()
+                       .AddDataProtection()
+                       .PersistKeysToFileSystem(new DirectoryInfo(directory))
+                       .SetApplicationName("FinancialAppApi.Tests")
+                       .Services
+                       .BuildServiceProvider())
+            {
+                var provider = services.GetRequiredService<IDataProtectionProvider>();
+                var keyManager = services.GetRequiredService<IKeyManager>();
+                var protector = new SecretProtector(provider);
+                var ciphertext = protector.Protect("rotatable-secret");
 
-            keyManager.CreateNewKey(
-                DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow.AddYears(1));
+                keyManager.CreateNewKey(
+                    DateTimeOffset.UtcNow,
+                    DateTimeOffset.UtcNow.AddYears(1));
 
-            Assert.Equal("rotatable-secret", protector.Unprotect(ciphertext));
-            Assert.Equal("rotatable-secret", new SecretProtector(provider).Unprotect(ciphertext));
+                Assert.Equal("rotatable-secret", protector.Unprotect(ciphertext));
+                Assert.Equal("rotatable-secret", new SecretProtector(provider).Unprotect(ciphertext));
+            }
         }
         finally
         {

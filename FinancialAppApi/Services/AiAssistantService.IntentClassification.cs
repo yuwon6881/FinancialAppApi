@@ -62,13 +62,14 @@ public partial class AiAssistantService
             }
             var wishlistReference = StringField(entities, "wishlistReference");
             var transactionReference = StringField(entities, "transactionReference");
+            var ledgerAccountReference = StringField(entities, "ledgerAccountReference");
             var classifierConstraints = ParseClassifierConstraints(root);
             var ambiguities = root.TryGetProperty("ambiguities", out var ambiguityElement) && ambiguityElement.ValueKind == JsonValueKind.Array
                 ? ambiguityElement.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList()
                 : [];
             // SanitizeClassification rejects unknown intents, clamps confidence, and normalizes text.
             return SanitizeClassification(intents, confidence, searchText, cycleHint, date, category, ledgerCategory,
-                amount, wishlistReference, transactionReference, classifierConstraints, ambiguities);
+                amount, wishlistReference, transactionReference, classifierConstraints, ambiguities, ledgerAccountReference);
         }
         catch (Exception ex) when (ex is AiClientException or JsonException or FormatException)
         {
@@ -258,7 +259,8 @@ public partial class AiAssistantService
             priorState?.LastInvestmentRange,
             priorState?.LastInvestmentInstrumentId,
             priorState?.LastReportCycleKey,
-            priorState?.LastLoanId);
+            priorState?.LastLoanId,
+            priorState?.LastLedgerAccountId);
     }
 
     private static string? ExtractConversationCycle(string? text)
@@ -413,7 +415,8 @@ public partial class AiAssistantService
             investmentRange,
             investmentInstrumentId,
             reportCycleKey,
-            Clamp(state.LastLoanId));
+            Clamp(state.LastLoanId),
+            Clamp(state.LastLedgerAccountId));
     }
 
     private static readonly Regex CycleKeyPattern = new(@"^\d{4}-(0[1-9]|1[0-2])$", RegexOptions.Compiled);
@@ -594,7 +597,8 @@ public partial class AiAssistantService
         string? WishlistReference = null,
         string? TransactionReference = null,
         AiConstraints? Constraints = null,
-        IReadOnlyList<string>? Ambiguities = null);
+        IReadOnlyList<string>? Ambiguities = null,
+        string? LedgerAccountReference = null);
 
     // Phase 3: classifier output is untrusted model text -- validate in application code, never
     // rely solely on provider-side schema enforcement. Rejects unknown intents, clamps
@@ -612,7 +616,8 @@ public partial class AiAssistantService
         string? wishlistReference = null,
         string? transactionReference = null,
         AiConstraints? constraints = null,
-        IReadOnlyList<string>? ambiguities = null)
+        IReadOnlyList<string>? ambiguities = null,
+        string? ledgerAccountReference = null)
     {
         var intents = (rawIntents ?? [])
             .Where(i => !string.IsNullOrWhiteSpace(i))
@@ -648,7 +653,8 @@ public partial class AiAssistantService
         return new IntentClassification(
             intents, confidence, Clean(searchText), Clean(cycleHint), validDate,
             Clean(category), cleanLedgerCategory, validAmount,
-            Clean(wishlistReference), Clean(transactionReference), constraints, cleanAmbiguities);
+            Clean(wishlistReference), Clean(transactionReference), constraints, cleanAmbiguities,
+            Clean(ledgerAccountReference));
     }
 
     internal enum TransactionDataLevel

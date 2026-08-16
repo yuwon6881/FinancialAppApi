@@ -42,6 +42,7 @@ public partial class AiAssistantService
         InvestmentSummary,
         InvestmentHolding,
         InvestmentAllocation,
+        LedgerAccount,
         LoanSummary,
         ReportReview
     }
@@ -86,6 +87,7 @@ public partial class AiAssistantService
         new(AiIntent.InvestmentSummary, "investment.summary", "investment", true),
         new(AiIntent.InvestmentHolding, "investment.holding", "investment", true),
         new(AiIntent.InvestmentAllocation, "investment.allocation", "investment", true),
+        new(AiIntent.LedgerAccount, "ledger.account", "transactional", true),
         new(AiIntent.LoanSummary, "loan.summary", "loan", true),
         new(AiIntent.ReportReview, "report.review", "report", true)
     ];
@@ -121,7 +123,8 @@ public partial class AiAssistantService
         string? WishlistReference,
         string? TransactionReference,
         IReadOnlyList<string> TransactionIds,
-        IReadOnlyList<string> Exclusions);
+        IReadOnlyList<string> Exclusions,
+        string? LedgerAccountReference = null);
 
     // One authoritative resolution: the intents (typed), the entities, the constraints, a
     // confidence, whether the classifier was consulted, and any ambiguities worth a clarification.

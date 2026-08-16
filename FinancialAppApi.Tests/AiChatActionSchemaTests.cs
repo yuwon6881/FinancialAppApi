@@ -32,6 +32,8 @@ public class AiChatActionSchemaTests
     [InlineData("enabled")]
     [InlineData("reminderMode")]
     [InlineData("leadDays")]
+    [InlineData("accountId")]
+    [InlineData("counterAccountId")]
     public void ActionPayload_DeclaresEveryDispatchableField(string field)
     {
         Assert.True(ActionPayloadProperties(ChatSchemaRoot()).TryGetProperty(field, out _));

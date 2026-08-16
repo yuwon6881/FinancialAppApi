@@ -167,7 +167,7 @@ public partial class AiAssistantService
             .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
             .Take(500)
-            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.PostedAt, t.Description, t.Category, t.LedgerCategory, t.Amount, t.RecurringPaymentId))
+            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.PostedAt, t.Description, t.Category, t.LedgerCategory, t.Amount, t.RecurringPaymentId, t.AccountId, t.CounterAccountId))
             .ToListAsync(cancellationToken);
         return rows.Select(ToAiTransactionRow).ToList();
     }
@@ -206,7 +206,7 @@ public partial class AiAssistantService
             // One beyond the cap so the caller can tell "exactly at the cap" (complete) apart
             // from "over the cap" (truncated); the caller drops the sentinel row.
             .Take(MaxTransactionsPerRange + 1)
-            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.PostedAt, t.Description, t.Category, t.LedgerCategory, t.Amount, t.RecurringPaymentId))
+            .Select(t => new AiTransactionDbRow(t.Id, t.Date, t.PostedAt, t.Description, t.Category, t.LedgerCategory, t.Amount, t.RecurringPaymentId, t.AccountId, t.CounterAccountId))
             .ToListAsync(cancellationToken);
         return rows.Select(ToAiTransactionRow).ToList();
     }
@@ -250,5 +250,7 @@ public partial class AiAssistantService
         row.LedgerCategory,
         row.Amount,
         row.PostedAt,
-        row.RecurringPaymentId);
+        row.RecurringPaymentId,
+        row.AccountId,
+        row.CounterAccountId);
 }

@@ -50,6 +50,7 @@ public partial class AiAssistantService
                 if (perDraftSource) ApplyExplicitLedgerCategory(sourceText, payload, txType);
                 ApplyBestNormalCategory(sourceText, normalCategories, payload);
             }
+            if (perDraftSource) ApplyExplicitLedgerAccount(sourceText, payload, context);
 
             enriched.Add(action with { Payload = payload });
         }
@@ -100,6 +101,38 @@ public partial class AiAssistantService
         var canonical = normalCategories.FirstOrDefault(category =>
             category.Equals(current, StringComparison.OrdinalIgnoreCase));
         if (canonical != null) payload["category"] = canonical;
+    }
+
+    private static void ApplyExplicitLedgerAccount(
+        string sourceText,
+        Dictionary<string, object?> payload,
+        AiContext context)
+    {
+        var accountRows = context.LedgerAccountContext?.Accounts
+            .Where(account => !account.IsArchived)
+            .ToList();
+        if (accountRows is not { Count: > 0 }) return;
+        var named = accountRows
+            .Where(account => ContainsNamedValue(sourceText, account.Name))
+            .ToList();
+        if (named.Count == 0) return;
+
+        var txType = ReadPayloadString(payload, "txType") ?? "outflow";
+        if (txType.Equals("transfer", StringComparison.OrdinalIgnoreCase))
+        {
+            var source = ReadPayloadString(payload, "transferSource");
+            var target = ReadPayloadString(payload, "transferTarget");
+            var sourceAccount = named.FirstOrDefault(account => string.Equals(account.Bucket, source, StringComparison.OrdinalIgnoreCase));
+            var targetAccount = named.FirstOrDefault(account => string.Equals(account.Bucket, target, StringComparison.OrdinalIgnoreCase));
+            if (sourceAccount != null) payload["accountId"] = sourceAccount.Id;
+            if (targetAccount != null) payload["counterAccountId"] = targetAccount.Id;
+            return;
+        }
+
+        var ledger = ReadPayloadString(payload, "ledgerCategory");
+        var matching = named.Where(account => string.Equals(account.Bucket, ledger, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (matching.Count == 1 && !string.Equals(ledger, "Income", StringComparison.OrdinalIgnoreCase))
+            payload["accountId"] = matching[0].Id;
     }
 
     private static bool ContainsNamedValue(string sourceText, string candidate)

@@ -76,7 +76,8 @@ public class AiAssistantServiceUnitTests
             LastInvestmentTopic = "portfolio",
             LastInvestmentRange = "3m",
             LastInvestmentInstrumentId = instrumentId,
-            LastReportCycleKey = "2026-08"
+            LastReportCycleKey = "2026-08",
+            LastLedgerAccountId = "acct-maybank"
         };
 
         var sanitized = Services.AiAssistantService.SanitizeConversationState(state);
@@ -91,6 +92,7 @@ public class AiAssistantServiceUnitTests
         Assert.Equal("3m", sanitized.LastInvestmentRange);
         Assert.Equal(instrumentId, sanitized.LastInvestmentInstrumentId);
         Assert.Equal("2026-08", sanitized.LastReportCycleKey);
+        Assert.Equal("acct-maybank", sanitized.LastLedgerAccountId);
     }
 
     [Fact]

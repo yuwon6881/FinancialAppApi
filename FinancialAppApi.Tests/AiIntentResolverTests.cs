@@ -290,4 +290,50 @@ public class AiIntentResolverTests
         Assert.True(plan.QueryPlan.NeedsTransactionDetail);
         Assert.True(plan.QueryPlan.NeedsCycleSummary);
     }
+
+    [Theory]
+    [InlineData("what accounts do I have?")]
+    [InlineData("how much is in my Maybank bank account?")]
+    public void ResolveDeterministically_LedgerAccountQuestion_LoadsAccountContext(string query)
+    {
+        var plan = AiAssistantService.ResolveDeterministically(query);
+
+        Assert.Contains(AiAssistantService.AiIntent.LedgerAccount, plan.Intents);
+        Assert.True(plan.QueryPlan.NeedsLedgerAccounts);
+    }
+
+    [Fact]
+    public void ResolveDeterministically_AccountActivityQuestionLoadsAccountTransactions()
+    {
+        var plan = AiAssistantService.ResolveDeterministically("show my spending activity in the Maybank account this month");
+
+        Assert.Contains(AiAssistantService.AiIntent.LedgerAccount, plan.Intents);
+        Assert.True(plan.QueryPlan.NeedsLedgerAccounts);
+        Assert.True(plan.QueryPlan.NeedsTransactionDetail);
+    }
+
+    [Fact]
+    public void ResolveDeterministically_AccountFollowUpCarriesSelectedAccount()
+    {
+        var prior = new AiConversationState(null, null, null, null) with
+        {
+            LastIntents = ["ledger.account"],
+            LastTopic = "transactional",
+            LastLedgerAccountId = "acct-maybank"
+        };
+
+        var plan = AiAssistantService.ResolveDeterministically("what about last cycle?", prior);
+
+        Assert.Contains(AiAssistantService.AiIntent.LedgerAccount, plan.Intents);
+        Assert.True(plan.QueryPlan.NeedsLedgerAccounts);
+        Assert.Equal("acct-maybank", plan.Entities?.LedgerAccountReference);
+    }
+
+    [Fact]
+    public void ResolveDeterministically_CashFlowQuestionDoesNotBecomeAccountQuestion()
+    {
+        var plan = AiAssistantService.ResolveDeterministically("summarise my cash flow this month");
+
+        Assert.DoesNotContain(AiAssistantService.AiIntent.LedgerAccount, plan.Intents);
+    }
 }

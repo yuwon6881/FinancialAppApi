@@ -30,7 +30,8 @@ public partial class AiAssistantService
         bool NeedsRewards = false,
         bool NeedsInvestments = false,
         bool NeedsReport = false,
-        bool NeedsLoans = false);
+        bool NeedsLoans = false,
+        bool NeedsLedgerAccounts = false);
 
     private sealed record TargetCycleSelection(IReadOnlyList<CycleKey> Cycles, bool ExplicitlyRequested);
     internal sealed record AiTransactionRow(
@@ -42,7 +43,9 @@ public partial class AiAssistantService
         string LedgerCategory,
         decimal Amount,
         DateTime? PostedAt = null,
-        string? RecurringPaymentId = null);
+        string? RecurringPaymentId = null,
+        string? AccountId = null,
+        string? CounterAccountId = null);
     private sealed record AiTransactionDbRow(
         string Id,
         DateTime Date,
@@ -51,7 +54,9 @@ public partial class AiAssistantService
         string Category,
         string LedgerCategory,
         decimal Amount,
-        string? RecurringPaymentId);
+        string? RecurringPaymentId,
+        string? AccountId,
+        string? CounterAccountId);
     internal sealed record AiWishlistRow(int Id, string Name, decimal Price, string Priority, bool IsActive, bool IsPurchased, DateTime CreatedAt, DateTime? PurchasedAt = null);
     private sealed record TransactionDateRange(DateTime Start, DateTime End);
 
@@ -96,6 +101,8 @@ public partial class AiAssistantService
         var transactionDomain = await LoadTransactionDomainContextAsync(
             intentPlan, targetSelection, cycleDay, exactDate, categories, cancellationToken);
         var allTransactions = transactionDomain.Transactions;
+        var ledgerAccountContext = await LoadLedgerAccountContextAsync(
+            intentPlan, targetSelection, cycleDay, sensitiveMode, cancellationToken);
         var scopeTruncated = transactionDomain.ScopeTruncated;
         var exactMatchCount = transactionDomain.ExactMatchCount;
         var constraints = intentPlan.Constraints;
@@ -131,7 +138,7 @@ public partial class AiAssistantService
 
         var turn = ResolveConversationTurn(
             intentPlan, queryPlan, targetSelection, exactDate, sensitiveMode,
-            allTransactions, recurringRows, wishlistRows);
+            allTransactions, recurringRows, wishlistRows, ledgerAccountContext.SelectedAccountId);
         var outgoingState = queryPlan.NeedsLoans
             ? turn.OutgoingState with { LastLoanId = loanContext.SelectedLoanId ?? turn.OutgoingState.LastLoanId }
             : turn.OutgoingState;
@@ -153,7 +160,7 @@ public partial class AiAssistantService
 
         var datasets = await BuildContextDatasetsAsync(
             queryPlan, setting, intentPlan, allTransactions, targetSelection, selectedYear, selectedMonthIndex, cycleDay,
-            sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, recurringRows, wishlistRows, ledgerDomain,
+            sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, recurringRows, wishlistRows, ledgerDomain, ledgerAccountContext,
             cancellationToken);
         var cycleSummaries = datasets.CycleSummaries;
         var derivedMetrics = datasets.DerivedMetrics;
@@ -231,6 +238,7 @@ public partial class AiAssistantService
             RecentTransactionIds: recentTransactionIds,
             RecurringPayments: recurringContext,
             Loans: loanContext.Payload,
+            LedgerAccounts: ledgerAccountContext.Payload,
             WishlistItems: wishlistContext,
             BudgetTargets: budgetTargets,
             WishlistForecast: wishlistForecast,
@@ -244,7 +252,9 @@ public partial class AiAssistantService
             RecurringAdvance: await BuildRecurringAdvanceContextAsync(
                 queryPlan, recurringRows, cycleDay, cancellationToken),
             RecurringReminderStatus: await BuildRecurringReminderStatusContextAsync(
-                queryPlan, recurringRows, cancellationToken));
+                queryPlan, recurringRows, cancellationToken),
+            LedgerAccountSelectionIssue: ledgerAccountContext.SelectionIssue,
+            LedgerAccountContext: ledgerAccountContext);
         var missing = sufficiencyResult.Missing.Select(m => m.DatasetKey).ToList();
         var sufficiency = new ContextSufficiency(
             Complete: sufficiencyResult.CanAnswer,
@@ -349,7 +359,9 @@ public partial class AiAssistantService
                 t.Description,
                 t.Category,
                 t.LedgerCategory,
-                txType = IsTransfer(t) ? "transfer" : t.Amount < 0 ? "outflow" : "inflow"
+                txType = IsTransfer(t) ? "transfer" : t.Amount < 0 ? "outflow" : "inflow",
+                accountId = queryPlan.NeedsLedgerAccounts ? null : t.AccountId,
+                counterAccountId = queryPlan.NeedsLedgerAccounts ? null : t.CounterAccountId
             }).ToList();
         }
         else
@@ -362,7 +374,9 @@ public partial class AiAssistantService
                 t.Category,
                 t.LedgerCategory,
                 t.Amount,
-                txType = IsTransfer(t) ? "transfer" : t.Amount < 0 ? "outflow" : "inflow"
+                txType = IsTransfer(t) ? "transfer" : t.Amount < 0 ? "outflow" : "inflow",
+                accountId = queryPlan.NeedsLedgerAccounts ? t.AccountId : null,
+                counterAccountId = queryPlan.NeedsLedgerAccounts ? t.CounterAccountId : null
             }).ToList();
         }
 
@@ -428,7 +442,8 @@ public partial class AiAssistantService
         bool sensitiveMode,
         IReadOnlyList<AiTransactionRow> allTransactions,
         IReadOnlyList<AiRecurringRow> recurringRows,
-        IReadOnlyList<AiWishlistRow> wishlistRows)
+        IReadOnlyList<AiWishlistRow> wishlistRows,
+        string? selectedLedgerAccountId)
     {
         var constraints = intentPlan.Constraints;
         // Outgoing conversation state: structured references the client echoes back next turn.
@@ -532,7 +547,8 @@ public partial class AiAssistantService
             LastInvestmentInstrumentId = intentPlan.ConversationState.LastInvestmentInstrumentId ?? baseState.LastInvestmentInstrumentId,
             LastReportCycleKey = queryPlan.NeedsReport && targetSelection.Cycles.Count == 1
                 ? ToCycleKey(targetSelection.Cycles[0])
-                : intentPlan.ConversationState.LastReportCycleKey ?? baseState.LastReportCycleKey
+                : intentPlan.ConversationState.LastReportCycleKey ?? baseState.LastReportCycleKey,
+            LastLedgerAccountId = selectedLedgerAccountId ?? baseState.LastLedgerAccountId
         };
 
         return new ConversationTurn(
@@ -685,6 +701,7 @@ public partial class AiAssistantService
         List<AiRecurringRow> recurringRows,
         List<AiWishlistRow> wishlistRows,
         LedgerDomainContext ledgerDomain,
+        AiLedgerAccountContext ledgerAccountContext,
         CancellationToken cancellationToken)
     {
         // Built after recovery so a per-cycle exact outflow (when recovered) replaces the
@@ -706,6 +723,7 @@ public partial class AiAssistantService
         if (ledgerDomain.AffordableWishlistCount != null) extraMetrics["affordableWishlistCount"] = ledgerDomain.AffordableWishlistCount;
         if (ledgerDomain.LedgerBalanceForecast != null) extraMetrics["ledgerBalanceForecast"] = ledgerDomain.LedgerBalanceForecast;
         if (recurringCostSummary != null) extraMetrics["recurringCostSummary"] = recurringCostSummary;
+        if (ledgerAccountContext.Activity != null) extraMetrics["accountActivity"] = ledgerAccountContext.Activity;
 
         var derivedMetrics = BuildDerivedMetrics(queryPlan, allTransactions, targetSelection.Cycles, cycleDay, sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, balanceSnapshot, recurringBillStatus, extraMetrics);
 
@@ -1281,5 +1299,8 @@ public partial class AiAssistantService
         object? RecurringReminderStatus,
         object? Rewards = null,
         object? Investments = null,
-        object? ReportReview = null);
+        object? ReportReview = null,
+        object? LedgerAccounts = null,
+        string? LedgerAccountSelectionIssue = null,
+        AiLedgerAccountContext? LedgerAccountContext = null);
 }

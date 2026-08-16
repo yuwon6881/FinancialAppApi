@@ -38,7 +38,8 @@ public partial class AiAssistantService
         string queryText,
         IReadOnlyList<string>? transactionIds = null,
         int? wishlistItemId = null,
-        bool needsLoans = false)
+        bool needsLoans = false,
+        bool needsLedgerAccounts = false)
     {
         var metrics = new List<DerivedMetric>();
         // Union: every intent contributes its owned metric.
@@ -88,6 +89,7 @@ public partial class AiAssistantService
                 AiIntent.SavingsGoalPacing or AiIntent.SavingsGoalScenario or AiIntent.SavingsGoalAdd or AiIntent.SavingsGoalEdit),
             NeedsInvestments: intents.Any(intent => intent is AiIntent.InvestmentSummary or AiIntent.InvestmentHolding or AiIntent.InvestmentAllocation),
             NeedsReport: intents.Contains(AiIntent.ReportReview),
-            NeedsLoans: needsLoans || intents.Contains(AiIntent.LoanSummary));
+            NeedsLoans: needsLoans || intents.Contains(AiIntent.LoanSummary),
+            NeedsLedgerAccounts: needsLedgerAccounts || intents.Contains(AiIntent.LedgerAccount));
     }
 }
