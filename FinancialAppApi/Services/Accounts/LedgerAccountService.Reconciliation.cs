@@ -20,20 +20,11 @@ public sealed partial class LedgerAccountService
             return new(LedgerAccountMutationStatus.Invalid, "At least one account target is required.");
         if (request.Targets.Any(target => target.Kind is not null && !LedgerAccountKind.IsValid(target.Kind)))
             return new(LedgerAccountMutationStatus.Invalid, "Choose a valid account kind for every row.");
-        if (request.Targets.Any(target => target.InterestFrequency is not null
-                && !LedgerAccountInterestFrequency.IsValid(target.InterestFrequency)))
-            return new(LedgerAccountMutationStatus.Invalid, "Choose a valid interest frequency for every row.");
-        if (request.Targets.Any(target => target.InterestRatePercent is < 0m or > 100m))
-            return new(LedgerAccountMutationStatus.Invalid, "Interest rate must be between 0% and 100%.");
-        if (request.Targets.Any(target => target.InterestEnabled == true
-                && (target.InterestRatePercent ?? 0m) <= 0m))
-            return new(LedgerAccountMutationStatus.Invalid, "Enter an interest rate above 0%, or choose no interest.");
 
         var bucket = FinancialConstants.BudgetCategories.First(value =>
             value.Equals(request.Bucket, StringComparison.OrdinalIgnoreCase));
         var userId = _context.RequireCurrentUserId();
         var operationKey = SanitizeOperationId(request.OperationId);
-        await ApplyDueInterestAsync(cancellationToken);
         var targets = request.Targets
             .Select(target => target with
             {
@@ -42,12 +33,6 @@ public sealed partial class LedgerAccountService
                 Kind = target.Kind is null ? null : LedgerAccountKind.Normalize(target.Kind),
                 ExpectedCurrent = RoundMoney(target.ExpectedCurrent),
                 Target = RoundMoney(target.Target),
-                InterestRatePercent = target.InterestRatePercent is null
-                    ? null
-                    : NormalizeInterestRate(target.InterestRatePercent.Value),
-                InterestFrequency = target.InterestFrequency is null
-                    ? null
-                    : NormalizeInterestFrequency(target.InterestFrequency),
             })
             .ToList();
         if (targets.Count == 0 || targets.Any(target => string.IsNullOrWhiteSpace(target.Name)))
@@ -135,20 +120,12 @@ public sealed partial class LedgerAccountService
                             && candidate.Name.Equals(target.Name, StringComparison.OrdinalIgnoreCase));
                     if (account is null)
                     {
-                        var interest = NormalizeReconcileInterest(target);
                         account = new LedgerAccount
                         {
                             Id = target.Id ?? $"acct-{Guid.NewGuid():N}",
                             Name = target.Name,
                             Bucket = bucket,
                             Kind = target.Kind ?? LedgerAccountKind.Other,
-                            InterestEnabled = interest.Enabled,
-                            InterestRatePercent = interest.RatePercent,
-                            InterestFrequency = interest.Frequency,
-                            InterestAnchorDay = interest.Enabled && !target.IsArchived ? _clock.Today.Day : null,
-                            InterestNextAccrualDate = interest.Enabled && !target.IsArchived
-                                ? LedgerAccountInterestFrequency.NextDate(_clock.Today, interest.Frequency, _clock.Today.Day)
-                                : null,
                             IsArchived = target.IsArchived,
                             CreatedAt = DateTime.UtcNow,
                             UpdatedAt = DateTime.UtcNow,
@@ -160,10 +137,6 @@ public sealed partial class LedgerAccountService
                     else
                     {
                         var wasArchived = account.IsArchived;
-                        var wasInterestEnabled = account.InterestEnabled;
-                        var previousAnchorDay = account.InterestAnchorDay
-                            ?? account.InterestNextAccrualDate?.Day
-                            ?? _clock.Today.Day;
                         if (!wasArchived && target.IsArchived)
                         {
                             if (await _context.RecurringPayments.AnyAsync(
@@ -176,45 +149,6 @@ public sealed partial class LedgerAccountService
                         account.Name = target.Name;
                         if (target.Kind is not null) account.Kind = target.Kind;
                         account.IsArchived = target.IsArchived;
-                        if (target.InterestEnabled.HasValue
-                            || target.InterestRatePercent.HasValue
-                            || target.InterestFrequency is not null)
-                        {
-                            var interest = NormalizeReconcileInterest(target, account);
-                            account.InterestEnabled = interest.Enabled;
-                            account.InterestRatePercent = interest.RatePercent;
-                            account.InterestFrequency = interest.Frequency;
-                            if (!interest.Enabled || account.IsArchived)
-                            {
-                                account.InterestNextAccrualDate = null;
-                                account.InterestRemainder = 0m;
-                            }
-                            else if (!wasInterestEnabled || account.InterestNextAccrualDate is null)
-                            {
-                                account.InterestAnchorDay = previousAnchorDay;
-                                account.InterestNextAccrualDate = LedgerAccountInterestFrequency.NextDate(
-                                    _clock.Today,
-                                    interest.Frequency,
-                                    previousAnchorDay);
-                            }
-                            else
-                            {
-                                account.InterestAnchorDay = previousAnchorDay;
-                            }
-                        }
-                        if (account.IsArchived)
-                        {
-                            account.InterestNextAccrualDate = null;
-                            account.InterestRemainder = 0m;
-                        }
-                        else if (wasArchived && account.InterestEnabled && account.InterestNextAccrualDate is null)
-                        {
-                            account.InterestAnchorDay ??= _clock.Today.Day;
-                            account.InterestNextAccrualDate = LedgerAccountInterestFrequency.NextDate(
-                                _clock.Today,
-                                account.InterestFrequency,
-                                account.InterestAnchorDay);
-                        }
                         account.UpdatedAt = DateTime.UtcNow;
                     }
                     resolvedTargets.Add(target with { Id = account.Id });

@@ -139,7 +139,6 @@ public class DatabaseInvariantTests
             (typeof(Transaction), "ck_transactions_stabilityreloadintent", "\"StabilityReloadIntent\" IN ('Unanswered', 'Required', 'NotRequired')"),
             (typeof(LedgerAccount), "ck_ledgeraccounts_bucket", "\"Bucket\" IN ('Essentials', 'Growth', 'Stability', 'Rewards')"),
             (typeof(LedgerAccount), "ck_ledgeraccounts_kind", "\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'Other')"),
-            (typeof(LedgerAccount), "ck_ledgeraccounts_interestfrequency", "\"InterestFrequency\" IN ('Daily', 'Monthly', 'Yearly')"),
             (typeof(RecurringPayment), "ck_recurringpayments_paymentmode", "\"PaymentMode\" IN ('AutoDeduct', 'Manual')"),
             (typeof(RecurringPayment), "ck_recurringpayments_pushremindermode", "\"PushReminderMode\" IN ('Once', 'Daily')"),
             (typeof(RecurringPaymentOccurrence), "ck_recurringpaymentoccurrences_status", "\"Status\" IN ('Pending', 'Paid', 'Discarded')"),

@@ -40,7 +40,7 @@ public class AuthAccountServiceTests
         Assert.Single(context.AppUsers);
         Assert.Equal("alice", context.AppUsers.Single().Username);
         Assert.Equal(1, await context.FinancialSettings.IgnoreQueryFilters().CountAsync());
-        Assert.Equal(10, await context.TransactionCategories.IgnoreQueryFilters().CountAsync());
+        Assert.Equal(11, await context.TransactionCategories.IgnoreQueryFilters().CountAsync());
     }
 
     [Fact]
@@ -55,7 +55,7 @@ public class AuthAccountServiceTests
 
         Assert.Equal(2, await context.AppUsers.CountAsync());
         Assert.Equal(2, await context.FinancialSettings.IgnoreQueryFilters().CountAsync());
-        Assert.Equal(20, await context.TransactionCategories.IgnoreQueryFilters().CountAsync());
+        Assert.Equal(22, await context.TransactionCategories.IgnoreQueryFilters().CountAsync());
         Assert.All(context.AppUsers, user => Assert.Null(user.RegistrationSlot));
     }
 

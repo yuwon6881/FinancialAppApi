@@ -885,7 +885,6 @@ public class PushDispatchServiceTests
             options.UseInMemoryDatabase(dbName).ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
         services.AddScoped<FinancialAppApi.Services.Accounts.LedgerAccountBalanceService>();
         services.AddScoped<CycleBalanceService>();
-        services.AddScoped<FinancialAppApi.Services.Accounts.LedgerAccountInterestService>();
         services.AddScoped<FinancialAppApi.Services.Accounts.LedgerAccountService>();
         services.AddScoped<RecurringOccurrenceService>();
         // The dispatcher resolves the ledger per user scope. It must share the test's fixed

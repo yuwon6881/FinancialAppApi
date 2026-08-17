@@ -87,9 +87,6 @@ public sealed class LedgerAccountsController : ControllerBase
                 target.IsArchived,
                 ReadAmount(target.ExpectedCurrent),
                 ReadAmount(target.Target),
-                target.InterestEnabled,
-                target.InterestRatePercent,
-                target.InterestFrequency,
                 target.ExpectedName,
                 target.ExpectedKind,
                 target.ExpectedIsArchived)).ToList(),
@@ -129,9 +126,6 @@ public sealed class LedgerAccountsController : ControllerBase
         Name = account.Name,
         Bucket = account.Bucket,
         Kind = account.Kind,
-        InterestEnabled = account.InterestEnabled,
-        InterestRatePercent = account.InterestRatePercent,
-        InterestFrequency = account.InterestFrequency,
         IsArchived = account.IsArchived,
         Remaining = ObfuscationHelper.Obfuscate(
             balances.TryGetValue(account.Id, out var balance) ? balance : 0m),
@@ -146,10 +140,7 @@ public sealed class LedgerAccountsController : ControllerBase
             dto.Bucket ?? string.Empty,
             dto.Kind ?? LedgerAccountKind.Bank,
             dto.IsArchived,
-            ReadAmount(dto.OpeningAmount),
-            dto.InterestEnabled,
-            dto.InterestRatePercent,
-            dto.InterestFrequency ?? LedgerAccountInterestFrequency.Monthly);
+            ReadAmount(dto.OpeningAmount));
 
     private static decimal ReadAmount(JsonElement value)
     {
@@ -172,9 +163,6 @@ public sealed class LedgerAccountMutationDto
     public string? Kind { get; set; }
     public bool IsArchived { get; set; }
     public JsonElement OpeningAmount { get; set; }
-    public bool? InterestEnabled { get; set; }
-    public decimal? InterestRatePercent { get; set; }
-    public string? InterestFrequency { get; set; }
 }
 
 public sealed class LedgerAccountDto
@@ -183,9 +171,6 @@ public sealed class LedgerAccountDto
     public string Name { get; set; } = string.Empty;
     public string Bucket { get; set; } = string.Empty;
     public string Kind { get; set; } = LedgerAccountKind.Bank;
-    public bool InterestEnabled { get; set; }
-    public decimal InterestRatePercent { get; set; }
-    public string InterestFrequency { get; set; } = LedgerAccountInterestFrequency.Monthly;
     public bool IsArchived { get; set; }
     public string Remaining { get; set; } = string.Empty;
     public string CreatedAt { get; set; } = string.Empty;
@@ -206,9 +191,6 @@ public sealed class LedgerAccountReconcileTargetDto
     public string? Id { get; set; }
     public string? Name { get; set; }
     public string? Kind { get; set; }
-    public bool? InterestEnabled { get; set; }
-    public decimal? InterestRatePercent { get; set; }
-    public string? InterestFrequency { get; set; }
     public string? ExpectedName { get; set; }
     public string? ExpectedKind { get; set; }
     public bool? ExpectedIsArchived { get; set; }

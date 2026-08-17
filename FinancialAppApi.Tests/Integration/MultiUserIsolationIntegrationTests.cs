@@ -66,9 +66,9 @@ public class MultiUserIsolationIntegrationTests : IntegrationTestBase
         var alice = CreateAuthenticatedClient(await SeedUserWithDefaultsAsync("alice", AliceUserId));
         var bob = CreateAuthenticatedClient(await SeedUserWithDefaultsAsync("bob", BobUserId));
 
-        // Both users start with the same 10 default category names, but as separate rows.
-        Assert.Equal(10, (await CategoryNames(alice)).Count);
-        Assert.Equal(10, (await CategoryNames(bob)).Count);
+        // Both users start with the same 11 default category names, but as separate rows.
+        Assert.Equal(11, (await CategoryNames(alice)).Count);
+        Assert.Equal(11, (await CategoryNames(bob)).Count);
 
         // Alice adds a custom category; it must not appear for Bob.
         var create = await alice.PostAsJsonAsync("/api/categories",
@@ -77,11 +77,11 @@ public class MultiUserIsolationIntegrationTests : IntegrationTestBase
 
         var aliceNames = await CategoryNames(alice);
         Assert.Contains("AliceOnlyCategory", aliceNames);
-        Assert.Equal(11, aliceNames.Count);
+        Assert.Equal(12, aliceNames.Count);
 
         var bobNames = await CategoryNames(bob);
         Assert.DoesNotContain("AliceOnlyCategory", bobNames);
-        Assert.Equal(10, bobNames.Count);
+        Assert.Equal(11, bobNames.Count);
     }
 
     [Fact]

@@ -72,18 +72,6 @@ public sealed partial class LedgerAccountService
     private static decimal RoundMoney(decimal value) =>
         MoneyRounding.RoundMoney(value);
 
-    private static (bool Enabled, decimal RatePercent, string Frequency) NormalizeReconcileInterest(
-        LedgerAccountReconcileTarget target,
-        LedgerAccount? existing = null)
-    {
-        var enabled = target.InterestEnabled ?? existing?.InterestEnabled ?? false;
-        var rate = target.InterestRatePercent ?? existing?.InterestRatePercent ?? 0m;
-        var frequency = target.InterestFrequency
-            ?? existing?.InterestFrequency
-            ?? LedgerAccountInterestFrequency.Monthly;
-        return (enabled, NormalizeInterestRate(rate), NormalizeInterestFrequency(frequency));
-    }
-
     private static bool NearlyEqual(decimal left, decimal right) =>
         Math.Abs(left - right) < 0.005m;
 

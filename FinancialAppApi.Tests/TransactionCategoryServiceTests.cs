@@ -114,7 +114,6 @@ public class TransactionCategoryServiceTests
     [Theory]
     [InlineData("Transfer")]
     [InlineData("Adjustment")]
-    [InlineData("Interest")]
     public async Task CreateCategoryAsync_RejectsSystemOwnedNames(string name)
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -129,7 +128,6 @@ public class TransactionCategoryServiceTests
     [Theory]
     [InlineData("Transfer")]
     [InlineData("Adjustment")]
-    [InlineData("Interest")]
     public async Task DeleteCategoryAsync_RejectsSystemOwnedNames(string name)
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -144,19 +142,48 @@ public class TransactionCategoryServiceTests
     }
 
     [Fact]
-    public async Task UpdateCategoryAsync_RejectsInterestCategory()
+    public async Task UpdateCategoryAsync_AllowsInterestCategory()
     {
+        // Interest is no longer written by the app, so it is an ordinary category the user owns
+        // and may edit like any other.
         await using var context = TestHelpers.NewInMemoryContext();
         context.TransactionCategories.Add(new TransactionCategory { Id = "cat-interest", Name = "Interest", Type = CategoryFlowType.Inflow });
         await context.SaveChangesAsync();
         var service = NewService(context);
 
-        var result = await service.UpdateCategoryAsync("cat-interest", CategoryFlowType.Both, 100m, updateLimit: true);
+        var result = await service.UpdateCategoryAsync("cat-interest", CategoryFlowType.Both, null, updateLimit: false);
 
-        Assert.Equal(UpdateCategoryCycleLimitStatus.ReservedName, result.Status);
-        var category = await context.TransactionCategories.SingleAsync();
-        Assert.Equal(CategoryFlowType.Inflow, category.Type);
-        Assert.Null(category.CycleLimit);
+        Assert.Equal(UpdateCategoryCycleLimitStatus.Updated, result.Status);
+        Assert.Equal(CategoryFlowType.Both, (await context.TransactionCategories.SingleAsync()).Type);
+    }
+
+    [Fact]
+    public async Task DeleteCategoryAsync_CannotOrphanInterestRows_WithoutAReplacement()
+    {
+        // Unreserving Interest must not put the posted interest history at risk: a category in
+        // use cannot be deleted without naming a replacement every row is moved to.
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.TransactionCategories.Add(new TransactionCategory { Id = "cat-interest", Name = "Interest", Type = CategoryFlowType.Inflow });
+        context.TransactionCategories.Add(new TransactionCategory { Id = "cat-other", Name = "Other" });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-interest",
+            Date = new DateTime(2026, 8, 17, 0, 0, 0, DateTimeKind.Utc),
+            Description = "Interest earned - RYT",
+            Category = "Interest",
+            LedgerCategory = "Stability",
+            Amount = 0.43m,
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var refused = await service.DeleteCategoryAsync("cat-interest");
+        Assert.Equal(DeleteTransactionCategoryStatus.InUse, refused.Status);
+        Assert.Equal("Interest", (await context.Transactions.SingleAsync()).Category);
+
+        var reassigned = await service.DeleteCategoryAsync("cat-interest", "cat-other");
+        Assert.Equal(DeleteTransactionCategoryStatus.Deleted, reassigned.Status);
+        Assert.Equal("Other", (await context.Transactions.SingleAsync()).Category);
     }
 
     [Fact]

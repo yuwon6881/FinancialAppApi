@@ -23,7 +23,7 @@ public class DbSeederTests
             .Where(c => c.UserId == UserId)
             .Select(c => c.Name)
             .ToList();
-        Assert.Equal(10, names.Count);
+        Assert.Equal(11, names.Count);
         Assert.Contains("Social", names);
         var accounts = context.LedgerAccounts.IgnoreQueryFilters().Where(account => account.UserId == UserId).ToList();
         Assert.Empty(accounts);
@@ -57,7 +57,7 @@ public class DbSeederTests
             .Select(c => c.Name)
             .ToList();
         Assert.DoesNotContain("Social", names);
-        Assert.Equal(9, names.Count);
+        Assert.Equal(10, names.Count);
     }
 
     [Fact]
@@ -75,6 +75,6 @@ public class DbSeederTests
         var count = context.TransactionCategories
             .IgnoreQueryFilters()
             .Count(c => c.UserId == UserId);
-        Assert.Equal(10, count);
+        Assert.Equal(11, count);
     }
 }

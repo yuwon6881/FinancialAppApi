@@ -307,11 +307,17 @@ public class TransactionCategoryService
         _cache.Remove(CacheKey);
     }
 
+    /// <summary>
+    /// Names the app writes rows under itself, so people cannot create, edit, or delete them.
+    /// <c>Interest</c> is deliberately absent: interest is now recorded by hand like any other
+    /// income, so it is an ordinary category the user owns. Deletion still cannot orphan the
+    /// existing rows — <see cref="DeleteCategoryAsync"/> requires a replacement for a category in
+    /// use and reassigns every transaction to it.
+    /// </summary>
     public static bool IsReservedName(string name)
     {
         return string.Equals(name, "Transfer", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "Adjustment", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "Interest", StringComparison.OrdinalIgnoreCase);
+            string.Equals(name, "Adjustment", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task UpsertCurrentCycleGuideAsync(string categoryName, decimal? limitAmount)

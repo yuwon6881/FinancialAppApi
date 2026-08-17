@@ -86,10 +86,7 @@ public sealed class LedgerAccountsControllerTests
             Name = "Emergency Savings",
             Bucket = "Stability",
             Kind = LedgerAccountKind.Bank,
-            OpeningAmount = ToJsonElement(500m),
-            InterestEnabled = true,
-            InterestRatePercent = 4.5m,
-            InterestFrequency = LedgerAccountInterestFrequency.Monthly
+            OpeningAmount = ToJsonElement(500m)
         };
 
         var result = await controller.PostAccount(mutation);
@@ -99,8 +96,7 @@ public sealed class LedgerAccountsControllerTests
         Assert.Equal("acct-new", dto.Id);
         Assert.Equal("Emergency Savings", dto.Name);
         Assert.Equal("Stability", dto.Bucket);
-        Assert.True(dto.InterestEnabled);
-        Assert.Equal(4.5m, dto.InterestRatePercent);
+        Assert.Equal(LedgerAccountKind.Bank, dto.Kind);
 
         var saved = await context.LedgerAccounts.FindAsync("acct-new");
         Assert.NotNull(saved);

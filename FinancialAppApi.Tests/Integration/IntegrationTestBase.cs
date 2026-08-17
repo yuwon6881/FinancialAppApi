@@ -27,6 +27,7 @@ public abstract class IntegrationTestBase : IDisposable
         ("cat-1", "Salary"), ("cat-2", "Social"), ("cat-3", "Food"), ("cat-4", "Hobbies"),
         ("cat-5", "Software"), ("cat-6", "Investment"), ("cat-7", "Entertainment"),
         ("cat-8", "Transport"), ("cat-9", "Other"), ("cat-10", "Transfer"),
+        ("cat-11", "Interest"),
     ];
 
     /// <summary>The four ledger buckets, each of which now needs at least one explicit account.</summary>

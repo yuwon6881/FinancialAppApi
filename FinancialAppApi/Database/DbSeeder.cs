@@ -9,7 +9,7 @@ public static class DbSeeder
     private static readonly string[] DefaultCategoryNames =
     [
         "Salary", "Social", "Food", "Hobbies", "Software", "Investment",
-        "Entertainment", "Transport", "Other", "Transfer"
+        "Entertainment", "Transport", "Other", "Transfer", "Interest"
     ];
     public static void Seed(AppDbContext context, FinancialClock? financialClock = null)
     {

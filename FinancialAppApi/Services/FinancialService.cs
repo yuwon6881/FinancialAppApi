@@ -96,7 +96,6 @@ public class FinancialService
     public async Task<object> GetWalletBalanceAsync(CancellationToken cancellationToken = default)
     {
         var setting = await GetOrCreateSettingAsync(cancellationToken);
-        await _ledgerAccountService.ApplyDueInterestAsync(cancellationToken);
 
         return await BuildWalletBalanceAsync(setting, null, cancellationToken);
     }
@@ -161,10 +160,9 @@ public class FinancialService
             queryYear,
             persistSelection,
             cancellationToken);
-        // Load accounts once, then write due interest before the transaction snapshot so dashboard
-        // totals and account rows observe the same balance without adding a bootstrap query.
+        // Load accounts once and reuse them for the dashboard totals and the account rows, so the
+        // bootstrap pays a single account query rather than one per consumer.
         var ledgerAccounts = await _ledgerAccountService.GetAccountsAsync(cancellationToken);
-        await _ledgerAccountService.ApplyDueInterestAsync(ledgerAccounts, cancellationToken);
         var activeRecurringPayments = await _context.RecurringPayments
             .AsNoTracking()
             .Where(payment => payment.Active)

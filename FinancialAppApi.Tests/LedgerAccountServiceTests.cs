@@ -108,18 +108,13 @@ public class LedgerAccountServiceTests
 
         var result = await service.UpdateAsync(
             "acct-first",
-            Mutation("acct-first", "Main bank") with
-            {
-                InterestEnabled = true,
-                InterestRatePercent = 3.5m,
-                InterestFrequency = LedgerAccountInterestFrequency.Monthly,
-            });
+            Mutation("acct-first", "Main bank") with { Kind = LedgerAccountKind.EWallet });
 
         Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
         var accounts = await service.GetAccountsAsync();
         var edited = accounts.Single(account => account.Id == "acct-first");
-        Assert.True(edited.InterestEnabled);
-        Assert.Equal(3.5m, edited.InterestRatePercent);
+        Assert.Equal(LedgerAccountKind.EWallet, edited.Kind);
+        Assert.Equal("Essentials", edited.Bucket);
     }
 
     [Fact]
@@ -132,7 +127,7 @@ public class LedgerAccountServiceTests
 
         var result = await service.UpdateAsync(
             "acct-second",
-            Mutation("acct-second", "Cash tin") with { InterestEnabled = true, InterestRatePercent = 1m });
+            Mutation("acct-second", "Cash tin") with { Kind = LedgerAccountKind.Cash });
 
         Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
         var accounts = await service.GetAccountsAsync();
