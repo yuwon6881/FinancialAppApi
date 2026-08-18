@@ -674,7 +674,10 @@ public class SavingsGoalService
 
         var occurrences = await _recurringOccurrenceLedger.GetRangeAsync(
             payments, startOnly, endOnly, cancellationToken: cancellationToken);
-        return SavingsGoalPacing.PendingAmount(occurrences, fundingBucket);
+        var activeIds = payments.Select(payment => payment.Id).ToHashSet(StringComparer.Ordinal);
+        return SavingsGoalPacing.PendingAmount(
+            occurrences.Where(occurrence => activeIds.Contains(occurrence.RecurringPaymentId)).ToList(),
+            fundingBucket);
     }
 
     private async Task<int> GetCycleDayAsync(CancellationToken cancellationToken)

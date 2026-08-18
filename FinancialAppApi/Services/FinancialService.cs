@@ -372,7 +372,9 @@ public class FinancialService
             .ThenBy(item => item.dueDate)
             .ToList();
 
-        var pendingRecurring = BuildPendingRecurringItems(snapshot.RecurringOccurrences);
+        var pendingRecurring = BuildPendingRecurringItems(
+            snapshot.RecurringOccurrences,
+            allRecurring.Select(payment => payment.Id).ToHashSet(StringComparer.Ordinal));
 
         // Hoisted out of BuildTodayPlanInsights so the recovery block can hold its proposed draw
         // above the bills this cycle has already committed to, without computing the sum twice.
@@ -995,13 +997,20 @@ public class FinancialService
             amount = ObfuscationHelper.Obfuscate(item.Amount)
         }).ToList();
 
-    private sealed record PendingRecurringItem(string Category, string LedgerCategory, decimal Amount);
+    private sealed record PendingRecurringItem(
+        string RecurringPaymentId,
+        string Category,
+        string LedgerCategory,
+        decimal Amount);
 
     private static List<PendingRecurringItem> BuildPendingRecurringItems(
-        List<RecurringPaymentOccurrence> occurrences) => occurrences
+        List<RecurringPaymentOccurrence> occurrences,
+        IReadOnlyCollection<string> activePaymentIds) => occurrences
         .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.Pending
-            && occurrence.ScheduledAmount.HasValue)
+            && occurrence.ScheduledAmount.HasValue
+            && activePaymentIds.Contains(occurrence.RecurringPaymentId))
         .Select(occurrence => new PendingRecurringItem(
+            occurrence.RecurringPaymentId,
             occurrence.Category ?? string.Empty,
             occurrence.LedgerCategory ?? string.Empty,
             Math.Abs(occurrence.ScheduledAmount!.Value)))

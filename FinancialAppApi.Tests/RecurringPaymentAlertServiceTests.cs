@@ -127,6 +127,22 @@ public class RecurringPaymentAlertServiceTests
         Assert.Empty(alerts);
     }
 
+    [Fact]
+    public async Task GetSubscriptionAlertsAsync_StopsNaggingForUnsettledBillOnceScheduleHasEnded()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        var payment = MonthlyHousehold();
+        payment.EndDate = "2026-07-28";
+        context.RecurringPayments.Add(payment);
+        await context.SaveChangesAsync();
+
+        var alerts = await NewService(context, new DateTimeOffset(2026, 7, 29, 12, 0, 0, TimeSpan.Zero))
+            .GetSubscriptionAlertsAsync();
+
+        Assert.Empty(alerts);
+    }
+
     // Settling a bill writes the occurrence row in the same save as the transaction
     // (TransactionPersistenceService does both). Seeding only the transaction models a state the
     // app cannot reach, and the ledger would rightly report the occurrence as still pending.

@@ -19,6 +19,9 @@ public sealed class RecurringOccurrenceLedgerService
     // deterministic `occ-{payment}-{date}` key and threw an identity conflict.
     private readonly Dictionary<(string PaymentId, DateOnly Date), RecurringPaymentOccurrence> _known = new();
 
+    // Parent existence is independent of Active: paused payments still own their pending rows.
+    // Cache the lookup so one service request performs at most one batched orphan check.
+    private readonly Dictionary<string, bool> _paymentExists = new();
     // Ranges already loaded in full, so a miss inside one is proof of absence rather than a
     // reason to ask the database again. A null payment id means the range was loaded for
     // every payment.
@@ -53,8 +56,13 @@ public sealed class RecurringOccurrenceLedgerService
         }
         await SaveIfChangedAsync(cancellationToken);
 
-        return Ordered(_known.Values.Where(occurrence =>
-            occurrence.OccurrenceDate >= start && occurrence.OccurrenceDate <= end));
+        var occurrences = _known.Values.Where(occurrence =>
+            occurrence.OccurrenceDate >= start && occurrence.OccurrenceDate <= end).ToList();
+        occurrences = await DropOrphanedPendingAsync(
+            occurrences,
+            activePayments.Select(payment => payment.Id).ToHashSet(StringComparer.Ordinal),
+            cancellationToken);
+        return Ordered(occurrences);
     }
 
     public async Task<List<RecurringPaymentOccurrence>> GetPendingDueAsync(
@@ -65,7 +73,13 @@ public sealed class RecurringOccurrenceLedgerService
         var active = activePayments.Where(payment => payment.Active).ToList();
         if (active.Count == 0) return new List<RecurringPaymentOccurrence>();
 
-        var activeIds = active.Select(payment => payment.Id).ToList();
+        var activeIds = active.Select(payment => payment.Id).ToHashSet(StringComparer.Ordinal);
+        var endDates = active.ToDictionary(
+            payment => payment.Id,
+            payment => DateOnly.TryParseExact(payment.EndDate, "yyyy-MM-dd", out var end)
+                ? end
+                : (DateOnly?)null,
+            StringComparer.Ordinal);
         var earliest = active.Min(TrackingStart);
         await LoadRangeAsync(activeIds, earliest, today, cancellationToken);
         var invented = false;
@@ -84,10 +98,49 @@ public sealed class RecurringOccurrenceLedgerService
         }
         await SaveIfChangedAsync(cancellationToken);
 
-        return Ordered(_known.Values.Where(occurrence =>
+        var occurrences = _known.Values.Where(occurrence =>
             activeIds.Contains(occurrence.RecurringPaymentId)
             && occurrence.Status == RecurringOccurrenceStatus.Pending
-            && occurrence.OccurrenceDate <= today));
+            && occurrence.OccurrenceDate <= today
+            && (endDates[occurrence.RecurringPaymentId] is not { } end
+                || today <= end)).ToList();
+        occurrences = await DropOrphanedPendingAsync(
+            occurrences,
+            activeIds,
+            cancellationToken);
+        return Ordered(occurrences);
+    }
+    // Pending rows are only commitments while their parent exists. Paid and discarded rows are
+    // settled history and deliberately survive deletion of the recurring-payment template.
+    private async Task<List<RecurringPaymentOccurrence>> DropOrphanedPendingAsync(
+        List<RecurringPaymentOccurrence> occurrences,
+        IReadOnlyCollection<string> knownExistingIds,
+        CancellationToken cancellationToken)
+    {
+        var candidateIds = occurrences
+            .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.Pending
+                && !knownExistingIds.Contains(occurrence.RecurringPaymentId)
+                && !_paymentExists.ContainsKey(occurrence.RecurringPaymentId))
+            .Select(occurrence => occurrence.RecurringPaymentId)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (candidateIds.Count > 0)
+        {
+            var existingIds = (await _context.RecurringPayments
+                    .AsNoTracking()
+                    .Where(payment => candidateIds.Contains(payment.Id))
+                    .Select(payment => payment.Id)
+                    .ToListAsync(cancellationToken))
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (var id in candidateIds)
+            {
+                _paymentExists[id] = existingIds.Contains(id);
+            }
+        }
+        return occurrences.Where(occurrence =>
+            occurrence.Status != RecurringOccurrenceStatus.Pending
+            || knownExistingIds.Contains(occurrence.RecurringPaymentId)
+            || _paymentExists.GetValueOrDefault(occurrence.RecurringPaymentId, true)).ToList();
     }
 
     private static List<RecurringPaymentOccurrence> Ordered(IEnumerable<RecurringPaymentOccurrence> occurrences) =>

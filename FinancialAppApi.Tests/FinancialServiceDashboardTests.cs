@@ -545,6 +545,47 @@ public class FinancialServiceDashboardTests
     }
 
     [Fact]
+    public async Task GetDashboardDataAsync_PausedBillStillShownButExcludedFromUnpaidTotals()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "paused-internet",
+            Name = "Paused internet",
+            Amount = -60m,
+            Frequency = "Monthly",
+            Category = "Bills",
+            LedgerCategory = "Essentials",
+            StartDate = "2026-07-20",
+            NextDueDate = "2026-07-20",
+            DueDate = 20,
+            Active = false
+        });
+        context.RecurringPaymentOccurrences.Add(new RecurringPaymentOccurrence
+        {
+            Id = "occ-paused-internet-20260720",
+            RecurringPaymentId = "paused-internet",
+            OccurrenceDate = new DateOnly(2026, 7, 20),
+            Name = "Paused internet",
+            ScheduledAmount = 60m,
+            Category = "Bills",
+            LedgerCategory = "Essentials",
+            Status = RecurringOccurrenceStatus.Pending,
+            UserId = TestHelpers.DefaultUserId
+        });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context, new DateTimeOffset(2026, 7, 16, 0, 0, 0, TimeSpan.Zero))
+            .GetDashboardDataAsync("Jul", 2026);
+        var insights = response.GetType().GetProperty("todayPlanInsights")!.GetValue(response)!;
+
+        Assert.Single(GetObjects(response, "activeRecurringPayments"));
+        Assert.Equal(0, insights.GetType().GetProperty("unpaidRecurringCount")!.GetValue(insights));
+        Assert.Equal(0m, GetAmount(insights, "unpaidRecurringTotal"));
+    }
+
+    [Fact]
     public async Task GetDashboardDataAsync_IncludesRecurringAccountShortfalls_WhenAccountBalanceIsBelowAutoDeductBill()
     {
         await using var context = TestHelpers.NewInMemoryContext();

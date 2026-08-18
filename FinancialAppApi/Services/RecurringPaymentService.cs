@@ -227,7 +227,7 @@ public class RecurringPaymentService
                 preserveThroughToday: !desired,
                 cancellationToken);
             payment.Active = desired;
-            if (desired) payment.OccurrenceTrackingStartDate = _clock.Today.AddDays(1);
+            if (desired) payment.OccurrenceTrackingStartDate = _clock.Today;
             await _context.SaveChangesAsync(cancellationToken);
         }
 

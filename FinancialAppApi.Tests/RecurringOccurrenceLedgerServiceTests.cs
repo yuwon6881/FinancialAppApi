@@ -8,6 +8,100 @@ namespace FinancialAppApi.Tests;
 public class RecurringOccurrenceLedgerServiceTests
 {
     [Fact]
+    public async Task GetRangeAsync_DropsPendingOccurrenceWhoseParentPaymentWasDeleted()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPaymentOccurrences.Add(Occurrence(
+            "deleted-payment", new DateOnly(2026, 8, 5), RecurringOccurrenceStatus.Pending));
+        await context.SaveChangesAsync();
+
+        var rows = await Ledger(context, ClockAt(2026, 8, 9)).GetRangeAsync(
+            [], new DateOnly(2026, 8, 1), new DateOnly(2026, 8, 31));
+
+        Assert.Empty(rows);
+    }
+
+    [Fact]
+    public async Task GetRangeAsync_KeepsPaidAndDiscardedOccurrencesWhoseParentPaymentWasDeleted()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPaymentOccurrences.AddRange(
+            Occurrence("deleted-payment", new DateOnly(2026, 8, 5), RecurringOccurrenceStatus.Paid),
+            Occurrence("deleted-payment", new DateOnly(2026, 8, 6), RecurringOccurrenceStatus.Discarded));
+        await context.SaveChangesAsync();
+
+        var rows = await Ledger(context, ClockAt(2026, 8, 9)).GetRangeAsync(
+            [], new DateOnly(2026, 8, 1), new DateOnly(2026, 8, 31));
+
+        Assert.Equal(
+            [RecurringOccurrenceStatus.Paid, RecurringOccurrenceStatus.Discarded],
+            rows.Select(row => row.Status));
+    }
+
+    [Fact]
+    public async Task GetPendingDueAsync_DropsPendingOccurrenceWhoseParentPaymentWasDeleted()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPaymentOccurrences.Add(Occurrence(
+            "deleted-payment", new DateOnly(2026, 8, 5), RecurringOccurrenceStatus.Pending));
+        await context.SaveChangesAsync();
+
+        var rows = await Ledger(context, ClockAt(2026, 8, 9)).GetPendingDueAsync([Payment()]);
+
+        Assert.DoesNotContain(rows, row => row.RecurringPaymentId == "deleted-payment");
+    }
+
+    [Fact]
+    public async Task GetPendingDueAsync_StopsSurfacingPendingOccurrenceOnceTodayIsPastEndDate()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var payment = Payment();
+        payment.EndDate = "2026-08-05";
+        context.RecurringPayments.Add(payment);
+        context.RecurringPaymentOccurrences.Add(Occurrence(
+            payment.Id, new DateOnly(2026, 8, 5), RecurringOccurrenceStatus.Pending));
+        await context.SaveChangesAsync();
+
+        var rows = await Ledger(context, ClockAt(2026, 8, 6)).GetPendingDueAsync([payment]);
+
+        Assert.Empty(rows);
+    }
+
+    [Fact]
+    public async Task GetPendingDueAsync_KeepsPendingOccurrenceOnEndDate()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var payment = Payment();
+        payment.EndDate = "2026-08-05";
+        context.RecurringPayments.Add(payment);
+        await context.SaveChangesAsync();
+
+        var rows = await Ledger(context, ClockAt(2026, 8, 5)).GetPendingDueAsync([payment]);
+
+        Assert.Single(rows);
+    }
+
+    [Fact]
+    public async Task Resume_OnTheDueDayItselfMaterializesTodaysOccurrence()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var payment = Payment();
+        payment.Active = false;
+        context.RecurringPayments.Add(payment);
+        context.LedgerAccounts.Add(Account());
+        await context.SaveChangesAsync();
+        var clock = ClockAt(2026, 9, 5);
+        var ledger = Ledger(context, clock);
+        var service = new RecurringPaymentService(context, ledger, clock);
+
+        await service.ToggleActiveAsync(payment.Id, true);
+        var occurrence = await ledger.GetNextPendingAsync(payment, clock.Today, includeFrom: true);
+
+        Assert.NotNull(occurrence);
+        Assert.Equal(clock.Today, occurrence.OccurrenceDate);
+    }
+
+    [Fact]
     public async Task ScheduleEdit_PreservesDueHistoryAndRegeneratesOnlyFuturePending()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -173,6 +267,30 @@ public class RecurringOccurrenceLedgerServiceTests
     {
         Id = "acct-essentials", Name = "Essentials account", Bucket = "Essentials", Kind = LedgerAccountKind.Bank,
     };
+
+    private static RecurringPaymentOccurrence Occurrence(
+        string paymentId,
+        DateOnly date,
+        string status) => new()
+    {
+        Id = $"occ-{paymentId}-{date:yyyyMMdd}",
+        RecurringPaymentId = paymentId,
+        OccurrenceDate = date,
+        Name = "Original bill",
+        ScheduledAmount = 50m,
+        Category = "Bills",
+        LedgerCategory = "Essentials",
+        PaymentMode = RecurringPaymentMode.Manual,
+        Status = status,
+        UserId = TestHelpers.DefaultUserId,
+    };
+
+    private static RecurringOccurrenceLedgerService Ledger(
+        Database.AppDbContext context,
+        FinancialClock clock) => new(
+        context,
+        new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance),
+        clock);
 
     private static FinancialClock ClockAt(int year, int month, int day) => new(
         TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),

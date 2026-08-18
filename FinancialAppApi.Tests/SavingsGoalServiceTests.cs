@@ -116,6 +116,43 @@ public class SavingsGoalServiceTests
         Assert.Equal(750m, summary.Unassigned);
     }
 
+    [Fact]
+    public async Task GetPoolSummaryAsync_DoesNotHoldPausedPaymentOccurrenceOutOfFreeBalance()
+    {
+        await using var context = NewContext(rewardsBalance: 1000m);
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "paused-reward",
+            Name = "Paused reward bill",
+            Amount = -250m,
+            Frequency = "Monthly",
+            Category = "Subscriptions",
+            LedgerCategory = "Rewards",
+            AccountId = "acct-rewards",
+            StartDate = "2026-07-20",
+            NextDueDate = "2026-07-20",
+            DueDate = 20,
+            Active = false
+        });
+        context.RecurringPaymentOccurrences.Add(new RecurringPaymentOccurrence
+        {
+            Id = "occ-paused-reward-20260720",
+            RecurringPaymentId = "paused-reward",
+            OccurrenceDate = new DateOnly(2026, 7, 20),
+            Name = "Paused reward bill",
+            ScheduledAmount = 250m,
+            Category = "Subscriptions",
+            LedgerCategory = "Rewards",
+            Status = RecurringOccurrenceStatus.Pending,
+            UserId = TestHelpers.DefaultUserId
+        });
+        await context.SaveChangesAsync();
+
+        var summary = await NewService(context).GetPoolSummaryAsync();
+
+        Assert.Equal(1000m, summary.Unassigned);
+    }
+
     // The money for a legacy bill has already left the Rewards balance, so holding the same
     // amount back a second time as "still pending" would understate free Rewards by the bill
     // twice over. Untagged pre-ledger history is kept out of that sum by

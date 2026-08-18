@@ -116,6 +116,29 @@ public class RecurringPaymentServiceTests
     }
 
     [Fact]
+    public async Task ToggleActiveAsync_ResumeSetsTrackingStartToTodayNotTomorrow()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var payment = NewPayment("rec-1", "Internet", active: false);
+        context.RecurringPayments.Add(payment);
+        SeedCategories(context);
+        await context.SaveChangesAsync();
+        var today = new DateOnly(2026, 8, 20);
+        var clock = ClockAt(today);
+        var service = new RecurringPaymentService(
+            context,
+            new RecurringOccurrenceLedgerService(
+                context,
+                new RecurringOccurrenceService(Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance),
+                clock),
+            clock);
+
+        await service.ToggleActiveAsync(payment.Id, true);
+
+        Assert.Equal(today, payment.OccurrenceTrackingStartDate);
+    }
+
+    [Fact]
     public async Task UpdateRecurringPaymentAsync_UpdatesExistingPayment()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -226,6 +249,31 @@ public class RecurringPaymentServiceTests
 
         Assert.Equal(DeleteRecurringPaymentStatus.Deleted, result.Status);
         Assert.False(await context.RecurringPayments.AnyAsync(p => p.Id == "rec-1"));
+    }
+
+    [Fact]
+    public async Task DeleteRecurringPaymentAsync_LeavesNoVisiblePendingOrphan()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var payment = NewPayment("rec-1", "Internet");
+        payment.StartDate = "2026-08-20";
+        payment.NextDueDate = "2026-08-20";
+        payment.DueDate = 20;
+        context.RecurringPayments.Add(payment);
+        await context.SaveChangesAsync();
+        var clock = ClockAt(new DateOnly(2026, 8, 20));
+        var ledger = new RecurringOccurrenceLedgerService(
+            context,
+            new RecurringOccurrenceService(Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance),
+            clock);
+        await ledger.GetRangeAsync([payment], clock.Today, clock.Today);
+        var service = new RecurringPaymentService(context, ledger, clock);
+
+        await service.DeleteRecurringPaymentAsync(payment.Id);
+        var visible = await ledger.GetRangeAsync([], clock.Today, clock.Today);
+
+        Assert.Empty(visible);
+        Assert.Single(context.RecurringPaymentOccurrences);
     }
 
     [Fact]
@@ -371,5 +419,14 @@ public class RecurringPaymentServiceTests
             Bucket = "Essentials",
             Kind = LedgerAccountKind.Bank,
         });
+    }
+
+    private static FinancialClock ClockAt(DateOnly date) => new(
+        TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+        new FixedTimeProvider(new DateTimeOffset(date.ToDateTime(new TimeOnly(12, 0)), TimeSpan.Zero)));
+
+    private sealed class FixedTimeProvider(DateTimeOffset value) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => value;
     }
 }
