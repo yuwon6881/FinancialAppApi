@@ -63,6 +63,7 @@ public sealed class StabilityReloadStatusService
         {
             var id = movement.TransactionId!;
             if (!transactionsById.TryGetValue(id, out var transaction)) continue;
+            if (transaction.IsAccountBalanceAdjustment) continue;
             var intent = StabilityReloadIntent.Normalize(transaction.StabilityReloadIntent);
             if (intent == StabilityReloadIntent.NotRequired)
             {

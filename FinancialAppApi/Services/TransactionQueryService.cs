@@ -229,6 +229,7 @@ public partial class TransactionQueryService
             Amount = item.Amount,
             StabilityRecoveryTopUpAmount = item.StabilityRecoveryTopUpAmount,
             StabilityReloadIntent = item.StabilityReloadIntent,
+            IsAccountBalanceAdjustment = item.IsAccountBalanceAdjustment,
         });
 
     public async Task<Transaction?> GetTransactionByIdAsync(string id, CancellationToken cancellationToken = default)

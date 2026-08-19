@@ -131,6 +131,55 @@
           }
         ]
       }
+    },
+    {
+      "id": "carried-obligation-with-date",
+      "why": "An obligation carried into a cycle retains its date in the FIFO queue.",
+      "input": {
+        "opening": {
+          "outstanding": 300.0,
+          "oldestOutstandingDate": "2026-07-15",
+          "obligations": [
+            {
+              "transactionId": "tx-carried",
+              "originalAmount": 300.0,
+              "remainingAmount": 300.0,
+              "date": "2026-07-15"
+            }
+          ]
+        },
+        "openingBalance": 1500.0,
+        "target": 2000.0,
+        "movements": [
+          {
+            "id": "tx-drawdown-new",
+            "date": "2026-08-05",
+            "change": -100.0,
+            "repayment": 0.0,
+            "marked": true
+          }
+        ]
+      },
+      "expected": {
+        "outstanding": 400.0,
+        "oldestOutstandingDate": "2026-07-15",
+        "markedThisRun": 100.0,
+        "repaidThisRun": 0.0,
+        "obligations": [
+          {
+            "transactionId": "tx-carried",
+            "originalAmount": 300.0,
+            "remainingAmount": 300.0,
+            "date": "2026-07-15"
+          },
+          {
+            "transactionId": "tx-drawdown-new",
+            "originalAmount": 100.0,
+            "remainingAmount": 100.0,
+            "date": "2026-08-05"
+          }
+        ]
+      }
     }
   ]
 }

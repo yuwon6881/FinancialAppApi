@@ -26,7 +26,8 @@ public sealed class StabilityReloadParityTests
         var openingObligations = openingJson.GetProperty("obligations").EnumerateArray().Select(o => new ReloadObligation(
             o.GetProperty("transactionId").GetString()!,
             o.GetProperty("originalAmount").GetDecimal(),
-            o.GetProperty("remainingAmount").GetDecimal()
+            o.GetProperty("remainingAmount").GetDecimal(),
+            o.TryGetProperty("date", out var d) && d.ValueKind != JsonValueKind.Null ? DateOnly.Parse(d.GetString()!) : null
         )).ToList();
 
         DateOnly? oldestDate = openingJson.GetProperty("oldestOutstandingDate").ValueKind == JsonValueKind.Null

@@ -331,6 +331,69 @@ public class StabilityReloadLedgerTests
         Assert.Equal(new DateOnly(2026, 8, 6), state.OldestMarkedThisRunDate);
     }
 
+    [Fact]
+    public void Replay_CarriedObligationWithDate_ReturnsCarriedDateAsOldestOutstandingDate()
+    {
+        var carriedDate = new DateOnly(2026, 6, 15);
+        var state = StabilityReloadLedger.Replay(
+            new ReloadState(
+                300m,
+                carriedDate,
+                0m,
+                0m,
+                Obligations: [new ReloadObligation("tx-carried", 300m, 300m, carriedDate)]),
+            openingBalance: 1000m,
+            target: 2000m,
+            []);
+
+        Assert.Equal(300m, state.Outstanding);
+        Assert.Equal(carriedDate, state.OldestOutstandingDate);
+        Assert.Equal(carriedDate, state.Obligations!.Single().Date);
+    }
+
+    [Fact]
+    public void Replay_BackdatedMovementDoesNotSkipPlanRevision()
+    {
+        var state = StabilityReloadLedger.Replay(
+            Opening(),
+            openingBalance: 4000m,
+            planPoints:
+            [
+                new ReloadPlanPoint(new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc), 10000m),
+                new ReloadPlanPoint(new DateTime(2026, 7, 10, 0, 0, 0, DateTimeKind.Utc), 5000m),
+            ],
+            movements:
+            [
+                // Early Date, late PostedAt (backdated entry): posted at July 12, so target in force is 5000m.
+                // Balance drops to 3500m, then rises to 5000m -> attains 5000m target and clears.
+                new ReloadMovement(new DateOnly(2026, 7, 2), -500m, 0m, true, "backdated",
+                    new DateTime(2026, 7, 12, 0, 0, 0, DateTimeKind.Utc)),
+                // Later Date, early PostedAt: posted at July 5, so target in force is 10000m.
+                new ReloadMovement(new DateOnly(2026, 7, 6), 1500m, 0m, false, "deposit",
+                    new DateTime(2026, 7, 5, 0, 0, 0, DateTimeKind.Utc)),
+            ]);
+
+        // Running balance: 4000 - 500 + 1500 = 5000. Under 5000 target at the end, queue is cleared.
+        Assert.Equal(0m, state.Outstanding);
+    }
+
+    [Fact]
+    public void Replay_AttainmentZeroesMarkedStillOutstandingThisRunWhileMarkedThisRunSurvives()
+    {
+        var state = StabilityReloadLedger.Replay(
+            Opening(),
+            openingBalance: 9000m,
+            target: 10000m,
+            [
+                new ReloadMovement(new DateOnly(2026, 7, 1), -500m, 0m, true, "drawdown"),
+                new ReloadMovement(new DateOnly(2026, 7, 2), 1500m, 0m, false, "deposit"),
+            ]);
+
+        Assert.Equal(0m, state.Outstanding);
+        Assert.Equal(500m, state.MarkedThisRun);
+        Assert.Equal(0m, state.MarkedStillOutstandingThisRun);
+    }
+
     private static ReloadState Opening() => new(0m, null, 0m, 0m);
 
     private static Transaction Transaction(

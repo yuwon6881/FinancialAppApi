@@ -157,7 +157,7 @@ public class CycleBalanceService
                     GrowthBalance = growth,
                     StabilityBalance = stability,
                     StabilityReloadOutstanding = reloaded.Outstanding,
-                    StabilityReloadMarkedAmount = reloaded.MarkedThisRun,
+                    StabilityReloadMarkedAmount = reloaded.MarkedStillOutstandingThisRun,
                     StabilityReloadOldestDate = reloaded.OldestOutstandingDate,
                     RewardsBalance = rewards
                 };

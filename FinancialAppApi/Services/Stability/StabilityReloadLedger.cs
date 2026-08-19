@@ -14,7 +14,8 @@ public readonly record struct ReloadMovement(
 public sealed record ReloadObligation(
     string TransactionId,
     decimal OriginalAmount,
-    decimal RemainingAmount);
+    decimal RemainingAmount,
+    DateOnly? Date = null);
 
 public sealed record ReloadPlanPoint(DateTime EffectiveAt, decimal TargetStabilityFund);
 
@@ -32,7 +33,8 @@ public sealed record ReloadState(
     // Detailed entries are returned when the replay started with transaction identities. The cycle
     // cache still carries only the aggregate queue, while query/bootstrap status uses these entries
     // to distinguish outstanding, partial and complete rows.
-    IReadOnlyList<ReloadObligation>? Obligations = null);
+    IReadOnlyList<ReloadObligation>? Obligations = null,
+    decimal MarkedStillOutstandingThisRun = 0m);
 
 /// <summary>
 /// Replays the user's explicit emergency-fund reload choices. Balance movement and reload intent
@@ -71,7 +73,7 @@ public static class StabilityReloadLedger
             {
                 queue.AddLast(new ReloadQueueEntry(
                     obligation.TransactionId,
-                    null,
+                    obligation.Date,
                     obligation.RemainingAmount));
                 obligations[obligation.TransactionId] = obligation;
             }
@@ -85,13 +87,21 @@ public static class StabilityReloadLedger
 
         var running = openingBalance;
         var markedThisRun = 0m;
+        var markedStillOutstandingThisRun = 0m;
         var repaidThisRun = 0m;
         DateOnly? oldestMarkedThisRun = null;
         var points = planPoints
             .OrderBy(point => Normalize(point.EffectiveAt))
             .ToList();
+
+        var sortedMovements = movements
+            .Select((m, index) => (Movement: m, Timestamp: Normalize(m.Timestamp ?? m.Date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)), Index: index))
+            .OrderBy(x => x.Timestamp)
+            .ThenBy(x => x.Index)
+            .ToList();
+
         var pointIndex = 0;
-        var target = points.Count > 0 ? points[0].TargetStabilityFund : 0m;
+        var activeTarget = points.Count > 0 ? points[0].TargetStabilityFund : 0m;
 
         void ClearAtTarget()
         {
@@ -104,6 +114,7 @@ public static class StabilityReloadLedger
             }
             queue.Clear();
             repaidThisRun = 0m;
+            markedStillOutstandingThisRun = 0m;
             // Attainment starts a fresh reporting window. MarkedThisRun intentionally remains an
             // audit total; OldestMarkedThisRunDate is what scopes the visible recovery window.
             oldestMarkedThisRun = null;
@@ -111,16 +122,18 @@ public static class StabilityReloadLedger
 
         void ApplyPlanPoint(ReloadPlanPoint point)
         {
-            target = point.TargetStabilityFund;
-            if (target > 0m && running >= target) ClearAtTarget();
+            activeTarget = point.TargetStabilityFund;
+            if (activeTarget > 0m && running >= activeTarget) ClearAtTarget();
         }
 
         void ApplyPlanPointsThrough(DateTime timestamp)
         {
             var normalized = Normalize(timestamp);
-            while (pointIndex < points.Count && Normalize(points[pointIndex].EffectiveAt) <= normalized)
+            while (pointIndex < points.Count)
             {
-                ApplyPlanPoint(points[pointIndex]);
+                var point = points[pointIndex];
+                if (Normalize(point.EffectiveAt) > normalized) break;
+                ApplyPlanPoint(point);
                 pointIndex++;
             }
         }
@@ -129,13 +142,15 @@ public static class StabilityReloadLedger
         {
             var marked = -movement.Change;
             markedThisRun += marked;
+            markedStillOutstandingThisRun += marked;
             queue.AddLast(new ReloadQueueEntry(movement.TransactionId, movement.Date, marked));
             if (movement.TransactionId is not null)
             {
                 obligations[movement.TransactionId] = new ReloadObligation(
                     movement.TransactionId,
                     marked,
-                    marked);
+                    marked,
+                    movement.Date);
             }
             if (!oldestMarkedThisRun.HasValue || movement.Date < oldestMarkedThisRun.Value)
             {
@@ -172,23 +187,33 @@ public static class StabilityReloadLedger
             repaidThisRun += repayment;
         }
 
-        foreach (var movement in movements)
+        if (sortedMovements.Count == 0)
         {
-            var timestamp = movement.Timestamp ?? movement.Date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
-            ApplyPlanPointsThrough(timestamp);
-            running += movement.Change;
-
-            if (movement.Marked && movement.Change < 0m) RecordMarked(movement);
-            ApplyRepayment(movement.Repayment);
-
-            if (target > 0m && running >= target) ClearAtTarget();
+            while (pointIndex < points.Count)
+            {
+                ApplyPlanPoint(points[pointIndex]);
+                pointIndex++;
+            }
         }
-
-        // A target change can clear a carried queue even when no transaction was recorded after it.
-        while (pointIndex < points.Count)
+        else
         {
-            ApplyPlanPoint(points[pointIndex]);
-            pointIndex++;
+            foreach (var item in sortedMovements)
+            {
+                var movement = item.Movement;
+                ApplyPlanPointsThrough(item.Timestamp);
+                running += movement.Change;
+
+                if (movement.Marked && movement.Change < 0m) RecordMarked(movement);
+                ApplyRepayment(movement.Repayment);
+
+                if (activeTarget > 0m && running >= activeTarget) ClearAtTarget();
+            }
+
+            while (pointIndex < points.Count)
+            {
+                ApplyPlanPoint(points[pointIndex]);
+                pointIndex++;
+            }
         }
 
         return new ReloadState(
@@ -197,7 +222,8 @@ public static class StabilityReloadLedger
             markedThisRun,
             repaidThisRun,
             oldestMarkedThisRun,
-            obligations.Values.OrderBy(item => item.TransactionId, StringComparer.Ordinal).ToList());
+            obligations.Values.OrderBy(item => item.TransactionId, StringComparer.Ordinal).ToList(),
+            markedStillOutstandingThisRun);
     }
 
     /// <summary>Describes one raw transaction when it is already a logical Stability movement.</summary>
@@ -214,7 +240,7 @@ public static class StabilityReloadLedger
     }
 
     public static bool CanCarryReloadStatus(Transaction transaction) =>
-        Describe(transaction, 0m) is { Change: < 0m };
+        !transaction.IsAccountBalanceAdjustment && Describe(transaction, 0m) is { Change: < 0m };
 
     /// <summary>
     /// Describes the generated Stability child together with its income parent. The parent is the

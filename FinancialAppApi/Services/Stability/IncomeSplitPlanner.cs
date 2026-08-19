@@ -120,8 +120,9 @@ public static class IncomeSplitPlanner
     /// adding an emergency-fund top-up on top of the usual Stability share.
     /// <para>
     /// <c>requestedTopUp</c> is an absolute currency amount to add to Stability beyond its normal
-    /// share, already bounded by <see cref="StabilityRecoveryPlanner.ProposeTopUp"/>. Pass zero for
-    /// the ordinary case.
+    /// share, bounded on save by <c>TransactionPersistenceService.MaximumRecoveryTopUp</c>. The
+    /// per-bucket committed floor is a client-side default, not a server rule. Pass zero for the
+    /// ordinary case.
     /// </para>
     /// </summary>
     public static IncomeSplitSpec Resolve(

@@ -446,6 +446,70 @@ public class StabilityRecoveryServiceTests
         Assert.Equal(40m, state.CurrentBalance);
     }
 
+    [Fact]
+    public async Task BuildAsync_CarriedDrawdownAcrossMultipleCycles_RetainsRecoveryFromDateAndMarkedTotalThroughCache()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 4, 4), "Stability", 5000m);
+        Add(context, "drawdown-1", new DateTime(2026, 5, 10), "Stability", -500m);
+        await context.SaveChangesAsync();
+
+        // Advance 3 cycles without repaying. Cache rebuilds across multiple cycles.
+        var recovery = await Build(context, setting, 2026, 8, opening: 4500m, current: 4500m);
+
+        Assert.True(recovery.IsActive);
+        Assert.Equal(500m, Money(recovery.OutstandingShortfall));
+        Assert.Equal(500m, Money(recovery.MarkedTotal));
+        Assert.Equal(0m, Money(recovery.RepaidTotal));
+        Assert.Equal("2026-05-10", recovery.RecoveryFromDate);
+    }
+
+    [Fact]
+    public async Task BuildAsync_NegativeBalanceCorrectionContributesNothingToMarkedOrRepaidTotals()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 6, 4), "Stability", 5000m);
+        var correction = Add(
+            context,
+            "corr-1",
+            new DateTime(2026, 7, 4),
+            "Stability",
+            -200m,
+            category: "Adjustment",
+            isAccountBalanceAdjustment: true);
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 5000m, current: 4800m, correction);
+
+        Assert.False(recovery.IsActive);
+        Assert.Equal(0m, Money(recovery.MarkedTotal));
+        Assert.Equal(0m, Money(recovery.RepaidTotal));
+        Assert.Equal(0m, Money(recovery.OutstandingShortfall));
+    }
+
+    [Fact]
+    public async Task BuildAsync_CycleClearedByAttainmentDoesNotRestartRecoveryWindow()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 5000m);
+        Add(context, "in-1", new DateTime(2026, 4, 4), "Stability", 5000m);
+        // Cycle 2026-05: drawdown -500, then +500 reaches 5000 target and clears queue
+        Add(context, "drawdown-1", new DateTime(2026, 5, 2), "Stability", -500m);
+        Add(context, "deposit-1", new DateTime(2026, 5, 10), "Stability", 500m);
+        // Cycle 2026-06: no drawdowns
+        await context.SaveChangesAsync();
+
+        var cycleBalanceService = new CycleBalanceService(context);
+        await cycleBalanceService.EnsureComputedThroughAsync(2026, 7, CycleDay);
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 5000m, current: 5000m);
+
+        Assert.False(recovery.IsActive);
+        Assert.Null(recovery.LastDrawdownCycleKey);
+    }
+
     private static async Task<StabilityRecoveryDto> Build(
         AppDbContext context,
         FinancialSetting setting,
@@ -514,7 +578,8 @@ public class StabilityRecoveryServiceTests
         string ledgerCategory,
         decimal amount,
         string category = "Other",
-        string intent = StabilityReloadIntent.Unanswered)
+        string intent = StabilityReloadIntent.Unanswered,
+        bool isAccountBalanceAdjustment = false)
     {
         var transaction = new Transaction
         {
@@ -524,7 +589,8 @@ public class StabilityRecoveryServiceTests
             Category = category,
             LedgerCategory = ledgerCategory,
             Amount = amount,
-            StabilityReloadIntent = intent
+            StabilityReloadIntent = intent,
+            IsAccountBalanceAdjustment = isAccountBalanceAdjustment
         };
         context.Transactions.Add(transaction);
         return transaction;

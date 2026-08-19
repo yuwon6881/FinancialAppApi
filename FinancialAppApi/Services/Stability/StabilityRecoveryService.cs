@@ -303,7 +303,8 @@ public class StabilityRecoveryService
                 transaction.Amount,
                 transaction.LedgerCategory,
                 transaction.StabilityRecoveryTopUpAmount,
-                transaction.StabilityReloadIntent
+                transaction.StabilityReloadIntent,
+                transaction.IsAccountBalanceAdjustment
             })
             .ToListAsync(cancellationToken);
         var markedTotal = StabilityReloadLedger.DescribeAll(
@@ -315,7 +316,8 @@ public class StabilityRecoveryService
                     Amount = row.Amount,
                     LedgerCategory = row.LedgerCategory,
                     StabilityRecoveryTopUpAmount = row.StabilityRecoveryTopUpAmount,
-                    StabilityReloadIntent = row.StabilityReloadIntent
+                    StabilityReloadIntent = row.StabilityReloadIntent,
+                    IsAccountBalanceAdjustment = row.IsAccountBalanceAdjustment
                 }),
                 transaction => StabilityPlanRevisionService.At(
                     planRevisions,

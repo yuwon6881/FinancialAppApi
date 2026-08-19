@@ -658,6 +658,45 @@ public class TransactionPersistenceServiceTests
         Assert.Equal(1000m, splits.Sum(t => t.Amount));
     }
 
+    [Fact]
+    public async Task CreateTransactionAsync_IncomeSplitUsesPlanRevisionAtPostedAt()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedSettings(context, targetStabilityFund: 10000m);
+        context.FinancialSettings.Local.Single().StabilityAlloc = 0.10m;
+        context.StabilityPlanRevisions.AddRange(
+            new StabilityPlanRevision
+            {
+                EffectiveAt = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
+                TargetStabilityFund = 10000m,
+                StabilityAlloc = 0.15m,
+            },
+            new StabilityPlanRevision
+            {
+                EffectiveAt = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc),
+                TargetStabilityFund = 10000m,
+                StabilityAlloc = 0.10m,
+            });
+        context.Transactions.AddRange(
+            NewTransaction("stability-peak", ledgerCategory: "Stability", amount: 2000m),
+            NewTransaction("stability-draw", ledgerCategory: "Stability", amount: -500m));
+        await context.SaveChangesAsync();
+
+        var request = NewRequest("salary-backdated", ledgerCategory: "IncomeSplit:50,25,24,1", amount: 1000m) with
+        {
+            Date = "2026-07-15",
+            PostedAt = "2026-07-15T12:00:00.000Z"
+        };
+        var result = await NewService(context, ClockAt(2026, 8, 15)).CreateTransactionAsync(request);
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal(90m, result.Transaction!.StabilityRecoveryTopUpAmount);
+        var stabilitySplit = await context.Transactions.SingleAsync(t => t.Id == "salary-backdated-split-Stability");
+        Assert.Equal(240m, stabilitySplit.Amount);
+        Assert.True(result.Transaction.StabilityRecoveryTopUpAmount <= stabilitySplit.Amount);
+    }
+
     /// <summary>An accepted emergency-fund top-up is just a salary split differently.</summary>
     [Fact]
     public async Task CreateTransactionAsync_HonoursAnAcceptedTopUpAboveTheUsualShare()

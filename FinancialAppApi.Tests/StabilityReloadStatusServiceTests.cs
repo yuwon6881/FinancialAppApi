@@ -47,6 +47,19 @@ public sealed class StabilityReloadStatusServiceTests
         Assert.Equal(StabilityReloadStatus.Complete, statuses["withdrawal"]);
     }
 
+    [Fact]
+    public async Task GetStatusMapAsync_BalanceCorrectionGetsNoStatusEntry()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedSetting(context, target: 1000m);
+        Add(context, "correction", new DateTime(2026, 7, 1), -100m, StabilityReloadIntent.Required, isAccountBalanceAdjustment: true);
+        await context.SaveChangesAsync();
+
+        var statuses = await new StabilityReloadStatusService(context).GetStatusMapAsync();
+
+        Assert.False(statuses.ContainsKey("correction"));
+    }
+
     private static FinancialSetting SeedSetting(AppDbContext context, decimal target)
     {
         var setting = new FinancialSetting
@@ -68,16 +81,18 @@ public sealed class StabilityReloadStatusServiceTests
         DateTime date,
         decimal amount,
         string intent,
-        string ledgerCategory = "Stability") =>
+        string ledgerCategory = "Stability",
+        bool isAccountBalanceAdjustment = false) =>
         context.Transactions.Add(new Transaction
         {
             Id = id,
             Date = DateTime.SpecifyKind(date, DateTimeKind.Utc),
             PostedAt = DateTime.SpecifyKind(date, DateTimeKind.Utc),
             Description = id,
-            Category = "Other",
+            Category = isAccountBalanceAdjustment ? "Adjustment" : "Other",
             LedgerCategory = ledgerCategory,
             Amount = amount,
             StabilityReloadIntent = intent,
+            IsAccountBalanceAdjustment = isAccountBalanceAdjustment,
         });
 }

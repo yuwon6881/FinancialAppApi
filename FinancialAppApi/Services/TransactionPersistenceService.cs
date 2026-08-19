@@ -829,6 +829,7 @@ public class TransactionPersistenceService
 
         var setting = context.Setting;
         var state = context.State;
+        var stabilityAlloc = context.Plan?.StabilityAlloc ?? setting?.StabilityAlloc ?? 0m;
 
         // Plain "Income" is the only branch that needs settings -- it has no percentages of its own
         // to fall back on. A proposed split carries its own and must still save without a settings
@@ -837,7 +838,6 @@ public class TransactionPersistenceService
 
         if (isPlainIncome)
         {
-            var stabilityAlloc = context.Plan?.StabilityAlloc ?? setting!.StabilityAlloc;
             // Every caller gets the target cap here, not just the web form. It used to be enforced
             // client-side only, so AI ledger drafts, recurring settlement and any outbox replay
             // whose balance had gone stale applied raw percentages and sailed past the target.
@@ -855,7 +855,7 @@ public class TransactionPersistenceService
                     stabilityOverflowRedirect: setting.StabilityOverflowRedirect,
                     requestedTopUp: requestedTopUp).ToSpecString();
             }
-            var maximumTopUp = MaximumRecoveryTopUp(transaction.Amount, setting!, state!);
+            var maximumTopUp = MaximumRecoveryTopUp(transaction.Amount, setting!, state!, context.Plan);
             var appliedTopUp = Math.Min(requestedTopUp, maximumTopUp);
             // New salaries always record the explicit answer, including zero. Leaving ordinary
             // salary as legacy-null lets a later allocation change reinterpret it as repayment.
@@ -889,16 +889,16 @@ public class TransactionPersistenceService
             return fallback.ToSpecString();
         }
 
-        var baselineStability = Math.Max(0m, setting.StabilityAlloc);
+        var baselineStability = Math.Max(0m, stabilityAlloc);
         var proposedTopUp = transaction.StabilityRecoveryTopUpAmount
             ?? Math.Max(0m, transaction.Amount * (proposed.Stability - baselineStability));
-        var applied = Math.Min(proposedTopUp, MaximumRecoveryTopUp(transaction.Amount, setting, state));
+        var applied = Math.Min(proposedTopUp, MaximumRecoveryTopUp(transaction.Amount, setting, state, context.Plan));
         transaction.StabilityRecoveryTopUpAmount = applied;
         return Stability.IncomeSplitPlanner.Resolve(
             transaction.Amount,
             setting.EssentialsAlloc,
             setting.GrowthAlloc,
-            setting.StabilityAlloc,
+            stabilityAlloc,
             setting.RewardsAlloc,
             state.CurrentBalance,
             state.Target,
@@ -909,10 +909,12 @@ public class TransactionPersistenceService
     private static decimal MaximumRecoveryTopUp(
         decimal incomeAmount,
         FinancialSetting setting,
-        Stability.StabilityState state)
+        Stability.StabilityState state,
+        Stability.StabilityPlanSnapshot? plan = null)
     {
         if (incomeAmount <= 0m) return 0m;
-        var normalStability = incomeAmount * Math.Max(0m, setting.StabilityAlloc);
+        var stabilityAlloc = plan?.StabilityAlloc ?? setting.StabilityAlloc;
+        var normalStability = incomeAmount * Math.Max(0m, stabilityAlloc);
         var targetRoomAfterNormal = state.Target > 0m
             ? Math.Max(0m, state.Target - state.CurrentBalance - normalStability)
             : decimal.MaxValue;
