@@ -100,7 +100,7 @@ public sealed class RecurringOccurrenceLedgerService
 
         var occurrences = _known.Values.Where(occurrence =>
             activeIds.Contains(occurrence.RecurringPaymentId)
-            && occurrence.Status == RecurringOccurrenceStatus.Pending
+            && RecurringOccurrenceStatus.IsUnresolved(occurrence.Status)
             && occurrence.OccurrenceDate <= today
             && (endDates[occurrence.RecurringPaymentId] is not { } end
                 || today <= end)).ToList();
@@ -110,15 +110,16 @@ public sealed class RecurringOccurrenceLedgerService
             cancellationToken);
         return Ordered(occurrences);
     }
-    // Pending rows are only commitments while their parent exists. Paid and discarded rows are
-    // settled history and deliberately survive deletion of the recurring-payment template.
+
+    // Pending/PartiallyPaid rows are only commitments while their parent exists. Paid and
+    // discarded rows are settled history and deliberately survive deletion of the template.
     private async Task<List<RecurringPaymentOccurrence>> DropOrphanedPendingAsync(
         List<RecurringPaymentOccurrence> occurrences,
         IReadOnlyCollection<string> knownExistingIds,
         CancellationToken cancellationToken)
     {
         var candidateIds = occurrences
-            .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.Pending
+            .Where(occurrence => RecurringOccurrenceStatus.IsUnresolved(occurrence.Status)
                 && !knownExistingIds.Contains(occurrence.RecurringPaymentId)
                 && !_paymentExists.ContainsKey(occurrence.RecurringPaymentId))
             .Select(occurrence => occurrence.RecurringPaymentId)
@@ -138,7 +139,7 @@ public sealed class RecurringOccurrenceLedgerService
             }
         }
         return occurrences.Where(occurrence =>
-            occurrence.Status != RecurringOccurrenceStatus.Pending
+            !RecurringOccurrenceStatus.IsUnresolved(occurrence.Status)
             || knownExistingIds.Contains(occurrence.RecurringPaymentId)
             || _paymentExists.GetValueOrDefault(occurrence.RecurringPaymentId, true)).ToList();
     }
@@ -172,7 +173,7 @@ public sealed class RecurringOccurrenceLedgerService
             var date = _dates.GetNextOccurrenceOnOrAfter(payment, cursor);
             if (date == null) return null;
             var occurrence = await EnsureOccurrenceAsync(payment, date.Value, cancellationToken);
-            if (occurrence.Status == RecurringOccurrenceStatus.Pending)
+            if (RecurringOccurrenceStatus.IsUnresolved(occurrence.Status))
             {
                 await _context.SaveChangesAsync(cancellationToken);
                 return occurrence;
@@ -222,7 +223,7 @@ public sealed class RecurringOccurrenceLedgerService
                 var occurrence = _known.TryGetValue(key, out var known)
                     ? known
                     : Materialize(payment, date.Value);
-                if (occurrence.Status == RecurringOccurrenceStatus.Pending)
+                if (RecurringOccurrenceStatus.IsUnresolved(occurrence.Status))
                 {
                     result[payment.Id] = occurrence;
                     break;
@@ -248,6 +249,10 @@ public sealed class RecurringOccurrenceLedgerService
         var futurePending = await _context.RecurringPaymentOccurrences
             .Where(occurrence => occurrence.RecurringPaymentId == payment.Id
                 && occurrence.OccurrenceDate > today
+                // Pending only, deliberately: a future PartiallyPaid row has ledger transactions
+                // against it, so dropping it on a schedule edit would orphan real money. It survives
+                // on its own snapshot, and the partial-payment guards stop the bill being paused or
+                // deleted while it is still open.
                 && occurrence.Status == RecurringOccurrenceStatus.Pending)
             .ToListAsync(cancellationToken);
         _context.RecurringPaymentOccurrences.RemoveRange(futurePending);
@@ -361,19 +366,75 @@ public sealed class RecurringOccurrenceLedgerService
     private bool IsLoadedForEveryPayment(DateOnly start, DateOnly end) => _loaded.Any(range =>
         range.PaymentId == null && start >= range.Start && end <= range.End);
 
-    public static void SettleFromTransaction(RecurringPaymentOccurrence occurrence, Transaction transaction)
+    public static void SettleFromTransaction(
+        RecurringPaymentOccurrence occurrence,
+        Transaction transaction,
+        decimal totalPaidForOccurrence = 0m)
     {
         var discarded = string.Equals(transaction.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase);
-        occurrence.Status = discarded ? RecurringOccurrenceStatus.Discarded : RecurringOccurrenceStatus.Paid;
-        occurrence.PaidDate = discarded ? null : TransactionDate.ToDateOnly(transaction.Date);
-        occurrence.SettlementTransactionId = transaction.Id;
+        if (discarded)
+        {
+            occurrence.Status = RecurringOccurrenceStatus.Discarded;
+            occurrence.PaidDate = null;
+            return;
+        }
+
+        var scheduled = occurrence.ScheduledAmount.GetValueOrDefault();
+        var paid = totalPaidForOccurrence > 0m ? totalPaidForOccurrence : Math.Abs(transaction.Amount);
+        if (scheduled > 0m && paid < scheduled)
+        {
+            occurrence.Status = RecurringOccurrenceStatus.PartiallyPaid;
+            occurrence.PaidDate = null;
+        }
+        else
+        {
+            occurrence.Status = RecurringOccurrenceStatus.Paid;
+            occurrence.PaidDate = TransactionDate.ToDateOnly(transaction.Date);
+        }
     }
 
-    public static void Reopen(RecurringPaymentOccurrence occurrence)
+    public static void RecomputeOccurrenceStatus(
+        RecurringPaymentOccurrence occurrence,
+        IReadOnlyCollection<Transaction> transactions)
     {
-        occurrence.Status = RecurringOccurrenceStatus.Pending;
-        occurrence.PaidDate = null;
-        occurrence.SettlementTransactionId = null;
+        if (occurrence.Status == RecurringOccurrenceStatus.SettledByLoanPayoff)
+            return;
+
+        var hasDiscarded = transactions.Any(t =>
+            t.Amount == 0m && string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase));
+        if (hasDiscarded)
+        {
+            occurrence.Status = RecurringOccurrenceStatus.Discarded;
+            occurrence.PaidDate = null;
+            return;
+        }
+
+        var activeTxs = transactions.Where(t =>
+            !string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase)).ToList();
+        var totalPaid = activeTxs.Sum(t => Math.Abs(t.Amount));
+        var scheduled = occurrence.ScheduledAmount.GetValueOrDefault();
+
+        // The >= comparison only means anything with a scheduled amount to compare against. With
+        // none, any money at all settles the occurrence — matching SettleFromTransaction, which took
+        // that branch already. Treated as "not yet enough" the row became PartiallyPaid with no
+        // reachable path to Paid, and partial rows block pausing and deleting the bill.
+        if (totalPaid > 0m && (scheduled <= 0m || totalPaid >= scheduled))
+        {
+            occurrence.Status = RecurringOccurrenceStatus.Paid;
+            occurrence.PaidDate = activeTxs.Count > 0
+                ? activeTxs.Max(t => (DateOnly?)TransactionDate.ToDateOnly(t.Date))
+                : null;
+        }
+        else if (totalPaid > 0m)
+        {
+            occurrence.Status = RecurringOccurrenceStatus.PartiallyPaid;
+            occurrence.PaidDate = null;
+        }
+        else
+        {
+            occurrence.Status = RecurringOccurrenceStatus.Pending;
+            occurrence.PaidDate = null;
+        }
     }
 
     // Synchronous by design: the range it walks is preloaded by the caller, so every date is
@@ -438,8 +499,6 @@ public sealed class RecurringOccurrenceLedgerService
                 .ToList();
         if (transactions.Count == 0) return;
 
-        // The caller's active payments already answer most of these; only a settlement that
-        // belongs to a payment since deactivated needs a lookup.
         var modes = activePayments.ToDictionary(payment => payment.Id, payment => payment.PaymentMode);
         var unknownIds = transactions
             .Select(transaction => transaction.RecurringPaymentId!)
@@ -454,38 +513,73 @@ public sealed class RecurringOccurrenceLedgerService
             foreach (var entry in extra) modes[entry.Key] = entry.Value;
         }
 
-        foreach (var transaction in transactions)
+        var groups = transactions
+            .GroupBy(t => (PaymentId: t.RecurringPaymentId!, Date: t.RecurringOccurrenceDate!.Value));
+
+        foreach (var group in groups)
         {
-            var date = transaction.RecurringOccurrenceDate!.Value;
-            if (_known.TryGetValue((transaction.RecurringPaymentId!, date), out var tracked))
+            var (paymentId, date) = group.Key;
+            var groupTxs = group.ToList();
+            var hasDiscarded = groupTxs.Any(t => t.Amount == 0m &&
+                string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase));
+            var activeTxs = groupTxs.Where(t =>
+                !string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase)).ToList();
+            var totalPaid = activeTxs.Sum(t => Math.Abs(t.Amount));
+            var lastPaymentDate = activeTxs.Count > 0 ? activeTxs.Max(t => (DateOnly?)TransactionDate.ToDateOnly(t.Date)) : null;
+
+            if (_known.TryGetValue((paymentId, date), out var tracked))
             {
-                // A tagged settlement outranks a row that was only ever projected as pending.
-                // An already-settled row is left alone: it carries the wording and amount as
-                // they stood when it settled, which is the point of the snapshot.
-                if (tracked.Status == RecurringOccurrenceStatus.Pending)
+                if (tracked.Status is not (RecurringOccurrenceStatus.Discarded or RecurringOccurrenceStatus.SettledByLoanPayoff))
                 {
-                    SettleFromTransaction(tracked, transaction);
+                    var scheduled = tracked.ScheduledAmount.GetValueOrDefault();
+                    if (hasDiscarded)
+                    {
+                        tracked.Status = RecurringOccurrenceStatus.Discarded;
+                        tracked.PaidDate = null;
+                    }
+                    else if (scheduled > 0m && totalPaid >= scheduled)
+                    {
+                        tracked.Status = RecurringOccurrenceStatus.Paid;
+                        tracked.PaidDate = lastPaymentDate;
+                    }
+                    else if (totalPaid > 0m)
+                    {
+                        tracked.Status = RecurringOccurrenceStatus.PartiallyPaid;
+                        tracked.PaidDate = null;
+                    }
+                    else
+                    {
+                        tracked.Status = RecurringOccurrenceStatus.Pending;
+                        tracked.PaidDate = null;
+                    }
                 }
                 continue;
             }
-            var discarded = transaction.Amount == 0m &&
-                string.Equals(transaction.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase);
+
+            var firstTx = activeTxs.FirstOrDefault() ?? groupTxs.First();
+            var scheduledAmount = hasDiscarded ? null : (decimal?)Math.Abs(firstTx.Amount);
+            var status = hasDiscarded
+                ? RecurringOccurrenceStatus.Discarded
+                : (scheduledAmount.HasValue && totalPaid >= scheduledAmount.Value && totalPaid > 0m)
+                    ? RecurringOccurrenceStatus.Paid
+                    : totalPaid > 0m
+                        ? RecurringOccurrenceStatus.PartiallyPaid
+                        : RecurringOccurrenceStatus.Pending;
+
             var backfilled = new RecurringPaymentOccurrence
             {
-                Id = $"occ-{transaction.RecurringPaymentId}-{date:yyyyMMdd}",
-                UserId = transaction.UserId,
-                RecurringPaymentId = transaction.RecurringPaymentId!,
+                Id = $"occ-{paymentId}-{date:yyyyMMdd}",
+                UserId = firstTx.UserId,
+                RecurringPaymentId = paymentId,
                 OccurrenceDate = date,
-                Name = transaction.Description,
-                ScheduledAmount = discarded ? null : Math.Abs(transaction.Amount),
-                Category = transaction.Category,
-                LedgerCategory = discarded ? null : transaction.LedgerCategory,
-                // Backfilled from what actually paid it, not from the schedule's current account.
-                AccountId = discarded ? null : transaction.AccountId,
-                PaymentMode = modes.GetValueOrDefault(transaction.RecurringPaymentId!) ?? RecurringPaymentMode.Manual,
-                Status = discarded ? RecurringOccurrenceStatus.Discarded : RecurringOccurrenceStatus.Paid,
-                PaidDate = discarded ? null : TransactionDate.ToDateOnly(transaction.Date),
-                SettlementTransactionId = transaction.Id
+                Name = firstTx.Description,
+                ScheduledAmount = scheduledAmount,
+                Category = firstTx.Category,
+                LedgerCategory = hasDiscarded ? null : firstTx.LedgerCategory,
+                AccountId = hasDiscarded ? null : firstTx.AccountId,
+                PaymentMode = modes.GetValueOrDefault(paymentId) ?? RecurringPaymentMode.Manual,
+                Status = status,
+                PaidDate = status == RecurringOccurrenceStatus.Paid ? lastPaymentDate : null
             };
             _context.RecurringPaymentOccurrences.Add(backfilled);
             Remember(backfilled);

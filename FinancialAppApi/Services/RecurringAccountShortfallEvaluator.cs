@@ -5,17 +5,24 @@ namespace FinancialAppApi.Services;
 
 public static class RecurringAccountShortfallEvaluator
 {
+    // cycleTransactions supplies what a partially paid occurrence has already taken; without it a
+    // partial is measured at its full scheduled amount and warns about money that has already left.
     public static List<object> EvaluateShortfalls(
         IReadOnlyList<RecurringPaymentOccurrence> occurrences,
         IReadOnlyList<RecurringPayment> allRecurring,
         IReadOnlyList<LedgerAccount> accounts,
         IReadOnlyDictionary<string, decimal> accountBalances,
-        DateOnly today)
+        DateOnly today,
+        IReadOnlyCollection<Transaction>? cycleTransactions = null)
     {
+        var paidByOccurrence = RecurringOccurrenceAmounts.PaidByOccurrence(cycleTransactions);
         var accountsById = accounts.ToDictionary(a => a.Id, StringComparer.Ordinal);
         var parentById = allRecurring.ToDictionary(payment => payment.Id, StringComparer.Ordinal);
         var eligible = occurrences
-            .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.Pending)
+            // Unresolved, not just Pending: a partially paid auto-deduct bill still has a balance the
+            // bank will take, and filtering it out here dropped it from the dashboard warning while
+            // the push path still reported it — the two are meant to answer the same question.
+            .Where(occurrence => RecurringOccurrenceStatus.IsUnresolved(occurrence.Status))
             .Select(occurrence =>
             {
                 var parent = parentById.GetValueOrDefault(occurrence.RecurringPaymentId);
@@ -29,10 +36,10 @@ public static class RecurringAccountShortfallEvaluator
                 item.Occurrence,
                 item.Parent,
                 AccountId = item.AccountId!,
-                Amount = Math.Abs(item.Occurrence.ScheduledAmount ?? item.Parent!.Amount),
+                Amount = RecurringOccurrenceAmounts.Outstanding(item.Occurrence, item.Parent!.Amount, paidByOccurrence),
                 OffsetDays = item.Occurrence.OccurrenceDate.DayNumber - today.DayNumber
             })
-            .Where(item => item.OffsetDays is >= 0 and <= 31)
+            .Where(item => item.OffsetDays is >= 0 and <= 31 && item.Amount > 0m)
             .ToList();
         var projections = RecurringAccountBalanceProjection.Project(
             eligible.Select(item => new RecurringAccountDebit(

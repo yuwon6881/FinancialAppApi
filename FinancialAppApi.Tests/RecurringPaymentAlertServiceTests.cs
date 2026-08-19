@@ -160,8 +160,7 @@ public class RecurringPaymentAlertServiceTests
         LedgerCategory = payment.LedgerCategory,
         PaymentMode = payment.PaymentMode,
         Status = RecurringOccurrenceStatus.Paid,
-        PaidDate = DateOnly.FromDateTime(settledBy.Date),
-        SettlementTransactionId = settledBy.Id
+        PaidDate = DateOnly.FromDateTime(settledBy.Date)
     };
 
     private static RecurringPayment MonthlyHousehold() => new()

@@ -50,7 +50,10 @@ public class FinancialService
         bool isPaid,
         bool isDiscarded,
         string status,
-        string? paidDate);
+        string? paidDate,
+        string? scheduledAmount = null,
+        string? paidAmount = null,
+        string? remainingAmount = null);
 
     private sealed record ReportTrendPoint(string CycleKey, string Month, decimal Balance);
     private sealed record ReportCategoryTotal(string Category, decimal Total);
@@ -366,15 +369,16 @@ public class FinancialService
             ? selectedRemStability / setting.TargetStabilityFund
             : 0m;
 
-        var activeRecurringList = BuildActiveRecurringList(snapshot.RecurringOccurrences);
+        var activeRecurringList = BuildActiveRecurringList(snapshot.RecurringOccurrences, snapshot.CycleRelevantTransactions);
         var selectedMonthRecurring = activeRecurringList
-            .OrderBy(item => item.status == "Pending" ? 0 : item.status == "Paid" ? 1 : 2)
+            .OrderBy(item => item.status == "Pending" || item.status == "PartiallyPaid" ? 0 : item.status == "Paid" ? 1 : 2)
             .ThenBy(item => item.dueDate)
             .ToList();
 
         var pendingRecurring = BuildPendingRecurringItems(
             snapshot.RecurringOccurrences,
-            allRecurring.Select(payment => payment.Id).ToHashSet(StringComparer.Ordinal));
+            allRecurring.Select(payment => payment.Id).ToHashSet(StringComparer.Ordinal),
+            snapshot.CycleRelevantTransactions);
 
         // Hoisted out of BuildTodayPlanInsights so the recovery block can hold its proposed draw
         // above the bills this cycle has already committed to, without computing the sum twice.
@@ -437,7 +441,8 @@ public class FinancialService
                 allRecurring,
                 snapshot.LedgerAccounts,
                 snapshot.LedgerAccountBalances.Current,
-                _financialClock.Today);
+                _financialClock.Today,
+                snapshot.CycleRelevantTransactions);
 
         var result = new
         {
@@ -852,22 +857,38 @@ public class FinancialService
     }
 
     private static List<ActiveRecurringItem> BuildActiveRecurringList(
-        List<RecurringPaymentOccurrence> occurrences)
+        List<RecurringPaymentOccurrence> occurrences,
+        IReadOnlyCollection<Transaction>? transactions = null)
     {
-        return occurrences.Select(occurrence => new ActiveRecurringItem(
-            occurrence.Id,
-            occurrence.RecurringPaymentId,
-            occurrence.Name,
-            occurrence.ScheduledAmount.HasValue
-                ? ObfuscationHelper.Obfuscate(Math.Abs(occurrence.ScheduledAmount.Value))
-                : null,
-            occurrence.Category ?? string.Empty,
-            occurrence.LedgerCategory ?? string.Empty,
-            occurrence.OccurrenceDate.ToString("yyyy-MM-dd"),
-            occurrence.Status == RecurringOccurrenceStatus.Paid,
-            occurrence.Status == RecurringOccurrenceStatus.Discarded,
-            occurrence.Status,
-            occurrence.PaidDate?.ToString("yyyy-MM-dd"))).ToList();
+        var nonDiscardedTxs = transactions?
+            .Where(t => t.RecurringPaymentId != null && t.RecurringOccurrenceDate != null && !string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(t => (PaymentId: t.RecurringPaymentId!, Date: t.RecurringOccurrenceDate!.Value))
+            .ToDictionary(g => g.Key, g => g.Sum(t => Math.Abs(t.Amount))) ?? new();
+
+        return occurrences.Select(occurrence =>
+        {
+            var scheduled = occurrence.ScheduledAmount.HasValue ? Math.Abs(occurrence.ScheduledAmount.Value) : 0m;
+            var paid = nonDiscardedTxs.GetValueOrDefault((occurrence.RecurringPaymentId, occurrence.OccurrenceDate));
+            var remaining = Math.Max(0m, scheduled - paid);
+
+            return new ActiveRecurringItem(
+                occurrence.Id,
+                occurrence.RecurringPaymentId,
+                occurrence.Name,
+                occurrence.ScheduledAmount.HasValue
+                    ? ObfuscationHelper.Obfuscate(occurrence.Status == RecurringOccurrenceStatus.PartiallyPaid ? remaining : scheduled)
+                    : null,
+                occurrence.Category ?? string.Empty,
+                occurrence.LedgerCategory ?? string.Empty,
+                occurrence.OccurrenceDate.ToString("yyyy-MM-dd"),
+                occurrence.Status == RecurringOccurrenceStatus.Paid,
+                occurrence.Status == RecurringOccurrenceStatus.Discarded,
+                occurrence.Status,
+                occurrence.PaidDate?.ToString("yyyy-MM-dd"),
+                scheduledAmount: ObfuscationHelper.Obfuscate(scheduled),
+                paidAmount: ObfuscationHelper.Obfuscate(paid),
+                remainingAmount: ObfuscationHelper.Obfuscate(remaining));
+        }).ToList();
     }
 
     // Walks cycle boundaries backward n-1 times (pure date math, no DB access) to find the start
@@ -1005,16 +1026,32 @@ public class FinancialService
 
     private static List<PendingRecurringItem> BuildPendingRecurringItems(
         List<RecurringPaymentOccurrence> occurrences,
-        IReadOnlyCollection<string> activePaymentIds) => occurrences
-        .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.Pending
-            && occurrence.ScheduledAmount.HasValue
-            && activePaymentIds.Contains(occurrence.RecurringPaymentId))
-        .Select(occurrence => new PendingRecurringItem(
-            occurrence.RecurringPaymentId,
-            occurrence.Category ?? string.Empty,
-            occurrence.LedgerCategory ?? string.Empty,
-            Math.Abs(occurrence.ScheduledAmount!.Value)))
-        .ToList();
+        IReadOnlyCollection<string> activePaymentIds,
+        IReadOnlyCollection<Transaction>? transactions = null)
+    {
+        var nonDiscardedTxs = transactions?
+            .Where(t => t.RecurringPaymentId != null && t.RecurringOccurrenceDate != null && !string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(t => (PaymentId: t.RecurringPaymentId!, Date: t.RecurringOccurrenceDate!.Value))
+            .ToDictionary(g => g.Key, g => g.Sum(t => Math.Abs(t.Amount))) ?? new();
+
+        return occurrences
+            .Where(occurrence => (occurrence.Status == RecurringOccurrenceStatus.Pending || occurrence.Status == RecurringOccurrenceStatus.PartiallyPaid)
+                && occurrence.ScheduledAmount.HasValue
+                && activePaymentIds.Contains(occurrence.RecurringPaymentId))
+            .Select(occurrence =>
+            {
+                var scheduled = Math.Abs(occurrence.ScheduledAmount!.Value);
+                var paid = nonDiscardedTxs.GetValueOrDefault((occurrence.RecurringPaymentId, occurrence.OccurrenceDate));
+                var remaining = Math.Max(0m, scheduled - paid);
+                return new PendingRecurringItem(
+                    occurrence.RecurringPaymentId,
+                    occurrence.Category ?? string.Empty,
+                    occurrence.LedgerCategory ?? string.Empty,
+                    remaining);
+            })
+            .Where(item => item.Amount > 0m)
+            .ToList();
+    }
 
     private object BuildTodayPlanInsights(
         List<Transaction> activeCycleTxs,

@@ -8,71 +8,79 @@ namespace FinancialAppApi.Services.Push;
 
 public sealed record PushDispatchSummary(int Sent, int Skipped, int Disabled);
 
-// The daily fan-out job: for every user with push reminders enabled who has at least one
-// enabled device subscription, finds each of their recurring payments' next due (unpaid)
-// occurrence and, if it falls inside that payment's configured lead window (or is an upcoming
-// auto-deduct bill with insufficient account balance 1 day prior), sends exactly one
-// reminder per device — using an insert-before-send claim row so retries/concurrent runs can
-// never double-send. Runs one user at a time in its own DbContext scope (mirroring
-// ReceiptScanProcessor) so per-user tenancy invariants on AppDbContext are respected even though
-// this job itself spans every account.
-public partial class PushDispatchService
+// The daily fan-out job: for every user with push reminders enabled who has at least one enabled
+// device subscription, finds each of their recurring payments' next due (unpaid) occurrence and, if
+// it falls inside that payment's configured lead window (or is an upcoming auto-deduct bill with
+// insufficient account balance 1 day prior), sends exactly one reminder per device — using an
+// insert-before-send claim row so retries and concurrent runs can never double-send. Runs one user
+// at a time in its own DbContext scope (mirroring ReceiptScanProcessor) so per-user tenancy
+// invariants on AppDbContext are respected even though this job itself spans every account.
+public sealed partial class PushDispatchService
 {
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly FinancialClock _financialClock;
     private readonly IConfiguration _configuration;
     private readonly ILogger<PushDispatchService> _logger;
 
     public PushDispatchService(
         IServiceScopeFactory scopeFactory,
-        FinancialClock financialClock,
         IConfiguration configuration,
         ILogger<PushDispatchService> logger)
     {
         _scopeFactory = scopeFactory;
-        _financialClock = financialClock;
         _configuration = configuration;
         _logger = logger;
     }
 
-    public async Task<PushDispatchSummary> DispatchAsync(CancellationToken cancellationToken = default)
+    public async Task<PushDispatchSummary> DispatchAsync(
+        CancellationToken cancellationToken = default) =>
+        await DispatchDueRemindersAsync(cancellationToken);
+
+    public async Task<PushDispatchSummary> DispatchDueRemindersAsync(
+        CancellationToken cancellationToken = default)
     {
         // Fails closed before claiming a single reminder: every send would fail anyway without a
-        // configured FCM project, and a claim row is written BEFORE the send is attempted, so
-        // running with this missing would permanently burn today's claim on a guaranteed failure.
+        // configured FCM project, and a claim row is written BEFORE the send is attempted. Running
+        // without this walks the whole fan-out and logs a failure per device per user for something
+        // known up front, and any future send path that does not clean up its claim on failure would
+        // permanently burn the day's reminder.
         if (string.IsNullOrWhiteSpace(_configuration["Fcm:ProjectId"]))
         {
             _logger.LogWarning("Push dispatch skipped: Fcm:ProjectId is not configured.");
             return new PushDispatchSummary(0, 0, 0);
         }
 
-        var today = _financialClock.Today;
-        var localNow = _financialClock.LocalNow;
+        var sent = 0;
+        var skipped = 0;
+        var disabled = 0;
 
-        Dictionary<string, DispatchCandidateUser> candidates;
-        using (var loadScope = _scopeFactory.CreateScope())
+        using var scope = _scopeFactory.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var fcmSender = scope.ServiceProvider.GetRequiredService<IFcmPushSender>();
+        var clock = scope.ServiceProvider.GetRequiredService<FinancialClock>();
+        var today = clock.Today;
+        var localNow = clock.LocalNow;
+
+        var candidates = await LoadCandidatesAsync(context, cancellationToken);
+        if (candidates.Count == 0)
         {
-            var loadContext = loadScope.ServiceProvider.GetRequiredService<AppDbContext>();
-            candidates = await LoadCandidatesAsync(loadContext, cancellationToken);
+            var categoryInitialSummary = await DispatchPendingCategoryAlertsAsync(cancellationToken);
+            return new PushDispatchSummary(
+                sent + categoryInitialSummary.Sent,
+                skipped + categoryInitialSummary.Skipped,
+                disabled + categoryInitialSummary.Disabled);
         }
-
-        int sent = 0, skipped = 0, disabled = 0;
 
         foreach (var (userId, candidate) in candidates)
         {
             try
             {
                 using var userScope = _scopeFactory.CreateScope();
-                var context = userScope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var occurrenceLedger = userScope.ServiceProvider.GetRequiredService<RecurringOccurrenceLedgerService>();
-                var accountService = userScope.ServiceProvider.GetRequiredService<LedgerAccountService>();
-                var fcmSender = userScope.ServiceProvider.GetRequiredService<IFcmPushSender>();
-                context.SetCurrentUser(userId);
+                var userContext = userScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                userContext.SetCurrentUser(userId);
+                var userOccurrenceLedger = userScope.ServiceProvider.GetRequiredService<RecurringOccurrenceLedgerService>();
+                var userAccountBalanceService = userScope.ServiceProvider.GetRequiredService<LedgerAccountBalanceService>();
 
-                // Subscription gating: no device opted into *bill reminders*, nothing to send for
-                // this account at all. A device that only asked for spending alerts is enabled
-                // but is deliberately not in this fan-out.
-                var subscriptions = await context.PushSubscriptions
+                var subscriptions = await userContext.PushSubscriptions
                     .Where(s => s.Enabled && s.BillRemindersEnabled)
                     .ToListAsync(cancellationToken);
                 if (subscriptions.Count == 0)
@@ -80,14 +88,15 @@ public partial class PushDispatchService
                     continue;
                 }
 
-                var userAccounts = await accountService.GetAccountsAsync(cancellationToken);
-                var userBalances = await accountService.GetBalancesAsync(userAccounts, cancellationToken);
-                var userAccountsById = userAccounts.ToDictionary(a => a.Id, StringComparer.Ordinal);
+                var userAccounts = await userContext.LedgerAccounts
+                    .ToListAsync(cancellationToken);
+                var userAccountsById = userAccounts.ToDictionary(account => account.Id, StringComparer.Ordinal);
+                var userBalances = await userAccountBalanceService.GetBalancesAsync(userAccounts, cancellationToken);
 
                 var duePayments = new List<(RecurringPayment Payment, RecurringPaymentOccurrence Due)>();
                 foreach (var payment in candidate.Payments)
                 {
-                    var due = await ResolveDueOccurrenceAsync(occurrenceLedger, payment, today, cancellationToken);
+                    var due = await ResolveDueOccurrenceAsync(userOccurrenceLedger, payment, today, cancellationToken);
                     if (due == null)
                     {
                         continue;
@@ -95,6 +104,17 @@ public partial class PushDispatchService
 
                     duePayments.Add((payment, due));
                 }
+
+                // Only a partially paid occurrence needs its ledger rows read; every other status
+                // either owes its full scheduled amount or owes nothing.
+                var partiallyPaidDue = duePayments
+                    .Where(item => item.Due.Status == RecurringOccurrenceStatus.PartiallyPaid)
+                    .Select(item => item.Due)
+                    .ToList();
+                var partialPaidByOccurrence = RecurringOccurrenceAmounts.PaidByOccurrence(
+                    partiallyPaidDue.Count == 0
+                        ? []
+                        : await LoadOccurrenceTransactionsAsync(userContext, partiallyPaidDue, cancellationToken));
 
                 var projectedDebits = duePayments
                     .Where(item => item.Payment.PaymentMode == RecurringPaymentMode.AutoDeduct)
@@ -111,12 +131,12 @@ public partial class PushDispatchService
                             item.Due,
                             AccountId = accountId,
                             Account = account,
-                            Amount = Math.Abs(item.Due.ScheduledAmount ?? item.Payment.Amount),
+                            Amount = RecurringOccurrenceAmounts.Outstanding(item.Due, item.Payment.Amount, partialPaidByOccurrence),
                             OffsetDays = item.Due.OccurrenceDate.DayNumber - today.DayNumber
                         };
                     })
                     .Where(item => item.Account is not null && !string.IsNullOrWhiteSpace(item.AccountId)
-                        && item.OffsetDays is >= 0 and <= 31)
+                        && item.OffsetDays is >= 0 and <= 31 && item.Amount > 0m)
                     .Select(item => new RecurringAccountDebit(
                         item.Due.Id,
                         item.AccountId!,
@@ -126,7 +146,6 @@ public partial class PushDispatchService
 
                 foreach (var (payment, due) in duePayments)
                 {
-
                     var occurrenceDate = due.OccurrenceDate;
                     var offsetDays = occurrenceDate.DayNumber - today.DayNumber;
                     var isDaily = string.Equals(payment.PushReminderMode, "Daily", StringComparison.OrdinalIgnoreCase);
@@ -134,14 +153,12 @@ public partial class PushDispatchService
 
                     // The occurrence snapshot is authoritative for both the amount and the account,
                     // exactly as settlement reads them: re-pointing or re-pricing a bill must not
-                    // change what an already-materialised occurrence will actually deduct. Math.Abs
-                    // because the sign of a stored recurring amount is not a contract — every other
-                    // reader defends against it the same way.
+                    // change what an already-materialised occurrence will actually deduct.
                     var accountId = string.IsNullOrWhiteSpace(due.AccountId) ? payment.AccountId : due.AccountId;
                     var account = string.IsNullOrWhiteSpace(accountId)
                         ? null
                         : userAccountsById.GetValueOrDefault(accountId);
-                    var scheduledAmount = Math.Abs(due.ScheduledAmount ?? payment.Amount);
+                    var scheduledAmount = RecurringOccurrenceAmounts.Outstanding(due, payment.Amount, partialPaidByOccurrence);
                     projections.TryGetValue(due.Id, out var projection);
                     var isShortfallOneDayPrior = isAutoDeduct
                         && offsetDays == 1
@@ -163,15 +180,15 @@ public partial class PushDispatchService
 
                     foreach (var subscription in subscriptions)
                     {
-                        // One device's failure (bad token, unexpected sender exception, etc.) must
-                        // never take down the rest of this user's devices or any other user's
-                        // reminders in the same run.
+                        // One device's failure (bad token, unexpected sender exception) must never
+                        // take down the rest of this user's devices or any other user's reminders.
                         try
                         {
                             var (outcome, sentIncrement, skippedIncrement, disabledIncrement) = await TrySendOneAsync(
-                                context,
+                                userContext,
                                 fcmSender,
                                 payment,
+                                due,
                                 occurrenceDate,
                                 offsetDays,
                                 isDaily,
@@ -218,6 +235,7 @@ public partial class PushDispatchService
         AppDbContext context,
         IFcmPushSender fcmSender,
         RecurringPayment payment,
+        RecurringPaymentOccurrence due,
         DateOnly occurrenceDate,
         int offsetDays,
         bool isDaily,
@@ -234,8 +252,8 @@ public partial class PushDispatchService
         // A single send can discharge both claims: a shortfall alert going out on the same day the
         // configured reminder is due already says everything that reminder would have. So it claims
         // every kind it covers, and the send is skipped only when nothing is left unclaimed —
-        // otherwise a shortfall claimed at offset 1 would satisfy the offset-agnostic Once lookup
-        // and silently swallow the reminder the user actually asked for.
+        // otherwise a shortfall claimed at offset 1 would satisfy the offset-agnostic Once lookup and
+        // silently swallow the reminder the user actually asked for.
         var kinds = new List<string>(2);
         if (isShortfall) kinds.Add(PushReminderDeliveryKind.Shortfall);
         if (sendStandard) kinds.Add(PushReminderDeliveryKind.Reminder);
@@ -245,8 +263,8 @@ public partial class PushDispatchService
         {
             // Once sends a single catch-up reminder anywhere inside the lead window, so "already
             // sent" ignores the offset it was originally claimed at. Countdown sends once per day,
-            // and a shortfall alert is about one specific day, so both keep the offset in the key
-            // and no backfill ever happens for a missed day.
+            // and a shortfall alert is about one specific day, so both keep the offset in the key and
+            // no backfill ever happens for a missed day.
             var offsetScoped = isDaily || kind == PushReminderDeliveryKind.Shortfall;
             var claimed = offsetScoped
                 ? await context.PushReminderDeliveries.AnyAsync(d =>
@@ -287,9 +305,9 @@ public partial class PushDispatchService
 
         try
         {
-            // The claim is committed BEFORE the FCM call is ever attempted: if this process (or
-            // a same-day retry) reaches this reminder again, the unique index above already
-            // reflects the claim, so it can never be sent twice even if FCM itself later fails.
+            // The claim is committed BEFORE the FCM call is ever attempted: if this process (or a
+            // same-day retry) reaches this reminder again, the unique index already reflects the
+            // claim, so it can never be sent twice even if FCM itself later fails.
             await context.SaveChangesAsync(cancellationToken);
         }
         catch (DbUpdateException ex) when (ex.IsUniqueViolation())
@@ -301,7 +319,8 @@ public partial class PushDispatchService
             return ("RaceLost", 0, 1, 0);
         }
 
-        var content = BuildContent(payment, occurrenceDate, offsetDays, today, localNow, shortfallAmount, accountName);
+        var isPartiallyPaid = due.Status == RecurringOccurrenceStatus.PartiallyPaid;
+        var content = BuildContent(payment, occurrenceDate, offsetDays, today, localNow, shortfallAmount, accountName, isPartiallyPaid);
         var result = await fcmSender.SendAsync(subscription.FcmToken, content, cancellationToken);
 
         switch (result.Status)
@@ -309,9 +328,9 @@ public partial class PushDispatchService
             case FcmSendStatus.Sent:
                 return ("Sent", 1, 0, 0);
             case FcmSendStatus.InvalidOrUnregistered:
-                // FCM has retired this token, so the device is off for every kind at once
-                // regardless of what its user asked for — keeping a channel flag on would leave
-                // the Enabled == (bills || alerts) invariant broken and the switch showing "on".
+                // FCM has retired this token, so the device is off for every kind at once regardless
+                // of what its user asked for — keeping a channel flag on would leave the
+                // Enabled == (bills || alerts) invariant broken and the switch showing "on".
                 subscription.Enabled = false;
                 subscription.BillRemindersEnabled = false;
                 subscription.CategoryAlertsEnabled = false;
@@ -326,8 +345,8 @@ public partial class PushDispatchService
                 await context.SaveChangesAsync(cancellationToken);
                 return ("Disabled", 0, 0, 1);
             default:
-                // Never logs the token or any payment amount — just that a send failed. The
-                // the claim above is removed, so a same-day retry may send this reminder again.
+                // Never logs the token or any payment amount — just that a send failed. The claim
+                // above is removed, so a same-day retry may send this reminder again.
                 context.PushReminderDeliveries.RemoveRange(claims);
                 await context.SaveChangesAsync(cancellationToken);
                 _logger.LogWarning(
@@ -345,7 +364,8 @@ public partial class PushDispatchService
         DateOnly today,
         DateTime localNow,
         decimal? shortfall = null,
-        string? accountName = null)
+        string? accountName = null,
+        bool isPartiallyPaid = false)
     {
         string body;
         var data = new Dictionary<string, string>
@@ -372,14 +392,19 @@ public partial class PushDispatchService
         {
             body = offsetDays switch
             {
-                0 => "Due today",
-                1 => "Due tomorrow",
-                _ => $"Due in {offsetDays} days"
+                // No overdue wording, deliberately: ResolveDueOccurrenceAsync resolves from today
+                // forward, so offsetDays is never negative and an overdue arm would be dead copy.
+                // Reminding about a bill that is already late means teaching that resolver to look
+                // backwards first, with a bound on how far, or Daily mode would re-notify every day
+                // for as long as the row stays open.
+                0 => isPartiallyPaid ? "Part paid, balance due today" : "Due today",
+                1 => isPartiallyPaid ? "Part paid, balance due tomorrow" : "Due tomorrow",
+                _ => isPartiallyPaid ? $"Part paid, balance due in {offsetDays} days" : $"Due in {offsetDays} days"
             };
         }
 
-        // Short TTL: the reminder should never survive past the end of the Malaysia calendar day
-        // it was generated for, so a delayed delivery never arrives as a stale/wrong-day message.
+        // Short TTL: the reminder should never survive past the end of the Malaysia calendar day it
+        // was generated for, so a delayed delivery never arrives as a stale, wrong-day message.
         var endOfDay = today.ToDateTime(TimeOnly.MinValue).AddDays(1);
         var timeToLive = endOfDay - localNow;
         if (timeToLive < TimeSpan.FromMinutes(1))
@@ -399,8 +424,25 @@ public partial class PushDispatchService
             Data: data);
     }
 
-    // Returns the occurrence itself, not just its date: its snapshotted amount and account are
-    // what settlement will actually use, so a shortfall must be measured against those.
+    private static async Task<List<Transaction>> LoadOccurrenceTransactionsAsync(
+        AppDbContext context,
+        IReadOnlyCollection<RecurringPaymentOccurrence> occurrences,
+        CancellationToken cancellationToken)
+    {
+        var paymentIds = occurrences.Select(o => o.RecurringPaymentId).Distinct(StringComparer.Ordinal).ToList();
+        var dates = occurrences.Select(o => o.OccurrenceDate).Distinct().ToList();
+        return await context.Transactions
+            .AsNoTracking()
+            .Where(t => t.RecurringPaymentId != null
+                && paymentIds.Contains(t.RecurringPaymentId)
+                && t.RecurringOccurrenceDate != null
+                && dates.Contains(t.RecurringOccurrenceDate.Value))
+            .ToListAsync(cancellationToken);
+    }
+
+    // Returns the occurrence itself, not just its date: its snapshotted amount and account are what
+    // settlement will actually use, so a shortfall must be measured against those. It resolves from
+    // today forward, which is why no caller ever sees a negative offset.
     private static async Task<RecurringPaymentOccurrence?> ResolveDueOccurrenceAsync(
         RecurringOccurrenceLedgerService occurrenceLedger,
         RecurringPayment payment,
@@ -412,8 +454,8 @@ public partial class PushDispatchService
         AppDbContext context,
         CancellationToken cancellationToken)
     {
-        // This job spans every account, so it must bypass the per-request tenant query filter
-        // (there is no "current user" yet) purely to discover who is opted in.
+        // This job spans every account, so it must bypass the per-request tenant query filter (there
+        // is no "current user" yet) purely to discover who is opted in.
         var subscribedUserIds = await context.PushSubscriptions
             .IgnoreQueryFilters()
             .Where(s => s.Enabled && s.BillRemindersEnabled)
@@ -425,10 +467,10 @@ public partial class PushDispatchService
             return new Dictionary<string, DispatchCandidateUser>();
         }
 
-        // Enabled device subscriptions, rather than the legacy account flag, are authoritative.
-        // This preserves delivery to mobile when an older desktop client previously cleared the
-        // account flag and left the mobile subscription intact. FinancialSettings is not part of
-        // the subscription contract; a user with a missing settings row must still receive push.
+        // Enabled device subscriptions, rather than the legacy account flag, are authoritative. This
+        // preserves delivery to mobile when an older desktop client previously cleared the account
+        // flag and left the mobile subscription intact. FinancialSettings is not part of the
+        // subscription contract; a user with a missing settings row must still receive push.
         var payments = await context.RecurringPayments
             .IgnoreQueryFilters()
             .Where(p => p.Active && (p.PushReminderEnabled || p.PaymentMode == RecurringPaymentMode.AutoDeduct) && subscribedUserIds.Contains(p.UserId))

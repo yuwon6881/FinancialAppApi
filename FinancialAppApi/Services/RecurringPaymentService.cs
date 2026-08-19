@@ -12,7 +12,8 @@ public enum UpdateRecurringPaymentStatus
     NotFound,
     InvalidCategory,
     InvalidLoanTerm,
-    InvalidAccount
+    InvalidAccount,
+    HasPartialPayments
 }
 
 public sealed record UpdateRecurringPaymentResult(
@@ -26,7 +27,8 @@ public enum ToggleRecurringPaymentStatus
 {
     Updated,
     NotFound,
-    InvalidAccount
+    InvalidAccount,
+    HasPartialPayments
 }
 
 public sealed record ToggleRecurringPaymentResult(
@@ -89,12 +91,14 @@ public enum DeleteRecurringPaymentStatus
 {
     Deleted,
     NotFound,
-    LinkedToLoan
+    LinkedToLoan,
+    HasPartialPayments
 }
 
 public sealed record DeleteRecurringPaymentResult(
     DeleteRecurringPaymentStatus Status,
-    string? LoanName = null);
+    string? LoanName = null,
+    string? Message = null);
 
 public class RecurringPaymentService
 {
@@ -220,6 +224,18 @@ public class RecurringPaymentService
                     accountValidation.Value.Code,
                     MissingBucketsFor(payment.LedgerCategory));
         }
+        else if (payment.Active)
+        {
+            var hasPartiallyPaid = await _context.RecurringPaymentOccurrences
+                .AnyAsync(o => o.RecurringPaymentId == id && o.Status == RecurringOccurrenceStatus.PartiallyPaid, cancellationToken);
+            if (hasPartiallyPaid)
+            {
+                return new ToggleRecurringPaymentResult(
+                    ToggleRecurringPaymentStatus.HasPartialPayments,
+                    payment,
+                    Message: "Finish or delete the partial payments before pausing this recurring bill.");
+            }
+        }
         if (payment.Active != desired)
         {
             await _occurrences.PreserveThroughTodayAndResetFutureAsync(
@@ -256,6 +272,19 @@ public class RecurringPaymentService
                 accountValidation.Value.Message,
                 accountValidation.Value.Code,
                 MissingBucketsFor(updated.LedgerCategory));
+
+        if (!updated.Active && existing.Active)
+        {
+            var hasPartiallyPaid = await _context.RecurringPaymentOccurrences
+                .AnyAsync(o => o.RecurringPaymentId == id && o.Status == RecurringOccurrenceStatus.PartiallyPaid, cancellationToken);
+            if (hasPartiallyPaid)
+            {
+                return new UpdateRecurringPaymentResult(
+                    UpdateRecurringPaymentStatus.HasPartialPayments,
+                    existing,
+                    Message: "Finish or delete the partial payments before pausing this recurring bill.");
+            }
+        }
 
         var linkedLoan = await _context.Loans
             .FirstOrDefaultAsync(loan => loan.RecurringPaymentId == id, cancellationToken);
@@ -330,6 +359,18 @@ public class RecurringPaymentService
             return new DeleteRecurringPaymentResult(
                 DeleteRecurringPaymentStatus.LinkedToLoan,
                 linkedLoanName);
+        }
+
+        // Checked after the loan link, which is the harder refusal: a loan-linked bill cannot be
+        // deleted however its occurrences are resolved, so leading with this one sent the user off to
+        // clear partial payments that would not have unblocked anything.
+        var hasPartiallyPaid = await _context.RecurringPaymentOccurrences
+            .AnyAsync(o => o.RecurringPaymentId == id && o.Status == RecurringOccurrenceStatus.PartiallyPaid, cancellationToken);
+        if (hasPartiallyPaid)
+        {
+            return new DeleteRecurringPaymentResult(
+                DeleteRecurringPaymentStatus.HasPartialPayments,
+                Message: "Finish or delete the partial payments before deleting this recurring bill.");
         }
 
         await _occurrences.PreserveThroughTodayAndResetFutureAsync(payment, cancellationToken: cancellationToken);

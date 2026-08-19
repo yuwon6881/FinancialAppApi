@@ -675,9 +675,29 @@ public class SavingsGoalService
         var occurrences = await _recurringOccurrenceLedger.GetRangeAsync(
             payments, startOnly, endOnly, cancellationToken: cancellationToken);
         var activeIds = payments.Select(payment => payment.Id).ToHashSet(StringComparer.Ordinal);
-        return SavingsGoalPacing.PendingAmount(
-            occurrences.Where(occurrence => activeIds.Contains(occurrence.RecurringPaymentId)).ToList(),
-            fundingBucket);
+        var claimed = occurrences.Where(occurrence => activeIds.Contains(occurrence.RecurringPaymentId)).ToList();
+
+        // Only a partially paid occurrence needs its ledger rows read; every other status either
+        // claims its full scheduled amount or claims nothing.
+        var partiallyPaid = claimed
+            .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.PartiallyPaid)
+            .ToList();
+        Dictionary<(string PaymentId, DateOnly Date), decimal>? paidByOccurrence = null;
+        if (partiallyPaid.Count > 0)
+        {
+            var partialPaymentIds = partiallyPaid.Select(o => o.RecurringPaymentId).Distinct(StringComparer.Ordinal).ToList();
+            var partialDates = partiallyPaid.Select(o => o.OccurrenceDate).Distinct().ToList();
+            var partialTransactions = await _context.Transactions
+                .AsNoTracking()
+                .Where(t => t.RecurringPaymentId != null
+                    && partialPaymentIds.Contains(t.RecurringPaymentId)
+                    && t.RecurringOccurrenceDate != null
+                    && partialDates.Contains(t.RecurringOccurrenceDate.Value))
+                .ToListAsync(cancellationToken);
+            paidByOccurrence = RecurringOccurrenceAmounts.PaidByOccurrence(partialTransactions);
+        }
+
+        return SavingsGoalPacing.PendingAmount(claimed, fundingBucket, paidByOccurrence);
     }
 
     private async Task<int> GetCycleDayAsync(CancellationToken cancellationToken)

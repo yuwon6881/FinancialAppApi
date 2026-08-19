@@ -29,20 +29,17 @@ public sealed class RecurringOccurrenceSettlementService
     private readonly AppDbContext _context;
     private readonly RecurringOccurrenceLedgerService _occurrences;
     private readonly TransactionPersistenceService _transactions;
-    private readonly RecurringPaymentPayEarlyService _payEarly;
     private readonly FinancialClock _clock;
 
     public RecurringOccurrenceSettlementService(
         AppDbContext context,
         RecurringOccurrenceLedgerService occurrences,
         TransactionPersistenceService transactions,
-        RecurringPaymentPayEarlyService payEarly,
         FinancialClock clock)
     {
         _context = context;
         _occurrences = occurrences;
         _transactions = transactions;
-        _payEarly = payEarly;
         _clock = clock;
     }
 
@@ -55,7 +52,8 @@ public sealed class RecurringOccurrenceSettlementService
         CancellationToken cancellationToken = default,
         string? transactionId = null,
         DateTime? postedAt = null,
-        string? accountId = null)
+        string? accountId = null,
+        decimal? requestedAmount = null)
     {
         if (status is not (RecurringOccurrenceStatus.Paid or RecurringOccurrenceStatus.Discarded))
         {
@@ -77,29 +75,68 @@ public sealed class RecurringOccurrenceSettlementService
             return new RecurringSettlementResult(RecurringSettlementStatus.Invalid, Message: exception.Message);
         }
 
-        if (occurrence.Status != RecurringOccurrenceStatus.Pending)
+        var existingTransactions = await _context.Transactions
+            .Where(t => t.RecurringPaymentId == paymentId && t.RecurringOccurrenceDate == occurrenceDate)
+            .ToListAsync(cancellationToken);
+
+        // The derived key deliberately mixes in how much is already paid. Keyed on the occurrence,
+        // status and amount alone, two part payments of the same size against the same bill hashed to
+        // one id, so the second was swallowed as an idempotent replay and the money silently vanished
+        // — an easy thing to do, since a bill is usually halved rather than split unevenly. A caller
+        // that wants true idempotency across retries passes clientKey (the outbox always does); this
+        // fallback only has to stop a double-submit of the identical request.
+        var resolvedTransactionId = string.IsNullOrWhiteSpace(transactionId)
+            ? BuildTransactionId(clientKey
+                ?? $"{paymentId}:{occurrenceDate:yyyy-MM-dd}:{status}:{requestedAmount}:{PaidSoFarKeyPart(existingTransactions)}")
+            : transactionId;
+
+        // Idempotency check: if this specific transaction already exists, return success.
+        var matchedTx = existingTransactions.FirstOrDefault(t => t.Id == resolvedTransactionId);
+        if (matchedTx != null)
         {
-            var existing = occurrence.SettlementTransactionId == null
-                ? null
-                : await _context.Transactions.AsNoTracking().FirstOrDefaultAsync(
-                    transaction => transaction.Id == occurrence.SettlementTransactionId,
-                    cancellationToken);
-            if (occurrence.Status == status)
+            var replayNext = (await _occurrences.GetNextPendingAsync(
+                payment, _clock.Today, includeFrom: true, cancellationToken))?.OccurrenceDate;
+            return new RecurringSettlementResult(
+                RecurringSettlementStatus.Success, occurrence, matchedTx, replayNext);
+        }
+
+        var nonDiscardedTxs = existingTransactions
+            .Where(t => !RecurringOccurrenceAmounts.IsDiscardedMarker(t))
+            .ToList();
+        var paidSoFar = RecurringOccurrenceAmounts.PaidSoFar(existingTransactions);
+        var scheduledAmount = Math.Abs(occurrence.ScheduledAmount ?? payment.Amount);
+        var remainingAmount = Math.Max(0m, scheduledAmount - paidSoFar);
+
+        if (occurrence.Status == RecurringOccurrenceStatus.SettledByLoanPayoff)
+        {
+            return new RecurringSettlementResult(
+                RecurringSettlementStatus.Conflict,
+                Message: "This occurrence was already settled by a loan payoff.");
+        }
+
+        if (status == RecurringOccurrenceStatus.Discarded)
+        {
+            if (occurrence.Status == RecurringOccurrenceStatus.Discarded)
             {
                 var replayNext = (await _occurrences.GetNextPendingAsync(
                     payment, _clock.Today, includeFrom: true, cancellationToken))?.OccurrenceDate;
                 return new RecurringSettlementResult(
-                    RecurringSettlementStatus.Success, occurrence, existing, replayNext);
+                    RecurringSettlementStatus.Success, occurrence, nonDiscardedTxs.FirstOrDefault(), replayNext);
             }
-            return new RecurringSettlementResult(RecurringSettlementStatus.Conflict, Message: "This occurrence was already reviewed.");
+            if (paidSoFar > 0m || occurrence.Status == RecurringOccurrenceStatus.PartiallyPaid)
+            {
+                return new RecurringSettlementResult(
+                    RecurringSettlementStatus.Invalid,
+                    Message: "A partially paid bill cannot be discarded. Finish the payment or delete the partial payments first.");
+            }
+        }
+        else if (occurrence.Status == RecurringOccurrenceStatus.Paid && remainingAmount == 0m)
+        {
+            return new RecurringSettlementResult(
+                RecurringSettlementStatus.Conflict,
+                Message: "This occurrence has already been fully paid.");
         }
 
-        // The occurrence's frozen snapshot is the authority on where this payment comes from, not
-        // the schedule's current AccountId: re-pointing a bill moves its future occurrences, while
-        // one already materialised still settles where it was scheduled. Checked after the
-        // already-reviewed short-circuit so an idempotent replay of a settled occurrence is not
-        // refused for an account that has since moved. Legacy rows materialised before the account
-        // cutover carry none and fall back to the parent, exactly as Name and LedgerCategory do.
         var scheduledBucket = occurrence.LedgerCategory ?? payment.LedgerCategory;
         if (status == RecurringOccurrenceStatus.Paid)
         {
@@ -128,10 +165,6 @@ public sealed class RecurringOccurrenceSettlementService
                     MissingBuckets: [scheduledBucket]);
         }
 
-        // Ensure the natural occurrence key exists before the compatibility transaction path
-        // resolves it again. The status change and Ledger insert still commit together below.
-        await _context.SaveChangesAsync(cancellationToken);
-
         var postingDate = paidDate ?? _clock.Today;
         if (postingDate > _clock.Today)
         {
@@ -148,24 +181,44 @@ public sealed class RecurringOccurrenceSettlementService
                     RecurringSettlementStatus.AutomaticPayment,
                     Message: "This bill is deducted automatically, so it can't be paid ahead of time.");
             }
-            var early = await _payEarly.PayEarlyAsync(
-                paymentId, occurrenceDate, cancellationToken, clientKey, transactionId, postedAt, accountId);
-            return early.Status == PayEarlyStatus.Success
-                ? new RecurringSettlementResult(
-                    RecurringSettlementStatus.Success,
-                    await _context.RecurringPaymentOccurrences.AsNoTracking().SingleAsync(
-                        item => item.RecurringPaymentId == paymentId && item.OccurrenceDate == occurrenceDate,
-                        cancellationToken),
-                    early.Transaction,
-                    early.NextOccurrenceDate)
-                : new RecurringSettlementResult(
-                    early.Status == PayEarlyStatus.Conflict ? RecurringSettlementStatus.Conflict : RecurringSettlementStatus.Invalid,
-                    Message: early.Message);
         }
 
-        var resolvedTransactionId = string.IsNullOrWhiteSpace(transactionId)
-            ? BuildTransactionId(clientKey ?? $"{paymentId}:{occurrenceDate:yyyy-MM-dd}:{status}")
-            : transactionId;
+        decimal amountToPay;
+        if (status == RecurringOccurrenceStatus.Discarded)
+        {
+            amountToPay = 0m;
+        }
+        else
+        {
+            if (requestedAmount == null)
+            {
+                amountToPay = remainingAmount;
+            }
+            else
+            {
+                var requested = Math.Round(requestedAmount.Value, 2, MidpointRounding.AwayFromZero);
+                if (payment.PaymentMode == RecurringPaymentMode.AutoDeduct && requested != remainingAmount)
+                {
+                    return new RecurringSettlementResult(
+                        RecurringSettlementStatus.Invalid,
+                        Message: "Automatic deduction bills must be paid in full.");
+                }
+                if (requested < 0.01m)
+                {
+                    return new RecurringSettlementResult(
+                        RecurringSettlementStatus.Invalid,
+                        Message: "Payment amount must be at least 0.01.");
+                }
+                if (requested > remainingAmount)
+                {
+                    return new RecurringSettlementResult(
+                        RecurringSettlementStatus.Conflict,
+                        Message: $"Payment amount cannot exceed the remaining amount of {remainingAmount:N2}.");
+                }
+                amountToPay = requested;
+            }
+        }
+
         var mutation = await _transactions.CreateTransactionAsync(new TransactionMutationRequest(
             resolvedTransactionId,
             postingDate.ToString("yyyy-MM-dd"),
@@ -175,14 +228,10 @@ public sealed class RecurringOccurrenceSettlementService
             status == RecurringOccurrenceStatus.Discarded ? "Discarded" : occurrence.LedgerCategory ?? payment.LedgerCategory,
             ObfuscationHelper.Obfuscate(status == RecurringOccurrenceStatus.Discarded
                 ? 0m
-                : -Math.Abs(occurrence.ScheduledAmount ?? payment.Amount)),
+                : -Math.Abs(amountToPay)),
             payment.Id,
             null,
             occurrenceDate.ToString("yyyy-MM-dd"),
-            // A Discarded row is a marker, not a bucket leg, and the account-tracking check
-            // constraint requires both placement columns null on one. Dropping the account here
-            // rather than trusting the caller keeps a client that sends one from turning a
-            // discard into an opaque constraint violation.
             AccountId: status == RecurringOccurrenceStatus.Discarded ? null : accountId), cancellationToken);
 
         if (mutation.Status is not (TransactionMutationStatus.Created or TransactionMutationStatus.Existing))
@@ -193,20 +242,44 @@ public sealed class RecurringOccurrenceSettlementService
                     : RecurringSettlementStatus.Invalid,
                 Message: mutation.Message);
         }
-        if (mutation.Status == TransactionMutationStatus.Existing && mutation.Transaction != null)
+
+        // Recompute occurrence status with the newly added transaction.
+        var updatedPaid = paidSoFar + amountToPay;
+        if (status == RecurringOccurrenceStatus.Discarded)
         {
-            RecurringOccurrenceLedgerService.SettleFromTransaction(occurrence, mutation.Transaction);
-            await _context.SaveChangesAsync(cancellationToken);
+            occurrence.Status = RecurringOccurrenceStatus.Discarded;
+            occurrence.PaidDate = null;
         }
+        else if (updatedPaid >= scheduledAmount)
+        {
+            occurrence.Status = RecurringOccurrenceStatus.Paid;
+            occurrence.PaidDate = postingDate;
+        }
+        else if (updatedPaid > 0m)
+        {
+            occurrence.Status = RecurringOccurrenceStatus.PartiallyPaid;
+            occurrence.PaidDate = null;
+        }
+        else
+        {
+            occurrence.Status = RecurringOccurrenceStatus.Pending;
+            occurrence.PaidDate = null;
+        }
+
+        await _context.SaveChangesAsync(cancellationToken);
 
         var refreshed = await _context.RecurringPaymentOccurrences.AsNoTracking().SingleAsync(
             item => item.RecurringPaymentId == paymentId && item.OccurrenceDate == occurrenceDate,
             cancellationToken);
         var next = (await _occurrences.GetNextPendingAsync(
             payment, _clock.Today, includeFrom: true, cancellationToken))?.OccurrenceDate;
+
         return new RecurringSettlementResult(
             RecurringSettlementStatus.Success, refreshed, mutation.Transaction, next);
     }
+
+    private static string PaidSoFarKeyPart(IEnumerable<Transaction> existingTransactions) =>
+        RecurringOccurrenceAmounts.PaidSoFar(existingTransactions).ToString("F2");
 
     private static string BuildTransactionId(string key)
     {

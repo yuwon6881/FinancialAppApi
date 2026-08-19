@@ -41,6 +41,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<SavingsGoal> SavingsGoals => Set<SavingsGoal>();
     public DbSet<SavingsGoalCompletion> SavingsGoalCompletions => Set<SavingsGoalCompletion>();
     public DbSet<Loan> Loans => Set<Loan>();
+    public DbSet<LoanRepaymentAction> LoanRepaymentActions => Set<LoanRepaymentAction>();
     public DbSet<WebAuthnCredential> WebAuthnCredentials => Set<WebAuthnCredential>();
     public DbSet<WebAuthnChallenge> WebAuthnChallenges => Set<WebAuthnChallenge>();
     public DbSet<ReceiptScanJob> ReceiptScanJobs => Set<ReceiptScanJob>();
@@ -122,11 +123,8 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable(t => t.HasCheckConstraint(
                 "ck_transactions_account_tracking",
                 "(lower(\"LedgerCategory\") IN ('essentials', 'growth', 'stability', 'rewards') AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") = 'accountmove' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL) OR (lower(\"LedgerCategory\") LIKE 'transfer:%' AND ((lower(\"LedgerCategory\") LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") NOT LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL))) OR (lower(\"LedgerCategory\") NOT IN ('essentials', 'growth', 'stability', 'rewards', 'accountmove') AND lower(\"LedgerCategory\") NOT LIKE 'transfer:%' AND \"AccountId\" IS NULL AND \"CounterAccountId\" IS NULL)"));
-            // Guarantees a given recurring-payment occurrence can never be settled twice
-            // (normal confirmation racing pay-early, pay-early retried, etc.). Partial so
-            // legacy/manual transactions (either column null) are exempt.
+            // Non-unique index for multiple partial recurring-payment occurrence contributions.
             entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId, e.RecurringOccurrenceDate })
-                .IsUnique()
                 .HasFilter("\"RecurringPaymentId\" IS NOT NULL AND \"RecurringOccurrenceDate\" IS NOT NULL");
         });
 
@@ -185,10 +183,9 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.ScheduledAmount).HasColumnType("numeric(12,2)");
             entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId, e.OccurrenceDate }).IsUnique();
             entity.HasIndex(e => new { e.UserId, e.Status, e.OccurrenceDate });
-            entity.HasIndex(e => e.SettlementTransactionId);
             entity.ToTable(t => t.HasCheckConstraint(
                 "ck_recurringpaymentoccurrences_status",
-                "\"Status\" IN ('Pending', 'Paid', 'Discarded')"));
+                "\"Status\" IN ('Pending', 'PartiallyPaid', 'Paid', 'Discarded', 'SettledByLoanPayoff')"));
         });
 
         modelBuilder.Entity<FinancialSetting>(entity =>
@@ -389,6 +386,27 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
                     $"\"ScheduleStatus\" IN ('{LoanScheduleStatus.Complete}', '{LoanScheduleStatus.Incomplete}')");
                 t.HasCheckConstraint("ck_loans_scheduledueday",
                     "\"ScheduleDueDay\" IS NULL OR \"ScheduleDueDay\" BETWEEN 1 AND 31");
+            });
+        });
+
+        modelBuilder.Entity<LoanRepaymentAction>(entity =>
+        {
+            entity.Property(e => e.LenderQuoteAmount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.EffectiveDate).HasColumnType("date");
+            entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.UserId, e.LoanId, e.CreatedAt });
+            entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId });
+            // A loan can be paid off once. LoanService keys its replay override by LoanId, so a second
+            // settlement row would both contradict the first and make that lookup throw on a duplicate
+            // key, taking the whole loan list down rather than just that loan.
+            entity.HasIndex(e => new { e.UserId, e.LoanId })
+                .IsUnique()
+                .HasFilter($"\"Kind\" = '{LoanRepaymentActionKind.FullSettlement}'");
+            entity.ToTable(table =>
+            {
+                table.HasCheckConstraint(
+                    "ck_loanrepaymentactions_kind",
+                    "\"Kind\" IN ('AdvanceCycles', 'FullSettlement')");
             });
         });
 
@@ -616,6 +634,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
         ConfigureUserOwnership(modelBuilder.Entity<SavingsGoal>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<SavingsGoalCompletion>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<Loan>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<LoanRepaymentAction>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<CycleBalance>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<StabilityPlanRevision>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<UserSession>(), applyQueryFilter: false);

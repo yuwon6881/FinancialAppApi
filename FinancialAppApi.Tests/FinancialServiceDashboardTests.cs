@@ -369,8 +369,7 @@ public class FinancialServiceDashboardTests
             LedgerCategory = "Rewards",
             PaymentMode = RecurringPaymentMode.Manual,
             Status = RecurringOccurrenceStatus.Paid,
-            PaidDate = new DateOnly(2026, 7, 10),
-            SettlementTransactionId = "streaming-jul-payment"
+            PaidDate = new DateOnly(2026, 7, 10)
         });
         await context.SaveChangesAsync();
 

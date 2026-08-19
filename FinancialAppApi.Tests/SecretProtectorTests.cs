@@ -58,7 +58,10 @@ public class SecretProtectorTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            if (Directory.Exists(directory))
+            {
+                try { Directory.Delete(directory, recursive: true); } catch { }
+            }
         }
     }
 }

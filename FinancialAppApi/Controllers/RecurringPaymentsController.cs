@@ -41,8 +41,6 @@ public class RecurringPaymentsController : ControllerBase
         CancellationToken cancellationToken)
     {
         var list = await recurringPaymentService.GetRecurringPaymentsAsync(cancellationToken);
-        // Resolved for the whole list at once: per-payment lookups issued three queries each, and
-        // this runs on every /api/bootstrap, which every outbox drain re-fetches.
         var nextUnpaid = await payEarlyService.GetNextUnpaidOccurrencesAsync(list, cancellationToken);
         var result = new List<RecurringPaymentDto>(list.Count);
         foreach (var payment in list)
@@ -96,7 +94,6 @@ public class RecurringPaymentsController : ControllerBase
         }
         if (result.Status == CreateRecurringPaymentStatus.Existing)
         {
-            // Idempotent replay of an already-committed create — return the stored row as success.
             return Ok(MapToDto(result.Payment!));
         }
 
@@ -112,6 +109,8 @@ public class RecurringPaymentsController : ControllerBase
         {
             return NotFound();
         }
+        if (result.Status == ToggleRecurringPaymentStatus.HasPartialPayments)
+            return Conflict(new { message = result.Message });
         if (result.Status == ToggleRecurringPaymentStatus.InvalidAccount)
             return BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets });
 
@@ -162,6 +161,8 @@ public class RecurringPaymentsController : ControllerBase
         {
             return NotFound();
         }
+        if (result.Status == UpdateRecurringPaymentStatus.HasPartialPayments)
+            return Conflict(new { message = result.Message });
         if (result.Status is UpdateRecurringPaymentStatus.InvalidCategory
             or UpdateRecurringPaymentStatus.InvalidLoanTerm
             or UpdateRecurringPaymentStatus.InvalidAccount)
@@ -181,6 +182,8 @@ public class RecurringPaymentsController : ControllerBase
         {
             return NotFound();
         }
+        if (result.Status == DeleteRecurringPaymentStatus.HasPartialPayments)
+            return Conflict(new { message = result.Message });
         if (result.Status == DeleteRecurringPaymentStatus.LinkedToLoan)
         {
             var message = result.LoanName == null
@@ -271,6 +274,16 @@ public class RecurringPaymentsController : ControllerBase
             paidDate = parsedPaidDate;
         }
 
+        decimal? requestedAmount = null;
+        if (!string.IsNullOrWhiteSpace(dto.Amount))
+        {
+            if (!ObfuscationHelper.TryDeobfuscate(dto.Amount, out var parsedAmount) || parsedAmount < 0.01m)
+            {
+                return BadRequest(new { message = "Amount must be a valid positive number of at least 0.01." });
+            }
+            requestedAmount = parsedAmount;
+        }
+
         var result = await _settlementService.SettleAsync(
             id,
             parsedOccurrence,
@@ -280,7 +293,8 @@ public class RecurringPaymentsController : ControllerBase
             HttpContext.RequestAborted,
             dto.TransactionId,
             dto.PostedAt,
-            dto.AccountId);
+            dto.AccountId,
+            requestedAmount);
         return result.Status switch
         {
             RecurringSettlementStatus.NotFound => NotFound(),
@@ -304,37 +318,60 @@ public class RecurringPaymentsController : ControllerBase
         amount = occurrence.ScheduledAmount.HasValue
             ? ObfuscationHelper.Obfuscate(occurrence.ScheduledAmount.Value)
             : null,
+        scheduledAmount = occurrence.ScheduledAmount.HasValue
+            ? ObfuscationHelper.Obfuscate(occurrence.ScheduledAmount.Value)
+            : null,
         category = occurrence.Category,
         ledgerCategory = occurrence.LedgerCategory,
         dueDate = occurrence.OccurrenceDate.ToString("yyyy-MM-dd"),
         isPaid = occurrence.Status == RecurringOccurrenceStatus.Paid,
         isDiscarded = occurrence.Status == RecurringOccurrenceStatus.Discarded,
+        isPartiallyPaid = occurrence.Status == RecurringOccurrenceStatus.PartiallyPaid,
         status = occurrence.Status,
         paidDate = occurrence.PaidDate?.ToString("yyyy-MM-dd")
     };
 
-    internal static RecurringPaymentDto MapToDto(RecurringPayment rp)
+    internal static RecurringPaymentDto MapToDto(RecurringPaymentProjection rp) => new()
     {
-        return new RecurringPaymentDto
-        {
-            Id = rp.Id,
-            Name = rp.Name,
-            Amount = ObfuscationHelper.Obfuscate(rp.Amount),
-            Frequency = rp.Frequency,
-            Category = rp.Category,
-            LedgerCategory = rp.LedgerCategory,
-            NextDueDate = rp.NextDueDate,
-            DueDate = rp.DueDate,
-            StartDate = rp.StartDate,
-            Active = rp.Active,
-            EndDate = rp.EndDate,
-            ReminderEnabled = rp.PushReminderEnabled,
-            ReminderMode = rp.PushReminderMode,
-            ReminderLeadDays = rp.PushReminderLeadDays,
-            PaymentMode = rp.PaymentMode,
-            AccountId = rp.AccountId,
-        };
-    }
+        Id = rp.Id,
+        Name = rp.Name,
+        Amount = ObfuscationHelper.Obfuscate(rp.Amount),
+        Frequency = rp.Frequency,
+        Category = rp.Category,
+        LedgerCategory = rp.LedgerCategory,
+        NextDueDate = rp.NextDueDate,
+        DueDate = rp.DueDate,
+        StartDate = rp.StartDate,
+        Active = rp.Active,
+        EndDate = rp.EndDate,
+        ReminderEnabled = rp.ReminderEnabled,
+        ReminderMode = rp.ReminderMode,
+        ReminderLeadDays = rp.ReminderLeadDays,
+        PaymentMode = rp.PaymentMode,
+        AccountId = rp.AccountId,
+        LinkedLoanId = rp.LinkedLoanId,
+        LinkedLoanName = rp.LinkedLoanName
+    };
+
+    internal static RecurringPaymentDto MapToDto(RecurringPayment rp) => new()
+    {
+        Id = rp.Id,
+        Name = rp.Name,
+        Amount = ObfuscationHelper.Obfuscate(rp.Amount),
+        Frequency = rp.Frequency,
+        Category = rp.Category,
+        LedgerCategory = rp.LedgerCategory,
+        NextDueDate = rp.NextDueDate,
+        DueDate = rp.DueDate,
+        StartDate = rp.StartDate,
+        Active = rp.Active,
+        EndDate = rp.EndDate,
+        ReminderEnabled = rp.PushReminderEnabled,
+        ReminderMode = rp.PushReminderMode,
+        ReminderLeadDays = rp.PushReminderLeadDays,
+        PaymentMode = rp.PaymentMode,
+        AccountId = rp.AccountId
+    };
 
     private static bool TryNormalizeFrequency(string? value, out string frequency)
     {
@@ -369,31 +406,6 @@ public class RecurringPaymentsController : ControllerBase
         paymentMode = string.Empty;
         return false;
     }
-
-    internal static RecurringPaymentDto MapToDto(RecurringPaymentProjection rp)
-    {
-        return new RecurringPaymentDto
-        {
-            Id = rp.Id,
-            Name = rp.Name,
-            Amount = ObfuscationHelper.Obfuscate(rp.Amount),
-            Frequency = rp.Frequency,
-            Category = rp.Category,
-            LedgerCategory = rp.LedgerCategory,
-            NextDueDate = rp.NextDueDate,
-            DueDate = rp.DueDate,
-            StartDate = rp.StartDate,
-            Active = rp.Active,
-            EndDate = rp.EndDate,
-            ReminderEnabled = rp.ReminderEnabled,
-            ReminderMode = rp.ReminderMode,
-            ReminderLeadDays = rp.ReminderLeadDays,
-            PaymentMode = rp.PaymentMode,
-            AccountId = rp.AccountId,
-            LinkedLoanId = rp.LinkedLoanId,
-            LinkedLoanName = rp.LinkedLoanName
-        };
-    }
 }
 
 public class ToggleActiveDto
@@ -418,6 +430,7 @@ public class PayEarlyRequestDto
 public class RecurringOccurrenceSettlementDto
 {
     public string Status { get; set; } = string.Empty;
+    public string? Amount { get; set; }
     public string? PaidDate { get; set; }
     public string? ClientKey { get; set; }
     public string? TransactionId { get; set; }

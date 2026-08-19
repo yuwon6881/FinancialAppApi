@@ -183,14 +183,25 @@ public class RecurringPaymentPayEarlyService
                 Code: "ledger_account_invalid",
                 MissingBuckets: [payment.LedgerCategory]);
 
-        // First line of defence against a race: re-check right before the insert. The
-        // PostgreSQL partial unique index on (UserId, RecurringPaymentId, RecurringOccurrenceDate)
-        // is the actual concurrency-safe guard — this check just turns the common case into a
-        // friendly response instead of always relying on catching the constraint violation.
-        var alreadySettled = await _context.Transactions.AnyAsync(
-            t => t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate == occurrence.Value,
-            cancellationToken);
-        if (alreadySettled)
+        // Partial payments dropped the unique index on
+        // (UserId, RecurringPaymentId, RecurringOccurrenceDate) that used to make one occurrence hold
+        // one transaction, so this is now the only guard rather than a friendly pre-check. It also
+        // has to measure rather than merely count: an occurrence carrying a part payment has rows
+        // against it but is not settled, and reporting it as "already paid" was both wrong and the
+        // opposite of what the user should do next.
+        var settledTransactions = await _context.Transactions
+            .AsNoTracking()
+            .Where(t => t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate == occurrence.Value)
+            .ToListAsync(cancellationToken);
+        var paidSoFar = RecurringOccurrenceAmounts.PaidSoFar(settledTransactions);
+        var scheduledForOccurrence = Math.Abs(occurrenceRow?.ScheduledAmount ?? payment.Amount);
+        var remainingForOccurrence = RecurringOccurrenceAmounts.Remaining(scheduledForOccurrence, paidSoFar);
+
+        if (occurrenceRow != null && !RecurringOccurrenceStatus.IsUnresolved(occurrenceRow.Status))
+        {
+            return new PayEarlyResult(PayEarlyStatus.Conflict, Message: "This occurrence has already been reviewed.");
+        }
+        if (remainingForOccurrence <= 0m)
         {
             return new PayEarlyResult(PayEarlyStatus.Conflict, Message: "This occurrence has already been paid.");
         }
@@ -208,14 +219,19 @@ public class RecurringPaymentPayEarlyService
             // Recurring templates store a positive cost. Ledger expenses are negative (the
             // normal confirm-payment flow also applies -Abs), so paying early must not credit
             // the selected envelope or disappear from spending/category-watch calculations.
-            Amount = -Math.Abs(payment.Amount),
+            // What is left on this occurrence, not the template's full price: paying early after a
+            // part payment must not charge the whole bill again.
+            Amount = -remainingForOccurrence,
             RecurringPaymentId = payment.Id,
             RecurringOccurrenceDate = occurrence.Value,
             AccountId = requestedAccountId,
         };
 
         _context.Transactions.Add(transaction);
-        RecurringOccurrenceLedgerService.SettleFromTransaction(occurrenceRow!, transaction);
+        // The running total, not this one row: without it a top-up payment on a partially paid
+        // occurrence was judged against its own amount alone and could never reach Paid.
+        RecurringOccurrenceLedgerService.SettleFromTransaction(
+            occurrenceRow!, transaction, paidSoFar + remainingForOccurrence);
 
         try
         {

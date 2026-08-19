@@ -95,7 +95,8 @@ public static class LoanAmortization
         int paymentNumber,
         decimal flatInterestPaidBefore,
         DateOnly previousAccrualDate,
-        string? transactionId = null)
+        string? transactionId = null,
+        decimal? interestDueOverride = null)
     {
         var actualPayment = RoundMoney(Math.Max(0m, payment));
         var normalizedBalance = RoundMoney(Math.Max(0m, balanceBefore));
@@ -105,7 +106,7 @@ public static class LoanAmortization
                 occurrenceDate, actualPayment, 0m, 0m, 0m, 0m, actualPayment, false, transactionId);
         }
 
-        var interestDue = loan.InterestMethod switch
+        var interestDue = interestDueOverride ?? (loan.InterestMethod switch
         {
             LoanInterestMethod.Flat => FlatInterestForPayment(loan, frequency, paymentNumber, flatInterestPaidBefore),
             LoanInterestMethod.ReducingBalanceDaily => DailyInterest(
@@ -114,7 +115,7 @@ public static class LoanAmortization
                 previousAccrualDate,
                 occurrenceDate),
             _ => RoundMoney(normalizedBalance * AnnualRate(loan.AnnualRatePercent) / PeriodsPerYear(frequency))
-        };
+        });
         var interest = Math.Min(actualPayment, Math.Max(0m, interestDue));
         var didNotCoverInterest = actualPayment < interestDue && interestDue > 0m;
         var principal = didNotCoverInterest
@@ -164,7 +165,7 @@ public static class LoanAmortization
     public static decimal TotalScheduledInterestForFrequency(Loan loan, string? frequency) =>
         TotalScheduledInterest(loan, frequency);
 
-    private static decimal FlatInterestForPayment(
+    internal static decimal FlatInterestForPayment(
         Loan loan,
         string? frequency,
         int paymentNumber,
@@ -177,7 +178,7 @@ public static class LoanAmortization
             : Math.Min(remainingInterest, RoundMoney(totalInterest / Math.Max(1, loan.TermPeriods)));
     }
 
-    private static decimal DailyInterest(
+    internal static decimal DailyInterest(
         Loan loan,
         decimal balance,
         DateOnly previousAccrualDate,

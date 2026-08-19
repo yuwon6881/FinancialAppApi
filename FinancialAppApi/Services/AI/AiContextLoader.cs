@@ -1,4 +1,5 @@
 using FinancialAppApi.Database;
+using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
@@ -68,8 +69,12 @@ public partial class AiAssistantService
             .Take(100)
             .ToListAsync(cancellationToken);
 
+    // Amount stays the scheduled figure so "how much is this bill" keeps its answer; Outstanding is
+    // what is still owed, and is the only one of the two a forecast may add up. They differ exactly
+    // when a bill is partially paid, where summing Amount projected money already spent a second time.
     private sealed record AiRecurringStatusRow(
-        string Id, string Name, string Category, string LedgerCategory, string DueDate, string Status, decimal? Amount);
+        string Id, string Name, string Category, string LedgerCategory, string DueDate, string Status,
+        decimal? Amount, decimal Outstanding);
 
     // Per-cycle bill status (Paid / Pending / Discarded) for each active recurring payment whose
     // billing date lands in the requested cycle(s). Mirrors FinancialService.BuildActiveRecurringList
@@ -83,6 +88,7 @@ public partial class AiAssistantService
         CancellationToken cancellationToken)
     {
         var recurring = await _context.RecurringPayments.AsNoTracking().Where(payment => payment.Active).ToListAsync(cancellationToken);
+        var parentAmounts = recurring.ToDictionary(payment => payment.Id, payment => payment.Amount, StringComparer.Ordinal);
         var results = new List<AiRecurringStatusRow>();
         foreach (var cycle in cycles.Distinct())
         {
@@ -91,6 +97,27 @@ public partial class AiAssistantService
             var endOnly = DateOnly.FromDateTime(range.end);
             var occurrences = await _recurringOccurrenceLedger.GetRangeAsync(
                 recurring, startOnly, endOnly, cancellationToken: cancellationToken);
+
+            // Only partially paid rows need their ledger transactions read back; every other status
+            // either owes its full scheduled amount or owes nothing.
+            var partiallyPaid = occurrences
+                .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.PartiallyPaid)
+                .ToList();
+            Dictionary<(string PaymentId, DateOnly Date), decimal>? paidByOccurrence = null;
+            if (partiallyPaid.Count > 0)
+            {
+                var partialIds = partiallyPaid.Select(item => item.RecurringPaymentId).Distinct(StringComparer.Ordinal).ToList();
+                var partialDates = partiallyPaid.Select(item => item.OccurrenceDate).Distinct().ToList();
+                var partialTransactions = await _context.Transactions
+                    .AsNoTracking()
+                    .Where(transaction => transaction.RecurringPaymentId != null
+                        && partialIds.Contains(transaction.RecurringPaymentId)
+                        && transaction.RecurringOccurrenceDate != null
+                        && partialDates.Contains(transaction.RecurringOccurrenceDate.Value))
+                    .ToListAsync(cancellationToken);
+                paidByOccurrence = RecurringOccurrenceAmounts.PaidByOccurrence(partialTransactions);
+            }
+
             foreach (var occurrence in occurrences)
             {
                 results.Add(new AiRecurringStatusRow(
@@ -100,7 +127,11 @@ public partial class AiAssistantService
                     occurrence.LedgerCategory ?? string.Empty,
                     occurrence.OccurrenceDate.ToString("yyyy-MM-dd"),
                     occurrence.Status,
-                    occurrence.ScheduledAmount.HasValue ? Math.Abs(occurrence.ScheduledAmount.Value) : null));
+                    occurrence.ScheduledAmount.HasValue ? Math.Abs(occurrence.ScheduledAmount.Value) : null,
+                    RecurringOccurrenceAmounts.Outstanding(
+                        occurrence,
+                        parentAmounts.GetValueOrDefault(occurrence.RecurringPaymentId),
+                        paidByOccurrence)));
             }
         }
         return results;

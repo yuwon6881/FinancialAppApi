@@ -186,12 +186,17 @@ public static class SavingsGoalPacing
     /// </summary>
     public static decimal PendingAmount(
         IEnumerable<RecurringPaymentOccurrence> occurrences,
-        string fundingBucket)
+        string fundingBucket,
+        IReadOnlyDictionary<(string PaymentId, DateOnly Date), decimal>? paidByOccurrence = null)
     {
+        // Unresolved rather than Pending, and the remainder rather than the whole scheduled amount: a
+        // partially paid bill has neither stopped claiming this bucket nor kept claiming all of it.
+        // Excluded outright, the still-owed balance came back as free-to-spend and could be earmarked
+        // to a commitment that the bill would then take the money for.
         var pending = occurrences
-            .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.Pending
+            .Where(occurrence => RecurringOccurrenceStatus.IsUnresolved(occurrence.Status)
                 && string.Equals(occurrence.LedgerCategory, fundingBucket, StringComparison.OrdinalIgnoreCase))
-            .Sum(occurrence => Math.Abs(occurrence.ScheduledAmount ?? 0m));
+            .Sum(occurrence => RecurringOccurrenceAmounts.Outstanding(occurrence, 0m, paidByOccurrence));
 
         return Math.Round(pending, 2, MidpointRounding.AwayFromZero);
     }

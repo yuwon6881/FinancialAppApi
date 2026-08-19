@@ -15,10 +15,12 @@ public sealed class LoansController : ControllerBase
 {
     private const int BootstrapSchedulePreviewLength = 6;
     private readonly LoanService _loanService;
+    private readonly LoanRepaymentService _repaymentService;
 
-    public LoansController(LoanService loanService)
+    public LoansController(LoanService loanService, LoanRepaymentService repaymentService)
     {
         _loanService = loanService;
+        _repaymentService = repaymentService;
     }
 
     [HttpGet]
@@ -35,6 +37,99 @@ public sealed class LoansController : ControllerBase
         return loan == null
             ? NotFound()
             : Ok(loan.Replay.FutureSchedule.Select(MapToDto).ToList());
+    }
+
+    [HttpPost("{id}/repayments/preview")]
+    public async Task<IActionResult> PreviewRepayment(string id, [FromBody] AdvanceRepaymentPreviewRequestDto? dto = null)
+    {
+        var cycles = dto?.Cycles ?? 1;
+        var result = await _repaymentService.PreviewAdvanceRepaymentAsync(id, cycles, HttpContext.RequestAborted);
+        return result.Status switch
+        {
+            LoanRepaymentStatus.NotFound => NotFound(),
+            LoanRepaymentStatus.Invalid => BadRequest(new { message = result.Message }),
+            _ => Ok(new
+            {
+                cyclesCount = result.CyclesCount,
+                totalAmount = ObfuscationHelper.Obfuscate(result.TotalAmount),
+                occurrences = result.Occurrences?.Select(MapToDto).ToList() ?? []
+            })
+        };
+    }
+
+    [HttpPost("{id}/repayments/advance-cycles")]
+    public async Task<IActionResult> AdvanceCyclesRepayment(string id, [FromBody] AdvanceCyclesRepaymentDto dto)
+    {
+        var result = await _repaymentService.AdvanceCyclesRepaymentAsync(
+            id,
+            dto.Cycles,
+            dto.AccountId,
+            dto.ClientKey,
+            dto.PostedAt,
+            HttpContext.RequestAborted);
+
+        return result.Status switch
+        {
+            LoanRepaymentStatus.NotFound => NotFound(),
+            LoanRepaymentStatus.Conflict => Conflict(new { message = result.Message }),
+            LoanRepaymentStatus.Invalid => BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets }),
+            _ => Ok(new
+            {
+                actionId = result.ActionId,
+                kind = result.Kind,
+                loan = MapToDto(result.LoanView!),
+                transactions = result.Transactions?.Select(t => TransactionsController.MapToDto(t)).ToList() ?? []
+            })
+        };
+    }
+
+    [HttpPost("{id}/repayments/full-settlement")]
+    public async Task<IActionResult> FullSettlementRepayment(string id, [FromBody] FullSettlementRepaymentDto dto)
+    {
+        if (!ObfuscationHelper.TryDeobfuscate(dto.LenderQuoteAmount, out var quote) || quote < 0.01m)
+        {
+            return BadRequest(new { message = "Lender quote amount must be a positive number of at least 0.01." });
+        }
+
+        var result = await _repaymentService.FullSettlementRepaymentAsync(
+            id,
+            quote,
+            dto.AccountId,
+            dto.ClientKey,
+            dto.PostedAt,
+            HttpContext.RequestAborted);
+
+        return result.Status switch
+        {
+            LoanRepaymentStatus.NotFound => NotFound(),
+            LoanRepaymentStatus.Conflict => Conflict(new { message = result.Message }),
+            LoanRepaymentStatus.Invalid => BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets }),
+            _ => Ok(new
+            {
+                actionId = result.ActionId,
+                kind = result.Kind,
+                loan = MapToDto(result.LoanView!),
+                transactions = result.Transactions?.Select(t => TransactionsController.MapToDto(t)).ToList() ?? []
+            })
+        };
+    }
+
+    [HttpPost("repayments/{actionId}/undo")]
+    public async Task<IActionResult> UndoRepayment(string actionId)
+    {
+        var result = await _repaymentService.UndoRepaymentActionAsync(actionId, HttpContext.RequestAborted);
+        return result.Status switch
+        {
+            LoanRepaymentStatus.NotFound => NotFound(),
+            LoanRepaymentStatus.Conflict => Conflict(new { message = result.Message }),
+            LoanRepaymentStatus.Invalid => BadRequest(new { message = result.Message }),
+            _ => Ok(new
+            {
+                actionId = result.ActionId,
+                kind = result.Kind,
+                loan = result.LoanView == null ? null : MapToDto(result.LoanView)
+            })
+        };
     }
 
     [HttpPost]
@@ -95,6 +190,7 @@ public sealed class LoansController : ControllerBase
             ScheduleDueDay = view.Loan.ScheduleDueDay,
             ScheduleStartDate = view.Loan.ScheduleStartDate?.ToString("yyyy-MM-dd"),
             ScheduleStatus = view.Loan.ScheduleStatus,
+            SettlementActionId = view.SettlementActionId,
             Snapshot = new LoanSnapshotDto
             {
                 OutstandingBalance = ObfuscationHelper.Obfuscate(replay.OutstandingBalance),
@@ -201,6 +297,7 @@ public sealed class LoanDto
     public int? ScheduleDueDay { get; set; }
     public string? ScheduleStartDate { get; set; }
     public string ScheduleStatus { get; set; } = LoanScheduleStatus.Incomplete;
+    public string? SettlementActionId { get; set; }
     public LoanSnapshotDto Snapshot { get; set; } = new();
 }
 
@@ -237,4 +334,25 @@ public sealed class LoanScheduleDto
     public string Interest { get; set; } = string.Empty;
     public string Principal { get; set; } = string.Empty;
     public string BalanceAfter { get; set; } = string.Empty;
+}
+
+public sealed class AdvanceRepaymentPreviewRequestDto
+{
+    public int Cycles { get; set; } = 1;
+}
+
+public sealed class AdvanceCyclesRepaymentDto
+{
+    public int Cycles { get; set; } = 1;
+    public string? AccountId { get; set; }
+    public string? ClientKey { get; set; }
+    public DateTime? PostedAt { get; set; }
+}
+
+public sealed class FullSettlementRepaymentDto
+{
+    public string LenderQuoteAmount { get; set; } = string.Empty;
+    public string? AccountId { get; set; }
+    public string? ClientKey { get; set; }
+    public DateTime? PostedAt { get; set; }
 }

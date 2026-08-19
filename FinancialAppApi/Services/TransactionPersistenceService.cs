@@ -170,15 +170,41 @@ public class TransactionPersistenceService
             }
             catch (InvalidOperationException exception)
             {
+                // A date that is not an occurrence of this schedule is a bad request, not a fault.
                 return new TransactionMutationResult(
                     TransactionMutationStatus.InvalidRecurringOccurrence,
                     Message: exception.Message);
             }
-            if (occurrenceRow.Status != RecurringOccurrenceStatus.Pending)
+            var existingTxs = await _context.Transactions.Where(t =>
+                t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate == occurrence.Date.Value)
+                .ToListAsync(cancellationToken);
+            var nonDiscarded = existingTxs
+                .Where(t => !RecurringOccurrenceAmounts.IsDiscardedMarker(t))
+                .ToList();
+            var paidSoFar = RecurringOccurrenceAmounts.PaidSoFar(existingTxs);
+            var scheduled = Math.Abs(occurrenceRow.ScheduledAmount ?? payment.Amount);
+            var remaining = RecurringOccurrenceAmounts.Remaining(scheduled, paidSoFar);
+
+            if (occurrenceRow.Status is RecurringOccurrenceStatus.Discarded or RecurringOccurrenceStatus.SettledByLoanPayoff)
             {
                 return new TransactionMutationResult(
                     TransactionMutationStatus.Conflict,
                     Message: "This recurring occurrence has already been settled.");
+            }
+
+            if (remaining <= 0m && nonDiscarded.Count > 0)
+            {
+                return new TransactionMutationResult(
+                    TransactionMutationStatus.Conflict,
+                    Message: "This recurring occurrence has already been settled.");
+            }
+
+            var isLinkedToLoan = await _context.Loans.AsNoTracking().AnyAsync(l => l.RecurringPaymentId == payment.Id, cancellationToken);
+            if (!isLinkedToLoan && Math.Abs(transaction.Amount) > remaining)
+            {
+                return new TransactionMutationResult(
+                    TransactionMutationStatus.Conflict,
+                    Message: $"Payment amount cannot exceed the remaining amount of {remaining:N2}.");
             }
         }
 
@@ -199,7 +225,17 @@ public class TransactionPersistenceService
             .ToListAsync(cancellationToken);
 
         _context.Transactions.Add(transaction);
-        if (occurrenceRow != null) RecurringOccurrenceLedgerService.SettleFromTransaction(occurrenceRow, transaction);
+        if (occurrenceRow != null)
+        {
+            var existingTxs = await _context.Transactions.Where(t =>
+                t.RecurringPaymentId == transaction.RecurringPaymentId && t.RecurringOccurrenceDate == transaction.RecurringOccurrenceDate)
+                .ToListAsync(cancellationToken);
+            var activeTxs = existingTxs
+                .Where(t => !string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var updatedPaid = activeTxs.Sum(t => Math.Abs(t.Amount)) + Math.Abs(transaction.Amount);
+            RecurringOccurrenceLedgerService.SettleFromTransaction(occurrenceRow, transaction, updatedPaid);
+        }
         foreach (var document in documentsToRelink)
         {
             document.TransactionId = transaction.Id;
@@ -392,7 +428,16 @@ public class TransactionPersistenceService
         {
             if (putDate > _clock.Today) return InvalidDate("A recurring payment date cannot be in the future.");
             var occurrenceRow = await _occurrenceLedger.FindByTransactionAsync(transaction, cancellationToken);
-            if (occurrenceRow != null) RecurringOccurrenceLedgerService.SettleFromTransaction(occurrenceRow, transaction);
+            if (occurrenceRow != null)
+            {
+                var relatedTxs = await _context.Transactions
+                    .Where(t => t.RecurringPaymentId == transaction.RecurringPaymentId
+                        && t.RecurringOccurrenceDate == transaction.RecurringOccurrenceDate.Value
+                        && t.Id != transaction.Id)
+                    .ToListAsync(cancellationToken);
+                relatedTxs.Add(transaction);
+                RecurringOccurrenceLedgerService.RecomputeOccurrenceStatus(occurrenceRow, relatedTxs);
+            }
         }
 
         if (preserveHistoricalIncomeSplit && Stability.HistoricalIncomeSplitRows.CanPreserve(transaction, existingSplits))
@@ -433,9 +478,14 @@ public class TransactionPersistenceService
         await ClearWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
         var recurringOccurrence = await _occurrenceLedger.FindByTransactionAsync(transaction, cancellationToken);
-        if (recurringOccurrence != null && recurringOccurrence.SettlementTransactionId == transaction.Id)
+        if (recurringOccurrence != null && transaction.RecurringOccurrenceDate.HasValue)
         {
-            RecurringOccurrenceLedgerService.Reopen(recurringOccurrence);
+            var remainingTxs = await _context.Transactions
+                .Where(t => t.RecurringPaymentId == transaction.RecurringPaymentId
+                    && t.RecurringOccurrenceDate == transaction.RecurringOccurrenceDate.Value
+                    && t.Id != transaction.Id)
+                .ToListAsync(cancellationToken);
+            RecurringOccurrenceLedgerService.RecomputeOccurrenceStatus(recurringOccurrence, remainingTxs);
         }
 
         var attachedDocuments = await _context.VaultDocuments
@@ -506,9 +556,14 @@ public class TransactionPersistenceService
             await ClearWishlistPurchaseLinkAsync(transaction, cancellationToken);
 
             var recurringOccurrence = await _occurrenceLedger.FindByTransactionAsync(transaction, cancellationToken);
-            if (recurringOccurrence != null && recurringOccurrence.SettlementTransactionId == transaction.Id)
+            if (recurringOccurrence != null && transaction.RecurringOccurrenceDate.HasValue)
             {
-                RecurringOccurrenceLedgerService.Reopen(recurringOccurrence);
+                var remainingTxs = await _context.Transactions
+                    .Where(t => t.RecurringPaymentId == transaction.RecurringPaymentId
+                        && t.RecurringOccurrenceDate == transaction.RecurringOccurrenceDate.Value
+                        && !canonicalIds.Contains(t.Id))
+                    .ToListAsync(cancellationToken);
+                RecurringOccurrenceLedgerService.RecomputeOccurrenceStatus(recurringOccurrence, remainingTxs);
             }
 
             var attachedDocuments = await _context.VaultDocuments
@@ -736,17 +791,25 @@ public class TransactionPersistenceService
                 : (false, null, "The selected date is not an occurrence of this recurring payment.");
         }
 
-        // Soft guard: never tag an occurrence that would collide with one already settled (e.g.
-        // pay-early already recorded it). Leaving it null here keeps this normal ledger-entry
-        // path from failing outright on that edge case, which the dedicated pay-early flow
-        // already rejects explicitly.
-        var alreadySettled = await _context.Transactions.AnyAsync(t =>
-            t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate == matchedOccurrence,
+        var occurrenceRow = await _context.RecurringPaymentOccurrences.AsNoTracking().FirstOrDefaultAsync(o =>
+            o.RecurringPaymentId == payment.Id && o.OccurrenceDate == matchedOccurrence,
             cancellationToken);
+        if (occurrenceRow != null && occurrenceRow.Status is RecurringOccurrenceStatus.Discarded or RecurringOccurrenceStatus.SettledByLoanPayoff)
+        {
+            return (false, null, "This recurring occurrence has already been settled.");
+        }
+        var existingTxs = await _context.Transactions.AsNoTracking().Where(t =>
+            t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate == matchedOccurrence
+            && !string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase))
+            .ToListAsync(cancellationToken);
+        var paidSoFar = existingTxs.Sum(t => Math.Abs(t.Amount));
+        var scheduled = Math.Abs(occurrenceRow?.ScheduledAmount ?? payment.Amount);
+        if (scheduled > 0m && paidSoFar >= scheduled)
+        {
+            return (false, null, "This recurring occurrence has already been settled.");
+        }
 
-        return alreadySettled
-            ? (false, null, "This recurring occurrence has already been settled.")
-            : (true, matchedOccurrence, null);
+        return (true, matchedOccurrence, null);
     }
 
     private async Task InvalidateCycleBalancesFromAsync(
@@ -764,6 +827,18 @@ public class TransactionPersistenceService
         DateTime earliestAffectedDate,
         CancellationToken cancellationToken)
     {
+        // A caller that already owns a transaction (loan repayment stages several transactions plus
+        // the schedule changes as one unit) commits for us: opening a second execution strategy
+        // inside its transaction throws, and committing here would break the atomicity it opened
+        // that transaction for. Invalidation still runs, so it is covered by that same commit.
+        if (_context.Database.CurrentTransaction is not null)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await _context.SaveChangesAsync(cancellationToken);
+            await InvalidateCycleBalancesFromAsync(earliestAffectedDate, cancellationToken);
+            return;
+        }
+
         var strategy = _context.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {

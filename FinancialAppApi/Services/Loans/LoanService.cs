@@ -23,7 +23,9 @@ public sealed record LoanResult(
 public sealed record LoanView(
     Loan Loan,
     RecurringPayment? RecurringPayment,
-    LoanReplayResult Replay);
+    LoanReplayResult Replay,
+    // Set only while a full settlement stands, and it is the handle the client needs to undo it.
+    string? SettlementActionId = null);
 
 /// <summary>
 /// Stores loan terms and builds the read model by replaying the linked bill's complete settlement
@@ -239,6 +241,26 @@ public sealed class LoanService
             .GroupBy(transaction => transaction.RecurringPaymentId!, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
 
+        var inactivePaymentLoanIds = loans
+            .Where(loan => payments.TryGetValue(loan.RecurringPaymentId, out var payment) && !payment.Active)
+            .Select(loan => loan.Id)
+            .ToArray();
+
+        var fullSettlementActions = new Dictionary<string, LoanRepaymentAction>(StringComparer.Ordinal);
+        if (inactivePaymentLoanIds.Length > 0)
+        {
+            // Grouped rather than ToDictionaryAsync keyed on LoanId: a unique index now stops a
+            // second settlement per loan, but a pre-existing duplicate must not throw here and take
+            // the entire loan list — and global search with it — down for good.
+            var settlementRows = await _context.LoanRepaymentActions
+                .AsNoTracking()
+                .Where(action => inactivePaymentLoanIds.Contains(action.LoanId) && action.Kind == LoanRepaymentActionKind.FullSettlement)
+                .ToListAsync(cancellationToken);
+            fullSettlementActions = settlementRows
+                .GroupBy(action => action.LoanId, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.OrderBy(action => action.CreatedAt).First(), StringComparer.Ordinal);
+        }
+
         return loans.Select(loan =>
         {
             var loanTransactions = transactionsByPayment.GetValueOrDefault(loan.RecurringPaymentId) ?? [];
@@ -259,14 +281,24 @@ public sealed class LoanService
                 loan.ScheduleStatus = LoanScheduleStatus.Incomplete;
             }
             var replay = LoanReplay.Replay(loan, inputs);
-            if (previewScheduleLength.HasValue && replay.FutureSchedule.Count > previewScheduleLength.Value)
+            fullSettlementActions.TryGetValue(loan.Id, out var settlementAction);
+            if (settlementAction != null)
+            {
+                replay = replay with
+                {
+                    OutstandingBalance = 0m,
+                    PayoffDate = settlementAction.EffectiveDate,
+                    FutureSchedule = []
+                };
+            }
+            else if (previewScheduleLength.HasValue && replay.FutureSchedule.Count > previewScheduleLength.Value)
             {
                 replay = replay with
                 {
                     FutureSchedule = replay.FutureSchedule.Take(previewScheduleLength.Value).ToList()
                 };
             }
-            return new LoanView(loan, payment, replay);
+            return new LoanView(loan, payment, replay, settlementAction?.Id);
         }).ToList();
     }
 

@@ -33,13 +33,13 @@ public class DatabaseInvariantTests
     }
 
     [Fact]
-    public void Model_EnforcesOneTransactionPerRecurringOccurrence()
+    public void Model_IndexesTransactionsByRecurringOccurrence()
     {
         using var context = TestHelpers.NewInMemoryContext();
         var entity = context.Model.FindEntityType(typeof(Transaction))!;
 
-        // This is the concurrency guard for pay-early / normal-confirmation races: a partial
-        // unique index (null-exempt) so legacy/manual transactions are unaffected.
+        // Partial non-unique index (null-exempt) supports multiple partial transactions per occurrence
+        // while accelerating per-occurrence lookups.
         var index = Assert.Single(entity.GetIndexes(), i =>
             i.Properties.Select(p => p.Name).SequenceEqual(
             [
@@ -48,7 +48,7 @@ public class DatabaseInvariantTests
                 nameof(Transaction.RecurringOccurrenceDate)
             ]));
 
-        Assert.True(index.IsUnique);
+        Assert.False(index.IsUnique);
         Assert.Equal(
             "\"RecurringPaymentId\" IS NOT NULL AND \"RecurringOccurrenceDate\" IS NOT NULL",
             index.GetFilter());
@@ -141,12 +141,13 @@ public class DatabaseInvariantTests
             (typeof(LedgerAccount), "ck_ledgeraccounts_kind", "\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'Other')"),
             (typeof(RecurringPayment), "ck_recurringpayments_paymentmode", "\"PaymentMode\" IN ('AutoDeduct', 'Manual')"),
             (typeof(RecurringPayment), "ck_recurringpayments_pushremindermode", "\"PushReminderMode\" IN ('Once', 'Daily')"),
-            (typeof(RecurringPaymentOccurrence), "ck_recurringpaymentoccurrences_status", "\"Status\" IN ('Pending', 'Paid', 'Discarded')"),
+            (typeof(RecurringPaymentOccurrence), "ck_recurringpaymentoccurrences_status", "\"Status\" IN ('Pending', 'PartiallyPaid', 'Paid', 'Discarded', 'SettledByLoanPayoff')"),
             (typeof(PushReminderDelivery), "ck_pushreminderdeliveries_kind", "\"Kind\" IN ('Reminder', 'Shortfall')"),
             (typeof(SavingsGoal), "ck_savingsgoals_fundingbucket", "\"FundingBucket\" IN ('Essentials', 'Rewards')"),
             (typeof(Loan), "ck_loans_interestmethod", "\"InterestMethod\" IN ('ReducingBalance', 'Flat', 'ReducingBalanceDaily', 'InterestOnly')"),
             (typeof(Loan), "ck_loans_ratebasis", "\"RateBasis\" IN ('Yearly', 'Monthly')"),
             (typeof(Loan), "ck_loans_schedulestatus", "\"ScheduleStatus\" IN ('Complete', 'Incomplete')"),
+            (typeof(LoanRepaymentAction), "ck_loanrepaymentactions_kind", "\"Kind\" IN ('AdvanceCycles', 'FullSettlement')"),
             (typeof(InvestmentInstrument), "ck_investmentinstruments_allocationsleeve", "\"AllocationSleeve\" IS NULL OR \"AllocationSleeve\" IN ('USEquity', 'InternationalExUS', 'Bonds')"),
         };
 

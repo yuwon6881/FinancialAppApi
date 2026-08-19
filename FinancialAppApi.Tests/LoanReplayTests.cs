@@ -157,6 +157,60 @@ public sealed class LoanReplayTests
         Assert.Equal(1000m, result.OutstandingBalance);
     }
 
+    [Fact]
+    public void MultiplePartialPaymentsForSameOccurrenceDate_AreAggregatedCorrectly()
+    {
+        var loan = NewLoan(rate: 12m);
+        // Scheduled payment is ~88.85 (interest is 10, principal is 78.85)
+        // Tx1 = 30 (covers 10 interest, 20 principal)
+        // Tx2 = 40 (covers 0 interest, 40 principal)
+        var result = LoanReplay.Replay(loan, [
+            new(new DateOnly(2026, 1, 1), new DateTime(2026, 1, 2, 10, 0, 0), 30m, TransactionId: "tx-1"),
+            new(new DateOnly(2026, 1, 1), new DateTime(2026, 1, 5, 14, 0, 0), 40m, TransactionId: "tx-2"),
+        ]);
+
+        Assert.Equal(2, result.Payments.Count);
+        Assert.Equal(10m, result.Payments[0].Interest);
+        Assert.Equal(20m, result.Payments[0].Principal);
+        Assert.Equal(980m, result.Payments[0].BalanceAfter);
+
+        Assert.Equal(0m, result.Payments[1].Interest);
+        Assert.Equal(40m, result.Payments[1].Principal);
+        Assert.Equal(940m, result.Payments[1].BalanceAfter);
+
+        Assert.Equal(940m, result.OutstandingBalance);
+        // Because 30 + 40 = 70 < scheduled (~88.85), the occurrence is incomplete,
+        // so future schedule starts with Jan 1 for the remaining ~18.85!
+        Assert.Equal(new DateOnly(2026, 1, 1), result.FutureSchedule[0].OccurrenceDate);
+        Assert.Equal(18.85m, result.FutureSchedule[0].Payment);
+        Assert.Equal(0m, result.FutureSchedule[0].Interest);
+        Assert.Equal(18.85m, result.FutureSchedule[0].Principal);
+
+        // Subsequent future occurrence is Feb 1
+        Assert.Equal(new DateOnly(2026, 2, 1), result.FutureSchedule[1].OccurrenceDate);
+    }
+
+    [Fact]
+    public void CompletedOccurrence_AdvancesFutureScheduleToNextPeriod()
+    {
+        var loan = NewLoan(rate: 12m);
+        // Pay full scheduled payment or more on Jan 1
+        var result = LoanReplay.Replay(loan, [
+            new(new DateOnly(2026, 1, 1), new DateTime(2026, 1, 2, 10, 0, 0), 50m, TransactionId: "tx-1"),
+            new(new DateOnly(2026, 1, 1), new DateTime(2026, 1, 5, 14, 0, 0), 50m, TransactionId: "tx-2"),
+        ]);
+
+        Assert.Equal(2, result.Payments.Count);
+        Assert.Equal(10m, result.Payments[0].Interest);
+        Assert.Equal(40m, result.Payments[0].Principal);
+        Assert.Equal(0m, result.Payments[1].Interest);
+        Assert.Equal(50m, result.Payments[1].Principal);
+        Assert.Equal(910m, result.OutstandingBalance);
+
+        // Future schedule starts on Feb 1
+        Assert.Equal(new DateOnly(2026, 2, 1), result.FutureSchedule[0].OccurrenceDate);
+    }
+
     private static Loan NewLoan(decimal rate) => new()
     {
         Id = "loan-test",

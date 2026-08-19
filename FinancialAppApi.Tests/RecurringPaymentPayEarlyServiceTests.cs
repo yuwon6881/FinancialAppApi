@@ -430,8 +430,7 @@ public class RecurringPaymentPayEarlyServiceTests
         LedgerCategory = payment.LedgerCategory,
         PaymentMode = payment.PaymentMode,
         Status = RecurringOccurrenceStatus.Paid,
-        PaidDate = TransactionDate.ToDateOnly(settledBy.Date),
-        SettlementTransactionId = settledBy.Id
+        PaidDate = TransactionDate.ToDateOnly(settledBy.Date)
     };
 
     private static RecurringPayment NewPayment(

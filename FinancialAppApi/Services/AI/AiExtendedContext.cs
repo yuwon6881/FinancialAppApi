@@ -70,11 +70,14 @@ public partial class AiAssistantService
                 var recurringSpent = Math.Abs(categoryRows
                     .Where(row => !string.IsNullOrWhiteSpace(row.RecurringPaymentId))
                     .Sum(row => row.Amount));
+                // Every bill that still owes something, counted at what it still owes. Keyed on
+                // "Pending" alone a partially paid bill dropped out of the projection entirely, and
+                // counted at Amount it would have projected the part already spent a second time.
                 var pending = billStatuses
-                    .Where(item => item.Status == "Pending" &&
+                    .Where(item => RecurringOccurrenceStatus.IsUnresolved(item.Status) &&
                         DateOnly.TryParse(item.DueDate, out var dueDate) && dueDate >= start && dueDate <= end &&
                         string.Equals(item.Category, guide.CategoryName, StringComparison.OrdinalIgnoreCase))
-                    .Sum(item => item.Amount ?? 0m);
+                    .Sum(item => item.Outstanding);
                 var nonRecurringSpent = Math.Max(0, spent - recurringSpent);
                 var limit = guide.LimitAmount!.Value;
                 var projected = isComplete

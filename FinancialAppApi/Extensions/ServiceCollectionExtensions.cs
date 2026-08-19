@@ -410,6 +410,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<Services.SavingsGoals.ISharedPoolMutationLock, Services.SavingsGoals.SharedPoolMutationLock>();
         services.AddScoped<Services.SavingsGoals.SavingsGoalService>();
         services.AddScoped<Services.Loans.LoanService>();
+        services.AddScoped<Services.Loans.LoanRepaymentService>();
         services.AddScoped<Services.Accounts.LedgerAccountBalanceService>();
         services.AddScoped<Services.Accounts.LedgerAccountService>();
         services.AddScoped<TransactionPersistenceService>();

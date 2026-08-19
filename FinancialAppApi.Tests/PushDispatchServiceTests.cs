@@ -2,6 +2,7 @@ using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
 using FinancialAppApi.Services.Push;
+using Microsoft.Extensions.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
@@ -896,8 +897,12 @@ public class PushDispatchServiceTests
         var provider = services.BuildServiceProvider();
         var scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
 
-        var configuration = TestHelpers.NewConfiguration(("Fcm:ProjectId", fcmProjectId));
-        return new PushDispatchService(scopeFactory, clock, configuration, NullLogger<PushDispatchService>.Instance);
+        // Dispatch fails closed without a configured FCM project, so the fake still needs one set.
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Fcm:ProjectId"] = "test-project" })
+            .Build();
+
+        return new PushDispatchService(scopeFactory, configuration, NullLogger<PushDispatchService>.Instance);
     }
 
     private static async Task SeedAsync(

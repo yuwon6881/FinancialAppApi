@@ -41,18 +41,23 @@ public sealed class RecurringPaymentOccurrence : IUserOwnedEntity
     public string PaymentMode { get; set; } = RecurringPaymentMode.Manual;
 
     [Required]
-    [StringLength(20)]
+    [StringLength(30)]
     public string Status { get; set; } = RecurringOccurrenceStatus.Pending;
 
     public DateOnly? PaidDate { get; set; }
-
-    // Deliberately denormalized so deleting/restoring a transaction can reopen/resettle atomically.
-    public string? SettlementTransactionId { get; set; }
 }
 
 public static class RecurringOccurrenceStatus
 {
     public const string Pending = "Pending";
+    public const string PartiallyPaid = "PartiallyPaid";
     public const string Paid = "Paid";
     public const string Discarded = "Discarded";
+    public const string SettledByLoanPayoff = "SettledByLoanPayoff";
+
+    public static bool IsResolved(string? status) =>
+        status is Paid or Discarded or SettledByLoanPayoff;
+
+    public static bool IsUnresolved(string? status) =>
+        status is Pending or PartiallyPaid;
 }
