@@ -485,6 +485,8 @@ public partial class AiAssistantService
             canonicalCategory ??= normalCategories.FirstOrDefault();
             if (canonicalCategory != null) payload["category"] = canonicalCategory;
         }
+
+        ApplyDefaultTransferDescription(payload, context);
     }
 
     private static bool IsValidLedgerDraftRecord(
@@ -505,11 +507,17 @@ public partial class AiAssistantService
         {
             var source = ReadPayloadString(record, "transferSource");
             var target = ReadPayloadString(record, "transferTarget");
-            return source != null && target != null &&
-                new[] { "Essentials", "Growth", "Stability", "Rewards" }.Contains(source, StringComparer.OrdinalIgnoreCase) &&
-                new[] { "Essentials", "Growth", "Stability", "Rewards" }.Contains(target, StringComparer.OrdinalIgnoreCase) &&
-                !source.Equals(target, StringComparison.OrdinalIgnoreCase) &&
-                HasValidAccountPlacement(record, context, txType, source, target);
+            var buckets = new[] { "Essentials", "Growth", "Stability", "Rewards" };
+            if (source == null || target == null ||
+                !buckets.Contains(source, StringComparer.OrdinalIgnoreCase) ||
+                !buckets.Contains(target, StringComparer.OrdinalIgnoreCase) ||
+                !HasValidAccountPlacement(record, context, txType, source, target)) return false;
+            // Same bucket is an internal account move, which is only meaningful once both ends are
+            // named: the bucket total does not change, the money has only changed hands. Without
+            // two exact accounts there is nothing to move between, so it stays rejected.
+            return source.Equals(target, StringComparison.OrdinalIgnoreCase)
+                ? IsExplicitAccountMove(record)
+                : true;
         }
 
         var normalCategories = context.Categories
@@ -519,6 +527,14 @@ public partial class AiAssistantService
         return !HasUnknownOrMissingString(record, "category", normalCategories) &&
             !HasUnknownOrMissingString(record, "ledgerCategory", ["Essentials", "Growth", "Stability", "Rewards", "Income"]) &&
             HasValidAccountPlacement(record, context, txType, ledgerCategory, null);
+    }
+
+    private static bool IsExplicitAccountMove(IReadOnlyDictionary<string, object?> record)
+    {
+        var accountId = ReadPayloadString(record, "accountId");
+        var counterAccountId = ReadPayloadString(record, "counterAccountId");
+        return accountId is { Length: > 0 } && counterAccountId is { Length: > 0 } &&
+            !accountId.Equals(counterAccountId, StringComparison.Ordinal);
     }
 
     private static bool HasValidAccountPlacement(

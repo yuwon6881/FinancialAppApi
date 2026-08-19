@@ -416,7 +416,14 @@ public partial class AiAssistantService
             investmentInstrumentId,
             reportCycleKey,
             Clamp(state.LastLoanId),
-            Clamp(state.LastLedgerAccountId));
+            Clamp(state.LastLedgerAccountId),
+            // The carried request is the user's own earlier words, so it is bounded by the same
+            // ceiling their message is and never trusted for anything but re-parsing.
+            string.IsNullOrWhiteSpace(state.PendingLedgerRequest)
+                ? null
+                : state.PendingLedgerRequest.Trim() is { Length: > MaxMessageLength } tooLong
+                    ? tooLong[..MaxMessageLength]
+                    : state.PendingLedgerRequest.Trim());
     }
 
     private static readonly Regex CycleKeyPattern = new(@"^\d{4}-(0[1-9]|1[0-2])$", RegexOptions.Compiled);
@@ -505,11 +512,55 @@ public partial class AiAssistantService
 
     private static bool LooksLikeLedgerDraftList(string message) => CountLedgerDraftListRecords(message) > 0;
 
-    private static int CountLedgerDraftListRecords(string message)
+    // People do not always type one record per line. "Transfer 50 from CIMB to RYT, and spent 53
+    // at Grab Mart" is two records in one sentence, and reading it as one unparseable line is how
+    // a perfectly clear instruction became "send it as a description and an amount on one line".
+    private static readonly Regex DraftSegmentSeparator = new(
+        @"\s*(?:[,;]|\band\b)\s*", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex DraftAmountToken = new(
+        @"(?<![\p{L}\p{N}.])(?:rm|myr|usd|sgd|eur|gbp|aud|cad|jpy|cny|rmb|\$|€|£)\s*\d{1,9}(?:[.,]\d{1,2})?" +
+        @"|(?<![\p{L}\p{N}.])\d{1,9}(?:[.,]\d{1,2})?(?![\p{L}\p{N}.])",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // A segment that is not in strict "description amount" shape still records money when it names
+    // the movement plainly. Requiring the verb keeps a question or a bare noun phrase out.
+    private static readonly Regex DraftRecordVerb = new(
+        @"\b(spent|spend|paid|pay|bought|buy|purchased|transfer(?:red)?|move[ds]?|moving|sent|send|" +
+        @"received|receive|got|deposit(?:ed)?|withdrew|withdrawn|top(?:ped)? ?up|refund(?:ed)?)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex StrictDraftLine = new(
+        @"^[\p{L}\p{N}][\p{L}\p{N}&'().,+/ -]{0,159}?\s+" +
+        @"(?:(?:rm|myr|usd|sgd|eur|gbp|aud|cad|jpy|cny|rmb|\$|€|£)\s*)?" +
+        // A single record is often typed as a sum of its parts ("Mamak 18+2.30" -- the meal plus
+        // the drink). That is still one record, so it must still pin the response to one action.
+        @"\d{1,9}(?:[.,]\d{1,2})?(?:\s*\+\s*\d{1,9}(?:[.,]\d{1,2})?)*" +
+        @"(?:\s+(?:income|inflow|outflow|expense|refund|deposit|withdrawal|" +
+        @"transfer(?:\s+from\s+[\p{L}]+\s+to\s+[\p{L}]+)?|" +
+        @"essentials?|growth|stability|rewards?|[\p{L}][\p{L}-]{0,30})){0,3}\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Split only when every piece carries its own amount -- otherwise "Nasi Lemak and Teh 12"
+    // would be torn into a nameless half. The whole line is not tested for validity first: a
+    // three-record sentence can satisfy the single-record shape by accident, since a comma is a
+    // legal description character and only the last amount has to sit near the end.
+    private static IReadOnlyList<string> SplitDraftSegments(string line)
+    {
+        var parts = DraftSegmentSeparator.Split(line)
+            .Select(part => part.Trim())
+            .Where(part => part.Length > 0)
+            .ToList();
+        if (parts.Count < 2) return [line];
+        return parts.All(part => DraftAmountToken.Matches(part).Count == 1) ? parts : [line];
+    }
+
+    internal static int CountLedgerDraftListRecords(string message)
     {
         var lines = message
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(line => !string.IsNullOrWhiteSpace(line))
+            .SelectMany(SplitDraftSegments)
             .ToList();
         if (lines.Count is < 1 or > AiResponseSchemas.MaxChatActions) return 0;
         if (lines.Any(line =>
@@ -520,20 +571,8 @@ public partial class AiAssistantService
             return 0;
         }
 
-        var everyLineIsADraft = lines.All(line => Regex.IsMatch(
-            line,
-            @"^[\p{L}\p{N}][\p{L}\p{N}&'().,+/ -]{0,159}?\s+" +
-            @"(?:(?:rm|myr|usd|sgd|eur|gbp|aud|cad|jpy|cny|rmb|\$|€|£)\s*)?" +
-            // A single record is often typed as a sum of its parts ("Mamak 18+2.30" -- the meal
-            // plus the drink). That is still one record, so it must still pin the response to one
-            // action; without this the amount read as unparseable, the count fell to zero, the
-            // schema stopped requiring an action, and the model answered with a staging sentence
-            // and no draft behind it.
-            @"\d{1,9}(?:[.,]\d{1,2})?(?:\s*\+\s*\d{1,9}(?:[.,]\d{1,2})?)*" +
-            @"(?:\s+(?:income|inflow|outflow|expense|refund|deposit|withdrawal|" +
-            @"transfer(?:\s+from\s+[\p{L}]+\s+to\s+[\p{L}]+)?|" +
-            @"essentials?|growth|stability|rewards?|[\p{L}][\p{L}-]{0,30})){0,3}\s*$",
-            RegexOptions.IgnoreCase));
+        var everyLineIsADraft = lines.All(line => StrictDraftLine.IsMatch(line) ||
+            (DraftAmountToken.Matches(line).Count == 1 && DraftRecordVerb.IsMatch(line)));
         return everyLineIsADraft ? lines.Count : 0;
     }
 

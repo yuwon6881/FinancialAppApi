@@ -8,6 +8,7 @@ public partial class AiAssistantService
         AiChatResponse response,
         string userMessage,
         AiContext context,
+        IReadOnlyList<AiResolvedAccountMention> accountMentions,
         CancellationToken cancellationToken)
     {
         if (!response.Actions.Any(action =>
@@ -51,6 +52,10 @@ public partial class AiAssistantService
                 ApplyBestNormalCategory(sourceText, normalCategories, payload);
             }
             if (perDraftSource) ApplyExplicitLedgerAccount(sourceText, payload, context);
+            // A mention is the user pointing at one exact account, so it outranks any name the
+            // model matched out of the prose -- and it is the only thing that can place both
+            // sides of a move between two accounts in one bucket.
+            if (draftCount == 1) ApplyMentionedLedgerAccounts(payload, accountMentions);
 
             enriched.Add(action with { Payload = payload });
         }
@@ -133,6 +138,79 @@ public partial class AiAssistantService
         var matching = named.Where(account => string.Equals(account.Bucket, ledger, StringComparison.OrdinalIgnoreCase)).ToList();
         if (matching.Count == 1 && !string.Equals(ledger, "Income", StringComparison.OrdinalIgnoreCase))
             payload["accountId"] = matching[0].Id;
+    }
+
+    // Mentions are ordered by where they appear in the message, which is what makes "from @cimb
+    // to @ryt" directional. One mention places the row itself; two place a movement's endpoints.
+    private static void ApplyMentionedLedgerAccounts(
+        Dictionary<string, object?> payload,
+        IReadOnlyList<AiResolvedAccountMention> mentions)
+    {
+        if (mentions.Count == 0) return;
+        var txType = ReadPayloadString(payload, "txType") ?? "outflow";
+        var isTransfer = txType.Equals("transfer", StringComparison.OrdinalIgnoreCase);
+
+        if (isTransfer && mentions.Count >= 2)
+        {
+            payload["accountId"] = mentions[0].AccountId;
+            payload["counterAccountId"] = mentions[1].AccountId;
+            payload["transferSource"] = mentions[0].Bucket;
+            payload["transferTarget"] = mentions[1].Bucket;
+            return;
+        }
+
+        var placement = mentions[0];
+        if (isTransfer)
+        {
+            // Only one side was named. Place that side and leave the other to the reviewed
+            // editor rather than inventing the account the money is going to.
+            var source = ReadPayloadString(payload, "transferSource");
+            if (string.Equals(placement.Bucket, source, StringComparison.OrdinalIgnoreCase))
+            {
+                payload["accountId"] = placement.AccountId;
+            }
+            else if (string.Equals(placement.Bucket, ReadPayloadString(payload, "transferTarget"), StringComparison.OrdinalIgnoreCase))
+            {
+                payload["counterAccountId"] = placement.AccountId;
+            }
+            return;
+        }
+
+        // An Income parent carries no account of its own -- its generated children do.
+        var ledger = ReadPayloadString(payload, "ledgerCategory");
+        if (string.Equals(ledger, "Income", StringComparison.OrdinalIgnoreCase)) return;
+        payload["accountId"] = placement.AccountId;
+        // The named account decides the bucket: picking "@CIMB Savings" and being filed under a
+        // bucket that account does not belong to is the placement failure this feature exists to
+        // remove, and the safety pass would drop the id rather than the bucket.
+        payload["ledgerCategory"] = placement.Bucket;
+        payload["ledgerCategorySpecified"] = true;
+    }
+
+    // Moving money between two accounts is a complete instruction on its own -- the description
+    // field is the app's, not the user's, so a transfer must never be refused or held up for one.
+    // Applied during normalization, before the record is checked for a description it should never
+    // have had to carry.
+    private static void ApplyDefaultTransferDescription(Dictionary<string, object?> payload, AiContext context)
+    {
+        var txType = ReadPayloadString(payload, "txType") ?? "outflow";
+        if (!txType.Equals("transfer", StringComparison.OrdinalIgnoreCase)) return;
+        if (ReadPayloadString(payload, "description") is { Length: > 0 }) return;
+
+        string? NameOf(string key)
+        {
+            var id = ReadPayloadString(payload, key);
+            return id == null
+                ? null
+                : context.LedgerAccountContext?.Accounts
+                    .FirstOrDefault(account => account.Id.Equals(id, StringComparison.Ordinal))?.Name;
+        }
+
+        var from = NameOf("accountId") ?? ReadPayloadString(payload, "transferSource");
+        var to = NameOf("counterAccountId") ?? ReadPayloadString(payload, "transferTarget");
+        payload["description"] = from != null && to != null
+            ? $"Transfer {from} to {to}"
+            : "Transfer";
     }
 
     private static bool ContainsNamedValue(string sourceText, string candidate)

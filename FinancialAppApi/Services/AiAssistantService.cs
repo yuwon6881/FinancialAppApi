@@ -64,7 +64,15 @@ public sealed record AiConversationState(
     Guid? LastInvestmentInstrumentId = null,
     string? LastReportCycleKey = null,
     string? LastLoanId = null,
-    string? LastLedgerAccountId = null);
+    string? LastLedgerAccountId = null,
+    // A record request the assistant could not stage because it asked one clarifying question.
+    // The answer to that question ("yes, cimb to ryt") carries no amount, no description and no
+    // verb, so on its own it resolves to no intent at all and the next turn restarts from
+    // nothing -- which is how a staged request evaporated into "send it as a description and an
+    // amount on one line". History cannot rescue it either: prior turns are quoted as untrusted
+    // dialogue the model is explicitly told never to act on. Carrying the unanswered request
+    // forward as structured state is what makes the answer completable.
+    string? PendingLedgerRequest = null);
 
 public sealed record AiInvocationContext(
     string Surface,
@@ -76,6 +84,14 @@ public sealed record AiInvocationContext(
     string? LoanId = null);
 
 public sealed record AiChatMessage(string Role, string Content);
+
+// One "@account" the user picked in the composer. The client resolves the token against the
+// accounts it already holds, but the id is re-validated against the tenant's own accounts before
+// it can reach a draft -- a client-supplied account id is untrusted like every other echoed
+// reference. Token is the literal text typed after "@", kept so the server can still resolve a
+// mention by name when an older client sends no id.
+public sealed record AiAccountMention(string Token, string? AccountId = null);
+
 public sealed record AiChatRequest(
     string Message,
     IReadOnlyList<AiChatMessage>? History,
@@ -85,7 +101,8 @@ public sealed record AiChatRequest(
     string? ClientTurnId = null,
     AiInvocationContext? Context = null,
     bool ForceSensitiveMode = false,
-    int ClientContractVersion = 1);
+    int ClientContractVersion = 1,
+    IReadOnlyList<AiAccountMention>? AccountMentions = null);
 public sealed record AiChatResponse(
     string Reply,
     IReadOnlyList<AiUiAction> Actions,
@@ -339,7 +356,16 @@ public partial class AiAssistantService
         }
 
         var history = SanitizeHistory(request.History);
-        var resolvedMessage = ApplyInvocationMessage(message, invocationContext);
+        var accountMentions = await ResolveAccountMentionsAsync(request.AccountMentions, message, cancellationToken);
+        // An unanswered request from the previous turn is completed here, before any parsing, so
+        // every downstream rule -- intent resolution, the structured draft count, enrichment --
+        // sees the whole instruction rather than the fragment that answers it.
+        var carriedRequest = IsPendingLedgerAnswer(priorState?.PendingLedgerRequest, message)
+            ? priorState!.PendingLedgerRequest
+            : null;
+        var strippedMessage = StripAccountMentionMarkers(message);
+        var effectiveMessage = CombinePendingLedgerRequest(carriedRequest, strippedMessage);
+        var resolvedMessage = ApplyInvocationMessage(effectiveMessage, invocationContext);
         var intentPlan = ResolveDeterministically(resolvedMessage, priorState);
         intentPlan = ApplyInvocationPresetPlan(intentPlan, invocationContext);
         if (ShouldUseSemanticPlanner(resolvedMessage, intentPlan, invocationContext))
@@ -356,6 +382,19 @@ public partial class AiAssistantService
             await _loanService.GetLoanAsync(loanId, cancellationToken) == null)
         {
             return Ok(new AiChatResponse("That loan is not available.", [], State: priorState));
+        }
+
+        // A staged record has to land in a real account, so a ledger-add turn needs the account
+        // list as much as an account question does. Without it the model was told to name an
+        // account only from ledgerAccounts and then handed no ledgerAccounts, so it could only ask
+        // which account was meant -- and the deterministic placement pass had nothing to match
+        // against either. An "@" mention needs it for the same reason.
+        if (intentPlan.Intents.Contains(AiIntent.LedgerAdd) || accountMentions.Count > 0)
+        {
+            intentPlan = intentPlan with
+            {
+                QueryPlan = intentPlan.QueryPlan with { NeedsLedgerAccounts = true }
+            };
         }
 
         var contextResult = await BuildContextAsync(intentPlan, request.ForceSensitiveMode, cancellationToken);
@@ -419,13 +458,13 @@ public partial class AiAssistantService
         // remains authoritative for every financial value.
         var promptHistory = history;
         var systemInstruction = SystemInstruction;
-        var userContent = BuildUserContent(message, promptHistory, context);
+        var userContent = BuildUserContent(strippedMessage, promptHistory, context, accountMentions, carriedRequest);
         var isLedgerAdd = intentPlan.Intents.Contains(AiIntent.LedgerAdd);
         var isReportReview = intentPlan.Intents.Contains(AiIntent.ReportReview);
         var isInvestmentExplanation = intentPlan.Intents.Any(intent => intent is AiIntent.InvestmentSummary or AiIntent.InvestmentHolding or AiIntent.InvestmentAllocation);
         var isRewardsPlan = intentPlan.Intents.Any(intent => intent is AiIntent.RewardsSummary or AiIntent.SavingsGoalList or
             AiIntent.SavingsGoalPacing or AiIntent.SavingsGoalScenario or AiIntent.SavingsGoalAdd or AiIntent.SavingsGoalEdit);
-        var structuredLedgerDraftCount = isLedgerAdd ? CountLedgerDraftListRecords(message) : 0;
+        var structuredLedgerDraftCount = isLedgerAdd ? CountLedgerDraftListRecords(effectiveMessage) : 0;
 
         string text;
         try
@@ -465,13 +504,13 @@ public partial class AiAssistantService
             return new AiChatOutcome(new AiChatResponse(ex.Message, []), IsProviderError: true);
         }
 
-        var parsed = await ParseAndValidateResponseAsync(text, context, message, intentPlan.Constraints, cancellationToken);
+        var parsed = await ParseAndValidateResponseAsync(text, context, effectiveMessage, intentPlan.Constraints, cancellationToken);
         // Enrichment is a best-effort second pass over an already-valid answer. Its own
         // provider call must never turn a complete reply into a 503, so it degrades to
         // the unenriched drafts instead of propagating.
         try
         {
-            parsed = await EnrichLedgerDraftActionsAsync(parsed, message, context, cancellationToken);
+            parsed = await EnrichLedgerDraftActionsAsync(parsed, effectiveMessage, context, accountMentions, cancellationToken);
         }
         catch (Exception ex) when (ex is AiClientException or JsonException or HttpRequestException)
         {
@@ -488,7 +527,11 @@ public partial class AiAssistantService
         // Round-trip the structured references so the client can echo them back on the next
         // turn (see AiConversationState). Not attached to small-talk/guardrail replies -- those
         // deliberately carry no financial state.
-        return Ok(parsed with { State = contextResult.OutgoingState });
+        var outgoingState = (contextResult.OutgoingState ?? new AiConversationState(null, null, null, null)) with
+        {
+            PendingLedgerRequest = ResolvePendingLedgerRequest(effectiveMessage, parsed, isLedgerAdd)
+        };
+        return Ok(parsed with { State = outgoingState });
     }
 
     private static AiChatOutcome Ok(AiChatResponse response) => new(response, IsProviderError: false);

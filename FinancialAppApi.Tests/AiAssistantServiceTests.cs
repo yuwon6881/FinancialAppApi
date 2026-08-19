@@ -498,6 +498,133 @@ public class AiAssistantServiceTests
         Assert.Equal("Stability", action.Payload["transferTarget"]?.ToString());
     }
 
+    // ---------- "@account" mentions ----------
+
+    private static void SeedTwoEssentialsAccounts(AppDbContext context)
+    {
+        context.LedgerAccounts.AddRange(
+            new LedgerAccount { Id = "acct-cimb", Name = "CIMB", Bucket = "Essentials", Kind = LedgerAccountKind.Bank },
+            new LedgerAccount { Id = "acct-ryt", Name = "RYT", Bucket = "Essentials", Kind = LedgerAccountKind.Bank });
+        context.SaveChanges();
+    }
+
+    [Fact]
+    public async Task ChatAsync_TwoMentionedAccountsInOneBucket_StageAnInternalAccountMove()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        SeedTwoEssentialsAccounts(context);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Preparing the move.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Move\",\"amount\":50,\"txType\":\"transfer\",\"ledgerCategorySpecified\":true,\"transferSource\":\"Essentials\",\"transferTarget\":\"Essentials\",\"accountId\":\"acct-cimb\",\"counterAccountId\":\"acct-ryt\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest(
+            "transfer 50 from @CIMB to @RYT",
+            [],
+            AccountMentions: [new AiAccountMention("CIMB", "acct-cimb"), new AiAccountMention("RYT", "acct-ryt")]));
+
+        var action = Assert.Single(outcome.Response.Actions);
+        // Same bucket both sides: the bucket total does not change, the money has changed hands.
+        Assert.Equal("Essentials", action.Payload["transferSource"]?.ToString());
+        Assert.Equal("Essentials", action.Payload["transferTarget"]?.ToString());
+        Assert.Equal("acct-cimb", action.Payload["accountId"]?.ToString());
+        Assert.Equal("acct-ryt", action.Payload["counterAccountId"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ChatAsync_MentionsPlaceTheAccountsEvenWhenTheModelOmitsThem()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        SeedTwoEssentialsAccounts(context);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Preparing the move.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Move\",\"amount\":50,\"txType\":\"transfer\",\"ledgerCategorySpecified\":true,\"transferSource\":\"Essentials\",\"transferTarget\":\"Growth\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest(
+            "transfer 50 from @CIMB to @RYT",
+            [],
+            AccountMentions: [new AiAccountMention("CIMB", "acct-cimb"), new AiAccountMention("RYT", "acct-ryt")]));
+
+        var action = Assert.Single(outcome.Response.Actions);
+        Assert.Equal("acct-cimb", action.Payload["accountId"]?.ToString());
+        Assert.Equal("acct-ryt", action.Payload["counterAccountId"]?.ToString());
+        // The mentioned accounts decide the buckets, not the model's guess at them.
+        Assert.Equal("Essentials", action.Payload["transferTarget"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ChatAsync_AccountIdTheUserDoesNotOwn_IsIgnoredRatherThanTrusted()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        SeedTwoEssentialsAccounts(context);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Preparing the move.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Move\",\"amount\":50,\"txType\":\"transfer\",\"ledgerCategorySpecified\":true,\"transferSource\":\"Essentials\",\"transferTarget\":\"Growth\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest(
+            "transfer 50 to somewhere",
+            [],
+            AccountMentions: [new AiAccountMention("Someone Else", "acct-not-mine")]));
+
+        var action = Assert.Single(outcome.Response.Actions);
+        Assert.False(action.Payload.ContainsKey("accountId") && action.Payload["accountId"] != null);
+    }
+
+    [Fact]
+    public async Task ChatAsync_TransferWithoutADescription_GetsOneNamingBothSides()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        SeedTwoEssentialsAccounts(context);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Preparing the move.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"amount\":50,\"txType\":\"transfer\",\"ledgerCategorySpecified\":true,\"transferSource\":\"Essentials\",\"transferTarget\":\"Essentials\",\"accountId\":\"acct-cimb\",\"counterAccountId\":\"acct-ryt\"}}]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest(
+            "transfer 50 from @CIMB to @RYT",
+            [],
+            AccountMentions: [new AiAccountMention("CIMB", "acct-cimb"), new AiAccountMention("RYT", "acct-ryt")]));
+
+        var action = Assert.Single(outcome.Response.Actions);
+        Assert.Equal("Transfer CIMB to RYT", action.Payload["description"]?.ToString());
+    }
+
+    [Fact]
+    public async Task ChatAsync_AnswerToAClarification_CarriesTheOriginalRequestBackToTheModel()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        SeedTwoEssentialsAccounts(context);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("Preparing the move.", actionsJson: "[]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest(
+            "yes, cimb to ryt",
+            [],
+            State: new AiConversationState(null, null, null, null) with
+            {
+                PendingLedgerRequest = "internal transfer from cimb to ryt RM50"
+            }));
+
+        Assert.Contains("internal transfer from cimb to ryt RM50", handler.LastUserContent);
+        Assert.NotNull(outcome.Response.State);
+    }
+
+    [Fact]
+    public async Task ChatAsync_ClarifyingQuestionOnARecordRequest_KeepsItForTheNextTurn()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        SeedTwoEssentialsAccounts(context);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "Which account is the 50 coming from?", actionsJson: "[]"));
+        var service = NewService(context, handler);
+
+        var outcome = await service.ChatAsync(new AiChatRequest("transfer 50 from cimb to ryt", []));
+
+        Assert.Equal("transfer 50 from cimb to ryt", outcome.Response.State?.PendingLedgerRequest);
+    }
+
     [Fact]
     public async Task ChatAsync_InflowDraft_KeepsInflowTypeAndNormalCategory()
     {
