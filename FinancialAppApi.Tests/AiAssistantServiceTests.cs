@@ -691,6 +691,23 @@ public class AiAssistantServiceTests
     }
 
     [Fact]
+    public async Task ChatAsync_AsksForSparseSafeEmphasisInVisibleReplies()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
+            "I prepared **1 draft** for review.",
+            actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Badminton\",\"amount\":10,\"txType\":\"outflow\",\"category\":\"Hobbies\",\"ledgerCategory\":\"Essentials\",\"ledgerCategorySpecified\":false}}]"));
+        var service = NewService(context, handler);
+
+        await service.ChatAsync(new AiChatRequest("Badminton 10", []));
+
+        using var request = JsonDocument.Parse(handler.RequestBodies[^1]);
+        var instructions = request.RootElement.GetProperty("instructions").GetString();
+        Assert.Contains("Use **bold** sparingly", instructions);
+        Assert.Contains("do not use any other Markdown or HTML", instructions);
+    }
+
+    [Fact]
     public async Task ChatAsync_AddedUpAmountOnOneLine_StillPinsTheResponseToOneDraftAction()
     {
         await using var context = NewContextWithSettings(hideSensitive: false);
