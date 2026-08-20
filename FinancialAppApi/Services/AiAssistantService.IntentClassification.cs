@@ -96,8 +96,12 @@ public partial class AiAssistantService
                               i.Equals("ledger.spending_total", StringComparison.OrdinalIgnoreCase) ||
                               i.Equals("ledger.transaction_list", StringComparison.OrdinalIgnoreCase))) return null;
 
+        // The action verb is optional here so a service phrased as its own verb still yields a
+        // term ("how often do i haircut" -> "haircut"), and the article/preposition run after it
+        // is consumed so "how often do i go for a hair cut" searches for "hair cut" rather than
+        // "for a hair cut", which matches nothing.
         var purchaseFrequency = Regex.Match(message,
-            @"\b(?:(?:how\s+(?:often|frequently))|(?:(?:approximately\s+)?(?:what(?:'s|\s+is)|whats)\s+(?:the\s+)?frequency)|frequency)\s+(?:do|did|have|has|would)?\s*(?:i|we)?\s*(?:usually\s+|typically\s+)?(?:buy|bought|purchase[sd]?|get|got|replace[sd]?|restock(?:ed)?)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{0,60}?)(?=\s+\b(?:last|this|previous|current|past|in|during|across|over|throughout)\b|[?.!,]|$)",
+            $@"\b(?:(?:how\s+(?:often|frequently))|(?:(?:approximately\s+)?(?:what(?:'s|\s+is)|whats)\s+(?:the\s+)?frequency)|frequency)\s+(?:do|did|does|have|has|am|are|is|would|will)?\s*(?:i|we)?\s*(?:usually\s+|typically\s+|normally\s+|generally\s+)?(?:(?:{CadenceVerbPattern})\s+)?(?:(?:to|for|at|on|a|an|the|my|some)\s+)*(?<value>[\p{{L}}\p{{N}}][\p{{L}}\p{{N}}'& -]{{0,60}}?)(?=\s+\b(?:last|this|previous|current|past|in|during|across|over|throughout)\b|[?.!,]|$)",
             RegexOptions.IgnoreCase);
         if (purchaseFrequency.Success) return NormalizeSearchText(purchaseFrequency.Groups["value"].Value);
 
@@ -595,8 +599,23 @@ public partial class AiAssistantService
         @"\b(how much|how many|total|totals|average|averages|avg|breakdown|sum)\b",
         RegexOptions.Compiled);
 
+    // A cadence question is not only about things that are bought. Services -- a haircut, a car
+    // wash, a dentist visit -- are "done", "had", "performed" or "gone for", and the old
+    // buy/purchase/replace/restock list left "how often do I perform a hair cut" routed as an
+    // ordinary cycle question: scoped to the loaded cycle instead of all saved history, with no
+    // cadence metric at all. Any "how often / frequency" wording paired with an action verb is a
+    // cadence question; the metric itself still reports honestly when nothing matches.
+    private const string CadenceVerbPattern =
+        @"buy|buys|buying|bought|purchase[sd]?|purchasing|get|gets|getting|got|replace[sd]?|replacing|" +
+        @"restock(?:s|ed|ing)?|reorder(?:s|ed|ing)?|order(?:s|ed|ing)?|refill(?:s|ed|ing)?|top\s?up|top(?:ped|ping)?\s+up|" +
+        @"renew(?:s|ed|ing)?|book(?:s|ed|ing)?|visit(?:s|ed|ing)?|go|goes|going|went|do|does|did|doing|done|" +
+        @"perform(?:s|ed|ing)?|have|has|had|having|use[sd]?|using|pay|pays|paid|paying|spend|spends|spent|" +
+        @"cut|cuts|cutting|service[sd]?|servicing|eat|eats|ate|eating|drink|drinks|drank|drinking|" +
+        @"fill|fills|filled|filling|wash|washes|washed|washing|charge[sd]?|charging|clean(?:s|ed|ing)?";
+
     private static readonly Regex PurchaseFrequencySignal = new(
-        @"\b(?:how\s+(?:often|frequently)|frequency)\b[^?!.]{0,80}\b(?:buy|bought|purchase[sd]?|get|got|replace[sd]?|restock(?:ed)?)\b|\b(?:buy|bought|purchase[sd]?|replace[sd]?|restock(?:ed)?)\b[^?!.]{0,60}\bhow\s+(?:often|frequently)\b",
+        $@"\b(?:how\s+(?:often|frequently)|frequency)\b[^?!.]{{0,80}}\b(?:{CadenceVerbPattern})\b|" +
+        $@"\b(?:{CadenceVerbPattern})\b[^?!.]{{0,60}}\bhow\s+(?:often|frequently)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex CountQuestionSignal = new(

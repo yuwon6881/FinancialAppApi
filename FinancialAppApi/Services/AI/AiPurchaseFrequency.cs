@@ -9,6 +9,11 @@ public partial class AiAssistantService
     internal sealed record AiPurchaseMatch(string Id, DateOnly Date, string Description);
     private sealed record AiPurchaseDbMatch(string Id, DateTime Date, string Description);
 
+    // The ladder a cadence search walks. Exact is the literal substring; compact retries the same
+    // term with separators removed on both sides ("hair cut" against a saved "Haircut"); fuzzy is
+    // the trigram pass, tried last because it can pair genuinely different words.
+    private enum PurchaseMatchMode { Exact, Compact, Fuzzy }
+
     internal sealed record AiPurchaseFrequencyMetric(
         string Query,
         string MatchMode,
@@ -21,6 +26,9 @@ public partial class AiAssistantService
         int ObservedCycleCount,
         int? DaysSinceLastPurchase,
         string? TypicalCadence,
+        string? NextExpectedDate,
+        int? DaysUntilNextExpected,
+        bool NextExpectedIsOverdue,
         string? SearchedFrom,
         string SearchedThrough,
         IReadOnlyList<string> SampleDescriptions,
@@ -38,15 +46,28 @@ public partial class AiAssistantService
             return null;
         }
 
-        var exact = await LoadPurchaseMatchesAsync(
-            queryPlan.SearchText, targetSelection, cycleDay, fuzzy: false, cancellationToken);
-        var mode = exact.Count > 0 ? "exact" : "none";
-        var matches = exact;
-        if (matches.Count == 0)
+        var mode = "none";
+        var matches = new List<AiPurchaseMatch>();
+        // Each rung is reached only when the stricter one above it found nothing, so an exact hit
+        // is never diluted by a looser reading of the same term.
+        foreach (var candidate in new[] { PurchaseMatchMode.Exact, PurchaseMatchMode.Compact, PurchaseMatchMode.Fuzzy })
         {
+            if (candidate == PurchaseMatchMode.Compact && !TransactionTextSearch.CanApplyCompact(queryPlan.SearchText))
+            {
+                continue;
+            }
             matches = await LoadPurchaseMatchesAsync(
-                queryPlan.SearchText, targetSelection, cycleDay, fuzzy: true, cancellationToken);
-            if (matches.Count > 0) mode = "fuzzy";
+                queryPlan.SearchText, targetSelection, cycleDay, candidate, cancellationToken);
+            if (matches.Count > 0)
+            {
+                mode = candidate switch
+                {
+                    PurchaseMatchMode.Exact => "exact",
+                    PurchaseMatchMode.Compact => "spacing",
+                    _ => "fuzzy"
+                };
+                break;
+            }
         }
 
         var today = _financialClock.Today;
@@ -73,7 +94,7 @@ public partial class AiAssistantService
         string searchText,
         TargetCycleSelection targetSelection,
         int cycleDay,
-        bool fuzzy,
+        PurchaseMatchMode matchMode,
         CancellationToken cancellationToken)
     {
         var ranges = targetSelection.AllHistory || targetSelection.Cycles.Count == 0
@@ -84,10 +105,12 @@ public partial class AiAssistantService
         foreach (var range in ranges)
         {
             var baseQuery = PurchaseCandidates(range);
-            if (!fuzzy)
+            if (matchMode != PurchaseMatchMode.Fuzzy)
             {
-                var rows = await TransactionTextSearch
-                    .ApplyExact(baseQuery, _context.Database.IsNpgsql(), searchText)
+                var filtered = matchMode == PurchaseMatchMode.Exact
+                    ? TransactionTextSearch.ApplyExact(baseQuery, _context.Database.IsNpgsql(), searchText)
+                    : TransactionTextSearch.ApplyCompact(baseQuery, searchText);
+                var rows = await filtered
                     .Select(transaction => new AiPurchaseDbMatch(
                         transaction.Id,
                         transaction.Date,
@@ -197,6 +220,14 @@ public partial class AiAssistantService
             ? 0m
             : decimal.Round(purchaseDays.Count / (decimal)observedCycles, 2, MidpointRounding.AwayFromZero);
         var last = purchaseDays.Count > 0 ? purchaseDays[^1] : (DateOnly?)null;
+        // "When is the next one due" is the other half of a cadence question, so the projection is
+        // derived here: the prompt forbids the model from doing cadence arithmetic itself, which
+        // left "estimate the next one" unanswerable even when the history was right there. A
+        // projected date already in the past is reported as overdue rather than rolled silently
+        // forward -- being late is the honest answer in that case.
+        var nextExpected = last.HasValue && medianGap.HasValue
+            ? last.Value.AddDays((int)decimal.Round(medianGap.Value, 0, MidpointRounding.AwayFromZero))
+            : (DateOnly?)null;
 
         return new AiPurchaseFrequencyMetric(
             query,
@@ -210,6 +241,9 @@ public partial class AiAssistantService
             observedCycles,
             last.HasValue ? Math.Max(0, today.DayNumber - last.Value.DayNumber) : null,
             FormatCadence(medianGap),
+            nextExpected?.ToString("yyyy-MM-dd"),
+            nextExpected.HasValue ? nextExpected.Value.DayNumber - today.DayNumber : null,
+            nextExpected.HasValue && nextExpected.Value < today,
             scopeStart?.ToString("yyyy-MM-dd"),
             scopeEnd.ToString("yyyy-MM-dd"),
             matches.Select(match => match.Description).Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToList(),

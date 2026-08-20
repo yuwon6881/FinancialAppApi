@@ -36,6 +36,49 @@ internal static partial class TransactionTextSearch
             transaction.LedgerCategory.ToLower().Contains(normalized));
     }
 
+    // Users and the ledger routinely disagree about spacing: "hair cut" typed against a saved
+    // "Haircut" (or the reverse) matches neither the exact ILIKE nor pg_trgm's strict-word
+    // similarity floor, so the assistant reported an empty ledger over rows the user can see on
+    // the Ledger tab. Comparing both sides with separators removed matches in both directions.
+    // It stays a fallback tried only after the exact pass, and only for a term long enough that
+    // a substring hit is still the thing the user named.
+    internal const int MinimumCompactTermLength = 4;
+
+    internal static string Compact(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        var builder = new System.Text.StringBuilder(value.Length);
+        foreach (var character in value)
+        {
+            if (char.IsLetterOrDigit(character)) builder.Append(char.ToLowerInvariant(character));
+        }
+        return builder.ToString();
+    }
+
+    internal static bool CanApplyCompact(string? searchText) =>
+        Compact(searchText).Length >= MinimumCompactTermLength;
+
+    internal static IQueryable<Transaction> ApplyCompact(
+        IQueryable<Transaction> query,
+        string searchText)
+    {
+        var term = Compact(searchText);
+        if (term.Length < MinimumCompactTermLength) return query;
+
+        // Replace/ToLower translate to PostgreSQL replace()/lower() and run natively in the
+        // in-memory provider, so one expression serves both without a provider branch.
+        return query.Where(transaction =>
+            transaction.Description.Replace(" ", "").Replace("-", "").Replace(".", "").ToLower().Contains(term) ||
+            transaction.Category.Replace(" ", "").Replace("-", "").Replace(".", "").ToLower().Contains(term));
+    }
+
+    internal static bool IsCompactMatch(string searchText, params string?[] fields)
+    {
+        var term = Compact(searchText);
+        return term.Length >= MinimumCompactTermLength &&
+            fields.Any(field => Compact(field).Contains(term, StringComparison.Ordinal));
+    }
+
     internal static IQueryable<Transaction> ApplyFuzzy(
         IQueryable<Transaction> query,
         string searchText)

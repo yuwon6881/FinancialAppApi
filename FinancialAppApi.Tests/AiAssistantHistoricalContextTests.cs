@@ -664,6 +664,43 @@ public class AiAssistantHistoricalContextTests
         Assert.Contains("Watsons Deodorant", handler.UserContent);
     }
 
+    // The reported failure: two saved "Haircut" rows, and "How often do i perform hair cut?"
+    // answered "I couldn't find any transaction labeled haircut/hair cut". Two defects met here --
+    // "perform" was not a cadence verb, so the turn was scoped to the loaded cycle with no metric
+    // at all, and "hair cut" matched neither the exact nor the trigram pass against "Haircut".
+    [Fact]
+    public async Task ChatAsync_PurchaseFrequencyForAServiceMatchesAcrossSpacingAndProjectsNextDate()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 1, SelectedMonth = "Aug", SelectedYear = 2026, HideSensitive = false
+        });
+        context.Transactions.AddRange(
+            Transaction("first", new DateTime(2026, 6, 23, 12, 0, 0, DateTimeKind.Utc), "Haircut", -22),
+            Transaction("second", new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Utc), "Haircut", -22));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(
+            NewClient(handler), context, new TransactionCategoryService(context, cache),
+            financialClock: TestClock(new DateTimeOffset(2026, 8, 21, 0, 0, 0, TimeSpan.Zero)));
+
+        await service.ChatAsync(new AiChatRequest(
+            "How often do i perform hair cut? estimate the next time i haircut", []));
+
+        Assert.Contains("\"intents\":[\"ledger.purchase_frequency\"", handler.UserContent);
+        Assert.Contains("\"allHistory\":true", handler.UserContent);
+        Assert.Contains("\"matchMode\":\"spacing\"", handler.UserContent);
+        Assert.Contains("\"purchaseDayCount\":2", handler.UserContent);
+        Assert.Contains("\"medianGapDays\":21", handler.UserContent);
+        Assert.Contains("\"typicalCadence\":\"about every 3 weeks\"", handler.UserContent);
+        Assert.Contains("\"nextExpectedDate\":\"2026-08-04\"", handler.UserContent);
+        Assert.Contains("\"nextExpectedIsOverdue\":true", handler.UserContent);
+        Assert.Contains("Haircut", handler.UserContent);
+    }
+
     [Fact]
     public async Task ChatAsync_PurchaseFrequencyExactMatchWinsOverFuzzyCandidates()
     {

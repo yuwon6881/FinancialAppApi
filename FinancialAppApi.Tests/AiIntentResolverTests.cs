@@ -63,6 +63,11 @@ public class AiIntentResolverTests
     [InlineData("How often do I purchase shampoo?", "shampoo")]
     [InlineData("How frequently did I replace my toothbrush?", "toothbrush")]
     [InlineData("What is the frequency I restock contact lenses?", "contact lenses")]
+    // A service is not bought: it is done, performed, or gone for. These routed as ordinary cycle
+    // questions before, so they were scoped to the loaded cycle with no cadence metric at all.
+    [InlineData("How often do i perform hair cut? estimate the next time i haircut", "hair cut")]
+    [InlineData("How often do I go for a hair cut?", "hair cut")]
+    [InlineData("How often do I have my car serviced?", "car serviced")]
     public void ResolveDeterministically_PurchaseFrequency_ExtractsArbitrarySubject(
         string message,
         string expectedSearch)
