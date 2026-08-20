@@ -51,18 +51,21 @@ public class RecurringPaymentPayEarlyService
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly FinancialClock _financialClock;
     private readonly RecurringOccurrenceLedgerService _occurrenceLedger;
+    private readonly IRecurringPaymentMutationLock _paymentLock;
 
     public RecurringPaymentPayEarlyService(
         AppDbContext context,
         RecurringOccurrenceService occurrenceService,
         CycleBalanceService cycleBalanceService,
         FinancialClock? financialClock = null,
-        RecurringOccurrenceLedgerService? occurrenceLedger = null)
+        RecurringOccurrenceLedgerService? occurrenceLedger = null,
+        IRecurringPaymentMutationLock? paymentLock = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _financialClock = financialClock ?? FinancialClock.Utc;
         _occurrenceLedger = occurrenceLedger ?? new RecurringOccurrenceLedgerService(context, occurrenceService, _financialClock);
+        _paymentLock = paymentLock ?? new RecurringPaymentMutationLock(context);
     }
 
     public async Task<PayEarlyResult> PayEarlyAsync(
@@ -89,6 +92,7 @@ public class RecurringPaymentPayEarlyService
         DateTime? postedAt = null,
         string? accountId = null)
     {
+        await using var paymentLease = await _paymentLock.AcquireAsync(recurringPaymentId, cancellationToken);
         var payment = await _context.RecurringPayments
             .FirstOrDefaultAsync(p => p.Id == recurringPaymentId, cancellationToken);
         if (payment == null)

@@ -58,6 +58,22 @@ public sealed class LoanRepaymentServiceTests
     }
 
     [Fact]
+    public async Task AdvanceCyclesRepayment_ReplaysTheSameActionAfterALostResponse()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, _, account) = await SeedLoanAsync(context);
+        var service = CreateService(context);
+
+        var first = await service.AdvanceCyclesRepaymentAsync(loan.Id, 2, account.Id, "retry-key");
+        var retry = await service.AdvanceCyclesRepaymentAsync(loan.Id, 2, account.Id, "retry-key");
+
+        Assert.Equal(LoanRepaymentStatus.Success, retry.Status);
+        Assert.Equal(first.ActionId, retry.ActionId);
+        Assert.Equal(2, await context.Transactions.CountAsync());
+        Assert.Single(await context.LoanRepaymentActions.ToListAsync());
+    }
+
+    [Fact]
     public async Task FullSettlementRepayment_ClosesBillAndMarksFutureOccurrencesSettledByLoanPayoff()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -82,6 +98,41 @@ public sealed class LoanRepaymentServiceTests
         // Loan replay has 0 outstanding balance and payoff date set
         Assert.Equal(0m, result.LoanView!.Replay.OutstandingBalance);
         Assert.Equal(FinancialClock.Utc.Today, result.LoanView.Replay.PayoffDate);
+    }
+
+    [Fact]
+    public async Task FullSettlementRepayment_ReplaysTheSameActionAfterALostResponse()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, _, account) = await SeedLoanAsync(context);
+        var service = CreateService(context);
+
+        var first = await service.FullSettlementRepaymentAsync(loan.Id, 950m, account.Id, "settlement-retry");
+        var retry = await service.FullSettlementRepaymentAsync(loan.Id, 950m, account.Id, "settlement-retry");
+
+        Assert.Equal(LoanRepaymentStatus.Success, retry.Status);
+        Assert.Equal(first.ActionId, retry.ActionId);
+        Assert.Single(await context.Transactions.ToListAsync());
+        Assert.Single(await context.LoanRepaymentActions.ToListAsync());
+    }
+
+    [Fact]
+    public async Task RepaymentLedgerEntry_CanOnlyBeRemovedThroughUndo()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, _, account) = await SeedLoanAsync(context);
+        var service = CreateService(context);
+        var repayment = await service.AdvanceCyclesRepaymentAsync(loan.Id, 1, account.Id, "protected-ledger-row");
+
+        var directDelete = await CreatePersistence(context).DeleteTransactionAsync(repayment.Transactions!.Single().Id);
+
+        Assert.Equal(TransactionMutationStatus.Conflict, directDelete.Status);
+        Assert.Contains("Undo repayment", directDelete.Message);
+        Assert.Single(await context.Transactions.ToListAsync());
+
+        var undo = await service.UndoRepaymentActionAsync(repayment.ActionId!);
+        Assert.Equal(LoanRepaymentStatus.Success, undo.Status);
+        Assert.Empty(await context.Transactions.ToListAsync());
     }
 
     [Fact]
@@ -129,6 +180,22 @@ public sealed class LoanRepaymentServiceTests
 
         Assert.Equal(LoanRepaymentStatus.Conflict, result.Status);
         Assert.Contains("automatically deducted", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AdvancePreview_UsesTheSameManualOnlyAndCycleCapRulesAsExecution()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, _, _) = await SeedLoanAsync(context, paymentMode: RecurringPaymentMode.AutoDeduct);
+        var service = CreateService(context);
+
+        var automatic = await service.PreviewAdvanceRepaymentAsync(loan.Id, 1);
+        var overLimit = await service.PreviewAdvanceRepaymentAsync(loan.Id, 61);
+
+        Assert.Equal(LoanRepaymentStatus.Invalid, automatic.Status);
+        Assert.Contains("automatically deducted", automatic.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(LoanRepaymentStatus.Invalid, overLimit.Status);
+        Assert.Contains("between 1 and 60", overLimit.Message);
     }
 
     [Fact]
@@ -326,16 +393,22 @@ public sealed class LoanRepaymentServiceTests
     {
         var clock = FinancialClock.Utc;
         var loanService = new LoanService(context);
+        var txPersistence = CreatePersistence(context);
+
+        return new LoanRepaymentService(context, loanService, txPersistence, clock);
+    }
+
+    private static TransactionPersistenceService CreatePersistence(AppDbContext context)
+    {
+        var clock = FinancialClock.Utc;
         var occurrenceService = new RecurringOccurrenceService(
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance);
         var cycleBalanceService = new CycleBalanceService(context);
-        var txPersistence = new TransactionPersistenceService(
+        return new TransactionPersistenceService(
             context,
             cycleBalanceService,
             occurrenceService,
             new Services.Stability.StabilityRecoveryService(context, cycleBalanceService, clock));
-
-        return new LoanRepaymentService(context, loanService, txPersistence, clock);
     }
 
     private static async Task<(Loan Loan, RecurringPayment Payment, LedgerAccount Account)> SeedLoanAsync(

@@ -30,17 +30,20 @@ public sealed class RecurringOccurrenceSettlementService
     private readonly RecurringOccurrenceLedgerService _occurrences;
     private readonly TransactionPersistenceService _transactions;
     private readonly FinancialClock _clock;
+    private readonly IRecurringPaymentMutationLock _paymentLock;
 
     public RecurringOccurrenceSettlementService(
         AppDbContext context,
         RecurringOccurrenceLedgerService occurrences,
         TransactionPersistenceService transactions,
-        FinancialClock clock)
+        FinancialClock clock,
+        IRecurringPaymentMutationLock? paymentLock = null)
     {
         _context = context;
         _occurrences = occurrences;
         _transactions = transactions;
         _clock = clock;
+        _paymentLock = paymentLock ?? new RecurringPaymentMutationLock(context);
     }
 
     public async Task<RecurringSettlementResult> SettleAsync(
@@ -59,6 +62,8 @@ public sealed class RecurringOccurrenceSettlementService
         {
             return new RecurringSettlementResult(RecurringSettlementStatus.Invalid, Message: "Status must be Paid or Discarded.");
         }
+
+        await using var paymentLease = await _paymentLock.AcquireAsync(paymentId, cancellationToken);
 
         var payment = await _context.RecurringPayments.FirstOrDefaultAsync(
             candidate => candidate.Id == paymentId,

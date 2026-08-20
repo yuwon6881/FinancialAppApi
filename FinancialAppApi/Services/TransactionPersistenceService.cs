@@ -55,6 +55,7 @@ public class TransactionPersistenceService
     private readonly RecurringOccurrenceLedgerService _occurrenceLedger;
     private readonly FinancialClock _clock;
     private readonly SavingsGoals.ISharedPoolMutationLock _sharedPoolMutationLock;
+    private readonly IRecurringPaymentMutationLock _recurringPaymentMutationLock;
 
     public TransactionPersistenceService(
         AppDbContext context,
@@ -64,7 +65,8 @@ public class TransactionPersistenceService
         RecurringOccurrenceLedgerService? occurrenceLedger = null,
         FinancialClock? clock = null,
         Stability.StabilityPlanRevisionService? stabilityPlanRevisionService = null,
-        SavingsGoals.ISharedPoolMutationLock? sharedPoolMutationLock = null)
+        SavingsGoals.ISharedPoolMutationLock? sharedPoolMutationLock = null,
+        IRecurringPaymentMutationLock? recurringPaymentMutationLock = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
@@ -75,12 +77,17 @@ public class TransactionPersistenceService
         _clock = clock ?? FinancialClock.Utc;
         _occurrenceLedger = occurrenceLedger ?? new RecurringOccurrenceLedgerService(context, occurrenceService, _clock);
         _sharedPoolMutationLock = sharedPoolMutationLock ?? new SavingsGoals.SharedPoolMutationLock(context);
+        _recurringPaymentMutationLock = recurringPaymentMutationLock ?? new RecurringPaymentMutationLock(context);
     }
 
     public async Task<TransactionMutationResult> CreateTransactionAsync(
         TransactionMutationRequest request,
         CancellationToken cancellationToken = default)
     {
+        await using var recurringLease = !string.IsNullOrWhiteSpace(request.RecurringPaymentId)
+            ? await _recurringPaymentMutationLock.AcquireAsync(request.RecurringPaymentId, cancellationToken)
+            : NoOpPoolLock.Instance;
+
         if (!string.IsNullOrWhiteSpace(request.Id))
         {
             var existingTx = await _context.Transactions
@@ -265,6 +272,18 @@ public class TransactionPersistenceService
         if (transaction == null)
         {
             return new TransactionMutationResult(TransactionMutationStatus.NotFound);
+        }
+
+        await using var recurringLease = !string.IsNullOrWhiteSpace(transaction.RecurringPaymentId)
+            ? await _recurringPaymentMutationLock.AcquireAsync(transaction.RecurringPaymentId, cancellationToken)
+            : NoOpPoolLock.Instance;
+
+        if (await IsLoanRepaymentActionTransactionAsync(transaction.Id, cancellationToken))
+        {
+            return new TransactionMutationResult(
+                TransactionMutationStatus.Conflict,
+                transaction,
+                "A loan repayment entry cannot be edited. Use Undo repayment from the loan instead.");
         }
 
         await using var poolLock = transaction.SavingsGoalId.HasValue
@@ -469,6 +488,18 @@ public class TransactionPersistenceService
             return new TransactionMutationResult(TransactionMutationStatus.NotFound);
         }
 
+        await using var recurringLease = !string.IsNullOrWhiteSpace(transaction.RecurringPaymentId)
+            ? await _recurringPaymentMutationLock.AcquireAsync(transaction.RecurringPaymentId, cancellationToken)
+            : NoOpPoolLock.Instance;
+
+        if (await IsLoanRepaymentActionTransactionAsync(transaction.Id, cancellationToken))
+        {
+            return new TransactionMutationResult(
+                TransactionMutationStatus.Conflict,
+                transaction,
+                "A loan repayment entry cannot be deleted. Use Undo repayment from the loan instead.");
+        }
+
         var goalRestoreError = await RestoreSavingsGoalCompletionAsync(transaction, cancellationToken);
         if (goalRestoreError != null)
         {
@@ -520,7 +551,8 @@ public class TransactionPersistenceService
 
     public async Task<(TransactionMutationStatus Status, List<Transaction> Transactions, string? Message)> DeleteTransactionsAsync(
         IReadOnlyCollection<string> ids,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool allowLoanRepaymentActionTransactions = false)
     {
         var canonicalIds = ids
             .Where(id => !string.IsNullOrWhiteSpace(id))
@@ -539,6 +571,20 @@ public class TransactionPersistenceService
         var transactions = await _context.Transactions
             .Where(transaction => canonicalIds.Contains(transaction.Id))
             .ToListAsync(cancellationToken);
+        await using var recurringLeases = await AcquireRecurringLocksAsync(
+            transactions.Select(transaction => transaction.RecurringPaymentId),
+            cancellationToken);
+        if (!allowLoanRepaymentActionTransactions)
+        {
+            var protectedIds = await LoanRepaymentActionTransactionIdsAsync(cancellationToken);
+            if (transactions.Any(transaction => protectedIds.Contains(transaction.Id)))
+            {
+                return (
+                    TransactionMutationStatus.Conflict,
+                    [],
+                    "Loan repayment entries cannot be deleted from the ledger. Use Undo repayment from the loan instead.");
+            }
+        }
         var protectedTransaction = transactions.FirstOrDefault(transaction => transaction.SavingsGoalId.HasValue);
         if (protectedTransaction != null)
         {
@@ -1232,6 +1278,53 @@ public class TransactionPersistenceService
         public static readonly NoOpPoolLock Instance = new();
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private async Task<IAsyncDisposable> AcquireRecurringLocksAsync(
+        IEnumerable<string?> recurringPaymentIds,
+        CancellationToken cancellationToken)
+    {
+        var leases = new List<IAsyncDisposable>();
+        try
+        {
+            foreach (var paymentId in recurringPaymentIds
+                         .Where(id => !string.IsNullOrWhiteSpace(id))
+                         .Select(id => id!)
+                         .Distinct(StringComparer.Ordinal)
+                         .OrderBy(id => id, StringComparer.Ordinal))
+            {
+                leases.Add(await _recurringPaymentMutationLock.AcquireAsync(paymentId, cancellationToken));
+            }
+            return new CompositeLease(leases);
+        }
+        catch
+        {
+            for (var i = leases.Count - 1; i >= 0; i--) await leases[i].DisposeAsync();
+            throw;
+        }
+    }
+
+    private async Task<bool> IsLoanRepaymentActionTransactionAsync(
+        string transactionId,
+        CancellationToken cancellationToken) =>
+        (await LoanRepaymentActionTransactionIdsAsync(cancellationToken)).Contains(transactionId);
+
+    private async Task<HashSet<string>> LoanRepaymentActionTransactionIdsAsync(CancellationToken cancellationToken)
+    {
+        var values = await _context.LoanRepaymentActions.AsNoTracking()
+            .Select(action => action.TransactionIds)
+            .ToListAsync(cancellationToken);
+        return values
+            .SelectMany(value => value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private sealed class CompositeLease(IReadOnlyList<IAsyncDisposable> leases) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            for (var i = leases.Count - 1; i >= 0; i--) await leases[i].DisposeAsync();
+        }
     }
 
     private static TransactionMutationResult InvalidDate(string? message = null)

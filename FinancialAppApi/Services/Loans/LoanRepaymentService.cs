@@ -34,21 +34,25 @@ public sealed record LoanRepaymentActionResult(
 
 public sealed class LoanRepaymentService
 {
+    private const int MaxAdvanceCycles = 60;
     private readonly AppDbContext _context;
     private readonly LoanService _loanService;
     private readonly TransactionPersistenceService _transactions;
     private readonly FinancialClock _clock;
+    private readonly IRecurringPaymentMutationLock _paymentLock;
 
     public LoanRepaymentService(
         AppDbContext context,
         LoanService loanService,
         TransactionPersistenceService transactions,
-        FinancialClock clock)
+        FinancialClock clock,
+        IRecurringPaymentMutationLock? paymentLock = null)
     {
         _context = context;
         _loanService = loanService;
         _transactions = transactions;
         _clock = clock;
+        _paymentLock = paymentLock ?? new RecurringPaymentMutationLock(context);
     }
 
     // Every repayment writes several ledger transactions plus schedule and occurrence changes that
@@ -86,13 +90,24 @@ public sealed class LoanRepaymentService
         int cycles,
         CancellationToken cancellationToken = default)
     {
-        if (cycles < 1)
+        if (cycles is < 1 or > MaxAdvanceCycles)
         {
-            return new LoanRepaymentPreviewResult(LoanRepaymentStatus.Invalid, Message: "Repayment must include at least 1 cycle.");
+            return new LoanRepaymentPreviewResult(LoanRepaymentStatus.Invalid, Message: $"Repayment must include between 1 and {MaxAdvanceCycles} cycles.");
         }
 
         var view = await _loanService.GetLoanAsync(loanId, cancellationToken);
         if (view == null) return new LoanRepaymentPreviewResult(LoanRepaymentStatus.NotFound);
+
+        var paymentMode = await _context.RecurringPayments.AsNoTracking()
+            .Where(payment => payment.Id == view.Loan.RecurringPaymentId)
+            .Select(payment => payment.PaymentMode)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (paymentMode == RecurringPaymentMode.AutoDeduct)
+        {
+            return new LoanRepaymentPreviewResult(
+                LoanRepaymentStatus.Invalid,
+                Message: "An automatically deducted bill cannot be settled in advance.");
+        }
 
         if (view.Loan.ScheduleStatus == LoanScheduleStatus.Incomplete)
         {
@@ -124,10 +139,12 @@ public sealed class LoanRepaymentService
         DateTime? postedAt = null,
         CancellationToken cancellationToken = default)
     {
-        if (cycles < 1)
+        if (cycles is < 1 or > MaxAdvanceCycles)
         {
-            return new LoanRepaymentActionResult(LoanRepaymentStatus.Invalid, Message: "Repayment must include at least 1 cycle.");
+            return new LoanRepaymentActionResult(LoanRepaymentStatus.Invalid, Message: $"Repayment must include between 1 and {MaxAdvanceCycles} cycles.");
         }
+
+        await using var paymentLease = await AcquireLoanPaymentLockAsync(loanId, cancellationToken);
 
         var outcome = await InTransactionAsync(
             () => AdvanceCyclesCoreAsync(loanId, cycles, accountId, clientKey, postedAt, cancellationToken),
@@ -149,6 +166,9 @@ public sealed class LoanRepaymentService
 
         var payment = await _context.RecurringPayments.FirstOrDefaultAsync(p => p.Id == loan.RecurringPaymentId, cancellationToken);
         if (payment == null) return new LoanRepaymentActionResult(LoanRepaymentStatus.NotFound);
+
+        var replay = await ReplayExistingActionAsync(loanId, clientKey, LoanRepaymentActionKind.AdvanceCycles, cancellationToken);
+        if (replay != null) return replay;
 
         if (payment.PaymentMode == RecurringPaymentMode.AutoDeduct)
         {
@@ -197,7 +217,7 @@ public sealed class LoanRepaymentService
 
         var createdTransactions = new List<Transaction>();
         var targetOccurrenceDates = new List<string>();
-        var actionId = $"repay-{Guid.NewGuid():N}";
+        var actionId = BuildRepaymentActionId(clientKey);
 
         for (var i = 0; i < selectedEntries.Count; i++)
         {
@@ -274,6 +294,8 @@ public sealed class LoanRepaymentService
             return new LoanRepaymentActionResult(LoanRepaymentStatus.Invalid, Message: "Settlement amount must be at least 0.01.");
         }
 
+        await using var paymentLease = await AcquireLoanPaymentLockAsync(loanId, cancellationToken);
+
         var outcome = await InTransactionAsync(
             () => FullSettlementCoreAsync(loanId, lenderQuoteAmount, accountId, clientKey, postedAt, cancellationToken),
             cancellationToken);
@@ -294,6 +316,9 @@ public sealed class LoanRepaymentService
 
         var payment = await _context.RecurringPayments.FirstOrDefaultAsync(p => p.Id == loan.RecurringPaymentId, cancellationToken);
         if (payment == null) return new LoanRepaymentActionResult(LoanRepaymentStatus.NotFound);
+
+        var replay = await ReplayExistingActionAsync(loanId, clientKey, LoanRepaymentActionKind.FullSettlement, cancellationToken);
+        if (replay != null) return replay;
 
         // The advance path refuses both of these, and a payoff writes far more state, so it must not
         // be the lenient one. An incomplete schedule means the replay cannot say what is really owed.
@@ -416,7 +441,7 @@ public sealed class LoanRepaymentService
             settledDates.Add(occ.OccurrenceDate.ToString("yyyy-MM-dd"));
         }
 
-        var actionId = $"repay-{Guid.NewGuid():N}";
+        var actionId = BuildRepaymentActionId(clientKey);
         var createdTx = mutation.Transaction!;
         var action = new LoanRepaymentAction
         {
@@ -456,6 +481,12 @@ public sealed class LoanRepaymentService
             .Select(a => a.LoanId)
             .FirstOrDefaultAsync(cancellationToken);
         if (loanId == null) return new LoanRepaymentActionResult(LoanRepaymentStatus.NotFound);
+
+        var paymentId = await _context.LoanRepaymentActions
+            .Where(action => action.Id == actionId)
+            .Select(action => action.RecurringPaymentId)
+            .FirstAsync(cancellationToken);
+        await using var paymentLease = await _paymentLock.AcquireAsync(paymentId, cancellationToken);
 
         var outcome = await InTransactionAsync(
             () => UndoRepaymentActionCoreAsync(actionId, cancellationToken),
@@ -528,7 +559,10 @@ public sealed class LoanRepaymentService
         {
             // A rejected delete used to be discarded, so the action row vanished while its
             // transactions stayed on the ledger and could never be undone again.
-            var deletion = await _transactions.DeleteTransactionsAsync(txIds, cancellationToken);
+            var deletion = await _transactions.DeleteTransactionsAsync(
+                txIds,
+                cancellationToken,
+                allowLoanRepaymentActionTransactions: true);
             if (deletion.Status is not (TransactionMutationStatus.Deleted or TransactionMutationStatus.NotFound))
             {
                 return new LoanRepaymentActionResult(
@@ -549,5 +583,53 @@ public sealed class LoanRepaymentService
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(key));
         return $"tx-loanrepay-{Convert.ToHexString(hash).ToLowerInvariant()[..16]}";
+    }
+
+    private async Task<IAsyncDisposable> AcquireLoanPaymentLockAsync(
+        string loanId,
+        CancellationToken cancellationToken)
+    {
+        var paymentId = await _context.Loans.AsNoTracking()
+            .Where(loan => loan.Id == loanId)
+            .Select(loan => loan.RecurringPaymentId)
+            .FirstOrDefaultAsync(cancellationToken);
+        return await _paymentLock.AcquireAsync(paymentId ?? string.Empty, cancellationToken);
+    }
+
+    private async Task<LoanRepaymentActionResult?> ReplayExistingActionAsync(
+        string loanId,
+        string? clientKey,
+        string expectedKind,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(clientKey)) return null;
+        var actionId = BuildRepaymentActionId(clientKey);
+        var action = await _context.LoanRepaymentActions.AsNoTracking()
+            .FirstOrDefaultAsync(candidate => candidate.Id == actionId, cancellationToken);
+        if (action == null) return null;
+        if (action.LoanId != loanId || action.Kind != expectedKind)
+        {
+            return new LoanRepaymentActionResult(
+                LoanRepaymentStatus.Conflict,
+                Message: "This repayment request key was already used for another action.");
+        }
+
+        var transactionIds = action.TransactionIds
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var transactions = await _context.Transactions.AsNoTracking()
+            .Where(transaction => transactionIds.Contains(transaction.Id))
+            .ToListAsync(cancellationToken);
+        return new LoanRepaymentActionResult(
+            LoanRepaymentStatus.Success,
+            ActionId: action.Id,
+            Kind: action.Kind,
+            Transactions: transactions);
+    }
+
+    private static string BuildRepaymentActionId(string? clientKey)
+    {
+        if (string.IsNullOrWhiteSpace(clientKey)) return $"repay-{Guid.NewGuid():N}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"loan-repayment-action:{clientKey}"));
+        return $"repay-{Convert.ToHexString(hash).ToLowerInvariant()[..24]}";
     }
 }
