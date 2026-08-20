@@ -17,6 +17,7 @@ public partial class AiAssistantService
         var classifierPrompt = $"Classify the user's financial-app request. Return only the JSON schema. " +
             $"Choose one or more intents, extract searchText for a merchant/activity, and preserve cycle wording. " +
             $"Treat shorthand, omitted nouns, abbreviations, and conversational equivalents by meaning: " +
+            $"ledger.purchase_frequency covers how often the user buys, purchases, replaces, or restocks something; " +
             $"category_limits.analysis covers category budgets/caps/allowances and remaining room; " +
             $"cycle.insights covers a cycle/month recap, progress, health, update, 'so far', 'how am I tracking', " +
             $"or 'where do I stand', including an ongoing cycle that has no saved end-of-cycle summary. " +
@@ -90,9 +91,15 @@ public partial class AiAssistantService
     private static string? ExtractLikelySearchText(string message, IReadOnlyList<string> intents)
     {
         if (!intents.Any(i => i.Equals("ledger.activity_count", StringComparison.OrdinalIgnoreCase) ||
+                              i.Equals("ledger.purchase_frequency", StringComparison.OrdinalIgnoreCase) ||
                               i.Equals("ledger.merchant_search", StringComparison.OrdinalIgnoreCase) ||
                               i.Equals("ledger.spending_total", StringComparison.OrdinalIgnoreCase) ||
                               i.Equals("ledger.transaction_list", StringComparison.OrdinalIgnoreCase))) return null;
+
+        var purchaseFrequency = Regex.Match(message,
+            @"\b(?:(?:how\s+(?:often|frequently))|(?:(?:approximately\s+)?(?:what(?:'s|\s+is)|whats)\s+(?:the\s+)?frequency)|frequency)\s+(?:do|did|have|has|would)?\s*(?:i|we)?\s*(?:usually\s+|typically\s+)?(?:buy|bought|purchase[sd]?|get|got|replace[sd]?|restock(?:ed)?)\s+(?<value>[\p{L}\p{N}][\p{L}\p{N}'& -]{0,60}?)(?=\s+\b(?:last|this|previous|current|past|in|during|across|over|throughout)\b|[?.!,]|$)",
+            RegexOptions.IgnoreCase);
+        if (purchaseFrequency.Success) return NormalizeSearchText(purchaseFrequency.Groups["value"].Value);
 
         // Common natural-language shapes. Keep the captured term deliberately short and stop
         // before cycle wording so "TNG transactions in the last 3 cycles" searches for TNG,
@@ -266,6 +273,7 @@ public partial class AiAssistantService
     private static string? ExtractConversationCycle(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
+        if (AllHistorySignal.IsMatch(text)) return "all history";
         var match = Regex.Match(text, @"\b((?:last|previous|prior|this|current)\s+(?:\d+\s+|few\s+)?(?:cycle|cycles|month|months))\b", RegexOptions.IgnoreCase);
         return match.Success ? match.Groups[1].Value : null;
     }
@@ -465,8 +473,12 @@ public partial class AiAssistantService
 
     private const string MonthNamePattern = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
 
+    private static readonly Regex AllHistorySignal = new(
+        @"\b(?:historical\s+(?:data|history|records?|transactions?)|all\s+(?:saved\s+)?history|full\s+history|all[- ]?time|(?:all|every|each)\s+(?:cycles?|months?)|(?:across|throughout|over)\s+all\s+(?:cycles?|months?|history)?)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex CycleComparisonSignal = new(
-        @"\b(compare|comparison|vs\.?|versus|trend|history|historical|over time|each month|every month|past (few |\d+ )?months?|past (few |\d+ )?cycles?|year over year|month over month)\b",
+        @"\b(compare|comparison|vs\.?|versus|trend|over time|each month|every month|past (few |\d+ )?months?|past (few |\d+ )?cycles?|year over year|month over month)\b",
         RegexOptions.Compiled);
 
     private static readonly Regex CycleAnalysisSignal = new(
@@ -583,8 +595,12 @@ public partial class AiAssistantService
         @"\b(how much|how many|total|totals|average|averages|avg|breakdown|sum)\b",
         RegexOptions.Compiled);
 
+    private static readonly Regex PurchaseFrequencySignal = new(
+        @"\b(?:how\s+(?:often|frequently)|frequency)\b[^?!.]{0,80}\b(?:buy|bought|purchase[sd]?|get|got|replace[sd]?|restock(?:ed)?)\b|\b(?:buy|bought|purchase[sd]?|replace[sd]?|restock(?:ed)?)\b[^?!.]{0,60}\bhow\s+(?:often|frequently)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex CountQuestionSignal = new(
-        @"\b(how many|how often|how frequently|number of times|times did i|played|visited|frequency)\b",
+        @"\b(how many|number of times|times did i|played|visited)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // ...unless the user explicitly asks to see the individual records. These words mean the
@@ -707,6 +723,7 @@ public partial class AiAssistantService
     internal enum DerivedMetric
     {
         ActivityCount,
+        PurchaseCadence,
         MerchantMatches,
         AnomalyDetection,
         DuplicateDetection,

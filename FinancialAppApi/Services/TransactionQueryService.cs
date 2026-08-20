@@ -421,29 +421,7 @@ public partial class TransactionQueryService
 
         if (!string.IsNullOrWhiteSpace(search))
         {
-            var term = search.Trim();
-            if (useIlike)
-            {
-                // ILIKE is case-insensitive at the DB level and, unlike ToLower().Contains(),
-                // can be served by the pg_trgm GIN indexes (see the AddTransactionSearchTrgmIndexes
-                // migration). Escape LIKE wildcards so a literal % or _ typed by the user is not
-                // treated as a pattern; '\' is the default ILIKE escape character.
-                var pattern = "%" + EscapeLikePattern(term) + "%";
-                query = query.Where(t =>
-                    EF.Functions.ILike(t.Description, pattern) ||
-                    EF.Functions.ILike(t.Category, pattern) ||
-                    EF.Functions.ILike(t.LedgerCategory, pattern));
-            }
-            else
-            {
-                // Providers without ILIKE (e.g. the InMemory test provider) fall back to the
-                // original case-insensitive substring match.
-                var s = term.ToLower();
-                query = query.Where(t =>
-                    t.Description.ToLower().Contains(s) ||
-                    t.Category.ToLower().Contains(s) ||
-                    t.LedgerCategory.ToLower().Contains(s));
-            }
+            query = TransactionTextSearch.ApplyExact(query, useIlike, search);
         }
 
         if (!string.IsNullOrWhiteSpace(ledgerCategory))
@@ -524,13 +502,6 @@ public partial class TransactionQueryService
                 .ThenByDescending(t => t.Id)
         };
     }
-
-    // Escapes the ILIKE special characters so user-typed text is matched literally.
-    // Backslash first (it is the escape character), then the wildcards % and _.
-    private static string EscapeLikePattern(string input) => input
-        .Replace("\\", "\\\\")
-        .Replace("%", "\\%")
-        .Replace("_", "\\_");
 
     private static string EscapeCsvField(string value)
     {

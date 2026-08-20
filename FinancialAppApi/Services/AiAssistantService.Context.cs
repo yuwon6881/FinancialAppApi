@@ -33,7 +33,7 @@ public partial class AiAssistantService
         bool NeedsLoans = false,
         bool NeedsLedgerAccounts = false);
 
-    private sealed record TargetCycleSelection(IReadOnlyList<CycleKey> Cycles, bool ExplicitlyRequested);
+    private sealed record TargetCycleSelection(IReadOnlyList<CycleKey> Cycles, bool ExplicitlyRequested, bool AllHistory = false);
     internal sealed record AiTransactionRow(
         string Id,
         DateTime Timestamp,
@@ -97,10 +97,10 @@ public partial class AiAssistantService
             intentPlan.ConversationState.LastLoanId,
             sensitiveMode,
             cancellationToken);
-
         var transactionDomain = await LoadTransactionDomainContextAsync(
             intentPlan, targetSelection, cycleDay, exactDate, categories, cancellationToken);
         var allTransactions = transactionDomain.Transactions;
+        var purchaseFrequency = await LoadPurchaseFrequencyAsync(queryPlan, targetSelection, cycleDay, cancellationToken);
         var ledgerAccountContext = await LoadLedgerAccountContextAsync(
             intentPlan, targetSelection, cycleDay, sensitiveMode, cancellationToken);
         var scopeTruncated = transactionDomain.ScopeTruncated;
@@ -112,12 +112,10 @@ public partial class AiAssistantService
         var includedLedgerCategories = transactionDomain.IncludedLedgerCategories;
         var requestedTransactionType = transactionDomain.RequestedTransactionType;
         var appliesTransactionTypeFilter = transactionDomain.AppliesTransactionTypeFilter;
-
         var recentTransactions = BuildRecentTransactionsPayload(queryPlan, sensitiveMode, allTransactions);
         var recentTransactionIds = queryPlan.NeedsTransactionDetail
             ? allTransactions.Take(120).Select(t => t.Id).ToList()
             : [];
-
         var ledgerDomain = await BuildLedgerDomainContextAsync(
             intentPlan,
             setting,
@@ -131,11 +129,8 @@ public partial class AiAssistantService
             ledgerForecastRequest,
             cancellationToken);
         var wishlistForecast = ledgerDomain.WishlistForecast;
-
         var budgetTargets = BuildBudgetTargetsPayload(queryPlan, setting, sensitiveMode);
-
         var requestedCycles = BuildRequestedCyclesPayload(targetSelection, transactionDomain.CycleHasAnyRows, cycleDay);
-
         var turn = ResolveConversationTurn(
             intentPlan, queryPlan, targetSelection, exactDate, sensitiveMode,
             allTransactions, recurringRows, wishlistRows, ledgerAccountContext.SelectedAccountId);
@@ -148,23 +143,21 @@ public partial class AiAssistantService
         var turnLedgerCategory = turn.LedgerCategory;
         var turnRecurringStatus = turn.RecurringStatus;
         var turnWishlistStatus = turn.WishlistStatus;
-
         var sufficiencyEvaluation = await EvaluateContextSufficiencyAsync(
             intentPlan, targetSelection, transactionDomain, wishlistRows, wishlistForecast,
-            sensitiveMode, cycleDay, cancellationToken);
+            purchaseFrequency, sensitiveMode, cycleDay, cancellationToken);
         var intentNames = sufficiencyEvaluation.IntentNames;
         var recoveredOutflow = sufficiencyEvaluation.RecoveredOutflow;
         var perCycleRecoveredOutflow = sufficiencyEvaluation.PerCycleRecoveredOutflow;
         var sufficiencyResult = sufficiencyEvaluation.Result;
         var resolution = ToResolution(intentPlan);
-
         var datasets = await BuildContextDatasetsAsync(
             queryPlan, setting, intentPlan, allTransactions, targetSelection, selectedYear, selectedMonthIndex, cycleDay,
-            sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, recurringRows, wishlistRows, ledgerDomain, ledgerAccountContext,
+            sensitiveMode, exactMatchCount, perCycleRecoveredOutflow, purchaseFrequency, recurringRows,
+            wishlistRows, ledgerDomain, ledgerAccountContext,
             cancellationToken);
         var cycleSummaries = datasets.CycleSummaries;
         var derivedMetrics = datasets.DerivedMetrics;
-
         var context = new AiContext(
             Currency: setting?.Currency ?? "USD",
             Today: _financialClock.Today.ToString("yyyy-MM-dd"),
@@ -181,6 +174,7 @@ public partial class AiAssistantService
             DataScope: new
             {
                 targetWasExplicit = targetSelection.ExplicitlyRequested,
+                allHistory = targetSelection.AllHistory,
                 aggregatesCoverAllTransactionsInRequestedCycles = targetSelection.Cycles.Count > 0 && !scopeTruncated,
                 aggregatesTruncated = scopeTruncated,
                 // Present only when the sample was truncated but the database returned the exact
@@ -573,6 +567,7 @@ public partial class AiAssistantService
         TransactionDomainContext transactionDomain,
         IReadOnlyList<AiWishlistRow> wishlistRows,
         object? wishlistForecast,
+        AiPurchaseFrequencyMetric? purchaseFrequency,
         bool sensitiveMode,
         int cycleDay,
         CancellationToken cancellationToken)
@@ -603,6 +598,14 @@ public partial class AiAssistantService
             datasetStates[AiDatasetKey.TransactionMatches] = new AiDatasetState(
                 scopeTruncated && !exactMatchCount.HasValue ? AiDatasetStatus.Truncated : AiDatasetStatus.Available,
                 TotalCount: exactMatchCount, IncludedCount: allTransactions.Count, HasExactMetric: exactMatchCount.HasValue);
+        }
+        if (queryPlan.Metrics.Contains(DerivedMetric.PurchaseCadence))
+        {
+            datasetStates[AiDatasetKey.PurchaseFrequency] = new AiDatasetState(
+                purchaseFrequency == null ? AiDatasetStatus.Unavailable
+                    : purchaseFrequency.TransactionCount == 0 ? AiDatasetStatus.VerifiedEmpty : AiDatasetStatus.Available,
+                TotalCount: purchaseFrequency?.TransactionCount,
+                IncludedCount: purchaseFrequency?.TransactionCount ?? 0, HasExactMetric: purchaseFrequency != null);
         }
         if (queryPlan.NeedsWishlist)
         {
@@ -698,6 +701,7 @@ public partial class AiAssistantService
         bool sensitiveMode,
         int? exactMatchCount,
         IReadOnlyDictionary<CycleKey, decimal>? perCycleRecoveredOutflow,
+        AiPurchaseFrequencyMetric? purchaseFrequency,
         List<AiRecurringRow> recurringRows,
         List<AiWishlistRow> wishlistRows,
         LedgerDomainContext ledgerDomain,
@@ -718,6 +722,7 @@ public partial class AiAssistantService
         var recurringCostSummary = recurringInsights.CostSummary;
 
         var extraMetrics = new Dictionary<string, object?>();
+        if (purchaseFrequency != null) extraMetrics["purchaseFrequency"] = purchaseFrequency;
         if (recurringUpcoming != null) extraMetrics["upcomingBills"] = recurringUpcoming;
         if (ledgerDomain.StabilityProgress != null) extraMetrics["stabilityProgress"] = ledgerDomain.StabilityProgress;
         if (ledgerDomain.AffordableWishlistCount != null) extraMetrics["affordableWishlistCount"] = ledgerDomain.AffordableWishlistCount;
@@ -1095,20 +1100,12 @@ public partial class AiAssistantService
             return new TargetCycleSelection(explicitCycles, true);
         }
 
-        // "all cycles" / "every month" / "across all cycles" / "all-time": a search or
-        // superlative that spans the user's whole history. Without this the query fell through
-        // to the single active-cycle default, so "show badminton for all cycle" or "the most I
-        // deposited into stability across all cycles" only ever looked at the current cycle.
-        // Bounded to the trailing 24 cycles (they merge into one contiguous range) to stay
-        // within the per-range row cap.
-        if (Regex.IsMatch(queryText, @"\b(all|every|each)\s+(cycles?|months?)\b|\b(across|over|through(?:out)?|in)\s+all\b|\ball[- ]?time\b", RegexOptions.IgnoreCase))
+        // All-history is a real database scope, not a synthetic trailing-cycle window. Purchase
+        // cadence defaults to it because a frequency estimate from only the active cycle is not
+        // meaningful; an explicitly named cycle/range above still wins.
+        if (AllHistorySignal.IsMatch(queryText) || PurchaseFrequencySignal.IsMatch(queryText))
         {
-            return new TargetCycleSelection(
-                Enumerable.Range(0, 24)
-                    .Select(offset => AddMonths(selectedYear, selectedMonthIndex, -offset))
-                    .Select(value => new CycleKey(value.Year, value.MonthIndex))
-                    .ToList(),
-                true);
+            return new TargetCycleSelection([], true, AllHistory: true);
         }
 
         var wholeYear = Regex.Match(

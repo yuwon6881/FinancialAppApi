@@ -14,6 +14,7 @@ public partial class AiAssistantService
     private static readonly Dictionary<AiIntent, DerivedMetric> IntentMetricMap = new()
     {
         [AiIntent.LedgerActivityCount] = DerivedMetric.ActivityCount,
+        [AiIntent.LedgerPurchaseFrequency] = DerivedMetric.PurchaseCadence,
         [AiIntent.LedgerMerchantSearch] = DerivedMetric.MerchantMatches,
         [AiIntent.LedgerAnomaly] = DerivedMetric.AnomalyDetection,
         [AiIntent.LedgerDuplicates] = DerivedMetric.DuplicateDetection,
@@ -54,13 +55,14 @@ public partial class AiAssistantService
         if (needsBudgetTargets) metrics.Add(DerivedMetric.AllocationPerformance);
         // A free-text entity is itself a request for matched transaction facts, regardless of
         // whether the wording was classified as merchant search, spending total, or list.
-        if (!string.IsNullOrWhiteSpace(searchText)) metrics.Add(DerivedMetric.MerchantMatches);
+        if (!string.IsNullOrWhiteSpace(searchText) && !metrics.Contains(DerivedMetric.PurchaseCadence))
+            metrics.Add(DerivedMetric.MerchantMatches);
 
         // Transaction level takes the strongest requirement across the combined intents:
         // matching rows (a count/merchant search needs exact matches) > bounded sample >
         // aggregate-only (a cycle question needs rows only to aggregate) > none.
         var transactionData = needsTransactionDetail
-            ? (metrics.Contains(DerivedMetric.ActivityCount) || metrics.Contains(DerivedMetric.MerchantMatches)
+            ? (metrics.Contains(DerivedMetric.ActivityCount) || metrics.Contains(DerivedMetric.MerchantMatches) || metrics.Contains(DerivedMetric.PurchaseCadence)
                 ? TransactionDataLevel.MatchingRows
                 : TransactionDataLevel.BoundedSample)
             : needsCycleSummary

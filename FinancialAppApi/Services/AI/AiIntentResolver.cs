@@ -97,7 +97,7 @@ public partial class AiAssistantService
     // "Special analysis" intents whose result is the kind of question being asked (not a default
     // total/list). A modifier-only follow-up ("how about previous cycle") must keep running these.
     private static bool IsAnalyticalIntent(AiIntent intent) => intent is
-        AiIntent.LedgerAnomaly or AiIntent.LedgerDuplicates or AiIntent.LedgerActivityCount or
+        AiIntent.LedgerAnomaly or AiIntent.LedgerDuplicates or AiIntent.LedgerActivityCount or AiIntent.LedgerPurchaseFrequency or
         AiIntent.LedgerComparison or AiIntent.CategoryLimits or AiIntent.CycleInsights or
         AiIntent.AllocationPerformance;
 
@@ -115,7 +115,7 @@ public partial class AiAssistantService
     }
 
     private static readonly string[] LedgerSearchIntentNames =
-        ["ledger.merchant_search", "ledger.activity_count", "ledger.spending_total", "ledger.transaction_list"];
+        ["ledger.merchant_search", "ledger.activity_count", "ledger.purchase_frequency", "ledger.spending_total", "ledger.transaction_list"];
 
     // Every way ResolveTargetCycles keys a cycle off text. Detects only the PRESENCE of a cycle
     // reference in the current message (not its resolution), so we know whether to inherit the
@@ -128,7 +128,7 @@ public partial class AiAssistantService
         @"|\b\d{1,2}\s+(?:cycles?|months?)\s+ago\b" +                                     // 3 cycles ago
         @"|\b(?:cycle|month)\s+before\s+last\b" +                                         // cycle before last
         @"|\b(?:last|past|previous|prior)\s+(?:\d{1,2}|few)\s+(?:cycles?|months?)\b" +     // last 3 cycles
-        @"|\b(all|every|each)\s+(cycles?|months?)\b|\b(across|over|through(?:out)?|in)\s+all\b|\ball[- ]?time\b" +
+        @"|\b(all|every|each)\s+(cycles?|months?)\b|\b(across|over|through(?:out)?|in)\s+all\b|\ball[- ]?time\b|\bhistorical\s+(?:data|history|records?|transactions?)\b|\ball\s+(?:saved\s+)?history\b" +
         @"|\b(?:in|during|for|year)\s+(?:19|20)\d{2}\b" +                                 // in 2023
         @"|\b(last|previous|this|current)\s+year\b" +
         @"|\b(?:same|corresponding)\s+(?:period|cycle|month|range)\b" +
@@ -285,7 +285,8 @@ public partial class AiAssistantService
         var investmentDomain = InvestmentCoreSignal.IsMatch(lower);
         var rewardsDomain = NeedsRewardsSignal(lower);
         var needsCycleAnalysis = CycleAnalysisSignal.IsMatch(lower) && !investmentDomain && !rewardsDomain;
-        var needsCycleComparison = CycleComparisonSignal.IsMatch(lower);
+        var needsPurchaseFrequency = PurchaseFrequencySignal.IsMatch(lower);
+        var needsCycleComparison = CycleComparisonSignal.IsMatch(lower) && !needsPurchaseFrequency;
         var needsImprovement = ImprovementSignal.IsMatch(lower) && !investmentDomain && !rewardsDomain;
         var needsCount = CountQuestionSignal.IsMatch(lower);
         var needsWishlist = WishlistSignal.IsMatch(lower) && (!rewardsDomain || ExplicitWishlistSignal.IsMatch(lower));
@@ -374,7 +375,8 @@ public partial class AiAssistantService
             intents.Add(Regex.IsMatch(lower, @"\b(add|create)\b") && !mutationVerb ? AiIntent.WishlistAdd : AiIntent.WishlistEdit);
         if (s.NeedsRecurring && (Regex.IsMatch(lower, @"\b(add|create|edit|update|change|modify)\b") || mutationVerb))
             intents.Add(Regex.IsMatch(lower, @"\b(add|create)\b") && !mutationVerb ? AiIntent.RecurringAdd : AiIntent.RecurringEdit);
-        if (CountQuestionSignal.IsMatch(lower)) intents.Add(AiIntent.LedgerActivityCount);
+        if (PurchaseFrequencySignal.IsMatch(lower)) intents.Add(AiIntent.LedgerPurchaseFrequency);
+        else if (CountQuestionSignal.IsMatch(lower)) intents.Add(AiIntent.LedgerActivityCount);
         // An amount-threshold question ("which transaction exceeded 100", "purchases over 200") is a
         // request for the matching individual rows, so it is a transaction-list intent. Detecting it
         // here (before the cycle-analysis signal) also keeps the intent stable across a threshold
@@ -453,7 +455,9 @@ public partial class AiAssistantService
         // must not drag the previous transaction search or cycle in.
         var inheritsTxn = InheritsTransactionalContext(message, priorState);
         var searchText = extractedSearch ?? (inheritsTxn && !WantsClearSearch(message) ? priorState?.LastSearchText : null);
-        var cycleHint = ExtractConversationCycle(queryText) ?? (inheritsTxn ? priorState?.LastCycleHint : null);
+        var cycleHint = ExtractConversationCycle(queryText)
+            ?? (distinct.Contains(AiIntent.LedgerPurchaseFrequency) ? "all history" : null)
+            ?? (inheritsTxn ? priorState?.LastCycleHint : null);
         var transactionIds = UsesPriorTransactionState(message) ? priorState?.LastMatchedTransactionIds : null;
         var needsWishlist = s.NeedsWishlist || distinct.Any(i => i is AiIntent.WishlistList or AiIntent.WishlistForecast or AiIntent.WishlistAdd or AiIntent.WishlistEdit);
         var needsRecurring = s.NeedsRecurring || distinct.Any(i => i is AiIntent.RecurringList or AiIntent.RecurringUpcoming or AiIntent.RecurringAdd or AiIntent.RecurringEdit);
@@ -524,7 +528,7 @@ public partial class AiAssistantService
             .Where(part => !string.IsNullOrWhiteSpace(part)));
 
         var needsAccountActivity = Has(AiIntent.LedgerAccount) && WantsLedgerAccountActivity(baseQueryText);
-        var needsTransactionDetail = s.NeedsTransactionDetail || needsAccountActivity || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerMerchantSearch) ||
+        var needsTransactionDetail = s.NeedsTransactionDetail || needsAccountActivity || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerPurchaseFrequency) || Has(AiIntent.LedgerMerchantSearch) ||
             Has(AiIntent.LedgerTransactionList) || Has(AiIntent.LedgerEdit) || Has(AiIntent.LedgerAnomaly) || Has(AiIntent.LedgerDuplicates);
         var needsCycleSummary = s.NeedsCycleSummary || needsAccountActivity || Has(AiIntent.ReportReview) || Has(AiIntent.LedgerActivityCount) || Has(AiIntent.LedgerSpendingTotal) ||
             Has(AiIntent.LedgerComparison) || Has(AiIntent.LedgerAnomaly) || Has(AiIntent.LedgerDuplicates) ||
@@ -545,7 +549,9 @@ public partial class AiAssistantService
         // same way the deterministic path does rather than trusting the model's extraction.
         var classifiedSearch = StripAnalysisVocabulary(classification.SearchText);
         var searchText = classifiedSearch ?? (inheritsTxn ? priorState?.LastSearchText : null);
-        var cycleHint = classification.CycleHint ?? (inheritsTxn ? priorState?.LastCycleHint : null);
+        var cycleHint = classification.CycleHint
+            ?? (typedIntents.Contains(AiIntent.LedgerPurchaseFrequency) ? "all history" : null)
+            ?? (inheritsTxn ? priorState?.LastCycleHint : null);
         var transactionIds = UsesPriorTransactionState(message) ? priorState?.LastMatchedTransactionIds : null;
         var wishlistItemId = needsWishlist || UsesPriorTransactionState(message) ? priorState?.LastWishlistItemId : null;
         var plan = BuildQueryPlan(
@@ -559,7 +565,7 @@ public partial class AiAssistantService
             classification.Confidence,
             true,
             plan,
-            ResolveConversationState(message, typedIntents.Select(ToIntentName).ToList(), classifiedSearch, classification.CycleHint, priorState),
+            ResolveConversationState(message, typedIntents.Select(ToIntentName).ToList(), classifiedSearch, cycleHint, priorState),
             constraints,
             new AiIntentEntities(searchText, cycleHint, classification.Date, classification.Category,
                 classification.LedgerCategory, classification.Amount, wishlistItemId, classification.WishlistReference,

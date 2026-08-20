@@ -204,17 +204,16 @@ public partial class AiAssistantService
     }
 
     // Applies the shared "not discarded, within [start,end), optional text match" predicate.
-    private IQueryable<Models.Transaction> ScopedTransactions(DateTime start, DateTime end, string? searchText, IReadOnlyList<string>? transactionIds = null)
+    private IQueryable<Models.Transaction> ScopedTransactions(DateTime? start, DateTime? end, string? searchText, IReadOnlyList<string>? transactionIds = null)
     {
         var query = _context.Transactions
             .AsNoTracking()
-            .Where(t => t.LedgerCategory != "Discarded" && t.Date >= start && t.Date < end);
+            .Where(t => t.LedgerCategory != "Discarded");
+        if (start.HasValue) query = query.Where(t => t.Date >= start.Value);
+        if (end.HasValue) query = query.Where(t => t.Date < end.Value);
         if (!string.IsNullOrWhiteSpace(searchText))
         {
-            var normalized = searchText.Trim().ToLowerInvariant();
-            query = query.Where(t => t.Description.ToLower().Contains(normalized) ||
-                t.Category.ToLower().Contains(normalized) ||
-                t.LedgerCategory.ToLower().Contains(normalized));
+            query = TransactionTextSearch.ApplyExact(query, _context.Database.IsNpgsql(), searchText);
         }
         if (transactionIds is { Count: > 0 })
         {
@@ -224,8 +223,8 @@ public partial class AiAssistantService
     }
 
     private async Task<List<AiTransactionRow>> QueryTransactionsAsync(
-        DateTime start,
-        DateTime end,
+        DateTime? start,
+        DateTime? end,
         string? searchText,
         IReadOnlyList<string>? transactionIds,
         CancellationToken cancellationToken)
@@ -244,8 +243,8 @@ public partial class AiAssistantService
 
     // Exact match count over the full result set (not the bounded sample).
     private async Task<int> CountTransactionsAsync(
-        DateTime start,
-        DateTime end,
+        DateTime? start,
+        DateTime? end,
         string searchText,
         IReadOnlyList<string>? transactionIds,
         CancellationToken cancellationToken) =>

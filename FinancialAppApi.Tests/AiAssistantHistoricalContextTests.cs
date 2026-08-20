@@ -591,6 +591,135 @@ public class AiAssistantHistoricalContextTests
     }
 
     [Fact]
+    public async Task ChatAsync_PurchaseFrequencySearchesAllHistoryAndBuildsAuthoritativeCadence()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false
+        });
+        var transfer = Transaction("transfer", new DateTime(2023, 3, 14, 12, 0, 0, DateTimeKind.Utc), "Deodorant transfer", -10);
+        transfer.Category = "Transfer";
+        transfer.LedgerCategory = "Transfer:Essentials->Rewards";
+        var adjustment = Transaction("adjustment", new DateTime(2023, 3, 15, 12, 0, 0, DateTimeKind.Utc), "Deodorant adjustment", -10);
+        adjustment.Category = "Adjustment";
+        var discarded = Transaction("discarded", new DateTime(2023, 3, 16, 12, 0, 0, DateTimeKind.Utc), "Deodorant discarded", -10);
+        discarded.LedgerCategory = "Discarded";
+        var structural = Transaction("structural", new DateTime(2023, 3, 17, 12, 0, 0, DateTimeKind.Utc), "Deodorant system row", -10);
+        structural.ExcludeFromAutocomplete = true;
+        context.Transactions.AddRange(
+            Transaction("one", new DateTime(2023, 1, 1, 12, 0, 0, DateTimeKind.Utc), "Watsons Deodorant", -12),
+            Transaction("same-day", new DateTime(2023, 1, 1, 18, 0, 0, DateTimeKind.Utc), "Deodorant refill", -5),
+            Transaction("two", new DateTime(2023, 1, 31, 12, 0, 0, DateTimeKind.Utc), "Deodorant", -11),
+            Transaction("three", new DateTime(2023, 3, 12, 12, 0, 0, DateTimeKind.Utc), "Deodorant spray", -10),
+            Transaction("refund", new DateTime(2023, 3, 13, 12, 0, 0, DateTimeKind.Utc), "Deodorant refund", 10),
+            transfer,
+            adjustment,
+            discarded,
+            structural);
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(
+            NewClient(handler), context, new TransactionCategoryService(context, cache),
+            financialClock: TestClock(new DateTimeOffset(2026, 7, 20, 0, 0, 0, TimeSpan.Zero)));
+
+        await service.ChatAsync(new AiChatRequest(
+            "Based on historical data, approximately whats the frequency do i buy deodorant?", []));
+
+        Assert.Contains("\"intents\":[\"ledger.purchase_frequency\"", handler.UserContent);
+        Assert.Contains("\"searchText\":\"deodorant\"", handler.UserContent);
+        Assert.Contains("\"allHistory\":true", handler.UserContent);
+        Assert.Contains("\"matchMode\":\"exact\"", handler.UserContent);
+        Assert.Contains("\"transactionCount\":4", handler.UserContent);
+        Assert.Contains("\"purchaseDayCount\":3", handler.UserContent);
+        Assert.Contains("\"medianGapDays\":35", handler.UserContent);
+        Assert.Contains("\"typicalCadence\":\"about every 5 weeks\"", handler.UserContent);
+        Assert.Contains("\"firstPurchaseDate\":\"2023-01-01\"", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_PurchaseFrequencyUsesFuzzyOnlyAfterExactReturnsNothing()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false
+        });
+        context.Transactions.Add(Transaction(
+            "correct", new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc), "Watsons Deodorant", -12));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(
+            NewClient(handler), context, new TransactionCategoryService(context, cache),
+            financialClock: TestClock(new DateTimeOffset(2026, 7, 20, 0, 0, 0, TimeSpan.Zero)));
+
+        await service.ChatAsync(new AiChatRequest("How often do I buy deoderant?", []));
+
+        Assert.Contains("\"matchMode\":\"fuzzy\"", handler.UserContent);
+        Assert.Contains("\"transactionCount\":1", handler.UserContent);
+        Assert.Contains("Watsons Deodorant", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_PurchaseFrequencyExactMatchWinsOverFuzzyCandidates()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false
+        });
+        context.Transactions.AddRange(
+            Transaction("typed", new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc), "Deoderant typed exactly", -12),
+            Transaction("similar", new DateTime(2026, 2, 1, 12, 0, 0, DateTimeKind.Utc), "Deodorant correct spelling", -12));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(
+            NewClient(handler), context, new TransactionCategoryService(context, cache),
+            financialClock: TestClock(new DateTimeOffset(2026, 7, 20, 0, 0, 0, TimeSpan.Zero)));
+
+        await service.ChatAsync(new AiChatRequest("How frequently do I buy deoderant?", []));
+
+        Assert.Contains("\"matchMode\":\"exact\"", handler.UserContent);
+        Assert.Contains("\"transactionCount\":1", handler.UserContent);
+        Assert.Contains("Deoderant typed exactly", handler.UserContent);
+        Assert.DoesNotContain("Deodorant correct spelling", handler.UserContent);
+    }
+
+    [Fact]
+    public async Task ChatAsync_PurchaseFrequencyFollowUpRetainsAllHistoryScope()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 1, SelectedMonth = "Jul", SelectedYear = 2026, HideSensitive = false
+        });
+        context.Transactions.AddRange(
+            Transaction("deodorant", new DateTime(2023, 1, 1, 12, 0, 0, DateTimeKind.Utc), "Deodorant", -12),
+            Transaction("shampoo", new DateTime(2023, 2, 1, 12, 0, 0, DateTimeKind.Utc), "Shampoo", -8));
+        await context.SaveChangesAsync();
+
+        var handler = new CapturingHandler();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new AiAssistantService(
+            NewClient(handler), context, new TransactionCategoryService(context, cache),
+            financialClock: TestClock(new DateTimeOffset(2026, 7, 20, 0, 0, 0, TimeSpan.Zero)));
+
+        var first = await service.ChatAsync(new AiChatRequest("How often do I buy deodorant?", []));
+        await service.ChatAsync(new AiChatRequest("What about shampoo?", [], first.Response.State));
+
+        Assert.Equal("all history", first.Response.State?.LastCycleHint);
+        Assert.Contains("\"allHistory\":true", handler.UserContent);
+        Assert.Contains("\"query\":\"shampoo\"", handler.UserContent);
+        Assert.Contains("Shampoo", handler.UserContent);
+    }
+
+    [Fact]
     public async Task ChatAsync_ExistenceAcrossLastThreeCyclesCountsRecordDatedInLaterCalendarMonth()
     {
         // CycleDay 28: the "May" cycle runs May 28 -> Jun 27, so a record dated Jun 24 belongs to

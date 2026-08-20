@@ -31,7 +31,7 @@ public partial class AiAssistantService
             }
         };
 
-        var needsLedgerAggregates = has("ledger.activity_count", "ledger.merchant_search", "ledger.spending_total",
+        var needsLedgerAggregates = has("ledger.activity_count", "ledger.purchase_frequency", "ledger.merchant_search", "ledger.spending_total",
             "ledger.comparison", "ledger.transaction_list", "ledger.anomaly", "ledger.duplicates",
             "category_limits.analysis", "cycle.insights", "allocation.balance", "allocation.performance",
             "ledger.account");

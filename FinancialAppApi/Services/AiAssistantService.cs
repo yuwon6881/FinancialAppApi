@@ -522,7 +522,7 @@ public partial class AiAssistantService
         parsed = parsed with { Reply = EnforceApproximateWording(parsed.Reply, contextResult.Sufficiency.Approximate) };
         parsed = parsed with
         {
-            Reply = BuildCoverageSentence(intentPlan, contextResult, pendingSyncWarning) + parsed.Reply
+            Reply = BuildCoverageSentence(contextResult, pendingSyncWarning) + parsed.Reply
         };
         // Round-trip the structured references so the client can echo them back on the next
         // turn (see AiConversationState). Not attached to small-talk/guardrail replies -- those
@@ -569,14 +569,10 @@ public partial class AiAssistantService
             AiCapabilities.Any(capability => capability.Intent == intent && capability.RequiresSensitiveReveal));
 
     private static string BuildCoverageSentence(
-        AiIntentPlan intentPlan,
         AiContextBuildResult contextResult,
         string pendingSyncWarning)
     {
-        var query = intentPlan.QueryPlan.QueryText;
-        var scope = Regex.IsMatch(query, @"\ball[- ]?time\b", RegexOptions.IgnoreCase)
-            ? "Coverage: this analysis is limited to the last 24 cycles, so it is not an exact all-time review."
-            : contextResult.Sufficiency.Approximate
+        var scope = contextResult.Sufficiency.Approximate
                 ? "Coverage: some saved rows were sampled, so the figures below are approximate."
                 : string.Empty;
 

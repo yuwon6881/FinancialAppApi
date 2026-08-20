@@ -98,7 +98,27 @@ public partial class AiAssistantService
         }
         if (queryPlan.NeedsTransactionDetail || queryPlan.NeedsCycleSummary)
         {
-            if (targetSelection.Cycles.Count > 0)
+            if (targetSelection.AllHistory)
+            {
+                if (queryPlan.TransactionData == TransactionDataLevel.MatchingRows && !string.IsNullOrWhiteSpace(queryPlan.SearchText))
+                {
+                    exactMatchCount = await CountTransactionsAsync(
+                        null, null, queryPlan.SearchText, queryPlan.TransactionIds, cancellationToken);
+                }
+                var rows = await QueryTransactionsAsync(
+                    null,
+                    null,
+                    queryPlan.TransactionData == TransactionDataLevel.MatchingRows ? queryPlan.SearchText : null,
+                    queryPlan.TransactionIds,
+                    cancellationToken);
+                if (rows.Count > MaxTransactionsPerRange)
+                {
+                    scopeTruncated = true;
+                    rows = rows.Take(MaxTransactionsPerRange).ToList();
+                }
+                transactions.AddRange(rows);
+            }
+            else if (targetSelection.Cycles.Count > 0)
             {
                 var seenIds = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var range in MergeCycleRanges(targetSelection.Cycles, cycleDay))

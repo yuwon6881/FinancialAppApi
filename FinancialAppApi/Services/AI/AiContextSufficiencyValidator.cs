@@ -12,6 +12,7 @@ public enum AiDatasetKey
     CycleSummaries,
     TransactionDetails,
     TransactionMatches,
+    PurchaseFrequency,
     Wishlist,
     WishlistForecast,
     Recurring,
@@ -53,6 +54,7 @@ public partial class AiAssistantService
     private static readonly Dictionary<string, (AiDatasetKey[] Datasets, bool RequiresExact)> IntentDataRequirements = new(StringComparer.OrdinalIgnoreCase)
     {
         ["ledger.activity_count"] = ([AiDatasetKey.TransactionMatches], true),
+        ["ledger.purchase_frequency"] = ([AiDatasetKey.PurchaseFrequency], true),
         ["ledger.merchant_search"] = ([AiDatasetKey.TransactionMatches], false),
         ["ledger.spending_total"] = ([AiDatasetKey.CycleSummaries], true),
         ["ledger.comparison"] = ([AiDatasetKey.CycleSummaries], true),

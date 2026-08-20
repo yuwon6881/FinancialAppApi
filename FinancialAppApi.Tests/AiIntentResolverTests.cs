@@ -58,6 +58,24 @@ public class AiIntentResolverTests
         Assert.True(plan.QueryPlan.NeedsTransactionDetail); // Needs matches for count
     }
 
+    [Theory]
+    [InlineData("Based on historical data, approximately whats the frequency do i buy deodorant?", "deodorant")]
+    [InlineData("How often do I purchase shampoo?", "shampoo")]
+    [InlineData("How frequently did I replace my toothbrush?", "toothbrush")]
+    [InlineData("What is the frequency I restock contact lenses?", "contact lenses")]
+    public void ResolveDeterministically_PurchaseFrequency_ExtractsArbitrarySubject(
+        string message,
+        string expectedSearch)
+    {
+        var plan = AiAssistantService.ResolveDeterministically(message);
+
+        Assert.Contains(AiAssistantService.AiIntent.LedgerPurchaseFrequency, plan.Intents);
+        Assert.Contains(AiAssistantService.DerivedMetric.PurchaseCadence, plan.QueryPlan.Metrics);
+        Assert.Equal(expectedSearch, plan.QueryPlan.SearchText, ignoreCase: true);
+        Assert.Equal("all history", plan.QueryPlan.CycleHint);
+        Assert.DoesNotContain(AiAssistantService.AiIntent.LedgerActivityCount, plan.Intents);
+    }
+
     [Fact]
     public void ResolveDeterministically_WishlistCreation_SetsWishlistAddIntent()
     {
