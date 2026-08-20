@@ -58,6 +58,33 @@ public sealed class LoanRepaymentServiceTests
     }
 
     [Fact]
+    public async Task AdvanceCyclesRepayment_AllowsAnyOpenAccountAndUsesItsBucketForTheLedgerEntry()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, _, _) = await SeedLoanAsync(context);
+        var rewardsAccount = new LedgerAccount
+        {
+            Id = "acc-rewards",
+            UserId = "test-user",
+            Name = "Rewards wallet",
+            Bucket = "Rewards",
+            Kind = "Bank"
+        };
+        context.LedgerAccounts.Add(rewardsAccount);
+        await context.SaveChangesAsync();
+
+        var result = await CreateService(context).AdvanceCyclesRepaymentAsync(
+            loan.Id, cycles: 1, accountId: rewardsAccount.Id, clientKey: "key-other-bucket");
+
+        Assert.Equal(LoanRepaymentStatus.Success, result.Status);
+        var transaction = Assert.Single(result.Transactions!);
+        Assert.Equal(rewardsAccount.Id, transaction.AccountId);
+        Assert.Equal("Rewards", transaction.LedgerCategory);
+        Assert.Equal(loan.RecurringPaymentId, transaction.RecurringPaymentId);
+        Assert.NotNull(transaction.RecurringOccurrenceDate);
+    }
+
+    [Fact]
     public async Task AdvanceCyclesRepayment_ReplaysTheSameActionAfterALostResponse()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -98,6 +125,33 @@ public sealed class LoanRepaymentServiceTests
         // Loan replay has 0 outstanding balance and payoff date set
         Assert.Equal(0m, result.LoanView!.Replay.OutstandingBalance);
         Assert.Equal(FinancialClock.Utc.Today, result.LoanView.Replay.PayoffDate);
+    }
+
+    [Fact]
+    public async Task FullSettlementRepayment_AllowsAnyOpenAccountAndUsesItsBucketForTheLedgerEntry()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, _, _) = await SeedLoanAsync(context);
+        var growthAccount = new LedgerAccount
+        {
+            Id = "acc-growth",
+            UserId = "test-user",
+            Name = "Growth account",
+            Bucket = "Growth",
+            Kind = "Bank"
+        };
+        context.LedgerAccounts.Add(growthAccount);
+        await context.SaveChangesAsync();
+
+        var result = await CreateService(context).FullSettlementRepaymentAsync(
+            loan.Id, lenderQuoteAmount: 950m, accountId: growthAccount.Id, clientKey: "key-full-other-bucket");
+
+        Assert.Equal(LoanRepaymentStatus.Success, result.Status);
+        var transaction = Assert.Single(result.Transactions!);
+        Assert.Equal(growthAccount.Id, transaction.AccountId);
+        Assert.Equal("Growth", transaction.LedgerCategory);
+        Assert.Equal(loan.RecurringPaymentId, transaction.RecurringPaymentId);
+        Assert.NotNull(transaction.RecurringOccurrenceDate);
     }
 
     [Fact]

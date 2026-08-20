@@ -192,27 +192,26 @@ public sealed class LoanRepaymentService
         var targetCount = Math.Min(cycles, futureSchedule.Count);
         var selectedEntries = futureSchedule.Take(targetCount).ToList();
 
-        // Account validation
-        var scheduledBucket = payment.LedgerCategory;
+        // A loan repayment is a one-off financing decision, not a change to the linked bill's
+        // default account. It may come from any open account; the generated ledger row follows
+        // that chosen account's bucket while its occurrence tags continue to drive loan replay.
         var requestedAccountId = string.IsNullOrWhiteSpace(accountId) ? payment.AccountId : accountId.Trim();
         if (string.IsNullOrWhiteSpace(requestedAccountId))
         {
             return new LoanRepaymentActionResult(
                 LoanRepaymentStatus.Invalid,
                 Message: "Choose the account for this loan repayment.",
-                Code: "ledger_account_required",
-                MissingBuckets: [scheduledBucket]);
+                Code: "ledger_account_required");
         }
 
         var account = await _context.LedgerAccounts.AsNoTracking()
             .FirstOrDefaultAsync(a => a.Id == requestedAccountId, cancellationToken);
-        if (account is null || account.IsArchived || !account.Bucket.Equals(scheduledBucket, StringComparison.OrdinalIgnoreCase))
+        if (account is null || account.IsArchived)
         {
             return new LoanRepaymentActionResult(
                 LoanRepaymentStatus.Invalid,
-                Message: "Choose an open account in the loan's bucket.",
-                Code: "ledger_account_invalid",
-                MissingBuckets: [scheduledBucket]);
+                Message: "Choose an open account for this loan repayment.",
+                Code: "ledger_account_invalid");
         }
 
         var createdTransactions = new List<Transaction>();
@@ -235,7 +234,7 @@ public sealed class LoanRepaymentService
                 postedAt?.ToUniversalTime().ToString("O"),
                 $"{loan.Name} advance repayment",
                 payment.Category,
-                payment.LedgerCategory,
+                account.Bucket,
                 ObfuscationHelper.Obfuscate(-Math.Abs(entry.Payment)),
                 payment.Id,
                 null,
@@ -369,26 +368,23 @@ public sealed class LoanRepaymentService
                 Message: $"Record or discard the payments still open from before today first: {dates}.");
         }
 
-        var scheduledBucket = payment.LedgerCategory;
         var requestedAccountId = string.IsNullOrWhiteSpace(accountId) ? payment.AccountId : accountId.Trim();
         if (string.IsNullOrWhiteSpace(requestedAccountId))
         {
             return new LoanRepaymentActionResult(
                 LoanRepaymentStatus.Invalid,
                 Message: "Choose the account for this loan full settlement.",
-                Code: "ledger_account_required",
-                MissingBuckets: [scheduledBucket]);
+                Code: "ledger_account_required");
         }
 
         var account = await _context.LedgerAccounts.AsNoTracking()
             .FirstOrDefaultAsync(a => a.Id == requestedAccountId, cancellationToken);
-        if (account is null || account.IsArchived || !account.Bucket.Equals(scheduledBucket, StringComparison.OrdinalIgnoreCase))
+        if (account is null || account.IsArchived)
         {
             return new LoanRepaymentActionResult(
                 LoanRepaymentStatus.Invalid,
-                Message: "Choose an open account in the loan's bucket.",
-                Code: "ledger_account_invalid",
-                MissingBuckets: [scheduledBucket]);
+                Message: "Choose an open account for this loan settlement.",
+                Code: "ledger_account_invalid");
         }
 
         var nextOccurrence = view.Replay.FutureSchedule.FirstOrDefault()?.OccurrenceDate ?? _clock.Today;
@@ -403,7 +399,7 @@ public sealed class LoanRepaymentService
             postedAt?.ToUniversalTime().ToString("O"),
             $"{loan.Name} full settlement",
             payment.Category,
-            payment.LedgerCategory,
+            account.Bucket,
             ObfuscationHelper.Obfuscate(-Math.Abs(lenderQuoteAmount)),
             payment.Id,
             null,
