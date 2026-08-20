@@ -227,6 +227,28 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
+    public async Task WriteTransactionsCsvAsync_PreservesSortAndNeutralizesSpreadsheetFormulas()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("small", "=HYPERLINK(\"bad\")", "+Food", "Rewards", -10m),
+            NewTransaction("large", "Rent", "Housing", "Essentials", -1000m));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+        await using var destination = new MemoryStream();
+
+        await service.WriteTransactionsCsvAsync(destination, sort: "amount-asc");
+
+        destination.Position = 0;
+        using var reader = new StreamReader(destination);
+        var csv = await reader.ReadToEndAsync();
+        var rows = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Contains("'=HYPERLINK", rows[1]);
+        Assert.Contains("'+Food", rows[1]);
+        Assert.Contains("Rent", rows[2]);
+    }
+
+    [Fact]
     public async Task GetAutocompleteSuggestionsAsync_ExcludesGeneratedIncomeSplits()
     {
         await using var context = TestHelpers.NewInMemoryContext();

@@ -120,7 +120,8 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "recurringOnly")] bool recurringOnly = false,
         [FromQuery(Name = "wishlistOnly")] bool wishlistOnly = false,
         [FromQuery(Name = "recurringFilter")] string? recurringFilter = null,
-        [FromQuery(Name = "wishlistFilter")] string? wishlistFilter = null)
+        [FromQuery(Name = "wishlistFilter")] string? wishlistFilter = null,
+        [FromQuery(Name = "sort")] string? sort = null)
     {
         Response.ContentType = "text/csv; charset=utf-8";
         Response.Headers.ContentDisposition =
@@ -139,6 +140,7 @@ public class TransactionsController : ControllerBase
             wishlistOnly,
             recurringFilter,
             wishlistFilter,
+            sort,
             HttpContext.RequestAborted);
         return new EmptyResult();
     }

@@ -288,6 +288,7 @@ public partial class TransactionQueryService
         bool wishlistOnly = false,
         string? recurringFilter = null,
         string? wishlistFilter = null,
+        string? sort = null,
         CancellationToken cancellationToken = default)
     {
         var query = ApplyAllFilters(
@@ -305,10 +306,7 @@ public partial class TransactionQueryService
             wishlistOnly,
             recurringFilter,
             wishlistFilter);
-        var rows = query
-            .OrderByDescending(t => t.Date)
-            .ThenByDescending(t => t.PostedAt)
-            .ThenByDescending(t => t.Id)
+        var rows = ApplySort(query, sort)
             .Select(t => new
             {
                 t.Date,
@@ -344,13 +342,13 @@ public partial class TransactionQueryService
             await writer.WriteLineAsync(string.Join(",", new[]
             {
                 EscapeCsvField(TransactionDate.ToDateOnly(t.Date).ToString("yyyy-MM-dd")),
-                EscapeCsvField(t.Description),
-                EscapeCsvField(t.Category),
-                EscapeCsvField(DisplayLedgerAllocation(t.LedgerCategory)),
+                EscapeCsvTextField(t.Description),
+                EscapeCsvTextField(t.Category),
+                EscapeCsvTextField(DisplayLedgerAllocation(t.LedgerCategory)),
                 EscapeCsvField(debit),
                 EscapeCsvField(credit),
                 EscapeCsvField(movement),
-                EscapeCsvField(t.AccountName ?? string.Empty)
+                EscapeCsvTextField(t.AccountName ?? string.Empty)
             }));
         }
         await writer.FlushAsync(cancellationToken);
@@ -542,6 +540,15 @@ public partial class TransactionQueryService
             return $"\"{value.Replace("\"", "\"\"")}\"";
         }
         return value;
+    }
+
+    private static string EscapeCsvTextField(string value)
+    {
+        if (!string.IsNullOrEmpty(value) && "=+-@\t\r".Contains(value[0]))
+        {
+            value = $"'{value}";
+        }
+        return EscapeCsvField(value);
     }
 
     private static string FormatAmount(decimal amount)
