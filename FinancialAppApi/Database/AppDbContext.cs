@@ -281,6 +281,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.ExpiresAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.CompletedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.AwaitingDeviceRecovery).HasDefaultValue(false);
             entity.HasIndex(e => new { e.UserId, e.CompletedAt, e.ExpiresAt });
         });
 

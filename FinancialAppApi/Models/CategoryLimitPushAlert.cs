@@ -72,6 +72,10 @@ public sealed class CategoryLimitAlertEvent : IUserOwnedEntity
     [Required]
     public DateTime ExpiresAt { get; set; }
 
+    // FCM definitively rejected every target token. Keep the event until its normal expiry so a
+    // device that renews its token can receive the alert without spending the cycle milestone.
+    public bool AwaitingDeviceRecovery { get; set; }
+
     public DateTime? CompletedAt { get; set; }
 }
 

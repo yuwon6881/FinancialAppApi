@@ -18,6 +18,7 @@ public class PushSubscriptionServiceTests
         Assert.False(status.DeviceSubscribed);
         Assert.False(status.ThisDeviceBillReminders);
         Assert.False(status.ThisDeviceCategoryAlerts);
+        Assert.False(status.TokenRenewalRequired);
     }
 
     [Fact]
@@ -75,6 +76,27 @@ public class PushSubscriptionServiceTests
         var status = await service.GetStatusAsync("device-1");
 
         Assert.False(status.DeviceSubscribed);
+    }
+
+    [Fact]
+    public async Task GetStatusAsync_RequiresRenewalOnlyForThisDevicesRetiredToken()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(NewSetting());
+        var retired = NewSubscription("device-1");
+        retired.Enabled = false;
+        retired.BillRemindersEnabled = false;
+        retired.CategoryAlertsEnabled = false;
+        retired.FcmToken = string.Empty;
+        context.PushSubscriptions.Add(retired);
+        await context.SaveChangesAsync();
+        var service = new PushSubscriptionService(context);
+
+        var retiredStatus = await service.GetStatusAsync("device-1");
+        var newDeviceStatus = await service.GetStatusAsync("new-device");
+
+        Assert.True(retiredStatus.TokenRenewalRequired);
+        Assert.False(newDeviceStatus.TokenRenewalRequired);
     }
 
     [Fact]

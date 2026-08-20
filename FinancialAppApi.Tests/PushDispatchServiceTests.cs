@@ -574,6 +574,9 @@ public class PushDispatchServiceTests
         var subscriptions = await check.PushSubscriptions.IgnoreQueryFilters().ToListAsync();
         Assert.False(subscriptions.Single(s => s.Id == "sub-bad").Enabled);
         Assert.True(subscriptions.Single(s => s.Id == "sub-good").Enabled);
+        var deliveries = await check.PushReminderDeliveries.IgnoreQueryFilters().ToListAsync();
+        Assert.DoesNotContain(deliveries, delivery => delivery.SubscriptionId == "sub-bad");
+        Assert.Contains(deliveries, delivery => delivery.SubscriptionId == "sub-good");
     }
 
     [Fact]
@@ -888,6 +891,7 @@ public class PushDispatchServiceTests
         services.AddScoped<CycleBalanceService>();
         services.AddScoped<FinancialAppApi.Services.Accounts.LedgerAccountService>();
         services.AddScoped<RecurringOccurrenceService>();
+        services.AddScoped<PushSubscriptionService>();
         // The dispatcher resolves the ledger per user scope. It must share the test's fixed
         // clock, or "which occurrence is next" is answered against the wall clock and the
         // seeded due dates never line up.

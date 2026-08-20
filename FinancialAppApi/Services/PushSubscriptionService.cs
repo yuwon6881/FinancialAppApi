@@ -33,7 +33,8 @@ public sealed record PushStatusResult(
     bool ThisDeviceBillReminders,
     bool ThisDeviceCategoryAlerts,
     bool OtherDevicesBillReminders,
-    bool OtherDevicesCategoryAlerts)
+    bool OtherDevicesCategoryAlerts,
+    bool TokenRenewalRequired)
 {
     public bool DeviceSubscribed => ThisDeviceBillReminders || ThisDeviceCategoryAlerts;
     public bool AccountEnabled => DeviceSubscribed || OtherDevicesBillReminders || OtherDevicesCategoryAlerts;
@@ -63,17 +64,29 @@ public class PushSubscriptionService
         // Live device subscriptions are the single source of truth for every part of this answer:
         // there is no separate account-level flag to disagree with them.
         var rows = await _context.PushSubscriptions
-            .Where(s => s.Enabled)
-            .Select(s => new { s.DeviceId, s.BillRemindersEnabled, s.CategoryAlertsEnabled })
+            .Select(s => new
+            {
+                s.DeviceId,
+                s.Enabled,
+                TokenMissing = s.FcmToken == string.Empty,
+                s.BillRemindersEnabled,
+                s.CategoryAlertsEnabled
+            })
             .ToListAsync(cancellationToken);
 
         var thisDeviceBills = false;
         var thisDeviceAlerts = false;
         var otherBills = false;
         var otherAlerts = false;
+        var tokenRenewalRequired = false;
         foreach (var row in rows)
         {
             var isThisDevice = !string.IsNullOrWhiteSpace(deviceId) && row.DeviceId == deviceId;
+            if (isThisDevice && !row.Enabled && row.TokenMissing)
+            {
+                tokenRenewalRequired = true;
+            }
+            if (!row.Enabled) continue;
             if (isThisDevice)
             {
                 thisDeviceBills |= row.BillRemindersEnabled;
@@ -86,7 +99,7 @@ public class PushSubscriptionService
             }
         }
 
-        return new PushStatusResult(thisDeviceBills, thisDeviceAlerts, otherBills, otherAlerts);
+        return new PushStatusResult(thisDeviceBills, thisDeviceAlerts, otherBills, otherAlerts, tokenRenewalRequired);
     }
 
     // The account's opted-in devices, so the user can see and revoke an enrolment made on a
@@ -240,6 +253,26 @@ public class PushSubscriptionService
 
     public Task<bool> RevokeDeviceAsync(string subscriptionId, CancellationToken cancellationToken = default) =>
         DisableAsync(s => s.Id == subscriptionId, cancellationToken);
+
+    /// <summary>
+    /// Retires a token that FCM has definitively rejected while preserving the durable push work
+    /// that can still be delivered after this device renews its registration.
+    /// </summary>
+    public async Task RetireInvalidTokenAsync(
+        PushSubscription subscription,
+        CancellationToken cancellationToken = default)
+    {
+        subscription.Enabled = false;
+        subscription.BillRemindersEnabled = false;
+        subscription.CategoryAlertsEnabled = false;
+        subscription.FcmToken = string.Empty;
+        subscription.UpdatedAt = _timeProvider.GetUtcNow().UtcDateTime;
+
+        // This must inspect tracked values as well as stored rows. A database AnyAsync here sees
+        // this subscription's pre-save flags and leaves the account mirror incorrectly enabled.
+        await SyncCategoryAlertConsentAsync(cancellationToken);
+        await _context.SaveChangesAsync(cancellationToken);
+    }
 
     private async Task<bool> DisableAsync(
         System.Linq.Expressions.Expression<Func<PushSubscription, bool>> predicate,

@@ -52,6 +52,25 @@ public class CategoryLimitAlertProcessorTests
     }
 
     [Fact]
+    public async Task ProcessPendingAsync_CategoryEditMovesSpendAndAlertsTheNewCategory()
+    {
+        var dbName = NewDbName();
+        await SeedAsync(dbName, ("Entertainment", 100m, 21m), ("Hobbies", 100m, 79m));
+        await using var context = NewContext(dbName, authenticated: true);
+        var sender = new FakeSender();
+
+        var transaction = await context.Transactions.SingleAsync(item => item.Id == "seed-Entertainment");
+        transaction.Category = "Hobbies";
+        await context.SaveChangesAsync();
+        await NewProcessor(context, sender).ProcessPendingAsync();
+
+        var content = Assert.Single(sender.Sent).Content;
+        Assert.Contains("Hobbies", content.Body);
+        Assert.DoesNotContain("Entertainment", content.Body);
+        Assert.Equal("Hobbies", Assert.Single(await context.CategoryLimitAlertMilestones.ToListAsync()).CategoryName);
+    }
+
+    [Fact]
     public async Task ProcessPendingAsync_DoesNotRepeatAfterFallingBelowAndRecrossing()
     {
         var dbName = NewDbName();
@@ -209,6 +228,74 @@ public class CategoryLimitAlertProcessorTests
     }
 
     [Fact]
+    public async Task ProcessPendingAsync_InvalidOnlyTokenWaitsForRenewalWithoutSpendingTheAlert()
+    {
+        var dbName = NewDbName();
+        await SeedAsync(dbName, ("Dining", 100m, 79m));
+        await using var context = NewContext(dbName, authenticated: true);
+        var sender = new FakeSender { Result = new FcmSendResult(FcmSendStatus.InvalidOrUnregistered) };
+        var processor = NewProcessor(context, sender);
+
+        await AddExpenseAsync(context, "tx-cross", "Dining", 1m);
+        await processor.ProcessPendingAsync();
+
+        var failedEvent = await context.CategoryLimitAlertEvents.SingleAsync();
+        Assert.True(failedEvent.AwaitingDeviceRecovery);
+        Assert.Null(failedEvent.CompletedAt);
+        Assert.Empty(await context.CategoryLimitAlertDeliveries.ToListAsync());
+        Assert.Single(await context.CategoryLimitAlertMilestones.ToListAsync());
+        Assert.False((await context.PushSubscriptions.SingleAsync()).Enabled);
+        Assert.False((await context.FinancialSettings.SingleAsync()).CategoryLimitAlertsEnabled);
+
+        sender.Result = new FcmSendResult(FcmSendStatus.Sent);
+        var subscriptionService = new PushSubscriptionService(context, new FixedTimeProvider(CurrentDate.AddHours(2)));
+        await subscriptionService.SubscribeAsync("device-1", "token-renewed", false, true);
+        await processor.ProcessPendingAsync();
+
+        var deliveredEvent = await context.CategoryLimitAlertEvents.SingleAsync();
+        Assert.False(deliveredEvent.AwaitingDeviceRecovery);
+        Assert.NotNull(deliveredEvent.CompletedAt);
+        Assert.Single(await context.CategoryLimitAlertDeliveries.ToListAsync());
+        Assert.Equal("token-renewed", sender.Sent.Last().Token);
+    }
+
+    [Fact]
+    public async Task ProcessPendingAsync_InvalidTokenDoesNotDelayAnotherDevicesSuccessfulAlert()
+    {
+        var dbName = NewDbName();
+        await SeedAsync(dbName, ("Dining", 100m, 79m));
+        await using var context = NewContext(dbName, authenticated: true);
+        context.PushSubscriptions.Add(new PushSubscription
+        {
+            Id = "push-2",
+            DeviceId = "device-2",
+            FcmToken = "token-good",
+            Enabled = true,
+            CategoryAlertsEnabled = true,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        });
+        await context.SaveChangesAsync();
+        var sender = new FakeSender
+        {
+            ResultForToken = token => token == "token-1"
+                ? new FcmSendResult(FcmSendStatus.InvalidOrUnregistered)
+                : new FcmSendResult(FcmSendStatus.Sent)
+        };
+
+        await AddExpenseAsync(context, "tx-cross", "Dining", 1m);
+        await NewProcessor(context, sender).ProcessPendingAsync();
+
+        var alertEvent = await context.CategoryLimitAlertEvents.SingleAsync();
+        Assert.False(alertEvent.AwaitingDeviceRecovery);
+        Assert.NotNull(alertEvent.CompletedAt);
+        Assert.Equal("push-2", (await context.CategoryLimitAlertDeliveries.SingleAsync()).SubscriptionId);
+        Assert.False((await context.PushSubscriptions.SingleAsync(item => item.Id == "push-1")).Enabled);
+        Assert.True((await context.PushSubscriptions.SingleAsync(item => item.Id == "push-2")).Enabled);
+        Assert.True((await context.FinancialSettings.SingleAsync()).CategoryLimitAlertsEnabled);
+    }
+
+    [Fact]
     public async Task ProcessPendingAsync_IgnoresHistoricalAndTransferRows()
     {
         var dbName = NewDbName();
@@ -336,6 +423,7 @@ public class CategoryLimitAlertProcessorTests
         return new CategoryLimitAlertProcessor(
             context,
             sender,
+            new PushSubscriptionService(context, new FixedTimeProvider(CurrentDate.AddHours(1))),
             clock,
             NullLogger<CategoryLimitAlertProcessor>.Instance);
     }
@@ -348,6 +436,8 @@ public class CategoryLimitAlertProcessorTests
     private sealed class FakeSender : IFcmPushSender
     {
         public List<(string Token, PushNotificationContent Content)> Sent { get; } = [];
+        public FcmSendResult Result { get; set; } = new(FcmSendStatus.Sent);
+        public Func<string, FcmSendResult>? ResultForToken { get; set; }
 
         public Task<FcmSendResult> SendAsync(
             string fcmToken,
@@ -355,7 +445,7 @@ public class CategoryLimitAlertProcessorTests
             CancellationToken cancellationToken = default)
         {
             Sent.Add((fcmToken, content));
-            return Task.FromResult(new FcmSendResult(FcmSendStatus.Sent));
+            return Task.FromResult(ResultForToken?.Invoke(fcmToken) ?? Result);
         }
     }
 }

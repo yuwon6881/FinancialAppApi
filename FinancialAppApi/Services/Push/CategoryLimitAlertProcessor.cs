@@ -14,17 +14,20 @@ public sealed class CategoryLimitAlertProcessor
 
     private readonly AppDbContext _context;
     private readonly IFcmPushSender _fcmSender;
+    private readonly PushSubscriptionService _subscriptionService;
     private readonly FinancialClock _financialClock;
     private readonly ILogger<CategoryLimitAlertProcessor> _logger;
 
     public CategoryLimitAlertProcessor(
         AppDbContext context,
         IFcmPushSender fcmSender,
+        PushSubscriptionService subscriptionService,
         FinancialClock financialClock,
         ILogger<CategoryLimitAlertProcessor> logger)
     {
         _context = context;
         _fcmSender = fcmSender;
+        _subscriptionService = subscriptionService;
         _financialClock = financialClock;
         _logger = logger;
     }
@@ -206,10 +209,11 @@ public sealed class CategoryLimitAlertProcessor
         var now = DateTime.UtcNow;
         if (setting == null || !setting.CategoryLimitAlertsEnabled)
         {
-            await ReleaseMilestonesAsync(events.Select(item => item.Id), cancellationToken);
-            foreach (var item in events) item.CompletedAt = now;
+            var dropped = events.Where(item => !item.AwaitingDeviceRecovery || item.ExpiresAt <= now).ToList();
+            await ReleaseMilestonesAsync(dropped.Select(item => item.Id), cancellationToken);
+            foreach (var item in dropped) item.CompletedAt = now;
             await _context.SaveChangesAsync(cancellationToken);
-            return new CategoryLimitAlertDispatchSummary(0, events.Count, 0);
+            return new CategoryLimitAlertDispatchSummary(0, dropped.Count, 0);
         }
 
         // Only the devices that asked for spending alerts. A phone opted into these while the
@@ -219,10 +223,11 @@ public sealed class CategoryLimitAlertProcessor
             .ToListAsync(cancellationToken);
         if (subscriptions.Count == 0)
         {
-            await ReleaseMilestonesAsync(events.Select(item => item.Id), cancellationToken);
-            foreach (var item in events) item.CompletedAt = now;
+            var dropped = events.Where(item => !item.AwaitingDeviceRecovery || item.ExpiresAt <= now).ToList();
+            await ReleaseMilestonesAsync(dropped.Select(item => item.Id), cancellationToken);
+            foreach (var item in dropped) item.CompletedAt = now;
             await _context.SaveChangesAsync(cancellationToken);
-            return new CategoryLimitAlertDispatchSummary(0, events.Count, 0);
+            return new CategoryLimitAlertDispatchSummary(0, dropped.Count, 0);
         }
 
         var sent = 0;
@@ -294,20 +299,12 @@ public sealed class CategoryLimitAlertProcessor
                 }
                 else if (result.Status == FcmSendStatus.InvalidOrUnregistered)
                 {
-                    // Retired token: off for every kind, so the invariant holds and no switch
-                    // keeps claiming this device receives something.
-                    subscription.Enabled = false;
-                    subscription.BillRemindersEnabled = false;
-                    subscription.CategoryAlertsEnabled = false;
-                    subscription.FcmToken = string.Empty;
-                    if (setting != null && !await _context.PushSubscriptions.AnyAsync(
-                            candidate => candidate.Enabled && candidate.CategoryAlertsEnabled,
-                            cancellationToken))
-                    {
-                        setting.CategoryLimitAlertsEnabled = false;
-                    }
+                    // FCM proved that nothing was delivered. Remove the claim, retire the token
+                    // through the one subscription writer, and retain the event for token renewal.
+                    _context.CategoryLimitAlertDeliveries.Remove(claim);
+                    alertEvent.AwaitingDeviceRecovery = true;
                     disabled++;
-                    await _context.SaveChangesAsync(cancellationToken);
+                    await _subscriptionService.RetireInvalidTokenAsync(subscription, cancellationToken);
                 }
                 else
                 {
@@ -322,8 +319,11 @@ public sealed class CategoryLimitAlertProcessor
                 .Where(subscription => subscription.Enabled && subscription.CategoryAlertsEnabled)
                 .AnyAsync(subscription => !_context.CategoryLimitAlertDeliveries.Any(delivery =>
                     delivery.EventId == alertEvent.Id && delivery.SubscriptionId == subscription.Id), cancellationToken);
-            if (!hasUndeliveredEnabledDevice)
+            var hasDelivery = await _context.CategoryLimitAlertDeliveries
+                .AnyAsync(delivery => delivery.EventId == alertEvent.Id, cancellationToken);
+            if (hasDelivery && !hasUndeliveredEnabledDevice)
             {
+                alertEvent.AwaitingDeviceRecovery = false;
                 alertEvent.CompletedAt = now;
             }
         }

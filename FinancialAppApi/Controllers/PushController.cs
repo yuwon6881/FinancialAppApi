@@ -11,11 +11,16 @@ public class PushController : ControllerBase
 {
     private readonly PushSubscriptionService _subscriptionService;
     private readonly PushDispatchService _dispatchService;
+    private readonly CategoryLimitAlertProcessor _categoryLimitAlertProcessor;
 
-    public PushController(PushSubscriptionService subscriptionService, PushDispatchService dispatchService)
+    public PushController(
+        PushSubscriptionService subscriptionService,
+        PushDispatchService dispatchService,
+        CategoryLimitAlertProcessor categoryLimitAlertProcessor)
     {
         _subscriptionService = subscriptionService;
         _dispatchService = dispatchService;
+        _categoryLimitAlertProcessor = categoryLimitAlertProcessor;
     }
 
     // GET: api/push/status?deviceId=...
@@ -28,6 +33,7 @@ public class PushController : ControllerBase
         {
             Enabled = status.AccountEnabled,
             DeviceRegistered = status.DeviceSubscribed,
+            TokenRenewalRequired = status.TokenRenewalRequired,
             BillRemindersEnabled = status.ThisDeviceBillReminders,
             CategoryAlertsEnabled = status.ThisDeviceCategoryAlerts,
             OtherDevicesBillReminders = status.OtherDevicesBillReminders,
@@ -102,6 +108,12 @@ public class PushController : ControllerBase
             dto.BillReminders,
             dto.CategoryAlerts,
             HttpContext.RequestAborted);
+        if (dto.CategoryAlerts == true)
+        {
+            // A renewed token may have durable category alerts waiting from the provider failure
+            // that retired the previous token. Deliver them as part of the acknowledged repair.
+            await _categoryLimitAlertProcessor.ProcessPendingAsync(HttpContext.RequestAborted);
+        }
         return Ok();
     }
 
@@ -134,6 +146,8 @@ public class PushStatusDto
     /// <summary>Any device on the account receives something. Never this device's state.</summary>
     public bool Enabled { get; set; }
     public bool DeviceRegistered { get; set; }
+    /// <summary>The server retired this device's old token; do not upload Firebase's cached value.</summary>
+    public bool TokenRenewalRequired { get; set; }
     /// <summary>What THIS device receives. Both switches render from these two.</summary>
     public bool BillRemindersEnabled { get; set; }
     public bool CategoryAlertsEnabled { get; set; }

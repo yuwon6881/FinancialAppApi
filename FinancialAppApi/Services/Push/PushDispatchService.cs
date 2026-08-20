@@ -79,6 +79,7 @@ public sealed partial class PushDispatchService
                 userContext.SetCurrentUser(userId);
                 var userOccurrenceLedger = userScope.ServiceProvider.GetRequiredService<RecurringOccurrenceLedgerService>();
                 var userAccountBalanceService = userScope.ServiceProvider.GetRequiredService<LedgerAccountBalanceService>();
+                var userSubscriptionService = userScope.ServiceProvider.GetRequiredService<PushSubscriptionService>();
 
                 var subscriptions = await userContext.PushSubscriptions
                     .Where(s => s.Enabled && s.BillRemindersEnabled)
@@ -187,6 +188,7 @@ public sealed partial class PushDispatchService
                             var (outcome, sentIncrement, skippedIncrement, disabledIncrement) = await TrySendOneAsync(
                                 userContext,
                                 fcmSender,
+                                userSubscriptionService,
                                 payment,
                                 due,
                                 occurrenceDate,
@@ -234,6 +236,7 @@ public sealed partial class PushDispatchService
     private async Task<(string Outcome, int Sent, int Skipped, int Disabled)> TrySendOneAsync(
         AppDbContext context,
         IFcmPushSender fcmSender,
+        PushSubscriptionService subscriptionService,
         RecurringPayment payment,
         RecurringPaymentOccurrence due,
         DateOnly occurrenceDate,
@@ -328,21 +331,10 @@ public sealed partial class PushDispatchService
             case FcmSendStatus.Sent:
                 return ("Sent", 1, 0, 0);
             case FcmSendStatus.InvalidOrUnregistered:
-                // FCM has retired this token, so the device is off for every kind at once regardless
-                // of what its user asked for — keeping a channel flag on would leave the
-                // Enabled == (bills || alerts) invariant broken and the switch showing "on".
-                subscription.Enabled = false;
-                subscription.BillRemindersEnabled = false;
-                subscription.CategoryAlertsEnabled = false;
-                subscription.FcmToken = string.Empty;
-                var setting = await context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
-                if (setting != null && !await context.PushSubscriptions.AnyAsync(
-                        candidate => candidate.Enabled && candidate.CategoryAlertsEnabled,
-                        cancellationToken))
-                {
-                    setting.CategoryLimitAlertsEnabled = false;
-                }
-                await context.SaveChangesAsync(cancellationToken);
+                // This send is known not to have reached the device. Release the claims before
+                // retiring the token so a renewed registration can receive the reminder later.
+                context.PushReminderDeliveries.RemoveRange(claims);
+                await subscriptionService.RetireInvalidTokenAsync(subscription, cancellationToken);
                 return ("Disabled", 0, 0, 1);
             default:
                 // Never logs the token or any payment amount — just that a send failed. The claim
