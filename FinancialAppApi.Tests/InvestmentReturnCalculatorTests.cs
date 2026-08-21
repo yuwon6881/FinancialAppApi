@@ -41,4 +41,17 @@ public sealed class InvestmentReturnCalculatorTests
             new DatedInvestmentFlow(new DateOnly(2025, 1, 1), 1100m)
         ]));
     }
+
+    [Fact]
+    public void Calculate_RefusesAmbiguousMultipleReturns()
+    {
+        var result = InvestmentReturnCalculator.Calculate([
+            new DatedInvestmentFlow(new DateOnly(2023, 1, 1), -1000m),
+            new DatedInvestmentFlow(new DateOnly(2024, 1, 1), 1500m),
+            new DatedInvestmentFlow(new DateOnly(2025, 1, 1), -700m),
+            new DatedInvestmentFlow(new DateOnly(2026, 1, 1), 100m)
+        ]);
+
+        Assert.Null(result);
+    }
 }

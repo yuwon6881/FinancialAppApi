@@ -77,11 +77,11 @@ public sealed record InvestmentAllocationOverviewDto(
     IReadOnlyList<string> IncompleteReasons,
     InvestmentMarketDataFreshnessDto Freshness,
     decimal? InvestedValue,
-    decimal AvailableCash,
+    decimal? AvailableCash,
     decimal? MinimumContribution,
     InvestmentContributionPlanDto? ContributionPlan = null);
 
-public sealed class InvestmentAllocationService(AppDbContext context)
+public sealed partial class InvestmentAllocationService(AppDbContext context)
 {
     public const int AutomaticRefreshMinutes = 60;
 
@@ -143,21 +143,37 @@ public sealed class InvestmentAllocationService(AppDbContext context)
             freshnessInputs.Any(value => value.FetchedAt is null),
             AutomaticRefreshMinutes,
             staleInputs);
+        var availableCash = PositiveCash(cashBalances);
+        var cashReasons = cashBalances
+            .Where(value => value.Amount > 0 && value.AmountApp is null)
+            .Select(value => $"{value.Currency} cash in {value.AccountName} cannot be valued in {appCurrency}.")
+            .Distinct()
+            .ToList();
+        var cycleDay = await context.FinancialSettings.AsNoTracking()
+            .Select(value => (int?)value.CycleDay)
+            .SingleOrDefaultAsync(cancellationToken) ?? 28;
+        var (usualGrowthDeposit, cyclesObserved) = UsualCompletedCycleContribution(contributions, cycleDay);
 
         if (holdings.Count == 0)
         {
+            var emptyValues = SleeveDefinitions.ToDictionary(value => value.Key, _ => 0m);
             return new InvestmentAllocationOverviewDto(
                 "NotStarted", appCurrency, plan, assignments,
-                EmptySleeves(plan), [], [], freshness, 0, PositiveCash(cashBalances), 0);
+                EmptySleeves(plan), [], cashReasons, freshness, 0, availableCash,
+                availableCash is null ? null : 0,
+                availableCash is null ? null : BuildContributionPlan(
+                    appCurrency, 0, emptyValues, Targets(plan), 0, false,
+                    usualGrowthDeposit, cyclesObserved, availableCash.Value));
         }
 
-        var incompleteReasons = reasons.Distinct().ToList();
-        if (incompleteReasons.Count > 0)
+        var incompleteReasons = reasons.Concat(cashReasons).Distinct().ToList();
+        var holdingReasons = reasons.Distinct().ToList();
+        if (holdingReasons.Count > 0)
         {
             return new InvestmentAllocationOverviewDto(
                 "Incomplete", appCurrency, plan, assignments,
                 IncompleteSleeves(plan, holdings, instruments), [], incompleteReasons,
-                freshness, null, PositiveCash(cashBalances), null);
+                freshness, null, availableCash, null);
         }
 
         var investedValue = holdings.Sum(value => value.ValueApp!.Value);
@@ -165,7 +181,8 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         {
             return new InvestmentAllocationOverviewDto(
                 "NotStarted", appCurrency, plan, assignments,
-                EmptySleeves(plan), [], [], freshness, investedValue, PositiveCash(cashBalances), 0);
+                EmptySleeves(plan), [], cashReasons, freshness, investedValue, availableCash,
+                availableCash is null ? null : 0);
         }
 
         var targets = Targets(plan);
@@ -179,29 +196,23 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         var status = sleeves.Any(value => value.Status == "Alert")
             ? "Alert"
             : sleeves.Any(value => value.Status == "Watch") ? "Watch" : "OnTrack";
-        var availableCash = PositiveCash(cashBalances);
-        var cycleDay = await context.FinancialSettings.AsNoTracking()
-            .Select(value => (int?)value.CycleDay)
-            .SingleOrDefaultAsync(cancellationToken) ?? 28;
-        var (usualGrowthDeposit, cyclesObserved) = UsualCompletedCycleContribution(contributions, cycleDay);
-
         var minimumNewMoney = SleeveDefinitions.Max(definition =>
             values[definition.Key] / (targets[definition.Key] / 100m) - investedValue);
         minimumNewMoney = Math.Max(0, minimumNewMoney);
 
-        var recommendations = status == "OnTrack" 
+        var recommendations = status == "OnTrack" || availableCash is null
             ? new List<InvestmentAllocationRecommendationDto>()
             : BuildRecommendations(
-                appCurrency, investedValue, values, targets, availableCash, usualGrowthDeposit,
+                appCurrency, investedValue, values, targets, availableCash.Value, usualGrowthDeposit,
                 plan.WatchDrift);
 
         return new InvestmentAllocationOverviewDto(
-            status, appCurrency, plan, assignments, sleeves, recommendations, [],
-            freshness, RoundMoney(investedValue), RoundMoney(availableCash),
-            RoundMoney(Math.Max(0, minimumNewMoney - availableCash - (usualGrowthDeposit ?? 0))),
-            BuildContributionPlan(
+            status, appCurrency, plan, assignments, sleeves, recommendations, incompleteReasons,
+            freshness, RoundMoney(investedValue), availableCash is null ? null : RoundMoney(availableCash.Value),
+            availableCash is null ? null : RoundMoney(Math.Max(0, minimumNewMoney - availableCash.Value - (usualGrowthDeposit ?? 0))),
+            availableCash is null ? null : BuildContributionPlan(
                 appCurrency, investedValue, values, targets, minimumNewMoney, status != "OnTrack",
-                usualGrowthDeposit, cyclesObserved, availableCash));
+                usualGrowthDeposit, cyclesObserved, availableCash.Value));
     }
 
     public static string? ValidatePlan(InvestmentPlanMutationDto value)
@@ -259,9 +270,9 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         CancellationToken cancellationToken)
     {
         var instruments = await context.InvestmentInstruments
-            .Where(value => instrumentIds.Contains(value.Id))
             .ToDictionaryAsync(value => value.Id, cancellationToken);
-        if (instruments.Count != instrumentIds.Count) return false;
+        if (instruments.Count != instrumentIds.Count || instrumentIds.Any(id => !instruments.ContainsKey(id)))
+            return false;
 
         for (var index = 0; index < instrumentIds.Count; index++)
         {
@@ -315,92 +326,6 @@ public sealed class InvestmentAllocationService(AppDbContext context)
                 Math.Round(percentage, 2), RoundMoney(values[definition.Key]), Math.Round(drift, 2),
                 RoundMoney(values[definition.Key] - total * targets[definition.Key] / 100m), status);
         }).ToList();
-    }
-
-    private static IReadOnlyList<InvestmentAllocationRecommendationDto> BuildRecommendations(
-        string currency,
-        decimal investedValue,
-        IReadOnlyDictionary<string, decimal> values,
-        IReadOnlyDictionary<string, decimal> targets,
-        decimal cash,
-        decimal? usualGrowthDeposit,
-        decimal watchDrift)
-    {
-        var recommendations = new List<InvestmentAllocationRecommendationDto>();
-        var expectedGrowthDeposit = usualGrowthDeposit ?? 0;
-        var funding = Math.Max(0, cash) + expectedGrowthDeposit;
-        var priority = 1;
-
-        if (usualGrowthDeposit is > 0)
-        {
-            recommendations.Add(new InvestmentAllocationRecommendationDto(
-                priority++, "TopUp", null, RoundMoney(expectedGrowthDeposit),
-                $"Use the usual completed-cycle Growth deposit of {Format(expectedGrowthDeposit, currency)} before considering any sale."));
-        }
-        if (cash > 0)
-        {
-            recommendations.Add(new InvestmentAllocationRecommendationDto(
-                priority++, "UseCash", null, RoundMoney(cash),
-                $"Invest {Format(cash, currency)} of available cash before selling any holding."));
-        }
-
-        // Apply all expected new money to the most underweight sleeves first. This models the
-        // portfolio after the user's normal Growth deposit and available cash have been invested,
-        // so a sale is only recommended if a configured Watch/Alert drift would still remain.
-        var projectedTotal = investedValue + funding;
-        var projected = values.ToDictionary(value => value.Key, value => value.Value);
-        var remainingFunding = funding;
-        var deficits = SleeveDefinitions
-            .Select(definition => new
-            {
-                definition.Key,
-                definition.Label,
-                Amount = Math.Max(0, projectedTotal * targets[definition.Key] / 100m - projected[definition.Key]),
-                Drift = projected[definition.Key] / projectedTotal * 100m - targets[definition.Key]
-            })
-            .Where(value => value.Amount > 0.005m)
-            .OrderBy(value => value.Drift)
-            .ToList();
-        foreach (var deficit in deficits)
-        {
-            if (remainingFunding <= 0.005m) break;
-            var amount = Math.Min(deficit.Amount, remainingFunding);
-            if (amount <= 0.005m) continue;
-            projected[deficit.Key] += amount;
-            remainingFunding -= amount;
-            recommendations.Add(new InvestmentAllocationRecommendationDto(
-                priority++, "Buy", deficit.Key, RoundMoney(amount),
-                $"Buy {Format(amount, currency)} of {deficit.Label} with new money."));
-        }
-
-        var stillOutsideBand = SleeveDefinitions.Any(definition =>
-            Math.Abs(projected[definition.Key] / projectedTotal * 100m - targets[definition.Key]) >= watchDrift);
-
-        if (stillOutsideBand)
-        {
-            var saleAmounts = SleeveDefinitions.Select(definition => new
-            {
-                definition.Key,
-                definition.Label,
-                Amount = Math.Max(0, projected[definition.Key] - projectedTotal * targets[definition.Key] / 100m)
-            }).Where(value => value.Amount > 0.005m).ToList();
-            foreach (var sale in saleAmounts)
-            {
-                recommendations.Add(new InvestmentAllocationRecommendationDto(
-                    priority++, "Sell", sale.Key, RoundMoney(sale.Amount),
-                    $"Only after investing new money, sell {Format(sale.Amount, currency)} of {sale.Label}."));
-            }
-            foreach (var definition in SleeveDefinitions)
-            {
-                var difference = projectedTotal * targets[definition.Key] / 100m - projected[definition.Key];
-                if (difference <= 0.005m) continue;
-                recommendations.Add(new InvestmentAllocationRecommendationDto(
-                    priority++, "TransferBuy", definition.Key, RoundMoney(difference),
-                    $"Reinvest {Format(difference, currency)} of sale proceeds into {definition.Label}."));
-            }
-        }
-
-        return recommendations;
     }
 
     /// <summary>
@@ -519,39 +444,6 @@ public sealed class InvestmentAllocationService(AppDbContext context)
             basis, cyclesObserved, isEstimated, sleeves);
     }
 
-    /// <summary>
-    /// The typical Growth deposit per completed cycle, plus how many cycles that was measured
-    /// over. The median rather than the mean: a single windfall cycle should not raise what the
-    /// user is told to buy every month.
-    /// </summary>
-    private static (decimal? Amount, int Cycles) UsualCompletedCycleContribution(
-        IReadOnlyList<InvestmentContributionDto> contributions,
-        int cycleDay)
-    {
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var currentCycle = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
-            today, cycleDay);
-        var cycleTotals = contributions
-            .Where(value => value.AmountApp > 0)
-            .Select(value => new
-            {
-                Cycle = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
-                    value.Date, cycleDay),
-                value.AmountApp
-            })
-            .Where(value => value.Cycle != currentCycle)
-            .GroupBy(value => value.Cycle)
-            .Select(group => group.Sum(value => value.AmountApp))
-            .OrderBy(value => value)
-            .ToList();
-
-        if (cycleTotals.Count == 0) return (null, 0);
-        var middle = cycleTotals.Count / 2;
-        return (RoundMoney(cycleTotals.Count % 2 == 1
-            ? cycleTotals[middle]
-            : (cycleTotals[middle - 1] + cycleTotals[middle]) / 2m), cycleTotals.Count);
-    }
-
     private static Dictionary<string, decimal> Targets(InvestmentPlanDto plan) => new()
     {
         ["USEquity"] = plan.UsEquityTarget,
@@ -559,8 +451,10 @@ public sealed class InvestmentAllocationService(AppDbContext context)
         ["Bonds"] = plan.BondsTarget
     };
 
-    private static decimal PositiveCash(IReadOnlyList<InvestmentCashBalanceDto> balances)
-        => balances.Where(value => value.AmountApp > 0).Sum(value => value.AmountApp ?? 0);
+    private static decimal? PositiveCash(IReadOnlyList<InvestmentCashBalanceDto> balances)
+        => balances.Any(value => value.Amount > 0 && value.AmountApp is null)
+            ? null
+            : balances.Where(value => value.AmountApp > 0).Sum(value => value.AmountApp ?? 0);
 
     private static decimal RoundMoney(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 

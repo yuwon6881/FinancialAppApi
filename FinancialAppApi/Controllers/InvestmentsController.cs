@@ -288,11 +288,12 @@ public sealed class InvestmentsController(
             .FirstOrDefaultAsync(value => value.Id == id, HttpContext.RequestAborted);
         if (transaction is null) return NotFound();
         context.InvestmentTransactions.Remove(transaction);
-        var validation = await historyValidationService.ValidatePositionHistoryAsync(HttpContext.RequestAborted);
-        if (validation is not null)
+        var validation = await historyValidationService.ValidateTransactionMutationAsync(HttpContext.RequestAborted);
+        var validationError = validation.PositionError ?? validation.CashError;
+        if (validationError is not null)
         {
             context.ChangeTracker.Clear();
-            return Conflict(new { message = $"This activity cannot be deleted because later activity would become invalid: {validation}" });
+            return Conflict(new { message = $"This activity cannot be deleted because later activity would become invalid: {validationError}" });
         }
         var snapshot = new DeletedTransactionsSnapshot(
             [InvestmentPortfolioService.ToDto(transaction)]);
@@ -333,7 +334,7 @@ public sealed class InvestmentsController(
                 AccountId = item.AccountId,
                 InstrumentId = item.InstrumentId,
                 Instrument = restoredInstruments[item.InstrumentId],
-                Type = item.Type,
+                Type = InvestmentKinds.CanonicalTransactionType(item.Type)!,
                 TradeDate = item.TradeDate,
                 Units = item.Units,
                 UnitPrice = item.UnitPrice,
@@ -345,7 +346,8 @@ public sealed class InvestmentsController(
             restored.Add(transaction);
             context.InvestmentTransactions.Add(transaction);
         }
-        var historyError = await historyValidationService.ValidatePositionHistoryAsync(HttpContext.RequestAborted);
+        var validation = await historyValidationService.ValidateTransactionMutationAsync(HttpContext.RequestAborted);
+        var historyError = validation.PositionError ?? validation.CashError;
         if (historyError is not null)
         {
             foreach (var transaction in restored) context.Entry(transaction).State = EntityState.Detached;
@@ -511,7 +513,8 @@ public sealed class InvestmentsController(
         InvestmentTransactionMutationDto dto,
         InvestmentTransaction? existing)
     {
-        if (!InvestmentKinds.TransactionTypes.Contains(dto.Type))
+        var type = InvestmentKinds.CanonicalTransactionType(dto.Type);
+        if (type is null)
             return (null, "Unsupported transaction type.");
         var account = await context.InvestmentAccounts
             .SingleOrDefaultAsync(value => value.Id == dto.AccountId, HttpContext.RequestAborted);
@@ -526,7 +529,7 @@ public sealed class InvestmentsController(
         decimal units = dto.Units ?? 0;
         decimal? unitPrice = dto.UnitPrice;
         decimal? cash = dto.CashAmount;
-        if (dto.Type is "Buy" or "Sell")
+        if (type is "Buy" or "Sell")
         {
             var supplied = new[] { dto.Units is > 0, dto.UnitPrice is > 0, dto.CashAmount is > 0 }.Count(value => value);
             if (supplied < 2) return (null, "Enter any two of units, unit price, and gross amount.");
@@ -537,16 +540,16 @@ public sealed class InvestmentsController(
             if (Math.Abs(expected - cash.Value) > Math.Max(0.01m, cash.Value * 0.000001m))
                 return (null, "Units, unit price, and gross amount do not agree.");
         }
-        if (dto.Type == "Dividend" && cash is not > 0)
+        if (type == "Dividend" && cash is not > 0)
             return (null, "Enter a positive gross dividend.");
-        if (dto.Type == "FeeTax" && (cash ?? 0) + dto.Fees + dto.Taxes <= 0)
+        if (type == "FeeTax" && (cash ?? 0) + dto.Fees + dto.Taxes <= 0)
             return (null, "Enter a positive fee or tax charge.");
         var value = existing ?? new InvestmentTransaction();
         if (existing is null && dto.CreatedAt.HasValue) value.CreatedAt = dto.CreatedAt.Value.ToUniversalTime();
         value.AccountId = dto.AccountId;
         value.InstrumentId = dto.InstrumentId;
         value.Instrument = instrument;
-        value.Type = dto.Type;
+        value.Type = type;
         value.TradeDate = dto.TradeDate;
         value.Units = units;
         value.UnitPrice = unitPrice;
@@ -560,7 +563,7 @@ public sealed class InvestmentsController(
     internal static string? ValidateTransactionSnapshot(IReadOnlyList<InvestmentTransactionDto> items)
     {
         if (items.Any(item =>
-                !InvestmentKinds.TransactionTypes.Contains(item.Type) ||
+                InvestmentKinds.CanonicalTransactionType(item.Type) is null ||
                 item.TradeDate == default ||
                 item.TradeDate > DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)) ||
                 item.Fees < 0 ||

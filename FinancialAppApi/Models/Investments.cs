@@ -19,6 +19,9 @@ public static class InvestmentKinds
         "Buy", "Sell", "Dividend", "FeeTax"
     };
 
+    public static string? CanonicalTransactionType(string value)
+        => TransactionTypes.FirstOrDefault(type => type.Equals(value, StringComparison.OrdinalIgnoreCase));
+
     public static readonly HashSet<string> CashFlowTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "Deposit", "Withdrawal", "Conversion"

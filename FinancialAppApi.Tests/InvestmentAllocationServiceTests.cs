@@ -387,6 +387,66 @@ public sealed class InvestmentAllocationServiceTests
     }
 
     [Fact]
+    public async Task ContributionPlan_SplitsCashBeforeTheFirstHoldingIsBought()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentCashFlows.Add(new InvestmentCashFlow
+        {
+            Account = account,
+            Currency = "USD",
+            Type = "Deposit",
+            Amount = 100,
+            Date = DateOnly.FromDateTime(DateTime.UtcNow)
+        });
+        await context.SaveChangesAsync();
+
+        var allocation = (await NewPortfolioService(context)
+            .GetPortfolioAsync("1m", CancellationToken.None)).Allocation;
+
+        Assert.Equal("NotStarted", allocation.Status);
+        Assert.NotNull(allocation.ContributionPlan);
+        Assert.Equal(100, allocation.ContributionPlan!.Amount);
+        Assert.Equal(66, allocation.ContributionPlan.Sleeves.Single(value => value.Sleeve == "USEquity").Amount);
+        Assert.Equal(10, allocation.ContributionPlan.Sleeves.Single(value => value.Sleeve == "InternationalExUS").Amount);
+        Assert.Equal(24, allocation.ContributionPlan.Sleeves.Single(value => value.Sleeve == "Bonds").Amount);
+    }
+
+    [Fact]
+    public async Task ContributionPlan_IsUnavailableWhenPositiveCashCannotBeConverted()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var us = Instrument("VTI", "USEquity");
+        var international = Instrument("VXUS", "InternationalExUS");
+        var bonds = Instrument("BND", "Bonds");
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.AddRange(us, international, bonds);
+        await context.SaveChangesAsync();
+        AddPosition(context, account, us, 66);
+        AddPosition(context, account, international, 10);
+        AddPosition(context, account, bonds, 24);
+        context.InvestmentCashFlows.Add(new InvestmentCashFlow
+        {
+            AccountId = account.Id,
+            Currency = "EUR",
+            Type = "Deposit",
+            Amount = 100,
+            Date = DateOnly.FromDateTime(DateTime.UtcNow)
+        });
+        await context.SaveChangesAsync();
+
+        var allocation = (await NewPortfolioService(context)
+            .GetPortfolioAsync("1m", CancellationToken.None)).Allocation;
+
+        Assert.Equal("OnTrack", allocation.Status);
+        Assert.Null(allocation.AvailableCash);
+        Assert.Null(allocation.ContributionPlan);
+        Assert.Contains(allocation.IncompleteReasons, value => value.Contains("cash", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void MutualFund_IsAFirstClassInstrumentType()
         => Assert.Contains("MutualFund", InvestmentKinds.InstrumentTypes);
 

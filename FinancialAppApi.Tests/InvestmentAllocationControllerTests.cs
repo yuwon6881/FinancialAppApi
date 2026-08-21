@@ -24,6 +24,8 @@ public sealed class InvestmentAllocationControllerTests
             first.Id, new AllocationSleeveMutationDto("Unknown")));
         Assert.IsType<BadRequestObjectResult>(await controller.UpdateAllocationOrder(
             new AllocationOrderMutationDto([first.Id, first.Id])));
+        Assert.IsType<BadRequestObjectResult>(await controller.UpdateAllocationOrder(
+            new AllocationOrderMutationDto([first.Id])));
 
         var plan = Assert.IsType<InvestmentPlanDto>(
             Assert.IsType<OkObjectResult>((await controller.UpdatePlan(

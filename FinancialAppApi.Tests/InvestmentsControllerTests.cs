@@ -142,6 +142,62 @@ public sealed class InvestmentsControllerTests
         Assert.Contains(catalog, value => value.Code == "USD");
     }
 
+    [Fact]
+    public async Task TransactionMutationsCanonicalizeTypesAndProtectCashHistoryOnDeleteAndRestore()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var instrument = new InvestmentInstrument
+        {
+            Symbol = "FUND", Name = "Fund", Type = "ETF", Currency = "USD", IsCustom = true
+        };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+        var controller = NewController(context);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+
+        Assert.IsType<CreatedResult>((await controller.CreateCashFlow(
+            new CashFlowMutationDto(account.Id, "USD", "Deposit", 200, today))).Result);
+        var buy = Assert.IsType<InvestmentTransactionDto>(
+            Assert.IsType<CreatedResult>((await controller.CreateTransaction(
+                new InvestmentTransactionMutationDto(
+                    account.Id, instrument.Id, "buy", today, 1, 100, 100, 0, 0))).Result).Value);
+        Assert.Equal("Buy", buy.Type);
+
+        var sell = Assert.IsType<InvestmentTransactionDto>(
+            Assert.IsType<CreatedResult>((await controller.CreateTransaction(
+                new InvestmentTransactionMutationDto(
+                    account.Id, instrument.Id, "Sell", today, 0.5m, 100, 50, 0, 0))).Result).Value);
+        Assert.IsType<CreatedResult>((await controller.CreateCashFlow(
+            new CashFlowMutationDto(account.Id, "USD", "Withdrawal", 150, today))).Result);
+
+        Assert.IsType<ConflictObjectResult>((await controller.DeleteTransaction(sell.Id)).Result);
+
+        await using var restoreContext = TestHelpers.NewInMemoryContext();
+        var restoreAccount = new InvestmentAccount { Name = "Restore broker", BaseCurrency = "USD" };
+        var restoreInstrument = new InvestmentInstrument
+        {
+            Symbol = "UNDO", Name = "Undo fund", Type = "ETF", Currency = "USD", IsCustom = true
+        };
+        restoreContext.InvestmentAccounts.Add(restoreAccount);
+        restoreContext.InvestmentInstruments.Add(restoreInstrument);
+        await restoreContext.SaveChangesAsync();
+        var restoreController = NewController(restoreContext);
+        Assert.IsType<CreatedResult>((await restoreController.CreateCashFlow(
+            new CashFlowMutationDto(restoreAccount.Id, "USD", "Deposit", 100, today))).Result);
+        var removableBuy = Assert.IsType<InvestmentTransactionDto>(
+            Assert.IsType<CreatedResult>((await restoreController.CreateTransaction(
+                new InvestmentTransactionMutationDto(
+                    restoreAccount.Id, restoreInstrument.Id, "Buy", today, 1, 50, 50, 0, 0))).Result).Value);
+        var snapshot = Assert.IsType<DeletedTransactionsSnapshot>(
+            Assert.IsType<OkObjectResult>((await restoreController.DeleteTransaction(removableBuy.Id)).Result).Value);
+        Assert.IsType<CreatedResult>((await restoreController.CreateCashFlow(
+            new CashFlowMutationDto(restoreAccount.Id, "USD", "Withdrawal", 100, today))).Result);
+
+        Assert.IsType<ConflictObjectResult>(await restoreController.RestoreTransactions(snapshot));
+    }
+
     private static InstrumentMutationDto Instrument(string symbol, string name)
         => new(symbol, name, "ETF", "usd", null, null, null, null, null, true);
 

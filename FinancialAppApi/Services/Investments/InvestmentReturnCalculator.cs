@@ -14,6 +14,7 @@ public static class InvestmentReturnCalculator
     private const double Tolerance = 1e-7;
     private const double MinRate = -0.9999;
     private const double MaxRate = 1e5;
+    private const int ScanIntervals = 512;
 
     public static decimal? Calculate(IEnumerable<DatedInvestmentFlow> source)
     {
@@ -38,31 +39,56 @@ public static class InvestmentReturnCalculator
         static double PresentValue(IEnumerable<(double Years, double Amount)> values, double rate)
             => values.Sum(flow => flow.Amount / Math.Pow(1 + rate, flow.Years));
 
-        var low = MinRate;
-        var high = MaxRate;
-        var lowValue = PresentValue(normalised, low);
-        var highValue = PresentValue(normalised, high);
-        if (!double.IsFinite(lowValue) || !double.IsFinite(highValue) || lowValue * highValue > 0)
-            return null;
-
-        var rate = 0d;
-        for (var iteration = 0; iteration < MaxIterations; iteration++)
+        static double Bisect(
+            IReadOnlyList<(double Years, double Amount)> values,
+            double low,
+            double high,
+            double lowValue)
         {
-            rate = (low + high) / 2;
-            var value = PresentValue(normalised, rate);
-            if (!double.IsFinite(value)) return null;
-            if (Math.Abs(value) < Tolerance || high - low < Tolerance) return (decimal)rate;
-            if (value * lowValue < 0)
+            var rate = 0d;
+            for (var iteration = 0; iteration < MaxIterations; iteration++)
             {
-                high = rate;
+                rate = (low + high) / 2;
+                var value = PresentValue(values, rate);
+                if (Math.Abs(value) < Tolerance || high - low < Tolerance) return rate;
+                if (value * lowValue < 0) high = rate;
+                else
+                {
+                    low = rate;
+                    lowValue = value;
+                }
             }
-            else
-            {
-                low = rate;
-                lowValue = value;
-            }
+            return rate;
         }
 
-        return Math.Abs(PresentValue(normalised, rate)) < 1e-3 ? (decimal)rate : null;
+        var roots = new List<double>();
+        var minLog = Math.Log(1 + MinRate);
+        var maxLog = Math.Log(1 + MaxRate);
+        var previousRate = MinRate;
+        var previousValue = PresentValue(normalised, previousRate);
+        if (!double.IsFinite(previousValue)) return null;
+
+        for (var index = 1; index <= ScanIntervals; index++)
+        {
+            var rate = Math.Exp(minLog + (maxLog - minLog) * index / ScanIntervals) - 1;
+            var value = PresentValue(normalised, rate);
+            if (!double.IsFinite(value)) return null;
+            if (Math.Abs(previousValue) < Tolerance) roots.Add(previousRate);
+            else if (previousValue * value < 0)
+                roots.Add(Bisect(normalised, previousRate, rate, previousValue));
+            previousRate = rate;
+            previousValue = value;
+        }
+        if (Math.Abs(previousValue) < Tolerance) roots.Add(previousRate);
+
+        var distinctRoots = roots
+            .Order()
+            .Aggregate(new List<double>(), (values, rate) =>
+            {
+                if (values.Count == 0 || Math.Abs(values[^1] - rate) > Tolerance * (1 + Math.Abs(rate)))
+                    values.Add(rate);
+                return values;
+            });
+        return distinctRoots.Count == 1 ? (decimal)distinctRoots[0] : null;
     }
 }

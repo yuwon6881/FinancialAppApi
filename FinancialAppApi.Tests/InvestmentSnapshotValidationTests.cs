@@ -21,6 +21,14 @@ public class InvestmentSnapshotValidationTests
     }
 
     [Fact]
+    public void CanonicalTransactionType_NormalizesSupportedCasing()
+    {
+        Assert.Equal("Buy", InvestmentKinds.CanonicalTransactionType("buy"));
+        Assert.Equal("FeeTax", InvestmentKinds.CanonicalTransactionType("FEETAX"));
+        Assert.Null(InvestmentKinds.CanonicalTransactionType("unsupported"));
+    }
+
+    [Fact]
     public void HasHistoricalMarketIdentityChange_DetectsCurrencyProviderAndCustomChanges()
     {
         var existing = new InvestmentInstrument
