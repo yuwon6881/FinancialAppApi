@@ -387,6 +387,90 @@ public class FinancialServiceDashboardTests
     }
 
     [Fact]
+    public async Task GetDashboardDataAsync_OccurrenceWithoutScheduledAmount_SendsNullNotZero()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "utility",
+            Name = "Variable Utility",
+            Amount = -30m,
+            Frequency = "Monthly",
+            Category = "Utilities",
+            LedgerCategory = "Essentials",
+            StartDate = "2026-01-10",
+            NextDueDate = "2026-07-10",
+            DueDate = 10,
+            Active = true
+        });
+        context.RecurringPaymentOccurrences.Add(new RecurringPaymentOccurrence
+        {
+            Id = "occ-utility-20260710",
+            RecurringPaymentId = "utility",
+            OccurrenceDate = new DateOnly(2026, 7, 10),
+            Name = "Variable Utility",
+            ScheduledAmount = null,
+            Category = "Utilities",
+            LedgerCategory = "Essentials",
+            PaymentMode = RecurringPaymentMode.Manual,
+            Status = RecurringOccurrenceStatus.Pending
+        });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context).GetDashboardDataAsync("Jul", 2026);
+        var occurrence = Assert.Single(GetObjects(response, "activeRecurringPayments"));
+        var occurrenceType = occurrence.GetType();
+
+        // A bill with no scheduled amount is unknown, not free: a fabricated zero here stopped
+        // every client `remaining ?? scheduled ?? amount` fallback before the honest state.
+        Assert.Null(occurrenceType.GetProperty("amount")!.GetValue(occurrence));
+        Assert.Null(occurrenceType.GetProperty("scheduledAmount")!.GetValue(occurrence));
+        Assert.Null(occurrenceType.GetProperty("remainingAmount")!.GetValue(occurrence));
+    }
+
+    [Fact]
+    public async Task GetDashboardDataAsync_ScheduledOccurrence_ReportsScheduledAndRemainingAmounts()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "streaming",
+            Name = "Streaming",
+            Amount = -19m,
+            Frequency = "Monthly",
+            Category = "Entertainment",
+            LedgerCategory = "Essentials",
+            StartDate = "2026-01-10",
+            NextDueDate = "2026-07-10",
+            DueDate = 10,
+            Active = true
+        });
+        context.RecurringPaymentOccurrences.Add(new RecurringPaymentOccurrence
+        {
+            Id = "occ-streaming-20260710",
+            RecurringPaymentId = "streaming",
+            OccurrenceDate = new DateOnly(2026, 7, 10),
+            Name = "Streaming",
+            ScheduledAmount = 19m,
+            Category = "Entertainment",
+            LedgerCategory = "Essentials",
+            PaymentMode = RecurringPaymentMode.Manual,
+            Status = RecurringOccurrenceStatus.Pending
+        });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context).GetDashboardDataAsync("Jul", 2026);
+        var occurrence = Assert.Single(GetObjects(response, "activeRecurringPayments"));
+        var occurrenceType = occurrence.GetType();
+
+        Assert.Equal(19m, ObfuscationHelper.Deobfuscate((string)occurrenceType.GetProperty("scheduledAmount")!.GetValue(occurrence)!));
+        Assert.Equal(19m, ObfuscationHelper.Deobfuscate((string)occurrenceType.GetProperty("remainingAmount")!.GetValue(occurrence)!));
+        Assert.Equal(0m, ObfuscationHelper.Deobfuscate((string)occurrenceType.GetProperty("paidAmount")!.GetValue(occurrence)!));
+    }
+
+    [Fact]
     public async Task GetDashboardDataAsync_DoesNotSettleOccurrenceWithDifferentTaggedDate()
     {
         await using var context = TestHelpers.NewInMemoryContext();

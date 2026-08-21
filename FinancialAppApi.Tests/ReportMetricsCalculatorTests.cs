@@ -17,6 +17,52 @@ public sealed class ReportMetricsCalculatorTests
     };
 
     [Fact]
+    public void BuildSummaryInsights_InProgressCycle_AveragesOverElapsedDaysNotWholeCycle()
+    {
+        var start = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+        var endExclusive = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc);
+        var asOf = new DateOnly(2026, 8, 10); // 10 elapsed days of a 31-day cycle
+
+        var insights = ReportMetricsCalculator.BuildSummaryInsights(
+            [Expense("2026-08-02", 100), Expense("2026-08-05", 100)],
+            start,
+            endExclusive,
+            asOf);
+
+        Assert.Equal(20m, insights.AverageDailySpend);
+    }
+
+    [Fact]
+    public void BuildSummaryInsights_CompletedCycle_AveragesOverTheFullCycle()
+    {
+        var start = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+        var endExclusive = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var insights = ReportMetricsCalculator.BuildSummaryInsights(
+            [Expense("2026-08-02", 155)],
+            start,
+            endExclusive,
+            new DateOnly(2026, 9, 5));
+
+        Assert.Equal(5m, insights.AverageDailySpend);
+    }
+
+    [Fact]
+    public void BuildSummaryInsights_CycleNotStarted_LeavesAverageUnknown()
+    {
+        var start = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+        var endExclusive = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var insights = ReportMetricsCalculator.BuildSummaryInsights(
+            [Expense("2026-08-02", 100)],
+            start,
+            endExclusive,
+            new DateOnly(2026, 7, 20));
+
+        Assert.Null(insights.AverageDailySpend);
+    }
+
+    [Fact]
     public void BuildSummaryInsights_UpcomingCycle_ReturnsZeroNoSpendDays()
     {
         var start = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);

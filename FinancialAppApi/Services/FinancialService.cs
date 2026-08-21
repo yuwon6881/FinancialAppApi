@@ -544,6 +544,7 @@ public class FinancialService
                 .Where(t => t.Category.ToLower() != "transfer")
                 .Where(t => t.Category.ToLower() != "adjustment")
                 .Where(t => !t.LedgerCategory.ToLower().StartsWith("transfer:"))
+                .Where(t => t.LedgerCategory.ToLower() != "accountmove")
                 .Where(t => t.LedgerCategory.ToLower() != "discarded")
                 .GroupBy(t => t.Category)
                 .Select(g => new ReportCategoryTotal(g.Key, g.Sum(t => t.Amount)))
@@ -553,6 +554,9 @@ public class FinancialService
             .GroupBy(g => string.IsNullOrWhiteSpace(g.Category) ? "Other" : g.Category.Trim(), StringComparer.OrdinalIgnoreCase)
             .Select(g => new ReportBreakdownItem(g.Key, Math.Abs(g.Sum(x => x.Total))))
             .OrderByDescending(item => item.Amount)
+            // Same tiebreak as BuildBreakdown, so equal totals do not order differently between
+            // the yearly range and every other range on the same chart.
+            .ThenBy(item => item.Category, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         // Last-6 is one range query; last-3 is a strict subset of that same range, sliced in
@@ -867,16 +871,21 @@ public class FinancialService
 
         return occurrences.Select(occurrence =>
         {
-            var scheduled = occurrence.ScheduledAmount.HasValue ? Math.Abs(occurrence.ScheduledAmount.Value) : 0m;
+            // An occurrence with no scheduled amount is genuinely unknown. Sending 0 for the
+            // scheduled/remaining pair made every client `remaining ?? scheduled ?? amount`
+            // fallback stop at a fabricated zero instead of reaching the honest "not set" state.
+            decimal? scheduled = occurrence.ScheduledAmount.HasValue
+                ? Math.Abs(occurrence.ScheduledAmount.Value)
+                : null;
             var paid = nonDiscardedTxs.GetValueOrDefault((occurrence.RecurringPaymentId, occurrence.OccurrenceDate));
-            var remaining = Math.Max(0m, scheduled - paid);
+            decimal? remaining = scheduled.HasValue ? Math.Max(0m, scheduled.Value - paid) : null;
 
             return new ActiveRecurringItem(
                 occurrence.Id,
                 occurrence.RecurringPaymentId,
                 occurrence.Name,
-                occurrence.ScheduledAmount.HasValue
-                    ? ObfuscationHelper.Obfuscate(occurrence.Status == RecurringOccurrenceStatus.PartiallyPaid ? remaining : scheduled)
+                scheduled.HasValue
+                    ? ObfuscationHelper.Obfuscate(occurrence.Status == RecurringOccurrenceStatus.PartiallyPaid ? remaining!.Value : scheduled.Value)
                     : null,
                 occurrence.Category ?? string.Empty,
                 occurrence.LedgerCategory ?? string.Empty,
@@ -885,9 +894,9 @@ public class FinancialService
                 occurrence.Status == RecurringOccurrenceStatus.Discarded,
                 occurrence.Status,
                 occurrence.PaidDate?.ToString("yyyy-MM-dd"),
-                scheduledAmount: ObfuscationHelper.Obfuscate(scheduled),
+                scheduledAmount: scheduled.HasValue ? ObfuscationHelper.Obfuscate(scheduled.Value) : null,
                 paidAmount: ObfuscationHelper.Obfuscate(paid),
-                remainingAmount: ObfuscationHelper.Obfuscate(remaining));
+                remainingAmount: remaining.HasValue ? ObfuscationHelper.Obfuscate(remaining.Value) : null);
         }).ToList();
     }
 

@@ -76,7 +76,10 @@ public static class ReportMetricsCalculator
             largest is null ? null : Math.Abs(largest.Amount),
             biggestDay?.Date.ToString("yyyy-MM-dd"),
             biggestDay?.Total,
-            expenses.Count > 0 && cycleLengthDays > 0 ? totalSpend / cycleLengthDays : null,
+            // Divided by days elapsed, not by the whole cycle: mid-cycle the full-length divisor
+            // is not a spend rate at all, and it disagreed with the cycle calendar's own
+            // "Avg /day" and with the elapsed-day pacing used for category limits.
+            expenses.Count > 0 && elapsedDays > 0 ? totalSpend / elapsedDays : null,
             cycleLengthDays,
             expenses.Count > 0 ? firstHalf : null,
             expenses.Count > 0 ? secondHalf : null,
