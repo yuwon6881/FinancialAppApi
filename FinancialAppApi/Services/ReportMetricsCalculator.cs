@@ -35,7 +35,8 @@ public static class ReportMetricsCalculator
     public static ReportSummaryInsights BuildSummaryInsights(
         IEnumerable<Transaction> transactions,
         DateTime start,
-        DateTime endExclusive)
+        DateTime endExclusive,
+        DateOnly? asOfDate = null)
     {
         var expenses = transactions.Where(TransactionReportSemantics.IsReportableOutflow).ToList();
         var largest = expenses.OrderBy(transaction => transaction.Amount).FirstOrDefault();
@@ -55,8 +56,18 @@ public static class ReportMetricsCalculator
             .Where(transaction => TransactionDate.ToDateOnly(transaction.Date) < secondHalfStart)
             .Sum(transaction => Math.Abs(transaction.Amount));
         var secondHalf = totalSpend - firstHalf;
+
+        var today = asOfDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var elapsedDays = today < startDate
+            ? 0
+            : today >= endDate
+                ? cycleLengthDays
+                : today.DayNumber - startDate.DayNumber + 1;
+
+        var maxObservedDate = today < endDate.AddDays(-1) ? today : endDate.AddDays(-1);
         var distinctExpenseDays = expenses
             .Select(transaction => TransactionDate.ToDateOnly(transaction.Date))
+            .Where(date => date >= startDate && date <= maxObservedDate)
             .Distinct()
             .Count();
 
@@ -69,7 +80,7 @@ public static class ReportMetricsCalculator
             cycleLengthDays,
             expenses.Count > 0 ? firstHalf : null,
             expenses.Count > 0 ? secondHalf : null,
-            Math.Max(0, cycleLengthDays - distinctExpenseDays),
+            Math.Max(0, elapsedDays - distinctExpenseDays),
             expenses.Count,
             Math.Abs(expenses.Where(transaction => !string.IsNullOrEmpty(transaction.RecurringPaymentId)).Sum(transaction => transaction.Amount)),
             Math.Abs(expenses.Where(transaction => string.IsNullOrEmpty(transaction.RecurringPaymentId)).Sum(transaction => transaction.Amount)));

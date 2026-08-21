@@ -133,8 +133,15 @@ public partial class AiAssistantService
             var endExclusive = range.end.AddDays(1);
             var midpoint = range.start.Ticks + (endExclusive.Ticks - range.start.Ticks) / 2;
             var observedDays = Math.Max(0, elapsedDays);
-            var noSpendDays = Math.Max(0, observedDays -
-                expenses.Select(row => row.Date).Distinct(StringComparer.Ordinal).Count());
+            var maxObservedDate = today < end ? today : end;
+            var maxObservedKey = maxObservedDate.ToString("yyyy-MM-dd");
+            var startKey = start.ToString("yyyy-MM-dd");
+            var distinctExpenseDays = expenses
+                .Where(row => string.CompareOrdinal(row.Date, startKey) >= 0 && string.CompareOrdinal(row.Date, maxObservedKey) <= 0)
+                .Select(row => row.Date)
+                .Distinct(StringComparer.Ordinal)
+                .Count();
+            var noSpendDays = Math.Max(0, observedDays - distinctExpenseDays);
             var committed = expenses
                 .Where(row => !string.IsNullOrWhiteSpace(row.RecurringPaymentId))
                 .Sum(row => Math.Abs(row.Amount));

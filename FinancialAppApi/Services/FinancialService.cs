@@ -432,7 +432,7 @@ public class FinancialService
         var monthlyCategoryBreakdown = ReportMetricsCalculator.BuildBreakdown(activeCycleTxs);
 
         var cycleSummaryInsights = ReportResponseMapper.ObfuscateSummaryInsights(
-            ReportMetricsCalculator.BuildSummaryInsights(activeCycleTxs, activeRangeStartDate, activeRangeEndExclusive));
+            ReportMetricsCalculator.BuildSummaryInsights(activeCycleTxs, activeRangeStartDate, activeRangeEndExclusive, _financialClock.Today));
 
         var recurringAccountShortfalls = summaryOnly
             ? new List<object>()
