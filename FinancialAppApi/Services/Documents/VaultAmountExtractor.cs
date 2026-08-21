@@ -68,15 +68,32 @@ public class VaultAmountExtractor
             var currency = root.TryGetProperty("currency", out var currencyValue)
                 ? currencyValue.GetString()?.ToUpperInvariant()
                 : null;
-            currency = currency is "MYR" or "OTHER" ? currency : "MYR";
+            // UNKNOWN is one of the three answers the schema allows, and it is not a currency.
+            // Nowhere else does this app substitute a real value for an unknown one: an
+            // off-vocabulary AI intent is dropped rather than mapped to a real one, an unrecognised
+            // category disqualifies a suggested record from being applied, and the branch below
+            // already leaves an amount the model could not read absent. Calling it MYR read a figure
+            // off a document that never claimed ringgit — and since the row renders in the app's own
+            // currency, nothing on screen would have contradicted it.
+            var isKnownCurrency = currency is "MYR" or "OTHER";
             decimal confidence = root.TryGetProperty("confidence", out var confidenceValue) &&
                                  confidenceValue.TryGetDecimal(out var parsedConfidence)
                 ? Math.Clamp(parsedConfidence, 0, 1)
                 : 0;
 
-            return amount.HasValue
-                ? new(amount.Value, currency, confidence, "NeedsReview", null)
-                : new(null, currency, confidence, "NotFound", "No reliable amount was found. Add it manually if needed.");
+            // A number with no currency behind it is not a usable amount, so it takes the same
+            // branch as no number at all. The stored currency is inert once the amount is absent;
+            // it stays MYR only because the column cannot be empty.
+            if (!amount.HasValue)
+            {
+                return new(null, isKnownCurrency ? currency! : "MYR", confidence, "NotFound",
+                    "No reliable amount was found. Add it manually if needed.");
+            }
+
+            return isKnownCurrency
+                ? new(amount.Value, currency!, confidence, "NeedsReview", null)
+                : new(null, "MYR", confidence, "NotFound",
+                    "An amount was read, but the document does not say which currency it is in. Add it manually if needed.");
         }
         catch (Exception ex) when (ex is AiClientException or JsonException or FormatException)
         {
