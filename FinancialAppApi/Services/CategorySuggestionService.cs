@@ -371,7 +371,11 @@ Recent usage JSON array: {JsonSerializer.Serialize(usage)}";
         var aiReview = ParseCategoryCleanupReview(text, visibleCategories, recentTransactions);
         var combined = deterministicSuggestions
             .Concat(aiReview.Suggestions)
-            .GroupBy(suggestion => $"{suggestion.Type}:{string.Join('|', suggestion.Categories)}", StringComparer.OrdinalIgnoreCase)
+            // An "add" carries no source categories, so keying on type+categories alone folded
+            // every proposed new category into one row.
+            .GroupBy(
+                suggestion => $"{suggestion.Type}:{string.Join('|', suggestion.Categories)}:{suggestion.TargetCategory}:{suggestion.NewCategoryName}",
+                StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .Take(5)
             .ToList();
@@ -626,7 +630,12 @@ Rules:
             if (type == "delete" && categories.Count == 0) continue;
             if (type == "merge" && (categories.Count == 0 || targetCategory == null)) continue;
             if (type == "consolidate" && categories.Count != 1) continue;
-            if (type == "add" && (newCategoryName == null || existingLower.Contains(newCategoryName.ToLowerInvariant()))) continue;
+            // A reserved name is filtered out of the list the model sees, so it does not look
+            // taken -- and the applier silently refuses it, leaving an accepted suggestion that
+            // did nothing. Drop it during review instead.
+            if (type == "add" && (newCategoryName == null ||
+                existingLower.Contains(newCategoryName.ToLowerInvariant()) ||
+                TransactionCategoryService.IsReservedName(newCategoryName))) continue;
 
             var affectedCount = type == "add"
                 ? 0

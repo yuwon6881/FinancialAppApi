@@ -290,13 +290,18 @@ public class ReceiptScanProcessor
 
     private static readonly string[] ValidLedgerCategories = ["Essentials", "Growth", "Stability", "Rewards", "Income"];
 
+    // Bounds on one split extraction. Anything past these is reported as truncated rather
+    // than silently dropped, because the review sheet spreads charges over the kept lines.
+    private const int MaxSplitItems = 80;
+    private const int MaxSplitCharges = 20;
+
     private const string ScanSystemInstruction = @"Extract one receipt or invoice for a personal finance app.
 Rules:
 - description: use the merchant/store name if visible; otherwise describe the purchase type
 - amount: extract the final TOTAL amount (after tax/tip if applicable); return as a plain, non-negative number
 - date: only return a date if you can clearly read it on the receipt; otherwise null
 - category: pick the single most fitting category from the available list. Do not invent a category.
-- ledgerCategory: pick the single most fitting ledger category (Essentials is typically for food/transport/bills, Rewards for entertainment/shopping, Growth for investments/education, Stability for savings/insurance, Income for salary/inflows).
+- ledgerCategory: pick the single most fitting ledger category (Essentials is typically for food/transport/bills, Rewards for entertainment/shopping, Growth for investments/education, Stability for savings/insurance). A receipt is always spending, so never return Income.
 - If critical text is unclear, return the best supported value with low confidence; never invent receipt details.";
 
     private const string ReceiptSplitScanSystemInstruction = @"Extract the visible structure of one receipt for a personal expense-share calculator.
@@ -455,8 +460,10 @@ Rules:
         var ledgerCategory = ValidLedgerCategories.FirstOrDefault(c =>
                 string.Equals(c, result.LedgerCategory, StringComparison.OrdinalIgnoreCase))
             ?? "Essentials";
-        var items = (result.Items ?? [])
-            .Take(80)
+        var rawItems = result.Items ?? [];
+        var rawCharges = result.Charges ?? [];
+        var items = rawItems
+            .Take(MaxSplitItems)
             .Select(item => new ReceiptSplitItem(
                 string.IsNullOrWhiteSpace(item.Name) ? "Unclear item" : item.Name.Trim()[..Math.Min(item.Name.Trim().Length, 120)],
                 item.Quantity > 0 ? Math.Max(1, decimal.Truncate(item.Quantity)) : 1,
@@ -464,23 +471,31 @@ Rules:
                 item.LineTotal is >= 0 ? item.LineTotal : null,
                 Math.Clamp(item.Confidence, 0, 1)))
             .ToList();
-        var charges = (result.Charges ?? [])
-            .Take(20)
-            .Select((charge, index) => new ReceiptSplitCharge(
-                string.IsNullOrWhiteSpace(charge.Label) ? "Other charge" : charge.Label.Trim()[..Math.Min(charge.Label.Trim().Length, 80)],
-                charge.Kind is "tax" or "service" or "tip" or "discount" or "rounding" or "other"
-                    ? charge.Kind : "other",
-                charge.Operation is "add" or "subtract" or "included"
-                    ? charge.Operation : charge.Kind == "discount" ? "subtract" : "add",
-                charge.Basis == "runningTotal" ? "runningTotal" : "subtotal",
-                charge.Amount is >= 0 ? charge.Amount : null,
-                charge.RatePercent is >= 0 ? charge.RatePercent : null,
-                charge.Sequence >= 0 ? charge.Sequence : index,
-                (charge.EligibleItemIndexes ?? [])
+        // A charge that named specific items but whose whole scope fell outside the kept items
+        // is reported as covering everything, which would quietly move it onto the wrong lines.
+        var chargeScopeLost = false;
+        var charges = rawCharges
+            .Take(MaxSplitCharges)
+            .Select((charge, index) =>
+            {
+                var eligible = (charge.EligibleItemIndexes ?? [])
                     .Where(itemIndex => itemIndex >= 0 && itemIndex < items.Count)
                     .Distinct()
-                    .ToList(),
-                Math.Clamp(charge.Confidence, 0, 1)))
+                    .ToList();
+                if (eligible.Count == 0 && (charge.EligibleItemIndexes?.Count ?? 0) > 0) chargeScopeLost = true;
+                return new ReceiptSplitCharge(
+                    string.IsNullOrWhiteSpace(charge.Label) ? "Other charge" : charge.Label.Trim()[..Math.Min(charge.Label.Trim().Length, 80)],
+                    charge.Kind is "tax" or "service" or "tip" or "discount" or "rounding" or "other"
+                        ? charge.Kind : "other",
+                    charge.Operation is "add" or "subtract" or "included"
+                        ? charge.Operation : charge.Kind == "discount" ? "subtract" : "add",
+                    charge.Basis == "runningTotal" ? "runningTotal" : "subtotal",
+                    charge.Amount is >= 0 ? charge.Amount : null,
+                    charge.RatePercent is >= 0 ? charge.RatePercent : null,
+                    charge.Sequence >= 0 ? charge.Sequence : index,
+                    eligible,
+                    Math.Clamp(charge.Confidence, 0, 1));
+            })
             .OrderBy(charge => charge.Sequence)
             .ToList();
         var warnings = (result.Warnings ?? [])
@@ -490,6 +505,17 @@ Rules:
             .ToList();
         var fieldConfidence = result.FieldConfidence ?? new ReceiptSplitFieldConfidence(0, 0, 0, 0, 0);
 
+        // Capping the extraction is a form of truncation: without saying so the review sheet
+        // would present a partial receipt as a complete one.
+        var itemsDropped = rawItems.Count > items.Count;
+        var chargesDropped = rawCharges.Count > charges.Count;
+        var truncated = result.Truncated || itemsDropped || chargesDropped;
+        if (itemsDropped)
+            warnings.Add($"Only the first {items.Count} lines were kept. Check for missing items before calculating your share.");
+        if (chargesDropped)
+            warnings.Add($"Only the first {charges.Count} receipt charges were kept.");
+        if (chargeScopeLost)
+            warnings.Add("A charge listed items that could not be matched, so it is spread over every line. Check it before calculating your share.");
         if (items.Count == 0)
             warnings.Add("No line items were confidently extracted. Add them manually before calculating your share.");
         if (string.IsNullOrWhiteSpace(description) && items.Count == 0 && result.Total == null)
@@ -506,6 +532,7 @@ Rules:
             LedgerCategory = ledgerCategory,
             Items = items,
             Charges = charges,
+            Truncated = truncated,
             FieldConfidence = new ReceiptSplitFieldConfidence(
                 Math.Clamp(fieldConfidence.Description, 0, 1),
                 Math.Clamp(fieldConfidence.Date, 0, 1),

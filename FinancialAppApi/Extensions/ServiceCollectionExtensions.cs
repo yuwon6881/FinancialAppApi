@@ -130,8 +130,8 @@ public static class ServiceCollectionExtensions
         IConfiguration configuration)
     {
         var requestsPerMinute = configuration.GetValue("Ai:RequestsPerMinute", 20);
-        // OCR receipt scans each trigger a vision call (pricier than a chat turn) and write
-        // ~13 MB of base64 to Postgres, so cap them harder than chat by default.
+        // OCR receipt scans each trigger a vision call (pricier than a chat turn) and upload the
+        // image to object storage, so cap them harder than chat by default.
         var ocrRequestsPerMinute = configuration.GetValue("Ocr:RequestsPerMinute", 10);
         var passwordVerificationRequestsPerMinute =
             configuration.GetValue("Auth:PasswordVerificationRequestsPerMinute", 30);
@@ -154,6 +154,18 @@ public static class ServiceCollectionExtensions
 
             options.AddPolicy("ai", httpContext =>
                 RateLimitPartition.GetFixedWindowLimiter(PartitionKeyFor(httpContext), _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = Math.Max(1, requestsPerMinute),
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                    AutoReplenishment = true
+                }));
+
+            // Category suggestions, description cleanup and cleanup review each cost a provider
+            // call too, so they need a ceiling of their own -- and their own partition, so a
+            // form-filling burst cannot drain the chat window or the other way round.
+            options.AddPolicy("ai-assist", httpContext =>
+                RateLimitPartition.GetFixedWindowLimiter("ai-assist:" + PartitionKeyFor(httpContext), _ => new FixedWindowRateLimiterOptions
                 {
                     PermitLimit = Math.Max(1, requestsPerMinute),
                     Window = TimeSpan.FromMinutes(1),

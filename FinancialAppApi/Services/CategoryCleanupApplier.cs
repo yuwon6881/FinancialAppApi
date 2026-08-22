@@ -18,6 +18,10 @@ public sealed class CategoryCleanupApplier
         public static CleanupStepResult Conflict(string message) => new(0, message);
     }
 
+    // How many moved rows one undo action may carry. A merge that would exceed it is refused
+    // rather than applied with an undo that could only restore part of it.
+    internal const int MaxUndoIds = 5000;
+
     private readonly AppDbContext _context;
 
     public CategoryCleanupApplier(AppDbContext context)
@@ -113,21 +117,30 @@ public sealed class CategoryCleanupApplier
                 continue;
             }
 
-            var transactionIds = await _context.Transactions
+            var transactions = await _context.Transactions
                 .Where(t => t.Category.ToLower() == source.Name.ToLower())
-                .Select(t => t.Id)
                 .ToListAsync();
-            var recurringPaymentIds = await _context.RecurringPayments
+            var recurringPayments = await _context.RecurringPayments
                 .Where(rp => rp.Category.ToLower() == source.Name.ToLower())
-                .Select(rp => rp.Id)
                 .ToListAsync();
 
-            foreach (var transaction in await _context.Transactions.Where(t => transactionIds.Contains(t.Id)).ToListAsync())
+            // Undo replays the exact rows that moved, so a merge larger than one undo payload
+            // can carry would leave the rest silently stuck under the destination category.
+            if (transactions.Count > MaxUndoIds || recurringPayments.Count > MaxUndoIds)
+            {
+                return CleanupStepResult.Conflict(
+                    $"{source.Name} has too many entries to merge in one step. Move them in smaller batches so the merge stays undoable.");
+            }
+
+            var transactionIds = transactions.Select(t => t.Id).ToList();
+            var recurringPaymentIds = recurringPayments.Select(rp => rp.Id).ToList();
+
+            foreach (var transaction in transactions)
             {
                 transaction.Category = target.Name;
             }
 
-            foreach (var recurringPayment in await _context.RecurringPayments.Where(rp => recurringPaymentIds.Contains(rp.Id)).ToListAsync())
+            foreach (var recurringPayment in recurringPayments)
             {
                 recurringPayment.Category = target.Name;
             }
@@ -220,7 +233,7 @@ public sealed class CategoryCleanupApplier
             .Select(id => id.Trim())
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Distinct(StringComparer.Ordinal)
-            .Take(1000)
+            .Take(MaxUndoIds)
             .ToList();
     }
 }

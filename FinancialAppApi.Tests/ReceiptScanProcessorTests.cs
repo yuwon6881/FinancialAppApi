@@ -216,6 +216,68 @@ public class ReceiptScanProcessorTests
         Assert.NotEmpty(imageStore.Objects);
     }
 
+    [Fact]
+    public async Task ProcessAsync_WhenASplitScanIsCappedItReportsTruncationAndLostChargeScope()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "alice", PasswordHash = "hash" });
+        context.TransactionCategories.Add(new TransactionCategory { Id = "food", UserId = "test-user", Name = "Food" });
+        var imageStore = new FakeReceiptImageStore();
+        imageStore.Objects.Add("receipts/scan-1.jpg", "receipt-image"u8.ToArray());
+        context.ReceiptScanJobs.Add(new ReceiptScanJob
+        {
+            Id = "scan-1",
+            UserId = "test-user",
+            Username = "alice",
+            Status = "queued",
+            ScanType = "receipt-split",
+            StorageObjectPath = "receipts/scan-1.jpg",
+            MimeType = "image/jpeg",
+        });
+        await context.SaveChangesAsync();
+
+        // 90 lines is past the 80-line extraction cap, and the service charge points at a line
+        // that the cap removes.
+        var items = string.Join(',', Enumerable.Range(0, 90).Select(index =>
+            $"{{\"name\":\"Item {index}\",\"quantity\":1,\"unitPrice\":1,\"lineTotal\":1,\"confidence\":1}}"));
+        var modelJson = $$"""
+            {
+              "description": "Big Table",
+              "date": null, "currency": "MYR", "subtotal": 90, "total": 95,
+              "category": "Food", "ledgerCategory": "Essentials",
+              "items": [{{items}}],
+              "charges": [{"label":"Service","kind":"service","operation":"add","basis":"subtotal","amount":5,"ratePercent":null,"sequence":0,"eligibleItemIndexes":[85],"confidence":1}],
+              "fieldConfidence": {"description":1,"date":0,"currency":1,"subtotal":1,"total":1},
+              "truncated": false, "warnings": [], "confidence": 0.9
+            }
+            """;
+        var handler = new DelegateHandler(_ => SuccessResponse(modelJson));
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var processor = new ReceiptScanProcessor(
+            new AiClient(
+                new HttpClient(handler),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
+                NullLogger<AiClient>.Instance),
+            context,
+            imageStore,
+            new TransactionCategoryService(context, cache),
+            NullLogger<ReceiptScanProcessor>.Instance);
+
+        Assert.Equal(ReceiptScanProcessStatus.Processed, await processor.ProcessAsync("scan-1"));
+
+        var job = context.ReceiptScanJobs.Single();
+        Assert.Equal("completed", job.Status);
+        using var result = JsonDocument.Parse(job.ResultJson!);
+        Assert.Equal(80, result.RootElement.GetProperty("items").GetArrayLength());
+        Assert.True(result.RootElement.GetProperty("truncated").GetBoolean());
+        var warnings = result.RootElement.GetProperty("warnings")
+            .EnumerateArray()
+            .Select(warning => warning.GetString() ?? string.Empty)
+            .ToList();
+        Assert.Contains(warnings, warning => warning.Contains("first 80 lines"));
+        Assert.Contains(warnings, warning => warning.Contains("spread over every line"));
+    }
+
     private static HttpResponseMessage SuccessResponse(string text) => new(HttpStatusCode.OK)
     {
         Content = new StringContent(

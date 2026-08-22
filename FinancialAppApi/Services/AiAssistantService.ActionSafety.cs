@@ -28,15 +28,9 @@ public partial class AiAssistantService
             // per record). Its ceiling is MaxChatActions, which is bounded by what the chat model's
             // structured-output budget accepts -- see AiResponseSchemas.MaxChatActions.
             var returnedActions = actionsProp.EnumerateArray().Take(AiResponseSchemas.MaxChatActions).ToList();
-            var containsOnlyLedgerDrafts = returnedActions.Count > 0 && returnedActions.All(actionEl =>
-                actionEl.ValueKind == JsonValueKind.Object &&
-                actionEl.TryGetProperty("type", out var actionType) &&
-                actionType.ValueKind == JsonValueKind.String &&
-                actionType.GetString()?.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase) == true);
-            var actionLimit = AiResponseSchemas.MaxChatActions;
             var nonLedgerMutationClaimed = false;
 
-            foreach (var actionEl in returnedActions.Take(actionLimit))
+            foreach (var actionEl in returnedActions)
             {
                 if (!actionEl.TryGetProperty("type", out var typeProp)) continue;
                 var type = typeProp.GetString() ?? "";

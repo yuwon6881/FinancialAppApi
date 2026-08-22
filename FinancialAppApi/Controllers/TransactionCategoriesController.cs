@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
@@ -125,6 +126,7 @@ public class TransactionCategoriesController : ControllerBase
         return Ok(ToResponse(result.Category!));
     }
 
+    [EnableRateLimiting("ai-assist")]
     [HttpPost("suggest")]
     public async Task<IActionResult> SuggestCategories(CategorySuggestionRequest request, CancellationToken cancellationToken)
     {
@@ -161,6 +163,7 @@ public class TransactionCategoriesController : ControllerBase
         }
     }
 
+    [EnableRateLimiting("ai-assist")]
     [HttpPost("suggest-notes")]
     public async Task<IActionResult> SuggestNotes(TransactionNoteSuggestionRequest request, CancellationToken cancellationToken)
     {
@@ -204,6 +207,7 @@ public class TransactionCategoriesController : ControllerBase
         }
     }
 
+    [EnableRateLimiting("ai-assist")]
     [HttpPost("cleanup/review")]
     public async Task<IActionResult> ReviewCleanup(CancellationToken cancellationToken)
     {
@@ -226,6 +230,8 @@ public class TransactionCategoriesController : ControllerBase
         }
     }
 
+    // Deliberately not rate-limited with the AI review above: applying is a plain database
+    // mutation that the offline outbox may replay, and it spends no provider quota.
     [HttpPost("cleanup/apply")]
     public async Task<IActionResult> ApplyCleanup(CategoryCleanupApplyRequest request)
     {
