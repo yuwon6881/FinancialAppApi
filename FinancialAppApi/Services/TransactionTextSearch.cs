@@ -47,11 +47,22 @@ internal static partial class TransactionTextSearch
 
         var term = searchText.Trim();
         if (term.Length == 0) return query;
-        var pattern = $@"(?<![\p{{L}}\p{{N}}]){Regex.Escape(term)}(?![\p{{L}}\p{{N}}])";
+        var pattern = WholeWordPattern(term, useIlike);
         return query.Where(transaction =>
             Regex.IsMatch(transaction.Description, pattern, RegexOptions.IgnoreCase) ||
             Regex.IsMatch(transaction.Category, pattern, RegexOptions.IgnoreCase) ||
             Regex.IsMatch(transaction.LedgerCategory, pattern, RegexOptions.IgnoreCase));
+    }
+
+    // This predicate is translated to PostgreSQL's `~*` in production and evaluated by .NET's own
+    // engine everywhere else, and the two dialects disagree about character classes: POSIX ARE has
+    // no \p{...} escapes, so the .NET spelling reaches the server as "invalid regular expression"
+    // and the whole-word search fails outright. [[:alnum:]] is ARE's Unicode-aware equivalent, and
+    // both engines support the lookaround constraints around the escaped term.
+    internal static string WholeWordPattern(string term, bool forPostgres)
+    {
+        var wordCharacter = forPostgres ? "[[:alnum:]]" : @"[\p{L}\p{N}]";
+        return $"(?<!{wordCharacter}){Regex.Escape(term)}(?!{wordCharacter})";
     }
 
     // Users and the ledger routinely disagree about spacing: "hair cut" typed against a saved
