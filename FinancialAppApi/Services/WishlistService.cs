@@ -14,7 +14,8 @@ public enum WishlistMutationStatus
     PriceInvalid,
     DateInvalid,
     AlreadyPurchased,
-    InvalidAccount
+    InvalidAccount,
+    Conflict
 }
 
 public sealed record WishlistItemResult(
@@ -87,6 +88,7 @@ public class WishlistService
 
     public async Task<WishlistItemResult> CreateWishlistItemAsync(WishlistItem item, CancellationToken cancellationToken = default)
     {
+        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         // Idempotency: the offline outbox may replay a create on retry (e.g. the write committed
         // but the response was lost). The int PK is server-generated, so dedupe on the client-supplied
         // key instead — returning the already-created row rather than inserting a duplicate.
@@ -120,15 +122,33 @@ public class WishlistService
         }
         else
         {
-            var hasAny = await _context.WishlistItems.AnyAsync(cancellationToken);
-            if (!hasAny)
+            var hasFocusedOpenItem = await _context.WishlistItems
+                .AnyAsync(candidate => candidate.IsActive && !candidate.IsPurchased, cancellationToken);
+            if (!hasFocusedOpenItem)
             {
                 item.IsActive = true;
             }
         }
 
         _context.WishlistItems.Add(item);
-        await _context.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (ex.IsUniqueViolation())
+        {
+            _context.Entry(item).State = EntityState.Detached;
+            if (!string.IsNullOrWhiteSpace(item.ClientKey))
+            {
+                var replay = await _context.WishlistItems
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(candidate => candidate.ClientKey == item.ClientKey, cancellationToken);
+                if (replay != null) return new WishlistItemResult(WishlistMutationStatus.Success, replay);
+            }
+            return new WishlistItemResult(
+                WishlistMutationStatus.Conflict,
+                Message: "Another reward became focused at the same time. Refresh and try again.");
+        }
 
         return new WishlistItemResult(WishlistMutationStatus.Success, item);
     }
@@ -140,10 +160,18 @@ public class WishlistService
             return new WishlistItemResult(WishlistMutationStatus.IdMismatch, Message: "ID mismatch.");
         }
 
+        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var item = await _context.WishlistItems.FindAsync([id], cancellationToken);
         if (item == null)
         {
             return new WishlistItemResult(WishlistMutationStatus.NotFound);
+        }
+        if (item.IsPurchased)
+        {
+            return new WishlistItemResult(
+                WishlistMutationStatus.AlreadyPurchased,
+                item,
+                "A claimed reward cannot be edited. Undo its ledger claim first.");
         }
 
         var validation = ValidateItem(updatedItem);
@@ -165,12 +193,24 @@ public class WishlistService
             }
             item.IsActive = true;
         }
-        else if (!updatedItem.IsActive && item.IsActive)
+        // Focus is a single selection rather than a nullable toggle. The focused item remains
+        // focused until another open reward is explicitly selected.
+        try
         {
-            item.IsActive = false;
+            await _context.SaveChangesAsync(cancellationToken);
         }
-
-        await _context.SaveChangesAsync(cancellationToken);
+        catch (DbUpdateConcurrencyException)
+        {
+            return new WishlistItemResult(
+                WishlistMutationStatus.Conflict,
+                Message: "This reward changed while it was being edited. Refresh and try again.");
+        }
+        catch (DbUpdateException ex) when (ex.IsUniqueViolation())
+        {
+            return new WishlistItemResult(
+                WishlistMutationStatus.Conflict,
+                Message: "Another reward became focused at the same time. Refresh and try again.");
+        }
         return new WishlistItemResult(WishlistMutationStatus.Success, item);
     }
 

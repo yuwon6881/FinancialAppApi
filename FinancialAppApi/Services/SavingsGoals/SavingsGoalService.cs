@@ -205,6 +205,58 @@ public class SavingsGoalService
         return new SavingsGoalResult(SavingsGoalMutationStatus.Success, goal);
     }
 
+    /// <summary>
+    /// Restores a deleted goal from its Undo snapshot. This is separate from ordinary creation so
+    /// the server can preserve the cycle-funding tally without allowing normal create callers to
+    /// forge it. A client key makes a lost-response replay return the first restored row.
+    /// </summary>
+    public async Task<SavingsGoalResult> RestoreDeletedGoalAsync(
+        SavingsGoal snapshot,
+        CancellationToken cancellationToken = default)
+    {
+        await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(snapshot.ClientKey))
+            return new SavingsGoalResult(SavingsGoalMutationStatus.Conflict, Message: "A restore key is required.");
+
+        var existing = await _context.SavingsGoals
+            .FirstOrDefaultAsync(goal => goal.ClientKey == snapshot.ClientKey, cancellationToken);
+        if (existing != null) return new SavingsGoalResult(SavingsGoalMutationStatus.Success, existing);
+
+        var validation = Validate(snapshot);
+        if (validation != null) return validation;
+        snapshot.Id = 0;
+        snapshot.Status = SavingsGoalStatus.Active;
+        snapshot.CompletedAt = null;
+        snapshot.LastCompletionTransactionId = null;
+        snapshot.EarmarkedAmount = Math.Clamp(snapshot.EarmarkedAmount, 0m, snapshot.TargetAmount);
+        snapshot.CycleFundedAmount = Math.Clamp(snapshot.CycleFundedAmount, 0m, snapshot.EarmarkedAmount);
+        snapshot.CreatedAt = snapshot.CreatedAt == default ? DateTime.UtcNow : snapshot.CreatedAt.ToUniversalTime();
+        snapshot.RecurrenceDayOfMonth = snapshot.IsRecurring ? snapshot.TargetDate.Day : null;
+
+        if (snapshot.EarmarkedAmount > 0m)
+        {
+            var headroom = await GetUnassignedAsync(snapshot.FundingBucket, cancellationToken: cancellationToken);
+            if (snapshot.EarmarkedAmount > headroom) return ExceedsAvailable(headroom, snapshot.FundingBucket);
+        }
+
+        _context.SavingsGoals.Add(snapshot);
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException exception) when (exception.IsUniqueViolation())
+        {
+            _context.Entry(snapshot).State = EntityState.Detached;
+            var replay = await _context.SavingsGoals
+                .AsNoTracking()
+                .FirstOrDefaultAsync(goal => goal.ClientKey == snapshot.ClientKey, cancellationToken);
+            return replay != null
+                ? new SavingsGoalResult(SavingsGoalMutationStatus.Success, replay)
+                : new SavingsGoalResult(SavingsGoalMutationStatus.Conflict, Message: "This commitment restore conflicted with another change.");
+        }
+        return new SavingsGoalResult(SavingsGoalMutationStatus.Success, snapshot);
+    }
+
     public async Task<SavingsGoalResult> UpdateGoalAsync(
         int id,
         SavingsGoal updated,
@@ -229,11 +281,14 @@ public class SavingsGoalService
         if (validation != null) return validation;
 
         var nextFundingBucket = updated.FundingBucket;
+        // Validate the amount that will actually remain earmarked. Checking the old earmark first
+        // falsely rejects a move that also lowers the target to an amount the destination can hold.
+        var nextEarmark = Math.Min(goal.EarmarkedAmount, updated.TargetAmount);
         if (!string.Equals(goal.FundingBucket, nextFundingBucket, StringComparison.Ordinal)
-            && goal.EarmarkedAmount > 0m)
+            && nextEarmark > 0m)
         {
             var targetBucketHeadroom = await GetUnassignedAsync(nextFundingBucket, cancellationToken: cancellationToken);
-            if (goal.EarmarkedAmount > targetBucketHeadroom)
+            if (nextEarmark > targetBucketHeadroom)
             {
                 return ExceedsAvailable(targetBucketHeadroom, nextFundingBucket);
             }
@@ -244,7 +299,7 @@ public class SavingsGoalService
         // Lowering the target below what is already set aside releases the surplus back to the pool
         // rather than holding money the goal no longer needs (and would breach the row-level
         // earmark <= target constraint). Raising the target never moves money.
-        var clampedEarmark = Math.Min(goal.EarmarkedAmount, goal.TargetAmount);
+        var clampedEarmark = nextEarmark;
         if (clampedEarmark != goal.EarmarkedAmount)
         {
             // Same rule as ContributeAsync: a release has to come off this cycle's tally too.
@@ -456,12 +511,57 @@ public class SavingsGoalService
     /// expense. Deleting that transaction restores this snapshot while it is still the latest,
     /// untouched completion. A recurring goal rolls its deadline forward and starts again at zero.
     /// </summary>
-    public async Task<SavingsGoalResult> CompleteGoalAsync(
+    public Task<SavingsGoalResult> CompleteGoalAsync(
         int id,
         string? accountId,
         CancellationToken cancellationToken = default)
+        => CompleteGoalAsync(id, accountId, null, null, cancellationToken);
+
+    public async Task<SavingsGoalResult> CompleteGoalAsync(
+        int id,
+        string? accountId,
+        string? transactionId,
+        DateTime? postedAt,
+        CancellationToken cancellationToken)
     {
         await using var poolLock = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
+        var requestedTransactionId = string.IsNullOrWhiteSpace(transactionId) ? null : transactionId.Trim();
+        if (requestedTransactionId is { Length: > 200 })
+        {
+            return new SavingsGoalResult(
+                SavingsGoalMutationStatus.Conflict,
+                Message: "The completion transaction ID is invalid.");
+        }
+
+        if (requestedTransactionId != null)
+        {
+            var retainedCompletion = await _context.SavingsGoalCompletions
+                .FirstOrDefaultAsync(completion => completion.TransactionId == requestedTransactionId, cancellationToken);
+            var existingTransaction = await _context.Transactions
+                .FirstOrDefaultAsync(transaction => transaction.Id == requestedTransactionId, cancellationToken);
+            if (existingTransaction != null)
+            {
+                var existingGoal = await _context.SavingsGoals.FindAsync([id], cancellationToken);
+                if (retainedCompletion?.SavingsGoalId == id
+                    && retainedCompletion.ReversedAt == null
+                    && existingTransaction.SavingsGoalId == id
+                    && existingGoal != null)
+                {
+                    return new SavingsGoalResult(SavingsGoalMutationStatus.Success, existingGoal, existingTransaction);
+                }
+
+                return new SavingsGoalResult(
+                    SavingsGoalMutationStatus.Conflict,
+                    Message: "That completion transaction ID is already in use.");
+            }
+            if (retainedCompletion != null)
+            {
+                return new SavingsGoalResult(
+                    SavingsGoalMutationStatus.Conflict,
+                    Message: "That completion transaction ID belongs to a completion that was already reversed.");
+            }
+        }
+
         var goal = await _context.SavingsGoals.FindAsync([id], cancellationToken);
         if (goal == null) return new SavingsGoalResult(SavingsGoalMutationStatus.NotFound);
         if (goal.Status != SavingsGoalStatus.Active)
@@ -502,9 +602,9 @@ public class SavingsGoalService
         var transactionDate = TransactionDate.FromInputDate(_financialClock.Today);
         var transaction = new Transaction
         {
-            Id = $"savings-goal-completion-{goal.Id}-{Guid.NewGuid():N}",
+            Id = requestedTransactionId ?? $"savings-goal-completion-{goal.Id}-{Guid.NewGuid():N}",
             Date = transactionDate,
-            PostedAt = DateTime.UtcNow,
+            PostedAt = postedAt?.ToUniversalTime() ?? DateTime.UtcNow,
             Description = $"Completed commitment: {goal.Name}",
             Category = "Other",
             LedgerCategory = goal.FundingBucket,

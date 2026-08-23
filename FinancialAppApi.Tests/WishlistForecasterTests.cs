@@ -183,13 +183,26 @@ public class WishlistForecasterTests
     }
 
     [Fact]
-    public void NoActiveItems_ReturnsEmpty()
+    public void NoFocusedItem_FallsBackToNewestOpenReward()
     {
         var result = AiAssistantService.ComputeWishlistForecast(Policy(
             [Item(1, "Racket", 100, active: false), Item(2, "Bought", 50, purchased: true)],
             [Row(2026, 4, 200)]));
 
-        Assert.Empty(result);
+        var forecast = Assert.Single(result);
+        Assert.Equal(1, forecast.WishlistItemId);
+    }
+
+    [Fact]
+    public void ExplicitReference_CanForecastAnOpenRewardThatIsNotFocused()
+    {
+        var result = AiAssistantService.ComputeWishlistForecast(Policy(
+            [Item(1, "Camera", 500), Item(2, "Weekend trip", 800, active: false)],
+            [Row(2026, 4, 200)],
+            reference: "Weekend trip"));
+
+        var forecast = Assert.Single(result);
+        Assert.Equal(2, forecast.WishlistItemId);
     }
 
     [Fact]

@@ -38,6 +38,10 @@ public class WishlistController : ControllerBase
         {
             return BadRequest(new { message = result.Message });
         }
+        if (result.Status == WishlistMutationStatus.Conflict)
+        {
+            return Conflict(new { message = result.Message });
+        }
 
         return CreatedAtAction(nameof(GetWishlist), new { id = result.Item!.Id }, MapToDto(result.Item));
     }
@@ -52,8 +56,9 @@ public class WishlistController : ControllerBase
         {
             WishlistMutationStatus.IdMismatch => BadRequest(new { message = result.Message }),
             WishlistMutationStatus.NotFound => NotFound(),
+            WishlistMutationStatus.AlreadyPurchased or WishlistMutationStatus.Conflict => Conflict(new { message = result.Message }),
             WishlistMutationStatus.NameRequired or WishlistMutationStatus.PriceInvalid => BadRequest(new { message = result.Message }),
-            _ => NoContent()
+            _ => Ok(MapToDto(result.Item!))
         };
     }
 

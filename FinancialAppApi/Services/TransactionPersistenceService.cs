@@ -485,6 +485,13 @@ public class TransactionPersistenceService
         var transaction = await _context.Transactions.FindAsync([id], cancellationToken);
         if (transaction == null)
         {
+            var reversedCompletion = await _context.SavingsGoalCompletions
+                .AsNoTracking()
+                .FirstOrDefaultAsync(completion => completion.TransactionId == id && completion.ReversedAt != null, cancellationToken);
+            if (reversedCompletion != null)
+            {
+                return new TransactionMutationResult(TransactionMutationStatus.Deleted);
+            }
             return new TransactionMutationResult(TransactionMutationStatus.NotFound);
         }
 
@@ -499,6 +506,10 @@ public class TransactionPersistenceService
                 transaction,
                 "A loan repayment entry cannot be deleted. Use Undo repayment from the loan instead.");
         }
+
+        await using var poolLock = transaction.SavingsGoalId.HasValue
+            ? await _sharedPoolMutationLock.AcquireAsync(cancellationToken)
+            : NoOpPoolLock.Instance;
 
         var goalRestoreError = await RestoreSavingsGoalCompletionAsync(transaction, cancellationToken);
         if (goalRestoreError != null)
@@ -1269,7 +1280,7 @@ public class TransactionPersistenceService
             goal.LastCompletionTransactionId = null;
         }
 
-        _context.SavingsGoalCompletions.Remove(completion);
+        completion.ReversedAt = DateTime.UtcNow;
         return null;
     }
 

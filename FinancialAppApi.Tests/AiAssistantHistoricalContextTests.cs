@@ -470,7 +470,8 @@ public class AiAssistantHistoricalContextTests
         context.Transactions.AddRange(
             RewardsSaving("saving-apr", new DateTime(2026, 4, 10, 12, 0, 0, DateTimeKind.Utc), 200),
             RewardsSaving("saving-may", new DateTime(2026, 5, 10, 12, 0, 0, DateTimeKind.Utc), 200),
-            RewardsSaving("saving-jun", new DateTime(2026, 6, 10, 12, 0, 0, DateTimeKind.Utc), 200));
+            RewardsSaving("saving-jun", new DateTime(2026, 6, 10, 12, 0, 0, DateTimeKind.Utc), 200),
+            RewardsSaving("saving-jul", new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Utc), 200));
         await context.SaveChangesAsync();
 
         var handler = new CapturingHandler();

@@ -1,8 +1,9 @@
 {
   "domain": "free-rewards",
-  "version": 1,
+  "version": 2,
   "cases": [
     { "id": "ledger-category-trap", "why": "Only a pending occurrence's ledger bucket holds money aside; its ordinary category must not.", "input": { "rewardsBalance": 1000, "pendingRewards": 150, "goals": [{ "status": "active", "fundingBucket": "Rewards", "earmarkedAmount": 300, "isPendingDelete": false }, { "status": "completed", "fundingBucket": "Rewards", "earmarkedAmount": 200, "isPendingDelete": false }, { "status": "active", "fundingBucket": "Essentials", "earmarkedAmount": 400, "isPendingDelete": false }], "pendingOccurrences": [{ "status": "Pending", "ledgerCategory": "rewards", "category": "Food", "scheduledAmount": 150 }, { "status": "Pending", "ledgerCategory": "Essentials", "category": "Rewards", "scheduledAmount": 90 }, { "status": "Paid", "ledgerCategory": "Rewards", "category": "Other", "scheduledAmount": 40 }] }, "expected": { "pendingRewards": 150, "unassigned": 550 } },
-    { "id": "claims-floor-at-zero", "why": "When claims exceed a reduced balance, free Rewards is zero rather than a negative amount.", "input": { "rewardsBalance": 100, "pendingRewards": 150, "goals": [{ "status": "active", "fundingBucket": "Rewards", "earmarkedAmount": 900, "isPendingDelete": false }], "pendingOccurrences": [] }, "expected": { "pendingRewards": 0, "unassigned": 0 } }
+    { "id": "claims-floor-at-zero", "why": "When claims exceed a reduced balance, free Rewards is zero rather than a negative amount.", "input": { "rewardsBalance": 100, "pendingRewards": 150, "goals": [{ "status": "active", "fundingBucket": "Rewards", "earmarkedAmount": 900, "isPendingDelete": false }], "pendingOccurrences": [] }, "expected": { "pendingRewards": 0, "unassigned": 0 } },
+    { "id": "partial-occurrence-remainder", "why": "A partially paid Rewards bill holds only its unpaid remainder, consistently on client and server.", "input": { "rewardsBalance": 1000, "pendingRewards": 150, "goals": [], "pendingOccurrences": [{ "status": "PartiallyPaid", "ledgerCategory": "Rewards", "category": "Other", "scheduledAmount": 300, "paidAmount": 125, "remainingAmount": 175, "occurrenceDate": "2026-08-15" }] }, "expected": { "pendingRewards": 175, "unassigned": 825 } }
   ]
 }

@@ -56,7 +56,7 @@ public class SavingsGoalsController : ControllerBase
         return result.Status switch
         {
             SavingsGoalMutationStatus.NotFound => NotFound(),
-            SavingsGoalMutationStatus.Success => NoContent(),
+            SavingsGoalMutationStatus.Success => Ok(MapToDto(result.Goal!)),
             SavingsGoalMutationStatus.Conflict => Conflict(new { message = result.Message }),
             _ => BadRequest(new { message = result.Message })
         };
@@ -76,6 +76,24 @@ public class SavingsGoalsController : ControllerBase
                 message = "This commitment changed while it was being deleted. Refresh and try again."
             }),
             _ => NoContent()
+        };
+    }
+
+    // POST: api/savings-goals/restore
+    // Authoritative Undo for a synced delete; preserves lifecycle fields that ordinary creation
+    // deliberately resets and revalidates the earmark against today's shared pool.
+    [HttpPost("restore")]
+    public async Task<ActionResult<SavingsGoalDto>> RestoreGoal(SavingsGoalRestoreDto dto)
+    {
+        var goal = ToGoal(dto);
+        goal.CycleFundedKey = dto.CycleFundedKey;
+        goal.CycleFundedAmount = Math.Round(ReadWireAmount(dto.CycleFundedAmount), 2, MidpointRounding.AwayFromZero);
+        var result = await _savingsGoalService.RestoreDeletedGoalAsync(goal, HttpContext.RequestAborted);
+        return result.Status switch
+        {
+            SavingsGoalMutationStatus.Success => Ok(MapToDto(result.Goal!)),
+            SavingsGoalMutationStatus.Conflict => Conflict(new { message = result.Message }),
+            _ => BadRequest(new { message = result.Message })
         };
     }
 
@@ -127,7 +145,12 @@ public class SavingsGoalsController : ControllerBase
     [HttpPost("{id}/complete")]
     public async Task<IActionResult> CompleteGoal(int id, [FromBody] SavingsGoalCompletionRequestDto dto)
     {
-        var result = await _savingsGoalService.CompleteGoalAsync(id, dto.AccountId, HttpContext.RequestAborted);
+        var result = await _savingsGoalService.CompleteGoalAsync(
+            id,
+            dto.AccountId,
+            dto.TransactionId,
+            dto.PostedAt,
+            HttpContext.RequestAborted);
         return result.Status switch
         {
             SavingsGoalMutationStatus.NotFound => NotFound(),
@@ -238,9 +261,17 @@ public class SavingsGoalContributionDto
     public JsonElement Amount { get; set; }
 }
 
+public sealed class SavingsGoalRestoreDto : SavingsGoalMutationDto
+{
+    public string? CycleFundedKey { get; set; }
+    public JsonElement CycleFundedAmount { get; set; }
+}
+
 public class SavingsGoalCompletionRequestDto
 {
     public string? AccountId { get; set; }
+    public string? TransactionId { get; set; }
+    public DateTime? PostedAt { get; set; }
 }
 
 public class SavingsGoalFundingRequestDto

@@ -13,7 +13,7 @@ namespace FinancialAppApi.Services;
 //   * "remaining" is the item price minus the current free Rewards balance (AvailableFunds),
 //     because wishlist goals are funded from unearmarked Rewards, not total net cash flow;
 //   * the target date is today + ceil(months * 30) days, exactly like the page;
-//   * a wishlist reference that matches more than one active item returns a clarification
+//   * a wishlist reference that matches more than one open item returns a clarification
 //     marker instead of silently forecasting every item.
 public partial class AiAssistantService
 {
@@ -88,15 +88,16 @@ public partial class AiAssistantService
 
     internal static IReadOnlyList<WishlistForecastResult> ComputeWishlistForecast(WishlistForecastPolicy policy)
     {
-        var candidates = policy.Wishlist.Where(w => w.IsActive && !w.IsPurchased).ToList();
-        if (candidates.Count == 0) return [];
-
         // Resolve which item(s) the user meant. A concrete reference wins; ambiguity is
-        // surfaced as a clarification rather than forecasting the whole list.
+        // surfaced as a clarification rather than forecasting the whole list. Explicitly named
+        // open rewards remain forecastable even when another reward currently has focus.
+        var open = policy.Wishlist.Where(w => !w.IsPurchased).ToList();
+        if (open.Count == 0) return [];
+        List<AiWishlistRow> candidates;
         if (!string.IsNullOrWhiteSpace(policy.WishlistReference))
         {
             var reference = policy.WishlistReference.Trim();
-            var matched = candidates
+            var matched = open
                 .Where(w => w.Name.Contains(reference, StringComparison.OrdinalIgnoreCase))
                 .ToList();
             if (matched.Count > 1)
@@ -106,11 +107,21 @@ public partial class AiAssistantService
                     new WishlistForecastResult(
                         matched[0].Id, reference, 0m, policy.AvailableFunds, 0m, null, null, null,
                         WishlistForecastStatus.MultipleMatches, [],
-                        $"\"{reference}\" matches {matched.Count} active wishlist items; ask which one.",
+                        $"\"{reference}\" matches {matched.Count} open wishlist items; ask which one.",
                         matched.Select(w => w.Name).ToList())
                 ];
             }
-            if (matched.Count == 1) candidates = matched;
+            candidates = matched.Count == 1
+                ? matched
+                : open.Where(w => w.IsActive).ToList();
+            if (candidates.Count == 0)
+                candidates = [open.OrderByDescending(w => w.CreatedAt).ThenByDescending(w => w.Id).First()];
+        }
+        else
+        {
+            candidates = open.Where(w => w.IsActive).ToList();
+            if (candidates.Count == 0)
+                candidates = [open.OrderByDescending(w => w.CreatedAt).ThenByDescending(w => w.Id).First()];
         }
 
         // Positive Rewards-ledger attribution per cycle, but ONLY over cycles that actually had

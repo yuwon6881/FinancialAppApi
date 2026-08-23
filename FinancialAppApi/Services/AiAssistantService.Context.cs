@@ -310,12 +310,13 @@ public partial class AiAssistantService
         }
         if ((queryPlan.NeedsWishlistForecast || queryPlan.NeedsRewards || ledgerForecastRequest != null) && !targetSelection.ExplicitlyRequested)
         {
-            // The active cycle plus the two before it -- matches the app's past-3 Rewards average
-            // window (FinancialService.CalculatePastRewardsAverageFromTxs starts at the active
-            // cycle), so the assistant's forecast lines up with the Wishlist page.
+            // Forecasts always use the three completed cycles before today's active cycle. A user
+            // viewing July must not make the assistant silently substitute July/June/May for the
+            // current completed-cycle history shown by the Rewards page.
+            var current = _financialClock.LocalNow;
             targetSelection = new TargetCycleSelection(
-                Enumerable.Range(0, 3)
-                    .Select(offset => AddMonths(selectedYear, selectedMonthIndex, -offset))
+                Enumerable.Range(1, 3)
+                    .Select(offset => AddMonths(current.Year, current.Month, -offset))
                     .Select(value => new CycleKey(value.Year, value.MonthIndex))
                     .ToList(),
                 false);

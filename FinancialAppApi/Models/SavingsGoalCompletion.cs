@@ -39,4 +39,10 @@ public class SavingsGoalCompletion : IUserOwnedEntity
 
     [Required]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// Set when the linked ledger transaction was deleted and this snapshot restored the goal.
+    /// Retaining the row makes a repeated DELETE idempotent after a lost response.
+    /// </summary>
+    public DateTime? ReversedAt { get; set; }
 }

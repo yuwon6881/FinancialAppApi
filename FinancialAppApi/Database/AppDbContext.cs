@@ -317,6 +317,10 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
             entity.Property(e => e.IsActive).HasDefaultValue(false);
             entity.HasIndex(e => new { e.UserId, e.PurchaseTransactionId });
+            entity.HasIndex(e => e.UserId)
+                .IsUnique()
+                .HasDatabaseName("IX_WishlistItems_UserId_FocusedOpen")
+                .HasFilter("\"IsActive\" = TRUE AND \"IsPurchased\" = FALSE");
             entity.Property(e => e.IsPurchased).IsConcurrencyToken();
             // Unique when present so a replayed offline create dedupes to the same row; the
             // filter keeps pre-existing rows (null ClientKey) exempt from the uniqueness constraint.
@@ -598,6 +602,7 @@ public class AppDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(e => e.PreviousEarmarkedAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.PreviousCycleFundedAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.ReversedAt).HasColumnType("timestamp with time zone");
             entity.HasIndex(e => new { e.UserId, e.SavingsGoalId, e.CreatedAt });
         });
 

@@ -42,9 +42,18 @@ public sealed class FreeRewardsParityTests
                 LedgerCategory = occurrence.GetProperty("ledgerCategory").GetString(),
                 Category = occurrence.GetProperty("category").GetString(),
                 ScheduledAmount = occurrence.GetProperty("scheduledAmount").GetDecimal(),
+                OccurrenceDate = occurrence.TryGetProperty("occurrenceDate", out var date)
+                    ? DateOnly.Parse(date.GetString()!)
+                    : new DateOnly(2026, 8, 1),
             })
             .ToArray();
-        var pending = SavingsGoalPacing.PendingAmount(occurrences, SavingsGoalFundingBucket.Rewards);
+        var paidByOccurrence = input.GetProperty("pendingOccurrences").EnumerateArray()
+            .Select((occurrence, index) => new { occurrence, index })
+            .Where(value => value.occurrence.TryGetProperty("paidAmount", out _))
+            .ToDictionary(
+                value => (occurrences[value.index].RecurringPaymentId, occurrences[value.index].OccurrenceDate),
+                value => value.occurrence.GetProperty("paidAmount").GetDecimal());
+        var pending = SavingsGoalPacing.PendingAmount(occurrences, SavingsGoalFundingBucket.Rewards, paidByOccurrence);
         var unassigned = SavingsGoalPacing.Unassigned(
             input.GetProperty("rewardsBalance").GetDecimal(),
             totalEarmarked,

@@ -779,7 +779,61 @@ public class SavingsGoalServiceTests
         Assert.Equal(400m, restored.CycleFundedAmount);
         Assert.Null(restored.LastCompletionTransactionId);
         Assert.DoesNotContain(context.Transactions, transaction => transaction.Id == transactionId);
-        Assert.Empty(context.SavingsGoalCompletions);
+        var reversal = Assert.Single(context.SavingsGoalCompletions);
+        Assert.NotNull(reversal.ReversedAt);
+        Assert.Equal(transactionId, reversal.TransactionId);
+    }
+
+    [Fact]
+    public async Task CompleteGoalAsync_ReplayedWithSameTransactionId_ReturnsOriginalSettlement()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var goal = NewGoal("Car service", 1200m, new DateOnly(2026, 9, 20), earmarked: 1200m);
+        context.SavingsGoals.Add(goal);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+        const string transactionId = "tx-stable-completion";
+        var postedAt = new DateTime(2026, 8, 22, 4, 0, 0, DateTimeKind.Utc);
+
+        var first = await service.CompleteGoalAsync(goal.Id, "acct-rewards", transactionId, postedAt, default);
+        var replay = await service.CompleteGoalAsync(goal.Id, "acct-rewards", transactionId, postedAt, default);
+
+        Assert.Equal(SavingsGoalMutationStatus.Success, first.Status);
+        Assert.Equal(SavingsGoalMutationStatus.Success, replay.Status);
+        Assert.Equal(transactionId, replay.CompletionTransaction!.Id);
+        Assert.Single(context.Transactions, transaction => transaction.Id == transactionId);
+        Assert.Single(context.SavingsGoalCompletions, completion => completion.TransactionId == transactionId);
+    }
+
+    [Fact]
+    public async Task RestoreDeletedGoalAsync_PreservesEarmarkAndCycleFundingAndDedupesReplay()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var snapshot = NewGoal("Car service", 1200m, new DateOnly(2026, 9, 20), earmarked: 700m);
+        snapshot.ClientKey = "undo-delete-goal-7";
+        snapshot.CycleFundedKey = "2026-08";
+        snapshot.CycleFundedAmount = 400m;
+        snapshot.CreatedAt = new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc);
+        var service = NewService(context);
+
+        var restored = await service.RestoreDeletedGoalAsync(snapshot);
+        var replay = await service.RestoreDeletedGoalAsync(new SavingsGoal
+        {
+            ClientKey = snapshot.ClientKey,
+            Name = snapshot.Name,
+            TargetAmount = snapshot.TargetAmount,
+            EarmarkedAmount = snapshot.EarmarkedAmount,
+            TargetDate = snapshot.TargetDate,
+            Priority = snapshot.Priority,
+            FundingBucket = snapshot.FundingBucket,
+        });
+
+        Assert.Equal(SavingsGoalMutationStatus.Success, restored.Status);
+        Assert.Equal(restored.Goal!.Id, replay.Goal!.Id);
+        Assert.Equal(700m, restored.Goal.EarmarkedAmount);
+        Assert.Equal("2026-08", restored.Goal.CycleFundedKey);
+        Assert.Equal(400m, restored.Goal.CycleFundedAmount);
+        Assert.Single(context.SavingsGoals);
     }
 
     [Fact]
