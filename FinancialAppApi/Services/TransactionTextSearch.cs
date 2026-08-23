@@ -36,6 +36,24 @@ internal static partial class TransactionTextSearch
             transaction.LedgerCategory.ToLower().Contains(normalized));
     }
 
+    internal static IQueryable<Transaction> Apply(
+        IQueryable<Transaction> query,
+        bool useIlike,
+        string searchText,
+        string? searchMode)
+    {
+        if (!string.Equals(searchMode, "whole-word", StringComparison.OrdinalIgnoreCase))
+            return ApplyExact(query, useIlike, searchText);
+
+        var term = searchText.Trim();
+        if (term.Length == 0) return query;
+        var pattern = $@"(?<![\p{{L}}\p{{N}}]){Regex.Escape(term)}(?![\p{{L}}\p{{N}}])";
+        return query.Where(transaction =>
+            Regex.IsMatch(transaction.Description, pattern, RegexOptions.IgnoreCase) ||
+            Regex.IsMatch(transaction.Category, pattern, RegexOptions.IgnoreCase) ||
+            Regex.IsMatch(transaction.LedgerCategory, pattern, RegexOptions.IgnoreCase));
+    }
+
     // Users and the ledger routinely disagree about spacing: "hair cut" typed against a saved
     // "Haircut" (or the reverse) matches neither the exact ILIKE nor pg_trgm's strict-word
     // similarity floor, so the assistant reported an empty ledger over rows the user can see on

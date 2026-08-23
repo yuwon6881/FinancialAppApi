@@ -10,6 +10,7 @@ public partial class TransactionQueryService
         IQueryable<Transaction> query,
         bool useIlike,
         string? search,
+        string? searchMode,
         string? ledgerCategory,
         string? category,
         string? txType,
@@ -70,7 +71,7 @@ public partial class TransactionQueryService
 
         if (!string.IsNullOrWhiteSpace(search))
         {
-            query = TransactionTextSearch.ApplyExact(query, useIlike, search);
+            query = TransactionTextSearch.Apply(query, useIlike, search, searchMode);
         }
 
         if (!string.IsNullOrWhiteSpace(ledgerCategory))

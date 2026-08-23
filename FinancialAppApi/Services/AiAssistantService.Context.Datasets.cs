@@ -95,6 +95,7 @@ public partial class AiAssistantService
             metrics["transactionMatches"] = new
             {
                 query = queryPlan.SearchText,
+                searchMode = queryPlan.SearchMode,
                 count = exactMatchCount ?? transactions.Count,
                 totalOutflow = sensitiveMode ? (decimal?)null : Math.Abs(transactions.Where(t => t.Amount < 0 && TransactionReportSemantics.IsReportableCashMovement(t.Amount, t.Category, t.LedgerCategory)).Sum(t => t.Amount)),
                 complete = queryPlan.TransactionData == TransactionDataLevel.MatchingRows && (exactMatchCount.HasValue || transactions.Count < MaxTransactionsPerRange),

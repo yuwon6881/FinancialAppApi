@@ -29,7 +29,8 @@ public partial class AiAssistantService
         bool NeedsInvestments = false,
         bool NeedsReport = false,
         bool NeedsLoans = false,
-        bool NeedsLedgerAccounts = false);
+        bool NeedsLedgerAccounts = false,
+        string SearchMode = "contains");
 
     private sealed record TargetCycleSelection(IReadOnlyList<CycleKey> Cycles, bool ExplicitlyRequested, bool AllHistory = false);
     internal sealed record AiTransactionRow(
@@ -203,6 +204,7 @@ public partial class AiAssistantService
                 transactionData = queryPlan.TransactionData.ToString(),
                     metrics = queryPlan.Metrics.Select(metric => metric.ToString()).ToList(),
                     searchText = queryPlan.SearchText,
+                    searchMode = queryPlan.SearchMode,
                     cycleHint = queryPlan.CycleHint,
                     operations = turnFacets,
                     exactDate = turnExactDate,

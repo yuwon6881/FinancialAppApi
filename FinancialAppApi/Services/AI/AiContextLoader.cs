@@ -204,7 +204,7 @@ public partial class AiAssistantService
     }
 
     // Applies the shared "not discarded, within [start,end), optional text match" predicate.
-    private IQueryable<Models.Transaction> ScopedTransactions(DateTime? start, DateTime? end, string? searchText, IReadOnlyList<string>? transactionIds = null)
+    private IQueryable<Models.Transaction> ScopedTransactions(DateTime? start, DateTime? end, string? searchText, IReadOnlyList<string>? transactionIds = null, string searchMode = "contains")
     {
         var query = _context.Transactions
             .AsNoTracking()
@@ -213,7 +213,7 @@ public partial class AiAssistantService
         if (end.HasValue) query = query.Where(t => t.Date < end.Value);
         if (!string.IsNullOrWhiteSpace(searchText))
         {
-            query = TransactionTextSearch.ApplyExact(query, _context.Database.IsNpgsql(), searchText);
+            query = TransactionTextSearch.Apply(query, _context.Database.IsNpgsql(), searchText, searchMode);
         }
         if (transactionIds is { Count: > 0 })
         {
@@ -227,9 +227,10 @@ public partial class AiAssistantService
         DateTime? end,
         string? searchText,
         IReadOnlyList<string>? transactionIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string searchMode = "contains")
         {
-        var rows = await ScopedTransactions(start, end, searchText, transactionIds)
+        var rows = await ScopedTransactions(start, end, searchText, transactionIds, searchMode)
             .OrderByDescending(t => t.Date)
             .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
@@ -247,8 +248,9 @@ public partial class AiAssistantService
         DateTime? end,
         string searchText,
         IReadOnlyList<string>? transactionIds,
-        CancellationToken cancellationToken) =>
-        await ScopedTransactions(start, end, searchText, transactionIds).CountAsync(cancellationToken);
+        CancellationToken cancellationToken,
+        string searchMode = "contains") =>
+        await ScopedTransactions(start, end, searchText, transactionIds, searchMode).CountAsync(cancellationToken);
 
     // Exact reportable outflow total over the full result set. The recovery loop uses this to
     // replace a truncated approximate cycle total with a precise SUM computed in the database;

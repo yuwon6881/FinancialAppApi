@@ -92,6 +92,14 @@ public partial class AiAssistantService
             NeedsInvestments: intents.Any(intent => intent is AiIntent.InvestmentSummary or AiIntent.InvestmentHolding or AiIntent.InvestmentAllocation),
             NeedsReport: intents.Contains(AiIntent.ReportReview),
             NeedsLoans: needsLoans || intents.Contains(AiIntent.LoanSummary),
-            NeedsLedgerAccounts: needsLedgerAccounts || intents.Contains(AiIntent.LedgerAccount));
+            NeedsLedgerAccounts: needsLedgerAccounts || intents.Contains(AiIntent.LedgerAccount),
+            SearchMode: InferSearchMode(queryText));
+    }
+
+    private static string InferSearchMode(string queryText)
+    {
+        if (System.Text.RegularExpressions.Regex.IsMatch(queryText, "[\"“”][^\"“”]+[\"“”]")) return "whole-word";
+        if (System.Text.RegularExpressions.Regex.IsMatch(queryText, @"\b(exact|exactly|whole[ -]word|whole[ -]phrase)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) return "whole-word";
+        return "contains";
     }
 }

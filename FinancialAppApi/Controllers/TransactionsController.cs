@@ -31,6 +31,7 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "page")] int page = 1,
         [FromQuery(Name = "pageSize")] int pageSize = 10,
         [FromQuery(Name = "search")] string? search = null,
+        [FromQuery(Name = "searchMode")] string? searchMode = null,
         [FromQuery(Name = "ledgerCategory")] string? ledgerCategory = null,
         [FromQuery(Name = "category")] string? category = null,
         [FromQuery(Name = "txType")] string? txType = null,
@@ -54,6 +55,7 @@ public class TransactionsController : ControllerBase
             page,
             pageSize,
             search,
+            searchMode,
             ledgerCategory,
             category,
             txType,
@@ -110,6 +112,7 @@ public class TransactionsController : ControllerBase
     [HttpGet("export")]
     public async Task<IActionResult> ExportTransactions(
         [FromQuery(Name = "search")] string? search = null,
+        [FromQuery(Name = "searchMode")] string? searchMode = null,
         [FromQuery(Name = "ledgerCategory")] string? ledgerCategory = null,
         [FromQuery(Name = "category")] string? category = null,
         [FromQuery(Name = "txType")] string? txType = null,
@@ -129,6 +132,7 @@ public class TransactionsController : ControllerBase
         await _transactionQueryService.WriteTransactionsCsvAsync(
             Response.Body,
             search,
+            searchMode,
             ledgerCategory,
             category,
             txType,
@@ -247,6 +251,24 @@ public class TransactionsController : ControllerBase
         }
 
         return Ok(new { restored = result.Transactions.Select(transaction => MapToDto(transaction)).ToList() });
+    }
+
+    [HttpPost("bulk-move")]
+    public async Task<IActionResult> BulkMoveTransactions([FromBody] BulkMoveTransactionsRequest? request)
+    {
+        var moves = request?.Moves ?? [];
+        if (moves.Count is < 1 or > 100)
+            return BadRequest(new { message = "Move between 1 and 100 transactions at a time." });
+        var result = await _transactionPersistenceService.MoveTransactionsAsync(
+            moves.Select(move => new TransactionMoveRequest(move.Id, move.TargetDate)).ToList(),
+            HttpContext.RequestAborted);
+        if (result.Status == TransactionMutationStatus.Conflict)
+            return Conflict(new { message = result.Message });
+        return Ok(new
+        {
+            moved = result.Transactions.Select(transaction => MapToDto(transaction)).ToList(),
+            affectedDates = result.AffectedDates
+        });
     }
 
     private static string CanonicalTransactionId(string id)
@@ -410,4 +432,15 @@ public sealed class BulkDeleteTransactionsRequest
 public sealed class BulkRestoreTransactionsRequest
 {
     public List<TransactionDto> Transactions { get; set; } = [];
+}
+
+public sealed class BulkMoveTransactionsRequest
+{
+    public List<BulkMoveTransactionItem> Moves { get; set; } = [];
+}
+
+public sealed class BulkMoveTransactionItem
+{
+    public string Id { get; set; } = string.Empty;
+    public string TargetDate { get; set; } = string.Empty;
 }

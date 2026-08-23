@@ -50,14 +50,17 @@ public partial class AiAssistantService
         var matches = new List<AiPurchaseMatch>();
         // Each rung is reached only when the stricter one above it found nothing, so an exact hit
         // is never diluted by a looser reading of the same term.
-        foreach (var candidate in new[] { PurchaseMatchMode.Exact, PurchaseMatchMode.Compact, PurchaseMatchMode.Fuzzy })
+        var candidates = queryPlan.SearchMode == "whole-word"
+            ? new[] { PurchaseMatchMode.Exact }
+            : new[] { PurchaseMatchMode.Exact, PurchaseMatchMode.Compact, PurchaseMatchMode.Fuzzy };
+        foreach (var candidate in candidates)
         {
             if (candidate == PurchaseMatchMode.Compact && !TransactionTextSearch.CanApplyCompact(queryPlan.SearchText))
             {
                 continue;
             }
             matches = await LoadPurchaseMatchesAsync(
-                queryPlan.SearchText, targetSelection, cycleDay, candidate, cancellationToken);
+                queryPlan.SearchText, targetSelection, cycleDay, candidate, cancellationToken, queryPlan.SearchMode);
             if (matches.Count > 0)
             {
                 mode = candidate switch
@@ -95,7 +98,8 @@ public partial class AiAssistantService
         TargetCycleSelection targetSelection,
         int cycleDay,
         PurchaseMatchMode matchMode,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string searchMode)
     {
         var ranges = targetSelection.AllHistory || targetSelection.Cycles.Count == 0
             ? new List<TransactionDateRange?> { null }
@@ -108,7 +112,7 @@ public partial class AiAssistantService
             if (matchMode != PurchaseMatchMode.Fuzzy)
             {
                 var filtered = matchMode == PurchaseMatchMode.Exact
-                    ? TransactionTextSearch.ApplyExact(baseQuery, _context.Database.IsNpgsql(), searchText)
+                    ? TransactionTextSearch.Apply(baseQuery, _context.Database.IsNpgsql(), searchText, searchMode)
                     : TransactionTextSearch.ApplyCompact(baseQuery, searchText);
                 var rows = await filtered
                     .Select(transaction => new AiPurchaseDbMatch(

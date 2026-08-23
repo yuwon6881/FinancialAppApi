@@ -103,14 +103,15 @@ public partial class AiAssistantService
                 if (queryPlan.TransactionData == TransactionDataLevel.MatchingRows && !string.IsNullOrWhiteSpace(queryPlan.SearchText))
                 {
                     exactMatchCount = await CountTransactionsAsync(
-                        null, null, queryPlan.SearchText, queryPlan.TransactionIds, cancellationToken);
+                        null, null, queryPlan.SearchText, queryPlan.TransactionIds, cancellationToken, queryPlan.SearchMode);
                 }
                 var rows = await QueryTransactionsAsync(
                     null,
                     null,
                     queryPlan.TransactionData == TransactionDataLevel.MatchingRows ? queryPlan.SearchText : null,
                     queryPlan.TransactionIds,
-                    cancellationToken);
+                    cancellationToken,
+                    queryPlan.SearchMode);
                 if (rows.Count > MaxTransactionsPerRange)
                 {
                     scopeTruncated = true;
@@ -125,14 +126,15 @@ public partial class AiAssistantService
                 {
                     if (queryPlan.TransactionData == TransactionDataLevel.MatchingRows && !string.IsNullOrWhiteSpace(queryPlan.SearchText))
                     {
-                        exactMatchCount = (exactMatchCount ?? 0) + await CountTransactionsAsync(range.Start, range.End, queryPlan.SearchText, queryPlan.TransactionIds, cancellationToken);
+                        exactMatchCount = (exactMatchCount ?? 0) + await CountTransactionsAsync(range.Start, range.End, queryPlan.SearchText, queryPlan.TransactionIds, cancellationToken, queryPlan.SearchMode);
                     }
                     var rows = await QueryTransactionsAsync(
                         range.Start,
                         range.End,
                         queryPlan.TransactionData == TransactionDataLevel.MatchingRows ? queryPlan.SearchText : null,
                         queryPlan.TransactionIds,
-                        cancellationToken);
+                        cancellationToken,
+                        queryPlan.SearchMode);
                     if (rows.Count > MaxTransactionsPerRange)
                     {
                         scopeTruncated = true;

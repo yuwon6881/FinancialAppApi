@@ -60,6 +60,24 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
+    public async Task GetTransactionsAsync_WholeWordModeUsesLiteralUnicodeBoundaries()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("match", "Iced Coffee Bean Latte", "Food", "Rewards", -10m),
+            NewTransaction("plural", "Coffee Beans", "Food", "Rewards", -10m),
+            NewTransaction("literal", "Cafe (special)", "Food", "Rewards", -10m));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var phrase = await service.GetTransactionsAsync(all: true, search: "coffee bean", searchMode: "whole-word");
+        var literal = await service.GetTransactionsAsync(all: true, search: "cafe (special)", searchMode: "whole-word");
+
+        Assert.Equal("match", Assert.Single(phrase.Items).Id);
+        Assert.Equal("literal", Assert.Single(literal.Items).Id);
+    }
+
+    [Fact]
     public async Task GetTransactionsAsync_OutflowFilterExcludesTransfersAndAdjustmentsCaseInsensitively()
     {
         await using var context = TestHelpers.NewInMemoryContext();
