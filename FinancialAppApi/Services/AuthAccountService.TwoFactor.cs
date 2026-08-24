@@ -1,4 +1,3 @@
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -114,11 +113,8 @@ public partial class AuthAccountService
             return new BadRequestObjectResult(new { message = "Two-factor authentication is not enabled." });
         }
 
-        var passwordResult = _passwordHasher.VerifyHashedPassword(user.Username, user.PasswordHash, password ?? string.Empty);
-        if (passwordResult == PasswordVerificationResult.Failed)
-        {
-            return new BadRequestObjectResult(new { message = "Incorrect password." });
-        }
+        var passwordFailure = await VerifyPasswordForSensitiveActionAsync(user, password, cancellationToken);
+        if (passwordFailure != null) return passwordFailure;
 
         var secret = _secretProtector.Unprotect(user.TotpSecret);
         var validTotp = _totpService.ValidateCode(secret, code ?? string.Empty);
@@ -161,11 +157,8 @@ public partial class AuthAccountService
             return new BadRequestObjectResult(new { message = "Two-factor authentication is not enabled." });
         }
 
-        var passwordResult = _passwordHasher.VerifyHashedPassword(user.Username, user.PasswordHash, password ?? string.Empty);
-        if (passwordResult == PasswordVerificationResult.Failed)
-        {
-            return new BadRequestObjectResult(new { message = "Incorrect password." });
-        }
+        var passwordFailure = await VerifyPasswordForSensitiveActionAsync(user, password, cancellationToken);
+        if (passwordFailure != null) return passwordFailure;
 
         var codes = await _recoveryCodeService.RegenerateAsync(
             username,

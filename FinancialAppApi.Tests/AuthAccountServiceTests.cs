@@ -351,7 +351,7 @@ public class AuthAccountServiceTests
     }
 
     [Fact]
-    public async Task SecurityQuestions_RecoveryReset_WithAtLeastTwoCorrectAnswers_ResetsPasswordAndRevokesSessions()
+    public async Task SecurityQuestions_RecoveryReset_WithAllAnswersCorrect_ResetsPasswordAndRevokesSessions()
     {
         // The recovery/reset endpoint is unauthenticated, so there is no current-user DB
         // scope. Run without one to faithfully reproduce production (and guard the regression
@@ -379,12 +379,12 @@ public class AuthAccountServiceTests
         Assert.IsType<OkObjectResult>(setup);
         Assert.True(context.AppUsers.Single().HasSetupSecurityQuestions);
 
-        // Two correct (answer normalization tolerates case/whitespace), one wrong -> still resets.
+        // Answer normalization tolerates case/whitespace, but every distinct answer is required.
         var reset = await service.VerifySecurityQuestionsAndResetPasswordAsync("alice", new List<QuestionAnswerDto>
         {
             new() { QuestionId = 0, Answer = "  rEx " },
             new() { QuestionId = 1, Answer = "Civic" },
-            new() { QuestionId = 2, Answer = "wrong-city" },
+            new() { QuestionId = 2, Answer = "London" },
         }, "new-password");
 
         Assert.IsType<OkObjectResult>(reset);
@@ -420,6 +420,117 @@ public class AuthAccountServiceTests
         Assert.IsType<BadRequestObjectResult>(reset);
         // Password is unchanged: the original still works.
         Assert.IsType<OkObjectResult>(await service.LoginAsync("alice", "old-password", null, null, null, null));
+    }
+
+    [Fact]
+    public async Task SecurityQuestions_RecoveryReset_RejectsDuplicateQuestionIds()
+    {
+        await using var context = TestHelpers.NewInMemoryContext(currentUserId: null);
+        SeedUser(context, "alice", "old-password");
+        var service = NewService(context);
+        await service.SetupSecurityQuestionsAsync("alice", new List<QuestionAnswerDto>
+        {
+            new() { QuestionId = 0, Answer = "Rex" },
+            new() { QuestionId = 1, Answer = "Civic" },
+            new() { QuestionId = 2, Answer = "London" },
+        });
+
+        var reset = await service.VerifySecurityQuestionsAndResetPasswordAsync("alice", new List<QuestionAnswerDto>
+        {
+            new() { QuestionId = 0, Answer = "Rex" },
+            new() { QuestionId = 0, Answer = "Rex" },
+            new() { QuestionId = 1, Answer = "wrong" },
+        }, "new-password");
+
+        Assert.IsType<BadRequestObjectResult>(reset);
+        Assert.IsType<OkObjectResult>(await service.LoginAsync("alice", "old-password", null, null, null, null));
+    }
+
+    [Fact]
+    public async Task SecurityQuestions_RecoveryReset_RejectsOversizedAnswersBeforeHashing()
+    {
+        await using var context = TestHelpers.NewInMemoryContext(currentUserId: null);
+        SeedUser(context, "alice", "old-password");
+        var service = NewService(context);
+        await service.SetupSecurityQuestionsAsync("alice", new List<QuestionAnswerDto>
+        {
+            new() { QuestionId = 0, Answer = "Rex" },
+            new() { QuestionId = 1, Answer = "Civic" },
+            new() { QuestionId = 2, Answer = "London" },
+        });
+
+        var reset = await service.VerifySecurityQuestionsAndResetPasswordAsync("alice", new List<QuestionAnswerDto>
+        {
+            new() { QuestionId = 0, Answer = new string('x', 257) },
+            new() { QuestionId = 1, Answer = "Civic" },
+            new() { QuestionId = 2, Answer = "London" },
+        }, "new-password");
+
+        Assert.IsType<BadRequestObjectResult>(reset);
+        Assert.Equal(0, context.AppUsers.Single().SecurityQuestionRecoveryFailedAttempts);
+    }
+
+    [Fact]
+    public async Task SecurityQuestions_RecoveryReset_LocksAfterRepeatedFailures()
+    {
+        await using var context = TestHelpers.NewInMemoryContext(currentUserId: null);
+        SeedUser(context, "alice", "old-password");
+        var service = NewService(context, TestHelpers.NewConfiguration(
+            ("Auth:MaxSecurityQuestionRecoveryAttempts", "2"),
+            ("Auth:SecurityQuestionRecoveryLockoutMinutes", "15")));
+        await service.SetupSecurityQuestionsAsync("alice", new List<QuestionAnswerDto>
+        {
+            new() { QuestionId = 0, Answer = "Rex" },
+            new() { QuestionId = 1, Answer = "Civic" },
+            new() { QuestionId = 2, Answer = "London" },
+        });
+        var wrongAnswers = new List<QuestionAnswerDto>
+        {
+            new() { QuestionId = 0, Answer = "wrong" },
+            new() { QuestionId = 1, Answer = "wrong" },
+            new() { QuestionId = 2, Answer = "wrong" },
+        };
+
+        Assert.IsType<BadRequestObjectResult>(
+            await service.VerifySecurityQuestionsAndResetPasswordAsync("alice", wrongAnswers, "new-password"));
+        var threshold = await service.VerifySecurityQuestionsAndResetPasswordAsync("alice", wrongAnswers, "new-password");
+        Assert.Equal(429, Assert.IsType<ObjectResult>(threshold).StatusCode);
+        var correctWhileLocked = await service.VerifySecurityQuestionsAndResetPasswordAsync("alice", new List<QuestionAnswerDto>
+        {
+            new() { QuestionId = 0, Answer = "Rex" },
+            new() { QuestionId = 1, Answer = "Civic" },
+            new() { QuestionId = 2, Answer = "London" },
+        }, "new-password");
+        Assert.Equal(429, Assert.IsType<ObjectResult>(correctWhileLocked).StatusCode);
+    }
+
+    [Theory]
+    [InlineData("short")]
+    [InlineData("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")]
+    public async Task RegisterAsync_RejectsPasswordsOutsideTheSupportedLength(string password)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var result = await NewService(context).RegisterAsync("alice", password);
+        Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Empty(context.AppUsers);
+    }
+
+    [Fact]
+    public async Task ChangePasswordAsync_UsesTheSharedPasswordVerificationLockout()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedUser(context, "alice", "old-password");
+        var service = NewService(context, TestHelpers.NewConfiguration(
+            ("Auth:MaxPasswordVerificationAttempts", "2"),
+            ("Auth:PasswordVerificationLockoutMinutes", "15")));
+
+        Assert.IsType<BadRequestObjectResult>(
+            await service.ChangePasswordAsync("alice", "wrong", "new-password", "token"));
+        var threshold = await service.ChangePasswordAsync("alice", "wrong", "new-password", "token");
+        Assert.Equal(429, Assert.IsType<ObjectResult>(threshold).StatusCode);
+        var correctWhileLocked = await service.ChangePasswordAsync(
+            "alice", "old-password", "new-password", "token");
+        Assert.Equal(429, Assert.IsType<ObjectResult>(correctWhileLocked).StatusCode);
     }
 
     private static AuthAccountService NewService(

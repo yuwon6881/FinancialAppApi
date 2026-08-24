@@ -59,7 +59,9 @@ public static class TestHelpers
             ["Auth:MaxFailedLoginAttempts"] = "5",
             ["Auth:LockoutMinutes"] = "15",
             ["Auth:MaxPasswordVerificationAttempts"] = "5",
-            ["Auth:PasswordVerificationLockoutMinutes"] = "15"
+            ["Auth:PasswordVerificationLockoutMinutes"] = "15",
+            ["Auth:MaxSecurityQuestionRecoveryAttempts"] = "5",
+            ["Auth:SecurityQuestionRecoveryLockoutMinutes"] = "15"
         };
         foreach (var (key, value) in overrides)
         {

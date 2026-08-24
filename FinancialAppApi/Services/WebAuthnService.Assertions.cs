@@ -177,11 +177,16 @@ public partial class WebAuthnService
                 IsUserHandleOwnerOfCredentialIdCallback = callback
             });
         }
-        catch (Exception e)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            var message = e.Message.Contains("User Verified flag not set", StringComparison.OrdinalIgnoreCase)
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _logger?.LogWarning(exception, "WebAuthn assertion failed for credential {CredentialId}.", Convert.ToHexString(storedCred.CredentialId));
+            var message = exception.Message.Contains("User Verified flag not set", StringComparison.OrdinalIgnoreCase)
                 ? "This device did not verify your identity. Use its PIN, fingerprint, face recognition, or screen lock, then try again."
-                : "Device verification failed: " + e.Message;
+                : "Device verification failed. Please try again or use your password.";
             return new UnauthorizedObjectResult(new { message });
         }
 

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Extensions;
 using FinancialAppApi.Services;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace FinancialAppApi.Controllers;
 
@@ -55,6 +56,7 @@ public class WebAuthnController : ControllerBase
 
     // POST api/auth/webauthn/login/options
     [HttpPost("login/options")]
+    [EnableRateLimiting("authentication")]
     public async Task<IActionResult> LoginOptions([FromQuery] string? username = null) =>
         await _webAuthnService.LoginOptionsAsync(
             RequestOrigin,
@@ -72,6 +74,7 @@ public class WebAuthnController : ControllerBase
 
     // POST api/auth/webauthn/login/verify
     [HttpPost("login/verify")]
+    [EnableRateLimiting("authentication")]
     public async Task<IActionResult> LoginVerify([FromBody] LoginVerifyRequest request)
     {
         var result = await _webAuthnService.LoginVerifyAsync(

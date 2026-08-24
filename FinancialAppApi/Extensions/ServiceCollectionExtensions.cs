@@ -135,6 +135,8 @@ public static class ServiceCollectionExtensions
         var ocrRequestsPerMinute = configuration.GetValue("Ocr:RequestsPerMinute", 10);
         var passwordVerificationRequestsPerMinute =
             configuration.GetValue("Auth:PasswordVerificationRequestsPerMinute", 30);
+        var authenticationRequestsPerMinute =
+            configuration.GetValue("Auth:AuthenticationRequestsPerMinute", 20);
         var documentRequestsPerMinute =
             configuration.GetValue("Documents:RequestsPerMinute", 60);
         services.AddRateLimiter(options =>
@@ -202,6 +204,21 @@ public static class ServiceCollectionExtensions
                     _ => new FixedWindowRateLimiterOptions
                     {
                         PermitLimit = Math.Max(1, passwordVerificationRequestsPerMinute),
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    });
+            });
+
+            options.AddPolicy("authentication", httpContext =>
+            {
+                var remoteAddress = httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous";
+                var endpoint = httpContext.Request.Path.Value?.ToLowerInvariant() ?? "unknown";
+                return RateLimitPartition.GetFixedWindowLimiter(
+                    $"authentication:{endpoint}:{remoteAddress}",
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = Math.Max(1, authenticationRequestsPerMinute),
                         Window = TimeSpan.FromMinutes(1),
                         QueueLimit = 0,
                         AutoReplenishment = true

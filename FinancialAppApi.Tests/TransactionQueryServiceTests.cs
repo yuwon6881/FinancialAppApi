@@ -78,6 +78,22 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
+    public async Task GetTransactionsAsync_ExactModeMatchesOnlyACompleteField()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("exact", "Badminton", "Hobbies", "Essentials", -18m),
+            NewTransaction("suffix", "Badminton String", "Hobbies", "Essentials", -28m),
+            NewTransaction("plural", "Badmintons", "Hobbies", "Essentials", -38m));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var result = await service.GetTransactionsAsync(all: true, search: "badminton", searchMode: "exact");
+
+        Assert.Equal("exact", Assert.Single(result.Items).Id);
+    }
+
+    [Fact]
     public async Task GetTransactionsAsync_OutflowFilterExcludesTransfersAndAdjustmentsCaseInsensitively()
     {
         await using var context = TestHelpers.NewInMemoryContext();

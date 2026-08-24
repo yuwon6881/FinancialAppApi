@@ -46,6 +46,22 @@ public partial class AuthAccountService
         _configuration.GetValue("Auth:PasswordVerificationLockoutMinutes", LockoutMinutes);
     private int MaxTwoFactorAttempts => _configuration.GetValue("Auth:MaxTwoFactorAttempts", MaxCodeAttempts);
     private int TwoFactorLockoutMinutes => _configuration.GetValue("Auth:TwoFactorLockoutMinutes", LockoutMinutes);
+    private int MaxSecurityQuestionRecoveryAttempts =>
+        _configuration.GetValue("Auth:MaxSecurityQuestionRecoveryAttempts", MaxFailedLoginAttempts);
+    private int SecurityQuestionRecoveryLockoutMinutes =>
+        _configuration.GetValue("Auth:SecurityQuestionRecoveryLockoutMinutes", LockoutMinutes);
+    public const int MinimumPasswordLength = 8;
+    public const int MaximumPasswordLength = 128;
+
+    private static string? ValidateNewPassword(string? password)
+    {
+        if (string.IsNullOrEmpty(password)) return "Password is required.";
+        if (password.Length < MinimumPasswordLength)
+            return $"Password must be at least {MinimumPasswordLength} characters.";
+        if (password.Length > MaximumPasswordLength)
+            return $"Password must be {MaximumPasswordLength} characters or fewer.";
+        return null;
+    }
 
     /// <summary>
     /// How many accounts may exist. Defaults to 1 (single-user). The legacy
@@ -118,10 +134,12 @@ public partial class AuthAccountService
         string password,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
+        if (string.IsNullOrWhiteSpace(username))
         {
             return new BadRequestObjectResult(new { message = "Username and password are required." });
         }
+        var passwordError = ValidateNewPassword(password);
+        if (passwordError != null) return new BadRequestObjectResult(new { message = passwordError });
 
         var slot = await AllocateRegistrationSlotAsync(cancellationToken);
         if (slot is null && MaxUsers != int.MaxValue)
@@ -430,6 +448,8 @@ public partial class AuthAccountService
         {
             return new BadRequestObjectResult(new { message = "Current and new password are required." });
         }
+        var passwordError = ValidateNewPassword(newPassword);
+        if (passwordError != null) return new BadRequestObjectResult(new { message = passwordError });
         if (string.IsNullOrEmpty(username))
         {
             return new UnauthorizedResult();
@@ -442,11 +462,8 @@ public partial class AuthAccountService
             return new UnauthorizedResult();
         }
 
-        var result = _passwordHasher.VerifyHashedPassword(user.Username, user.PasswordHash, currentPassword);
-        if (result == PasswordVerificationResult.Failed)
-        {
-            return new BadRequestObjectResult(new { message = "Current password is incorrect." });
-        }
+        var passwordFailure = await VerifyPasswordForSensitiveActionAsync(user, currentPassword, cancellationToken);
+        if (passwordFailure != null) return passwordFailure;
 
         user.PasswordHash = _passwordHasher.HashPassword(user.Username, newPassword);
         var revokedOtherSessions = await _authSessionService.RevokeOtherSessionsAsync(

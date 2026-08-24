@@ -7,6 +7,8 @@ namespace FinancialAppApi.Services;
 
 public partial class AuthAccountService
 {
+    private const int MaxSecurityQuestionAnswerLength = 256;
+
     public static List<string> GetAvailableSecurityQuestions()
     {
         // Append-only: the position (index) of each entry is the persisted QuestionId,
@@ -66,9 +68,9 @@ public partial class AuthAccountService
 
         foreach (var answer in answers)
         {
-            if (string.IsNullOrWhiteSpace(answer.Answer))
+            if (string.IsNullOrWhiteSpace(answer.Answer) || answer.Answer.Length > MaxSecurityQuestionAnswerLength)
             {
-                return new BadRequestObjectResult(new { message = "Answers cannot be empty." });
+                return new BadRequestObjectResult(new { message = $"Answers must be between 1 and {MaxSecurityQuestionAnswerLength} characters." });
             }
 
             var normalized = SecurityQuestionNormalization.NormalizeAnswer(answer.Answer);
@@ -144,10 +146,24 @@ public partial class AuthAccountService
             return new BadRequestObjectResult(new { message = "Invalid attempt." });
         }
 
-        if (answers == null || answers.Count < 3)
+        if (user.SecurityQuestionRecoveryLockedUntil.HasValue &&
+            user.SecurityQuestionRecoveryLockedUntil.Value > DateTime.UtcNow)
         {
-            return new BadRequestObjectResult(new { message = "You must answer all 3 questions." });
+            return SecurityQuestionRecoveryLockedResult(user.SecurityQuestionRecoveryLockedUntil.Value);
         }
+
+        if (answers == null || answers.Count != 3 || answers.Select(answer => answer.QuestionId).Distinct().Count() != 3)
+        {
+            return new BadRequestObjectResult(new { message = "You must answer all 3 distinct questions." });
+        }
+        if (answers.Any(answer =>
+                string.IsNullOrWhiteSpace(answer.Answer) ||
+                answer.Answer.Length > MaxSecurityQuestionAnswerLength))
+        {
+            return new BadRequestObjectResult(new { message = "Invalid recovery answers." });
+        }
+        var passwordError = ValidateNewPassword(newPassword);
+        if (passwordError != null) return new BadRequestObjectResult(new { message = passwordError });
 
         var storedAnswers = await _context.SecurityQuestionAnswers
             .Where(sqa => sqa.UserId == user.Id)
@@ -174,8 +190,7 @@ public partial class AuthAccountService
             }
         }
 
-        // Require at least 2 out of 3 correct answers
-        if (correctAnswers >= 2)
+        if (correctAnswers == storedAnswers.Count)
         {
             user.PasswordHash = _passwordHasher.HashPassword(user.Username, newPassword);
             user.FailedLoginAttempts = 0;
@@ -184,6 +199,8 @@ public partial class AuthAccountService
             user.PasswordVerificationLockedUntil = null;
             user.TwoFactorFailedAttempts = 0;
             user.TwoFactorLockedUntil = null;
+            user.SecurityQuestionRecoveryFailedAttempts = 0;
+            user.SecurityQuestionRecoveryLockedUntil = null;
 
             await _context.SaveChangesAsync(cancellationToken);
             // This endpoint is unauthenticated (no current-user DB scope), so revoke by the
@@ -193,6 +210,12 @@ public partial class AuthAccountService
                 cancellationToken);
 
             return new OkObjectResult(new { message = "Password reset successfully." });
+        }
+
+        var lockedUntil = await RecordSecurityQuestionRecoveryFailureAsync(user.Id, cancellationToken);
+        if (lockedUntil.HasValue && lockedUntil.Value > DateTime.UtcNow)
+        {
+            return SecurityQuestionRecoveryLockedResult(lockedUntil.Value);
         }
 
         return new BadRequestObjectResult(new { message = "Answers are incorrect." });

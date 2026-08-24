@@ -1,4 +1,5 @@
 using FinancialAppApi.Models;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -218,6 +219,67 @@ public partial class AuthAccountService
         await _context.SaveChangesAsync(cancellationToken);
     }
 
+    private async Task<DateTime?> RecordSecurityQuestionRecoveryFailureAsync(
+        string userId,
+        CancellationToken cancellationToken)
+    {
+        var maxAttempts = Math.Max(1, MaxSecurityQuestionRecoveryAttempts);
+        var now = DateTime.UtcNow;
+        var lockedUntil = now.AddMinutes(Math.Max(1, SecurityQuestionRecoveryLockoutMinutes));
+
+        if (_context.Database.IsRelational())
+        {
+            await _context.AppUsers
+                .Where(candidate => candidate.Id == userId &&
+                    (!candidate.SecurityQuestionRecoveryLockedUntil.HasValue ||
+                     candidate.SecurityQuestionRecoveryLockedUntil.Value <= now))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(
+                        candidate => candidate.SecurityQuestionRecoveryLockedUntil,
+                        candidate => candidate.SecurityQuestionRecoveryFailedAttempts + 1 >= maxAttempts
+                            ? lockedUntil
+                            : null)
+                    .SetProperty(
+                        candidate => candidate.SecurityQuestionRecoveryFailedAttempts,
+                        candidate => candidate.SecurityQuestionRecoveryFailedAttempts + 1 >= maxAttempts
+                            ? 0
+                            : candidate.SecurityQuestionRecoveryFailedAttempts + 1),
+                    cancellationToken);
+
+            return await _context.AppUsers
+                .AsNoTracking()
+                .Where(candidate => candidate.Id == userId)
+                .Select(candidate => candidate.SecurityQuestionRecoveryLockedUntil)
+                .SingleAsync(cancellationToken);
+        }
+
+        var trackedUser = await _context.AppUsers.SingleAsync(candidate => candidate.Id == userId, cancellationToken);
+        if (trackedUser.SecurityQuestionRecoveryLockedUntil.HasValue &&
+            trackedUser.SecurityQuestionRecoveryLockedUntil.Value <= now)
+        {
+            trackedUser.SecurityQuestionRecoveryLockedUntil = null;
+            trackedUser.SecurityQuestionRecoveryFailedAttempts = 0;
+        }
+        RegisterFailureInMemory(
+            () => trackedUser.SecurityQuestionRecoveryFailedAttempts,
+            attempts => trackedUser.SecurityQuestionRecoveryFailedAttempts = attempts,
+            until => trackedUser.SecurityQuestionRecoveryLockedUntil = until,
+            maxAttempts,
+            lockedUntil);
+        await _context.SaveChangesAsync(cancellationToken);
+        return trackedUser.SecurityQuestionRecoveryLockedUntil;
+    }
+
+    private static ObjectResult SecurityQuestionRecoveryLockedResult(DateTime lockedUntil)
+    {
+        var retryAfterSeconds = Math.Max(1, (int)Math.Ceiling((lockedUntil - DateTime.UtcNow).TotalSeconds));
+        return new ObjectResult(new
+        {
+            message = "Too many recovery attempts. Please try again later.",
+            retryAfterSeconds
+        }) { StatusCode = StatusCodes.Status429TooManyRequests };
+    }
+
     private static OkObjectResult PasswordVerificationLockedResult(DateTime lockedUntil)
     {
         var retryAfterSeconds = Math.Max(
@@ -231,6 +293,44 @@ public partial class AuthAccountService
             retryAfterSeconds,
             message = $"Too many incorrect password attempts. Try again in {minutesLeft} minute(s)."
         });
+    }
+
+    private async Task<IActionResult?> VerifyPasswordForSensitiveActionAsync(
+        AppUser user,
+        string? password,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        if (user.PasswordVerificationLockedUntil.HasValue &&
+            user.PasswordVerificationLockedUntil.Value > now)
+        {
+            return SensitiveActionPasswordLockedResult(user.PasswordVerificationLockedUntil.Value);
+        }
+
+        var result = _passwordHasher.VerifyHashedPassword(
+            user.Username,
+            user.PasswordHash,
+            password ?? string.Empty);
+        if (result == PasswordVerificationResult.Failed)
+        {
+            var lockedUntil = await RecordPasswordVerificationFailureAsync(user.Id, cancellationToken);
+            return lockedUntil.HasValue && lockedUntil.Value > now
+                ? SensitiveActionPasswordLockedResult(lockedUntil.Value)
+                : new BadRequestObjectResult(new { message = "Incorrect password." });
+        }
+
+        await ResetPasswordVerificationFailuresAsync(user.Id, cancellationToken);
+        return null;
+    }
+
+    private static ObjectResult SensitiveActionPasswordLockedResult(DateTime lockedUntil)
+    {
+        var retryAfterSeconds = Math.Max(1, (int)Math.Ceiling((lockedUntil - DateTime.UtcNow).TotalSeconds));
+        return new ObjectResult(new
+        {
+            message = "Too many incorrect password attempts. Please try again later.",
+            retryAfterSeconds
+        }) { StatusCode = StatusCodes.Status429TooManyRequests };
     }
 
     private async Task<bool> TryConsumePendingTwoFactorAsync(

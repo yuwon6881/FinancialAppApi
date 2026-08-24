@@ -176,6 +176,23 @@ public class AuthFlowIntegrationTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task SecurityQuestionRecoveryStart_EndpointRateLimitCapsAnonymousRequests()
+    {
+        var client = CreateClient();
+        HttpResponseMessage? response = null;
+
+        for (var i = 0; i < 21; i++)
+        {
+            response = await client.PostAsJsonAsync(
+                "/api/auth/security-questions/recovery/start",
+                new { username = "unknown-user" });
+        }
+
+        Assert.NotNull(response);
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Login_WithTotpEnabled_RequiresSecondFactor_AndCompletesWithCode()
     {
         // Seed a user with TOTP enabled and a known secret (stored encrypted via SecretProtector).

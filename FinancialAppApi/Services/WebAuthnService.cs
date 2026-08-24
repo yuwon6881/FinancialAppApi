@@ -15,12 +15,18 @@ public partial class WebAuthnService
     private readonly AppDbContext _context;
     private readonly IConfiguration _config;
     private readonly AuthSessionService _authSessionService;
+    private readonly ILogger<WebAuthnService>? _logger;
 
-    public WebAuthnService(AppDbContext context, IConfiguration config, AuthSessionService authSessionService)
+    public WebAuthnService(
+        AppDbContext context,
+        IConfiguration config,
+        AuthSessionService authSessionService,
+        ILogger<WebAuthnService>? logger = null)
     {
         _context = context;
         _config = config;
         _authSessionService = authSessionService;
+        _logger = logger;
     }
 
     public async Task<IActionResult> RegisterOptionsAsync(
@@ -117,9 +123,14 @@ public partial class WebAuthnService
                 IsCredentialIdUniqueToUserCallback = callback
             });
         }
-        catch (Exception e)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return new BadRequestObjectResult(new { message = "Device unlock setup failed: " + e.Message });
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _logger?.LogWarning(exception, "WebAuthn credential registration failed for user {UserId}.", userId);
+            return new BadRequestObjectResult(new { message = "Device unlock setup failed. Please try again." });
         }
 
         _context.WebAuthnCredentials.Add(new WebAuthnCredential

@@ -51,4 +51,8 @@ public class AppUser
     public long? LastTotpTimeStep { get; set; }
 
     public bool HasSetupSecurityQuestions { get; set; } = false;
+
+    public int SecurityQuestionRecoveryFailedAttempts { get; set; } = 0;
+
+    public DateTime? SecurityQuestionRecoveryLockedUntil { get; set; }
 }

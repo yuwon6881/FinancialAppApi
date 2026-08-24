@@ -48,6 +48,7 @@ public class AuthController : ControllerBase
 
     // POST: api/auth/register
     [HttpPost("register")]
+    [EnableRateLimiting("authentication")]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request) =>
         await _authAccountService.RegisterAsync(
             request.Username,
@@ -63,6 +64,7 @@ public class AuthController : ControllerBase
 
     // POST: api/auth/login
     [HttpPost("login")]
+    [EnableRateLimiting("authentication")]
     public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
         var result = await _authAccountService.LoginAsync(
@@ -89,6 +91,7 @@ public class AuthController : ControllerBase
 
     // POST: api/auth/login/2fa
     [HttpPost("login/2fa")]
+    [EnableRateLimiting("authentication")]
     public async Task<IActionResult> LoginTwoFactor([FromBody] TwoFactorLoginRequest request)
     {
         var result = await _authAccountService.LoginTwoFactorAsync(
@@ -239,6 +242,7 @@ public class AuthController : ControllerBase
 
     // POST: api/auth/change-password
     [AuthorizeToken]
+    [EnableRateLimiting("password-verification")]
     [HttpPost("change-password")]
     public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
     {
@@ -282,6 +286,7 @@ public class AuthController : ControllerBase
 
     // POST: api/auth/2fa/totp/disable
     [AuthorizeToken]
+    [EnableRateLimiting("password-verification")]
     [HttpPost("2fa/totp/disable")]
     public async Task<IActionResult> DisableTotp([FromBody] DisableTotpRequest request) =>
         await _authAccountService.DisableTotpAsync(
@@ -292,6 +297,7 @@ public class AuthController : ControllerBase
 
     // POST: api/auth/2fa/recovery-codes/regenerate
     [AuthorizeToken]
+    [EnableRateLimiting("password-verification")]
     [HttpPost("2fa/recovery-codes/regenerate")]
     public async Task<IActionResult> RegenerateRecoveryCodes([FromBody] RegenerateRecoveryCodesRequest request) =>
         await _authAccountService.RegenerateRecoveryCodesAsync(
@@ -315,6 +321,7 @@ public class AuthController : ControllerBase
 
     // POST: api/auth/security-questions/recovery/start
     [HttpPost("security-questions/recovery/start")]
+    [EnableRateLimiting("authentication")]
     public async Task<IActionResult> StartSecurityQuestionsRecovery([FromBody] SecurityQuestionsRecoveryStartRequest request) =>
         await _authAccountService.GetSecurityQuestionsForRecoveryAsync(
             request.Username,
@@ -322,6 +329,7 @@ public class AuthController : ControllerBase
 
     // POST: api/auth/security-questions/recovery/reset
     [HttpPost("security-questions/recovery/reset")]
+    [EnableRateLimiting("authentication")]
     public async Task<IActionResult> ResetPasswordViaSecurityQuestions([FromBody] SecurityQuestionsRecoveryResetRequest request) =>
         await _authAccountService.VerifySecurityQuestionsAndResetPasswordAsync(
             request.Username,

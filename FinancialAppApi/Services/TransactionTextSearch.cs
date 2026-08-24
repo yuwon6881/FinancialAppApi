@@ -12,7 +12,7 @@ internal static partial class TransactionTextSearch
         @"[\p{L}\p{N}]+",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    internal static IQueryable<Transaction> ApplyExact(
+    internal static IQueryable<Transaction> ApplyContains(
         IQueryable<Transaction> query,
         bool useIlike,
         string searchText)
@@ -42,8 +42,10 @@ internal static partial class TransactionTextSearch
         string searchText,
         string? searchMode)
     {
-        if (!string.Equals(searchMode, "whole-word", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(searchMode, "exact", StringComparison.OrdinalIgnoreCase))
             return ApplyExact(query, useIlike, searchText);
+        if (!string.Equals(searchMode, "whole-word", StringComparison.OrdinalIgnoreCase))
+            return ApplyContains(query, useIlike, searchText);
 
         var term = searchText.Trim();
         if (term.Length == 0) return query;
@@ -52,6 +54,30 @@ internal static partial class TransactionTextSearch
             Regex.IsMatch(transaction.Description, pattern, RegexOptions.IgnoreCase) ||
             Regex.IsMatch(transaction.Category, pattern, RegexOptions.IgnoreCase) ||
             Regex.IsMatch(transaction.LedgerCategory, pattern, RegexOptions.IgnoreCase));
+    }
+
+    internal static IQueryable<Transaction> ApplyExact(
+        IQueryable<Transaction> query,
+        bool useIlike,
+        string searchText)
+    {
+        var term = searchText.Trim();
+        if (term.Length == 0) return query;
+
+        if (useIlike)
+        {
+            var pattern = EscapeLikePattern(term);
+            return query.Where(transaction =>
+                EF.Functions.ILike(transaction.Description, pattern) ||
+                EF.Functions.ILike(transaction.Category, pattern) ||
+                EF.Functions.ILike(transaction.LedgerCategory, pattern));
+        }
+
+        var normalized = term.ToLowerInvariant();
+        return query.Where(transaction =>
+            transaction.Description.ToLower() == normalized ||
+            transaction.Category.ToLower() == normalized ||
+            transaction.LedgerCategory.ToLower() == normalized);
     }
 
     // This predicate is translated to PostgreSQL's `~*` in production and evaluated by .NET's own
