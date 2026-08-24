@@ -13,8 +13,8 @@ namespace FinancialAppApi.Services.Stability;
 /// </para>
 /// <para>
 /// Only entries with money still owing are persisted: a discharged obligation has nothing left to
-/// carry forward, and per-row completion status comes from
-/// <see cref="StabilityReloadStatusService"/>'s full-history replay rather than from this cache.
+/// carry forward. <see cref="StabilityReloadStatusService"/> uses absence from a usable latest
+/// snapshot to classify an older requested withdrawal as complete, then replays only the tail.
 /// </para>
 /// </summary>
 public static class StabilityReloadObligationCache

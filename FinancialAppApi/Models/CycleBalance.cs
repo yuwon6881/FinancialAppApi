@@ -16,6 +16,11 @@ public class CycleBalance : IUserOwnedEntity
 
     public decimal EssentialsBalance { get; set; }
     public decimal GrowthBalance { get; set; }
+
+    // Positive Growth legs within this cycle (not cumulative). Investment allocation uses the
+    // median completed-cycle contribution, so retaining the exact per-cycle total avoids replaying
+    // every Growth-related transaction without changing that statistic.
+    public decimal GrowthContributions { get; set; }
     public decimal StabilityBalance { get; set; }
     public decimal StabilityReloadOutstanding { get; set; }
     public DateOnly? StabilityReloadOldestDate { get; set; }

@@ -62,6 +62,49 @@ public sealed class StabilityReloadStatusServiceTests
     }
 
     [Fact]
+    public async Task GetStatusMapAsync_CurrentSnapshotDoesNotReapplyHistoricalTargets()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedSetting(context, target: 0m);
+        context.StabilityPlanRevisions.AddRange(
+            new StabilityPlanRevision
+            {
+                EffectiveAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                TargetStabilityFund = 1000m,
+                StabilityAlloc = 0.15m,
+            },
+            new StabilityPlanRevision
+            {
+                EffectiveAt = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),
+                TargetStabilityFund = 0m,
+                StabilityAlloc = 0.15m,
+            });
+        Add(context, "withdrawal", new DateTime(2026, 1, 3), -100m, StabilityReloadIntent.Required);
+        // This is the boundary produced after the target was disabled: the balance can now sit
+        // above the old target while the explicitly carried obligation remains open.
+        context.CycleBalances.Add(new CycleBalance
+        {
+            Year = 2026,
+            MonthIndex = 7,
+            StabilityBalance = 1200m,
+            StabilityReloadOutstanding = 100m,
+            StabilityReloadOldestDate = new DateOnly(2026, 1, 3),
+            StabilityReloadObligations = StabilityReloadObligationCache.Serialize(
+            [
+                new ReloadObligation("withdrawal", 100m, 100m, new DateOnly(2026, 1, 3))
+            ]),
+        });
+        await context.SaveChangesAsync();
+        var clock = ClockAt(new DateTimeOffset(2026, 8, 15, 0, 0, 0, TimeSpan.Zero));
+
+        var statuses = await new StabilityReloadStatusService(context, clock: clock).GetStatusMapAsync(
+            CancellationToken.None,
+            ["withdrawal"]);
+
+        Assert.Equal(StabilityReloadStatus.Outstanding, statuses["withdrawal"]);
+    }
+
+    [Fact]
     public async Task GetStatusMapAsync_DoesNotReopenAWithdrawalAfterATargetIncrease()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -180,4 +223,13 @@ public sealed class StabilityReloadStatusServiceTests
             StabilityReloadIntent = intent,
             IsAccountBalanceAdjustment = isAccountBalanceAdjustment,
         });
+
+    private static FinancialClock ClockAt(DateTimeOffset utcNow) => new(
+        TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+        new FixedTimeProvider(utcNow));
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+    }
 }

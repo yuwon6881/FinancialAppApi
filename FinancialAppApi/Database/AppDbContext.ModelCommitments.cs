@@ -134,6 +134,7 @@ public partial class AppDbContext
             entity.HasKey(e => new { e.UserId, e.Year, e.MonthIndex });
             entity.Property(e => e.EssentialsBalance).HasColumnType("numeric(12,2)");
             entity.Property(e => e.GrowthBalance).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.GrowthContributions).HasColumnType("numeric(12,2)");
             entity.Property(e => e.StabilityBalance).HasColumnType("numeric(12,2)");
             entity.Property(e => e.StabilityReloadOutstanding).HasColumnType("numeric(12,2)");
             entity.Property(e => e.StabilityReloadOldestDate).HasColumnType("date");

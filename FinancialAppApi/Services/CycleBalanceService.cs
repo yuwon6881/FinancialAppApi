@@ -217,10 +217,13 @@ public class CycleBalanceService
 
                 // One pass for all four buckets rather than four passes over the same slice, and the
                 // per-account placement of each leg is taken from the same pass.
+                var growthContributions = 0m;
                 foreach (var transaction in cycleTxs)
                 {
                     essentials += CategoryAttributionService.GetCategoryAmount(transaction, "Essentials");
-                    growth += CategoryAttributionService.GetCategoryAmount(transaction, "Growth");
+                    var growthAmount = CategoryAttributionService.GetCategoryAmount(transaction, "Growth");
+                    growth += growthAmount;
+                    if (growthAmount > 0m) growthContributions += growthAmount;
                     stability += CategoryAttributionService.GetCategoryAmount(transaction, "Stability");
                     rewards += CategoryAttributionService.GetCategoryAmount(transaction, "Rewards");
                     LedgerAccountBalanceMath.Accumulate(accountBalances, transaction, accountsById);
@@ -232,6 +235,7 @@ public class CycleBalanceService
                     MonthIndex = m,
                     EssentialsBalance = essentials,
                     GrowthBalance = growth,
+                    GrowthContributions = growthContributions,
                     StabilityBalance = stability,
                     StabilityReloadOutstanding = reloaded.Outstanding,
                     StabilityReloadOldestDate = reloaded.OldestOutstandingDate,

@@ -145,10 +145,12 @@ public sealed partial class InvestmentPortfolioService(
     private async Task<InvestmentPortfolioDto> BuildPortfolioAsync(
         string range, bool includeChart, CancellationToken cancellationToken)
     {
-        var appCurrency = (await context.FinancialSettings.AsNoTracking()
-                .Select(value => value.Currency)
-                .FirstOrDefaultAsync(cancellationToken) ?? "USD")
+        var financialSetting = await context.FinancialSettings.AsNoTracking()
+            .Select(value => new { value.Currency, value.CycleDay })
+            .FirstOrDefaultAsync(cancellationToken);
+        var appCurrency = (financialSetting?.Currency ?? "USD")
             .ToUpperInvariant();
+        var cycleDay = financialSetting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
         var accounts = await context.InvestmentAccounts.AsNoTracking()
             .OrderBy(value => value.IsArchived).ThenBy(value => value.Name).ThenBy(value => value.Id)
             .ToListAsync(cancellationToken);
@@ -165,17 +167,39 @@ public sealed partial class InvestmentPortfolioService(
             .OrderByDescending(value => value.Date)
             .ThenByDescending(value => value.CreatedAt)
             .ToListAsync(cancellationToken);
-        // Only rows that can attribute money to Growth, and only the three columns that decide
-        // how much. This used to materialise every column of every transaction ever recorded to
-        // produce two sums. The prefixes are not cosmetic: an `IncomeSplit:` row routes a
-        // percentage of a salary to Growth and a `Transfer:` row moves money in or out of it, so
-        // filtering on LedgerCategory == "Growth" alone would silently drop every salary. The
-        // match is case-insensitive because GetCategoryAmount's is, and a legacy row that differs
-        // in casing must keep counting exactly as it does on every other surface.
-        var ledgerTransactions = await context.Transactions.AsNoTracking()
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var (currentCycleYear, currentCycleMonth) =
+            CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
+        var currentRange = CategoryAttributionService.GetCycleRange(
+            currentCycleYear,
+            currentCycleMonth,
+            cycleDay);
+        var currentStart = TransactionDate.StartOfDate(DateOnly.FromDateTime(currentRange.start));
+        var snapshotService = new CycleBalanceService(context);
+        var openingGrowth = (await snapshotService.GetOpeningBalanceAsync(
+            currentCycleYear,
+            currentCycleMonth,
+            cycleDay,
+            cancellationToken)).growth;
+        var completedCycles = await context.CycleBalances
+            .AsNoTracking()
+            .Where(balance => balance.Year < currentCycleYear
+                || (balance.Year == currentCycleYear && balance.MonthIndex < currentCycleMonth))
+            .OrderBy(balance => balance.Year)
+            .ThenBy(balance => balance.MonthIndex)
+            .Select(balance => new { balance.Year, balance.MonthIndex, balance.GrowthContributions })
+            .ToListAsync(cancellationToken);
+
+        // Snapshots cover the app's 2026+ timeline through the latest closed cycle. Read only the
+        // uncached tails: hypothetical pre-baseline imports plus the current/future rows whose
+        // values have not reached a closed-cycle snapshot yet. The category prefixes are part of
+        // the accounting contract and keep salary splits and structural transfers exact.
+        var baselineStart = TransactionDate.StartOfDate(new DateOnly(Math.Min(2026, currentCycleYear), 1, 1));
+        var uncachedLedgerTransactions = await context.Transactions.AsNoTracking()
             .Where(value => value.LedgerCategory.ToUpper().StartsWith("GROWTH")
                             || value.LedgerCategory.ToUpper().StartsWith("INCOMESPLIT:")
                             || value.LedgerCategory.ToUpper().StartsWith("TRANSFER:"))
+            .Where(value => value.Date < baselineStart || value.Date >= currentStart)
             .OrderBy(value => value.Date)
             .Select(value => new { value.Date, value.Amount, value.LedgerCategory })
             .ToListAsync(cancellationToken);
@@ -224,7 +248,6 @@ public sealed partial class InvestmentPortfolioService(
         var instrumentById = instruments.ToDictionary(value => value.Id);
         var holdings = new List<InvestmentHoldingDto>();
         var warnings = calculation.Warnings.ToList();
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         foreach (var position in calculation.Positions.Where(value => value.Units != 0))
         {
@@ -305,7 +328,7 @@ public sealed partial class InvestmentPortfolioService(
         decimal? realised = realisedComplete ? calculation.Positions.Sum(value => value.RealisedApp ?? 0) : null;
         decimal? dividends = dividendsComplete ? calculation.Positions.Sum(value => value.DividendsApp ?? 0) : null;
         decimal? unrealisedTotal = marketValue is not null && costBasis is not null ? marketValue - costBasis : null;
-        var growthAmounts = ledgerTransactions
+        var uncachedGrowthAmounts = uncachedLedgerTransactions
             .Select(value => new
             {
                 Date = DateOnly.FromDateTime(value.Date),
@@ -316,9 +339,9 @@ public sealed partial class InvestmentPortfolioService(
                     "Growth")
             })
             .ToList();
-        var growthLedger = growthAmounts.Sum(value => value.Amount);
-        var growthContributions = growthAmounts.Where(value => value.Amount > 0)
-            .Sum(value => value.Amount);
+        var growthLedger = openingGrowth + uncachedGrowthAmounts.Sum(value => value.Amount);
+        var growthContributions = completedCycles.Sum(value => value.GrowthContributions)
+            + uncachedGrowthAmounts.Where(value => value.Amount > 0).Sum(value => value.Amount);
 
         // Uninvested cash per account+currency: explicit deposits/withdrawals plus
         // the implicit cash effect of trades and income.
@@ -381,9 +404,17 @@ public sealed partial class InvestmentPortfolioService(
         var cashComplete = cashBalances.All(value => value.AmountApp is not null);
         decimal? cashValue = cashComplete ? cashBalances.Sum(value => value.AmountApp ?? 0) : null;
         decimal? totalValue = marketValue is not null && cashValue is not null ? marketValue + cashValue : null;
-        var contributionHistory = growthAmounts
+        var contributionHistory = completedCycles
+            .Where(value => value.GrowthContributions > 0m)
+            .Select(value => new InvestmentContributionDto(
+                DateOnly.FromDateTime(CategoryAttributionService.GetCycleRange(
+                    value.Year,
+                    value.MonthIndex,
+                    cycleDay).start),
+                value.GrowthContributions))
+            .Concat(uncachedGrowthAmounts
             .Where(value => value.Amount > 0)
-            .Select(value => new InvestmentContributionDto(value.Date, value.Amount))
+            .Select(value => new InvestmentContributionDto(value.Date, value.Amount)))
             .ToList();
         decimal? netDeposits = 0;
         var returnFlows = new List<DatedInvestmentFlow>();

@@ -89,6 +89,9 @@ public partial class AppDbContext
             entity.Property(e => e.Close).HasColumnType("numeric(28,10)");
             entity.Property(e => e.FetchedAt).HasColumnType("timestamp with time zone");
             entity.HasIndex(e => new { e.Provider, e.ExternalInstrumentId, e.MarketDate }).IsUnique();
+            // The unique lookup index cannot serve the retention job's provider-independent age
+            // predicate because MarketDate is its trailing column.
+            entity.HasIndex(e => e.MarketDate);
         });
 
         modelBuilder.Entity<FxRateBar>(entity =>

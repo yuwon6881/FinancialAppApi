@@ -204,6 +204,9 @@ public partial class AppDbContext
                 e.Kind
             }).IsUnique();
             entity.HasIndex(e => new { e.UserId, e.RecurringPaymentId, e.OccurrenceDate, e.SubscriptionId, e.Kind });
+            // Retention is a cross-tenant background operation. The claim indexes above begin with
+            // UserId and cannot support a global age predicate efficiently.
+            entity.HasIndex(e => e.SentAt);
         });
 
         modelBuilder.Entity<CategoryLimitAlertEvaluation>(entity =>
@@ -214,6 +217,7 @@ public partial class AppDbContext
             entity.Property(e => e.CurrentDate).HasColumnType("timestamp with time zone");
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
             entity.HasIndex(e => new { e.UserId, e.CreatedAt });
+            entity.HasIndex(e => e.CreatedAt);
         });
 
         modelBuilder.Entity<CategoryLimitAlertEvent>(entity =>
@@ -223,6 +227,7 @@ public partial class AppDbContext
             entity.Property(e => e.CompletedAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.AwaitingDeviceRecovery).HasDefaultValue(false);
             entity.HasIndex(e => new { e.UserId, e.CompletedAt, e.ExpiresAt });
+            entity.HasIndex(e => e.CreatedAt);
         });
 
         modelBuilder.Entity<CategoryLimitAlertMilestone>(entity =>
@@ -238,6 +243,7 @@ public partial class AppDbContext
         {
             entity.Property(e => e.SentAt).HasColumnType("timestamp with time zone");
             entity.HasIndex(e => new { e.UserId, e.EventId, e.SubscriptionId }).IsUnique();
+            entity.HasIndex(e => e.SentAt);
             entity.HasOne<CategoryLimitAlertEvent>()
                 .WithMany()
                 .HasForeignKey(e => e.EventId)

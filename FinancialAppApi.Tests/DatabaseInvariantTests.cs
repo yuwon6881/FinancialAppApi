@@ -172,4 +172,24 @@ public class DatabaseInvariantTests
 
         Assert.True(index.IsUnique);
     }
+
+    [Fact]
+    public void Model_IndexesEveryGlobalRetentionCutoff()
+    {
+        using var context = TestHelpers.NewInMemoryContext();
+
+        AssertSingleColumnIndex<MarketPriceBar>(context, nameof(MarketPriceBar.MarketDate));
+        AssertSingleColumnIndex<PushReminderDelivery>(context, nameof(PushReminderDelivery.SentAt));
+        AssertSingleColumnIndex<CategoryLimitAlertEvaluation>(context, nameof(CategoryLimitAlertEvaluation.CreatedAt));
+        AssertSingleColumnIndex<CategoryLimitAlertEvent>(context, nameof(CategoryLimitAlertEvent.CreatedAt));
+        AssertSingleColumnIndex<CategoryLimitAlertDelivery>(context, nameof(CategoryLimitAlertDelivery.SentAt));
+    }
+
+    private static void AssertSingleColumnIndex<TEntity>(DbContext context, string propertyName)
+    {
+        var entity = context.Model.FindEntityType(typeof(TEntity));
+        Assert.NotNull(entity);
+        Assert.Contains(entity!.GetIndexes(), index =>
+            index.Properties.Select(property => property.Name).SequenceEqual([propertyName]));
+    }
 }
