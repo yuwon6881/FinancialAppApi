@@ -136,8 +136,8 @@ public partial class AppDbContext
             entity.Property(e => e.GrowthBalance).HasColumnType("numeric(12,2)");
             entity.Property(e => e.StabilityBalance).HasColumnType("numeric(12,2)");
             entity.Property(e => e.StabilityReloadOutstanding).HasColumnType("numeric(12,2)");
-            entity.Property(e => e.StabilityReloadMarkedAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.StabilityReloadOldestDate).HasColumnType("date");
+            entity.Property(e => e.StabilityReloadObligations).HasColumnType("jsonb");
             entity.Property(e => e.RewardsBalance).HasColumnType("numeric(12,2)");
         });
 

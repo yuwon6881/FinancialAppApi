@@ -49,20 +49,60 @@ public sealed class StabilityReloadParityTests
             m.GetProperty("change").GetDecimal(),
             m.GetProperty("repayment").GetDecimal(),
             m.GetProperty("marked").GetBoolean(),
-            m.TryGetProperty("id", out var mid) ? mid.GetString() : null
+            m.TryGetProperty("id", out var mid) ? mid.GetString() : null,
+            m.TryGetProperty("postedAt", out var posted) && posted.ValueKind != JsonValueKind.Null
+                ? DateTime.Parse(
+                    posted.GetString()!,
+                    null,
+                    System.Globalization.DateTimeStyles.AdjustToUniversal
+                        | System.Globalization.DateTimeStyles.AssumeUniversal)
+                : null
         )).ToList();
 
-        var result = StabilityReloadLedger.Replay(opening, openingBalance, target, movements);
+        // A case may carry an effective-dated plan timeline instead of one flat target.
+        var planPoints = input.TryGetProperty("planPoints", out var pointsJson)
+            ? pointsJson.EnumerateArray().Select(p => new ReloadPlanPoint(
+                DateTime.Parse(
+                    p.GetProperty("effectiveAt").GetString()!,
+                    null,
+                    System.Globalization.DateTimeStyles.AdjustToUniversal
+                        | System.Globalization.DateTimeStyles.AssumeUniversal),
+                p.GetProperty("target").GetDecimal())).ToList()
+            : [new ReloadPlanPoint(DateTime.MinValue, target)];
+
+        var result = StabilityReloadLedger.Replay(opening, openingBalance, planPoints, movements);
 
         var expected = item.GetProperty("expected");
         Assert.Equal(expected.GetProperty("outstanding").GetDecimal(), result.Outstanding);
         Assert.Equal(expected.GetProperty("markedThisRun").GetDecimal(), result.MarkedThisRun);
         Assert.Equal(expected.GetProperty("repaidThisRun").GetDecimal(), result.RepaidThisRun);
+        Assert.Equal(expected.GetProperty("openMarkedTotal").GetDecimal(), result.OpenMarkedTotal);
+        Assert.Equal(expected.GetProperty("openRepaidTotal").GetDecimal(), result.OpenRepaidTotal);
+        // The reported totals must always account for exactly what is owed.
+        Assert.Equal(result.Outstanding, result.OpenMarkedTotal - result.OpenRepaidTotal);
 
         var expOldest = expected.GetProperty("oldestOutstandingDate").ValueKind == JsonValueKind.Null
             ? (DateOnly?)null
             : DateOnly.Parse(expected.GetProperty("oldestOutstandingDate").GetString()!);
         Assert.Equal(expOldest, result.OldestOutstandingDate);
+
+        var expectedObligations = expected.GetProperty("obligations").EnumerateArray().ToList();
+        Assert.Equal(
+            expectedObligations.Select(o => o.GetProperty("transactionId").GetString()),
+            result.Obligations!.Select(o => o.TransactionId));
+        foreach (var (expectedObligation, actual) in expectedObligations.Zip(result.Obligations!))
+        {
+            Assert.Equal(expectedObligation.GetProperty("originalAmount").GetDecimal(), actual.OriginalAmount);
+            Assert.Equal(expectedObligation.GetProperty("remainingAmount").GetDecimal(), actual.RemainingAmount);
+            if (expectedObligation.TryGetProperty("date", out var expectedDate)
+                && expectedDate.ValueKind != JsonValueKind.Null)
+            {
+                Assert.Equal(DateOnly.Parse(expectedDate.GetString()!), actual.Date);
+            }
+        }
+
+        Assert.False(string.IsNullOrWhiteSpace(id));
+        Assert.False(string.IsNullOrWhiteSpace(why));
     }
 
     private static string FixturePath => Path.Combine(

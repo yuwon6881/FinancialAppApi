@@ -18,7 +18,12 @@ public class CycleBalance : IUserOwnedEntity
     public decimal GrowthBalance { get; set; }
     public decimal StabilityBalance { get; set; }
     public decimal StabilityReloadOutstanding { get; set; }
-    public decimal StabilityReloadMarkedAmount { get; set; }
     public DateOnly? StabilityReloadOldestDate { get; set; }
+
+    // The reload queue's still-owing entries, serialized by StabilityReloadObligationCache. The two
+    // aggregate columns above cannot say which drawdown a carried obligation came from, so without
+    // this the next cycle replays against one anonymous entry and every reported total counts
+    // drawdowns that were already put back in full.
+    public string? StabilityReloadObligations { get; set; }
     public decimal RewardsBalance { get; set; }
 }

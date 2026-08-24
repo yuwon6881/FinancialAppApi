@@ -1,6 +1,6 @@
 {
   "domain": "stability-reload",
-  "version": 1,
+  "version": 2,
   "cases": [
     {
       "id": "single-marked-drawdown",
@@ -28,6 +28,8 @@
         "oldestOutstandingDate": "2026-08-05",
         "markedThisRun": 200.0,
         "repaidThisRun": 0.0,
+        "openMarkedTotal": 200.0,
+        "openRepaidTotal": 0.0,
         "obligations": [
           {
             "transactionId": "tx-drawdown-1",
@@ -39,7 +41,7 @@
     },
     {
       "id": "fifo-partial-repayment",
-      "why": "Repayments discharge the oldest marked obligations first (FIFO order).",
+      "why": "Repayments discharge the oldest marked obligations first (FIFO order), and a drawdown discharged in full leaves the reported totals while remaining available for per-row status.",
       "input": {
         "opening": {
           "outstanding": 0.0,
@@ -77,6 +79,8 @@
         "oldestOutstandingDate": "2026-08-08",
         "markedThisRun": 250.0,
         "repaidThisRun": 120.0,
+        "openMarkedTotal": 150.0,
+        "openRepaidTotal": 20.0,
         "obligations": [
           {
             "transactionId": "tx-drawdown-1",
@@ -93,7 +97,7 @@
     },
     {
       "id": "clear-at-target",
-      "why": "When the running balance reaches or exceeds the target stability fund, all obligations are cleared.",
+      "why": "When the running balance reaches or exceeds the target stability fund, all obligations are cleared and nothing is reported as owed.",
       "input": {
         "opening": {
           "outstanding": 300.0,
@@ -123,6 +127,8 @@
         "oldestOutstandingDate": null,
         "markedThisRun": 0.0,
         "repaidThisRun": 0.0,
+        "openMarkedTotal": 0.0,
+        "openRepaidTotal": 0.0,
         "obligations": [
           {
             "transactionId": "tx-old",
@@ -165,6 +171,8 @@
         "oldestOutstandingDate": "2026-07-15",
         "markedThisRun": 100.0,
         "repaidThisRun": 0.0,
+        "openMarkedTotal": 400.0,
+        "openRepaidTotal": 0.0,
         "obligations": [
           {
             "transactionId": "tx-carried",
@@ -177,6 +185,355 @@
             "originalAmount": 100.0,
             "remainingAmount": 100.0,
             "date": "2026-08-05"
+          }
+        ]
+      }
+    },
+    {
+      "id": "carried-obligation-without-date",
+      "why": "A carried obligation with no date must still be queued and discharged. The queue is the obligation: a replay that kept a running total beside it left the queue empty while the total stayed positive, and that divergence was persisted into every later cycle.",
+      "input": {
+        "opening": {
+          "outstanding": 300.0,
+          "oldestOutstandingDate": null,
+          "obligations": []
+        },
+        "openingBalance": 1500.0,
+        "target": 2000.0,
+        "movements": [
+          {
+            "id": "tx-repay",
+            "date": "2026-08-10",
+            "change": 120.0,
+            "repayment": 120.0,
+            "marked": false
+          }
+        ]
+      },
+      "expected": {
+        "outstanding": 180.0,
+        "oldestOutstandingDate": null,
+        "markedThisRun": 0.0,
+        "repaidThisRun": 120.0,
+        "openMarkedTotal": 180.0,
+        "openRepaidTotal": 0.0,
+        "obligations": []
+      }
+    },
+    {
+      "id": "opening-with-settled-obligation",
+      "why": "A carried entry that owes nothing is neither queued nor counted. Counting it is what made the reported total grow with every drawdown and never come back down.",
+      "input": {
+        "opening": {
+          "outstanding": 150.0,
+          "oldestOutstandingDate": "2026-07-20",
+          "obligations": [
+            {
+              "transactionId": "tx-settled",
+              "originalAmount": 500.0,
+              "remainingAmount": 0.0,
+              "date": "2026-07-01"
+            },
+            {
+              "transactionId": "tx-owing",
+              "originalAmount": 400.0,
+              "remainingAmount": 150.0,
+              "date": "2026-07-20"
+            }
+          ]
+        },
+        "openingBalance": 1500.0,
+        "target": 2000.0,
+        "movements": []
+      },
+      "expected": {
+        "outstanding": 150.0,
+        "oldestOutstandingDate": "2026-07-20",
+        "markedThisRun": 0.0,
+        "repaidThisRun": 0.0,
+        "openMarkedTotal": 400.0,
+        "openRepaidTotal": 250.0,
+        "obligations": [
+          {
+            "transactionId": "tx-owing",
+            "originalAmount": 400.0,
+            "remainingAmount": 150.0,
+            "date": "2026-07-20"
+          }
+        ]
+      }
+    },
+    {
+      "id": "settled-carried-drawdown-then-new-drawdown",
+      "why": "The reported defect: a carried drawdown finished off this cycle leaves the totals entirely, so a fresh drawdown does not stack on top of it. Whole-run activity still counts both.",
+      "input": {
+        "opening": {
+          "outstanding": 100.0,
+          "oldestOutstandingDate": "2026-06-04",
+          "obligations": [
+            {
+              "transactionId": "tx-old",
+              "originalAmount": 500.0,
+              "remainingAmount": 100.0,
+              "date": "2026-06-04"
+            }
+          ]
+        },
+        "openingBalance": 1900.0,
+        "target": 10000.0,
+        "movements": [
+          {
+            "id": "tx-new",
+            "date": "2026-07-04",
+            "change": -300.0,
+            "repayment": 0.0,
+            "marked": true
+          },
+          {
+            "id": "tx-repay",
+            "date": "2026-07-20",
+            "change": 100.0,
+            "repayment": 100.0,
+            "marked": false
+          }
+        ]
+      },
+      "expected": {
+        "outstanding": 300.0,
+        "oldestOutstandingDate": "2026-07-04",
+        "markedThisRun": 300.0,
+        "repaidThisRun": 100.0,
+        "openMarkedTotal": 300.0,
+        "openRepaidTotal": 0.0,
+        "obligations": [
+          {
+            "transactionId": "tx-old",
+            "originalAmount": 500.0,
+            "remainingAmount": 0.0,
+            "date": "2026-06-04"
+          },
+          {
+            "transactionId": "tx-new",
+            "originalAmount": 300.0,
+            "remainingAmount": 300.0,
+            "date": "2026-07-04"
+          }
+        ]
+      }
+    },
+    {
+      "id": "not-required-mid-sequence",
+      "why": "A drawdown answered 'spent for good' raises no obligation, and the repayment that follows it discharges only the marked ones.",
+      "input": {
+        "opening": {
+          "outstanding": 0.0,
+          "oldestOutstandingDate": null,
+          "obligations": []
+        },
+        "openingBalance": 1000.0,
+        "target": 5000.0,
+        "movements": [
+          {
+            "id": "tx-marked",
+            "date": "2026-08-01",
+            "change": -200.0,
+            "repayment": 0.0,
+            "marked": true
+          },
+          {
+            "id": "tx-spent-for-good",
+            "date": "2026-08-02",
+            "change": -150.0,
+            "repayment": 0.0,
+            "marked": false
+          },
+          {
+            "id": "tx-repay",
+            "date": "2026-08-03",
+            "change": 80.0,
+            "repayment": 80.0,
+            "marked": false
+          }
+        ]
+      },
+      "expected": {
+        "outstanding": 120.0,
+        "oldestOutstandingDate": "2026-08-01",
+        "markedThisRun": 200.0,
+        "repaidThisRun": 80.0,
+        "openMarkedTotal": 200.0,
+        "openRepaidTotal": 80.0,
+        "obligations": [
+          {
+            "transactionId": "tx-marked",
+            "originalAmount": 200.0,
+            "remainingAmount": 120.0,
+            "date": "2026-08-01"
+          }
+        ]
+      }
+    },
+    {
+      "id": "target-lowered-mid-sequence-clears-only-what-is-owed-then",
+      "why": "Plan points are applied chronologically. A target the balance already meets clears the queue at that moment; a drawdown after it raises a fresh obligation that the earlier attainment cannot settle.",
+      "input": {
+        "opening": {
+          "outstanding": 0.0,
+          "oldestOutstandingDate": null,
+          "obligations": []
+        },
+        "openingBalance": 2000.0,
+        "planPoints": [
+          {
+            "effectiveAt": "2026-08-01T00:00:00.000Z",
+            "target": 5000.0
+          },
+          {
+            "effectiveAt": "2026-08-10T00:00:00.000Z",
+            "target": 1500.0
+          }
+        ],
+        "target": 1500.0,
+        "movements": [
+          {
+            "id": "tx-early-drawdown",
+            "date": "2026-08-05",
+            "postedAt": "2026-08-05T00:00:00.000Z",
+            "change": -300.0,
+            "repayment": 0.0,
+            "marked": true
+          },
+          {
+            "id": "tx-late-drawdown",
+            "date": "2026-08-20",
+            "postedAt": "2026-08-20T00:00:00.000Z",
+            "change": -300.0,
+            "repayment": 0.0,
+            "marked": true
+          }
+        ]
+      },
+      "expected": {
+        "outstanding": 300.0,
+        "oldestOutstandingDate": "2026-08-20",
+        "markedThisRun": 600.0,
+        "repaidThisRun": 0.0,
+        "openMarkedTotal": 300.0,
+        "openRepaidTotal": 0.0,
+        "obligations": [
+          {
+            "transactionId": "tx-early-drawdown",
+            "originalAmount": 300.0,
+            "remainingAmount": 0.0,
+            "date": "2026-08-05"
+          },
+          {
+            "transactionId": "tx-late-drawdown",
+            "originalAmount": 300.0,
+            "remainingAmount": 300.0,
+            "date": "2026-08-20"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cycle-rollover-carries-identity",
+      "why": "Replaying the next cycle from the previous cycle's still-owing entries keeps each drawdown's original amount, so a partly-repaid carried drawdown reports as partly repaid rather than as a smaller untouched one.",
+      "input": {
+        "opening": {
+          "outstanding": 130.0,
+          "oldestOutstandingDate": "2026-08-08",
+          "obligations": [
+            {
+              "transactionId": "tx-drawdown-2",
+              "originalAmount": 150.0,
+              "remainingAmount": 130.0,
+              "date": "2026-08-08"
+            }
+          ]
+        },
+        "openingBalance": 1120.0,
+        "target": 2000.0,
+        "movements": [
+          {
+            "id": "tx-repay-next-cycle",
+            "date": "2026-09-03",
+            "change": 30.0,
+            "repayment": 30.0,
+            "marked": false
+          }
+        ]
+      },
+      "expected": {
+        "outstanding": 100.0,
+        "oldestOutstandingDate": "2026-08-08",
+        "markedThisRun": 0.0,
+        "repaidThisRun": 30.0,
+        "openMarkedTotal": 150.0,
+        "openRepaidTotal": 50.0,
+        "obligations": [
+          {
+            "transactionId": "tx-drawdown-2",
+            "originalAmount": 150.0,
+            "remainingAmount": 100.0,
+            "date": "2026-08-08"
+          }
+        ]
+      }
+    },
+    {
+      "id": "same-day-carried-fifo-order",
+      "why": "The carried obligation list is already in authoritative posting order. Same-day withdrawals must not be re-sorted by transaction id at a cycle boundary, or the next reimbursement completes the wrong Ledger row and changes the reported open totals.",
+      "input": {
+        "opening": {
+          "outstanding": 180.0,
+          "oldestOutstandingDate": "2026-08-08",
+          "obligations": [
+            {
+              "transactionId": "z-first",
+              "originalAmount": 100.0,
+              "remainingAmount": 100.0,
+              "date": "2026-08-08"
+            },
+            {
+              "transactionId": "a-second",
+              "originalAmount": 80.0,
+              "remainingAmount": 80.0,
+              "date": "2026-08-08"
+            }
+          ]
+        },
+        "openingBalance": 1000.0,
+        "target": 0.0,
+        "movements": [
+          {
+            "id": "tx-repay-next-cycle",
+            "date": "2026-09-03",
+            "change": 120.0,
+            "repayment": 120.0,
+            "marked": false
+          }
+        ]
+      },
+      "expected": {
+        "outstanding": 60.0,
+        "oldestOutstandingDate": "2026-08-08",
+        "markedThisRun": 0.0,
+        "repaidThisRun": 120.0,
+        "openMarkedTotal": 80.0,
+        "openRepaidTotal": 20.0,
+        "obligations": [
+          {
+            "transactionId": "z-first",
+            "originalAmount": 100.0,
+            "remainingAmount": 0.0,
+            "date": "2026-08-08"
+          },
+          {
+            "transactionId": "a-second",
+            "originalAmount": 80.0,
+            "remainingAmount": 60.0,
+            "date": "2026-08-08"
           }
         ]
       }

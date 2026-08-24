@@ -8,6 +8,17 @@ namespace FinancialAppApi.Services.Stability;
 public sealed record StabilityRecoveryDrawDto(string Bucket, decimal Share);
 
 /// <summary>
+/// One still-owing drawdown carried into this cycle, so the client's optimistic replay can start
+/// from the same queue the server did. Without the identities the client seeds one anonymous entry
+/// and cannot tell a partly-repaid drawdown from one already put back in full.
+/// </summary>
+public sealed record StabilityReloadObligationDto(
+    string TransactionId,
+    string OriginalAmount,
+    string RemainingAmount,
+    string? Date);
+
+/// <summary>
 /// The emergency-fund recovery state the dashboard carries. Money fields are obfuscated strings,
 /// matching every other money field in the dashboard payload.
 /// <para>
@@ -24,6 +35,7 @@ public sealed record StabilityRecoveryDto(
     string OutstandingShortfall,
     string OpeningOutstanding,
     string? OpeningOldestDate,
+    IReadOnlyList<StabilityReloadObligationDto> OpeningObligations,
     int CyclesRemaining,
     string RequiredThisCycle,
     string ToppedUpThisCycle,
@@ -158,31 +170,27 @@ public partial class StabilityRecoveryService
         // table would silently forget an older obligation.
         await _cycleBalanceService.EnsureComputedThroughAsync(year, monthIndex, setting.CycleDay, cancellationToken);
 
-        var history = await _context.CycleBalances
+        // Only the cycle immediately before this one is needed: it carries the whole queue forward,
+        // identities included. Nothing reads further back now that the pace anchors on the oldest
+        // obligation still owing rather than on the last cycle that recorded a marked amount.
+        var previous = await _context.CycleBalances
             .AsNoTracking()
-            .Where(balance => balance.Year < year || (balance.Year == year && balance.MonthIndex <= monthIndex))
-            .OrderBy(balance => balance.Year)
-            .ThenBy(balance => balance.MonthIndex)
+            .Where(balance => balance.Year < year || (balance.Year == year && balance.MonthIndex < monthIndex))
+            .OrderByDescending(balance => balance.Year)
+            .ThenByDescending(balance => balance.MonthIndex)
             .Select(balance => new
             {
-                balance.Year,
-                balance.MonthIndex,
                 balance.StabilityReloadOutstanding,
-                balance.StabilityReloadMarkedAmount,
-                balance.StabilityReloadOldestDate
+                balance.StabilityReloadOldestDate,
+                balance.StabilityReloadObligations
             })
-            .ToListAsync(cancellationToken);
-
-        var previous = history
-            .Where(row => row.Year < year || (row.Year == year && row.MonthIndex < monthIndex))
-            .LastOrDefault();
+            .FirstOrDefaultAsync(cancellationToken);
         var openingReload = previous == null
             ? new ReloadState(0m, null, 0m, 0m)
-            : new ReloadState(
+            : StabilityReloadObligationCache.OpeningState(
                 previous.StabilityReloadOutstanding,
                 previous.StabilityReloadOldestDate,
-                0m,
-                0m);
+                previous.StabilityReloadObligations);
         var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, setting.CycleDay);
         var cycleStartUtc = DateTime.SpecifyKind(cycleStart, DateTimeKind.Utc);
         var cycleEndExclusiveUtc = DateTime.SpecifyKind(cycleEnd.Date.AddDays(1), DateTimeKind.Utc);
@@ -203,12 +211,18 @@ public partial class StabilityRecoveryService
                     planRevisions,
                     transaction.PostedAt).StabilityAlloc));
 
-        var lastMarked = history.LastOrDefault(row => row.StabilityReloadMarkedAmount > 0m);
-        var lastDrawdownCycleKey = replay.MarkedThisRun > 0m
-            ? StabilityRecoveryPlanner.CycleKey(year, monthIndex)
-            : lastMarked == null
-                ? null
-                : StabilityRecoveryPlanner.CycleKey(lastMarked.Year, lastMarked.MonthIndex);
+        // The pace is anchored on the oldest drawdown that still owes money, which FIFO order puts
+        // at the head of the queue. Anchoring on the last cycle that recorded any marked amount kept
+        // a drawdown that has since been put back in full driving the deadline -- and reporting the
+        // recovery as overdue on the strength of money that is already back.
+        var anchorDate = replay.Outstanding > 0m ? replay.OldestOutstandingDate : null;
+        string? lastDrawdownCycleKey = null;
+        if (anchorDate.HasValue)
+        {
+            var (anchorYear, anchorMonthIndex) = CategoryAttributionService
+                .GetCycleYearAndMonthIndexForDate(anchorDate.Value, setting.CycleDay);
+            lastDrawdownCycleKey = StabilityRecoveryPlanner.CycleKey(anchorYear, anchorMonthIndex);
+        }
         var currentCycleKey = StabilityRecoveryPlanner.CycleKey(year, monthIndex);
         var cyclesRemaining = StabilityRecoveryPlanner.CyclesRemaining(
             lastDrawdownCycleKey, currentCycleKey, FinancialConstants.StabilityRecoveryCycles);
@@ -217,113 +231,39 @@ public partial class StabilityRecoveryService
             cyclesRemaining,
             replay.RepaidThisRun);
 
-        // FIFO repayment can consume part of a carried drawdown before touching one marked in the
-        // current cycle. Keep the carried queue head in the reporting window as well: otherwise a
-        // December 500 drawdown carried into January, followed by a January 300 drawdown and 600
-        // reimbursement, would show only 300 marked and 100 repaid beside 200 outstanding.
-        var windowDates = new[]
-        {
-            openingReload.OldestOutstandingDate,
-            replay.OldestMarkedThisRunDate,
-            replay.OldestOutstandingDate
-        }
-            .Where(date => date.HasValue)
-            .Select(date => date!.Value)
-            .ToList();
-        var windowStart = replay.Outstanding > 0m && windowDates.Count > 0
-            ? windowDates.Min()
-            : (DateOnly?)null;
-
-        var reloadTotals = replay.Outstanding > 0m && windowStart.HasValue
-            ? await GetReloadTotalsAsync(
-                windowStart.Value,
-                year,
-                monthIndex,
-                setting.CycleDay,
-                planRevisions,
-                replay.Outstanding,
-                cancellationToken)
-            : (MarkedTotal: 0m, RepaidTotal: 0m);
-
         var goalCommitments = await GetGoalCommitmentsAsync(year, monthIndex, setting.CycleDay, cancellationToken);
         var committedEssentials = essentialsCommitted + goalCommitments.Essentials;
         var committedRewards = rewardsRecurringCommitted + goalCommitments.Rewards;
 
         return new StabilityRecoveryDto(
             replay.Outstanding > 0m,
-            ObfuscationHelper.Obfuscate(reloadTotals.MarkedTotal),
+            ObfuscationHelper.Obfuscate(replay.OpenMarkedTotal),
             ObfuscationHelper.Obfuscate(
                 StabilityPlanRevisionService.At(planRevisions, cycleEndInclusiveUtc).TargetStabilityFund),
             ObfuscationHelper.Obfuscate(currentStability),
             ObfuscationHelper.Obfuscate(replay.Outstanding),
             ObfuscationHelper.Obfuscate(openingReload.Outstanding),
             openingReload.OldestOutstandingDate?.ToString("yyyy-MM-dd"),
+            (openingReload.Obligations ?? [])
+                .Where(obligation => obligation.RemainingAmount > 0m)
+                .Select(obligation => new StabilityReloadObligationDto(
+                    obligation.TransactionId,
+                    ObfuscationHelper.Obfuscate(obligation.OriginalAmount),
+                    ObfuscationHelper.Obfuscate(obligation.RemainingAmount),
+                    obligation.Date?.ToString("yyyy-MM-dd")))
+                .ToList(),
             pace.CyclesRemaining,
             ObfuscationHelper.Obfuscate(pace.RequiredThisCycle),
             ObfuscationHelper.Obfuscate(pace.ToppedUpThisCycle),
             ObfuscationHelper.Obfuscate(pace.OutstandingThisCycle),
             pace.IsOverdue,
             lastDrawdownCycleKey,
-            ObfuscationHelper.Obfuscate(reloadTotals.RepaidTotal),
+            ObfuscationHelper.Obfuscate(replay.OpenRepaidTotal),
             ObfuscationHelper.Obfuscate(committedEssentials),
             ObfuscationHelper.Obfuscate(committedRewards),
             BuildSuggestedDraws(setting),
-            // The same window the totals were measured over, so "see every movement since then"
-            // lands on exactly the rows those figures came from.
-            windowStart?.ToString("yyyy-MM-dd"));
-    }
-
-    private async Task<(decimal MarkedTotal, decimal RepaidTotal)> GetReloadTotalsAsync(
-        DateOnly oldestOutstandingDate,
-        int year,
-        int monthIndex,
-        int cycleDay,
-        IReadOnlyList<StabilityPlanSnapshot> planRevisions,
-        decimal outstanding,
-        CancellationToken cancellationToken)
-    {
-        var (_, cycleEnd, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
-        var start = TransactionDate.StartOfDate(oldestOutstandingDate);
-        var endExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleEnd));
-        var rows = await _context.Transactions
-            .AsNoTracking()
-            .Where(transaction => transaction.Date >= start && transaction.Date < endExclusive)
-            // DescribeAll needs the salary parent to pair with its generated Stability child, so
-            // Income is included alongside the three GetCategoryAmount shapes. The projection is
-            // intentional: the dashboard only needs the ordering and reload-attribution fields.
-            .Where(transaction => transaction.LedgerCategory.ToUpper().StartsWith("STABILITY")
-                                  || transaction.LedgerCategory.ToUpper().StartsWith("INCOMESPLIT:")
-                                  || transaction.LedgerCategory.ToUpper().StartsWith("TRANSFER:")
-                                  || transaction.LedgerCategory.ToUpper() == "INCOME")
-            .Select(transaction => new
-            {
-                transaction.Id,
-                transaction.Date,
-                transaction.PostedAt,
-                transaction.Amount,
-                transaction.LedgerCategory,
-                transaction.StabilityRecoveryTopUpAmount,
-                transaction.StabilityReloadIntent,
-                transaction.IsAccountBalanceAdjustment
-            })
-            .ToListAsync(cancellationToken);
-        var markedTotal = StabilityReloadLedger.DescribeAll(
-                rows.Select(row => new Transaction
-                {
-                    Id = row.Id,
-                    Date = row.Date,
-                    PostedAt = row.PostedAt,
-                    Amount = row.Amount,
-                    LedgerCategory = row.LedgerCategory,
-                    StabilityRecoveryTopUpAmount = row.StabilityRecoveryTopUpAmount,
-                    StabilityReloadIntent = row.StabilityReloadIntent,
-                    IsAccountBalanceAdjustment = row.IsAccountBalanceAdjustment
-                }),
-                transaction => StabilityPlanRevisionService.At(
-                    planRevisions,
-                    transaction.PostedAt).StabilityAlloc)
-            .Where(movement => movement.Marked)
-            .Sum(movement => Math.Max(0m, -movement.Change));
-        return (markedTotal, Math.Max(0m, markedTotal - outstanding));
+            // The oldest drawdown that still owes money is exactly the set the totals above cover, so
+            // "see every movement since then" lands on the rows those figures came from.
+            anchorDate?.ToString("yyyy-MM-dd"));
     }
 }

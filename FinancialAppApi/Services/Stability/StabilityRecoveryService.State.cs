@@ -57,16 +57,16 @@ public partial class StabilityRecoveryService
             .Select(balance => new
             {
                 balance.StabilityReloadOutstanding,
-                balance.StabilityReloadOldestDate
+                balance.StabilityReloadOldestDate,
+                balance.StabilityReloadObligations
             })
             .FirstOrDefaultAsync(cancellationToken);
         var openingReload = previous == null
             ? new ReloadState(0m, null, 0m, 0m)
-            : new ReloadState(
+            : StabilityReloadObligationCache.OpeningState(
                 previous.StabilityReloadOutstanding,
                 previous.StabilityReloadOldestDate,
-                0m,
-                0m);
+                previous.StabilityReloadObligations);
         var cycleStartUtc = DateTime.SpecifyKind(start, DateTimeKind.Utc);
         var cycleEndExclusiveUtc = DateTime.SpecifyKind(end.Date.AddDays(1), DateTimeKind.Utc);
         var planAtStart = StabilityPlanRevisionService.At(planRevisions, cycleStartUtc);

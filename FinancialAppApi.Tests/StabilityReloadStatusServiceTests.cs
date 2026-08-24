@@ -60,6 +60,55 @@ public sealed class StabilityReloadStatusServiceTests
         Assert.False(statuses.ContainsKey("correction"));
     }
 
+    /// <summary>
+    /// The per-row status map and the dashboard's reported totals are produced by two different
+    /// replays -- this one from the whole history, the dashboard's from the cycle cache -- and they
+    /// have to agree about which drawdowns are settled. A divergence between two replays of this
+    /// ledger is the worst money bug the app has had, and RebuildStabilityReloadCache exists
+    /// because it was persisted before anyone noticed.
+    /// </summary>
+    [Fact]
+    public async Task GetStatusMapAsync_AgreesWithTheReportedTotalsAboutWhatIsSettled()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedSetting(context, target: 0m);
+        Add(context, "settled", new DateTime(2026, 7, 1), -100m, StabilityReloadIntent.Required);
+        Add(context, "partly", new DateTime(2026, 7, 2), -80m, StabilityReloadIntent.Required);
+        Add(context, "untouched", new DateTime(2026, 7, 3), -60m, StabilityReloadIntent.Required);
+        Add(context, "spent", new DateTime(2026, 7, 3, 1, 0, 0), -20m, StabilityReloadIntent.NotRequired);
+        Add(context, "repayment", new DateTime(2026, 7, 4), 130m, StabilityReloadIntent.Unanswered,
+            ledgerCategory: "Transfer:Growth->Stability");
+        await context.SaveChangesAsync();
+
+        var statuses = await new StabilityReloadStatusService(context).GetStatusMapAsync();
+        var transactions = context.Transactions.ToList();
+        var replay = StabilityReloadLedger.Replay(
+            new ReloadState(0m, null, 0m, 0m),
+            openingBalance: 0m,
+            target: 0m,
+            StabilityReloadLedger.DescribeAll(transactions, 0.15m));
+        var obligations = replay.Obligations!.ToDictionary(item => item.TransactionId);
+
+        Assert.Equal(StabilityReloadStatus.Complete, statuses["settled"]);
+        Assert.Equal(StabilityReloadStatus.PartlyRepaid, statuses["partly"]);
+        Assert.Equal(StabilityReloadStatus.Outstanding, statuses["untouched"]);
+
+        // Nothing the map calls complete may contribute to the reported ask.
+        foreach (var (id, status) in statuses.Where(entry => entry.Value == StabilityReloadStatus.Complete))
+        {
+            Assert.Equal(0m, obligations[id].RemainingAmount);
+        }
+
+        // And what the map still shows as owing is exactly what the totals report.
+        var owedByStatus = statuses
+            .Where(entry => entry.Value is StabilityReloadStatus.Outstanding or StabilityReloadStatus.PartlyRepaid)
+            .Sum(entry => obligations[entry.Key].RemainingAmount);
+        Assert.Equal(replay.Outstanding, owedByStatus);
+        Assert.Equal(replay.Outstanding, replay.OpenMarkedTotal - replay.OpenRepaidTotal);
+        Assert.Equal(140m, replay.OpenMarkedTotal);
+        Assert.Equal(30m, replay.OpenRepaidTotal);
+    }
+
     private static FinancialSetting SeedSetting(AppDbContext context, decimal target)
     {
         var setting = new FinancialSetting

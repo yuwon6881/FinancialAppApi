@@ -73,13 +73,14 @@ public class StabilityRecoveryServiceTests
     /// read straight off the ledger or the card would not appear until the cycle turned over.
     /// </summary>
     /// <summary>
-    /// Marked and repaid must account for the same money the shortfall does. FIFO repayment retires
-    /// the oldest drawdown first, so the 70 on 08-06 was cleared outright and left the queue; a
-    /// window anchored on the outstanding head then started at 08-09 and reported 801.77 marked
-    /// with 450 back, next to a reimbursement of 520 the user could see on the same card.
+    /// Marked and repaid account for exactly the money the shortfall does. FIFO repayment retires
+    /// the oldest drawdown first, so the 70 on 08-06 was put back outright and leaves both figures:
+    /// what is still asked back is the 676.77 less the 325 that went against it. The whole-cycle
+    /// activity -- 871.77 marked, 520 back -- is a different question, and reporting it here is what
+    /// let a settled drawdown keep inflating the ask.
     /// </summary>
     [Fact]
-    public async Task BuildAsync_CountsADrawdownThisCycleRepaidInFull()
+    public async Task BuildAsync_DropsADrawdownAlreadyPutBackInFull()
     {
         await using var context = NewContext();
         var setting = SeedSetting(context, target: 10000m);
@@ -96,11 +97,15 @@ public class StabilityRecoveryServiceTests
             medical, roadTax, insurance, reimburse);
 
         Assert.Equal(351.77m, Money(recovery.OutstandingShortfall));
-        Assert.Equal(871.77m, Money(recovery.MarkedTotal));
-        Assert.Equal(520m, Money(recovery.RepaidTotal));
+        Assert.Equal(676.77m, Money(recovery.MarkedTotal));
+        Assert.Equal(325m, Money(recovery.RepaidTotal));
+        Assert.Equal(
+            Money(recovery.OutstandingShortfall),
+            Money(recovery.MarkedTotal) - Money(recovery.RepaidTotal));
+        // What went back during the cycle is a separate figure and still counts the whole 520.
         Assert.Equal(520m, Money(recovery.ToppedUpThisCycle));
-        // The jump lands on the oldest row the figures were measured over, not on the 09th.
-        Assert.Equal("2026-08-06", recovery.RecoveryFromDate);
+        // The jump lands on the oldest row that still owes, which is the only row the figures cover.
+        Assert.Equal("2026-08-09", recovery.RecoveryFromDate);
         Assert.NotNull(opening);
     }
 
@@ -215,8 +220,13 @@ public class StabilityRecoveryServiceTests
         Assert.Equal("2026-06-04", recovery.RecoveryFromDate);
     }
 
+    /// <summary>
+    /// A carried drawdown that this cycle's repayment cleared outright leaves the reported figures
+    /// entirely, taking the window with it. Counting it kept the December 500 in the ask forever:
+    /// the total only ever grew, one drawdown at a time, and never came back down.
+    /// </summary>
     [Fact]
-    public async Task BuildAsync_IncludesCarriedFifoDrawdownsInTheCurrentReportingWindow()
+    public async Task BuildAsync_DropsACarriedDrawdownPutBackInFull()
     {
         await using var context = NewContext();
         var setting = SeedSetting(context, target: 10000m);
@@ -252,10 +262,131 @@ public class StabilityRecoveryServiceTests
             currentDrawdown,
             repayment);
 
-        Assert.Equal(800m, Money(recovery.MarkedTotal));
-        Assert.Equal(600m, Money(recovery.RepaidTotal));
+        // The carried 500 is fully back, so only the current 300 is still asked about -- 100 of
+        // which the same repayment already covered.
+        Assert.Equal(300m, Money(recovery.MarkedTotal));
+        Assert.Equal(100m, Money(recovery.RepaidTotal));
         Assert.Equal(200m, Money(recovery.OutstandingShortfall));
+        Assert.Equal("2027-01-04", recovery.RecoveryFromDate);
+        // The pace anchors on what is still owed, so a settled June drawdown cannot report the
+        // recovery as overdue seven cycles later.
+        Assert.Equal("2027-01", recovery.LastDrawdownCycleKey);
+        Assert.False(recovery.IsOverdue);
+    }
+
+    /// <summary>
+    /// The client replays the current cycle itself and needs the same opening queue the server used.
+    /// Sending only the aggregate leaves it unable to tell a partly-repaid carried drawdown from one
+    /// already put back in full, which is the same defect one layer out.
+    /// </summary>
+    [Fact]
+    public async Task BuildAsync_SendsTheCarriedObligationsTheClientHasToReplayFrom()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 5, 4), "Stability", 1000m);
+        Add(context, "old-drawdown", new DateTime(2026, 6, 4), "Stability", -500m);
+        context.CycleBalances.Add(new CycleBalance
+        {
+            Year = 2026,
+            MonthIndex = 12,
+            StabilityBalance = 500m,
+            StabilityReloadOutstanding = 300m,
+            StabilityReloadOldestDate = new DateOnly(2026, 6, 4),
+            StabilityReloadObligations = StabilityReloadObligationCache.Serialize(
+            [
+                new ReloadObligation("settled", 200m, 0m, new DateOnly(2026, 6, 1)),
+                new ReloadObligation("old-drawdown", 500m, 300m, new DateOnly(2026, 6, 4))
+            ])
+        });
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2027, 1, opening: 500m, current: 500m);
+
+        // Only the still-owing entry travels; the settled one has nothing to carry.
+        var carried = Assert.Single(recovery.OpeningObligations);
+        Assert.Equal("old-drawdown", carried.TransactionId);
+        Assert.Equal(500m, Money(carried.OriginalAmount));
+        Assert.Equal(300m, Money(carried.RemainingAmount));
+        Assert.Equal("2026-06-04", carried.Date);
+        // And the reported figures agree with it: 500 asked back, 200 of it already returned.
+        Assert.Equal(500m, Money(recovery.MarkedTotal));
+        Assert.Equal(200m, Money(recovery.RepaidTotal));
+        Assert.Equal(300m, Money(recovery.OutstandingShortfall));
+    }
+
+    /// <summary>
+    /// The other half of the same rule: a carried drawdown only partly put back stays in the figures
+    /// at its full original amount, with what has gone back reported against it.
+    /// </summary>
+    [Fact]
+    public async Task BuildAsync_KeepsACarriedDrawdownOnlyPartlyPutBack()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 5, 4), "Stability", 1000m);
+        Add(context, "old-drawdown", new DateTime(2026, 6, 4), "Stability", -500m);
+        var repayment = Add(
+            context,
+            "current-repayment",
+            new DateTime(2027, 1, 4),
+            "Stability",
+            200m,
+            "Reimbursement");
+        // Carried with its identity, which is what lets the 500 be reported as a 500 partly back
+        // rather than as an anonymous 300 still owed.
+        context.CycleBalances.Add(new CycleBalance
+        {
+            Year = 2026,
+            MonthIndex = 12,
+            StabilityBalance = 500m,
+            StabilityReloadOutstanding = 500m,
+            StabilityReloadOldestDate = new DateOnly(2026, 6, 4),
+            StabilityReloadObligations = StabilityReloadObligationCache.Serialize(
+                [new ReloadObligation("old-drawdown", 500m, 500m, new DateOnly(2026, 6, 4))])
+        });
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(
+            context, setting, 2027, 1, opening: 500m, current: 700m, repayment);
+
+        Assert.Equal(500m, Money(recovery.MarkedTotal));
+        Assert.Equal(200m, Money(recovery.RepaidTotal));
+        Assert.Equal(300m, Money(recovery.OutstandingShortfall));
         Assert.Equal("2026-06-04", recovery.RecoveryFromDate);
+        Assert.Equal("2026-06", recovery.LastDrawdownCycleKey);
+    }
+
+    /// <summary>
+    /// The reported defect, end to end: an unfinished put-back followed by a fresh drawdown must not
+    /// make the total climb. Each new drawdown used to be added to a running sum that never dropped
+    /// the ones already settled.
+    /// </summary>
+    [Fact]
+    public async Task BuildAsync_DoesNotAccumulateSettledDrawdownsAcrossCycles()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 5, 4), "Stability", 2000m);
+        // Cycle one: 500 out, 400 back. 100 of the 500 is still owed.
+        Add(context, "out-1", new DateTime(2026, 6, 4), "Stability", -500m);
+        Add(context, "back-1", new DateTime(2026, 6, 20), "Stability", 400m, "Reimbursement");
+        // Cycle two: 300 more out, then 100 back -- which settles the first drawdown outright.
+        var secondDrawdown = Add(context, "out-2", new DateTime(2026, 7, 4), "Stability", -300m);
+        var secondRepayment = Add(
+            context, "back-2", new DateTime(2026, 7, 20), "Stability", 100m, "Reimbursement");
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(
+            context, setting, 2026, 7,
+            opening: 1900m, current: 1700m,
+            secondDrawdown, secondRepayment);
+
+        // Only the second drawdown still owes anything, and nothing has gone against it.
+        Assert.Equal(300m, Money(recovery.MarkedTotal));
+        Assert.Equal(0m, Money(recovery.RepaidTotal));
+        Assert.Equal(300m, Money(recovery.OutstandingShortfall));
+        Assert.Equal("2026-07-04", recovery.RecoveryFromDate);
     }
 
     [Fact]

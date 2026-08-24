@@ -206,6 +206,55 @@ public class StabilityReloadLedgerTests
         Assert.Equal(130m, state.Outstanding);
     }
 
+    /// <summary>
+    /// The reported totals count obligations, not movements. A drawdown put back in full leaves both
+    /// figures entirely, which is what keeps the reported ask from growing with every new drawdown
+    /// while older ones are settled.
+    /// </summary>
+    [Fact]
+    public void Replay_ReportedTotalsCountOnlyWhatIsStillOwed()
+    {
+        var state = StabilityReloadLedger.Replay(
+            Opening(),
+            openingBalance: 0m,
+            target: 0m,
+            [
+                new ReloadMovement(new DateOnly(2026, 7, 1), -100m, 0m, true, "settled"),
+                new ReloadMovement(new DateOnly(2026, 7, 2), -80m, 0m, true, "partly"),
+                new ReloadMovement(new DateOnly(2026, 7, 3), -60m, 0m, true, "untouched"),
+                new ReloadMovement(new DateOnly(2026, 7, 4), 130m, 130m, false, "repayment"),
+            ]);
+
+        // 130 back: the 100 outright, then 30 of the 80. The settled row contributes to neither
+        // total; the partly-repaid one contributes its full original and the 30 that went back.
+        Assert.Equal(140m, state.OpenMarkedTotal);
+        Assert.Equal(30m, state.OpenRepaidTotal);
+        Assert.Equal(110m, state.Outstanding);
+        Assert.Equal(state.Outstanding, state.OpenMarkedTotal - state.OpenRepaidTotal);
+        // Whole-run activity is unchanged -- it answers a different question.
+        Assert.Equal(240m, state.MarkedThisRun);
+        Assert.Equal(130m, state.RepaidThisRun);
+    }
+
+    /// <summary>
+    /// A carried obligation with no identity cannot say what it originally was, so its remaining
+    /// amount is all it can report. The difference still equals what is owed, which is what stops a
+    /// pre-migration cache row from reporting an impossible negative put-back.
+    /// </summary>
+    [Fact]
+    public void Replay_AnonymousCarriedObligationReportsWhatIsLeftOfIt()
+    {
+        var state = StabilityReloadLedger.Replay(
+            new ReloadState(300m, new DateOnly(2026, 6, 1), 0m, 0m),
+            openingBalance: 0m,
+            target: 0m,
+            [new ReloadMovement(new DateOnly(2026, 7, 1), 120m, 120m, false, "repayment")]);
+
+        Assert.Equal(180m, state.Outstanding);
+        Assert.Equal(180m, state.OpenMarkedTotal);
+        Assert.Equal(0m, state.OpenRepaidTotal);
+    }
+
     [Fact]
     public void Replay_ExactRepaymentMarksOnlyTheOldestWithdrawalComplete()
     {
@@ -223,6 +272,9 @@ public class StabilityReloadLedgerTests
         Assert.Equal(0m, obligations["first"].RemainingAmount);
         Assert.Equal(80m, obligations["second"].RemainingAmount);
         Assert.Equal(80m, state.Outstanding);
+        // The completed row is still returned, so per-row status can say so -- but it is not counted.
+        Assert.Equal(80m, state.OpenMarkedTotal);
+        Assert.Equal(0m, state.OpenRepaidTotal);
     }
 
     [Fact]
@@ -312,12 +364,12 @@ public class StabilityReloadLedgerTests
             target: 10000m,
             movements:
             [
-                new ReloadMovement(new DateOnly(2026, 7, 28), 148m, 148m, false),
-                new ReloadMovement(new DateOnly(2026, 7, 28), 900m, 900m, false),
-                new ReloadMovement(new DateOnly(2026, 8, 6), -70m, 0m, true),
-                new ReloadMovement(new DateOnly(2026, 8, 9), -125m, 0m, true),
-                new ReloadMovement(new DateOnly(2026, 8, 9), -676.77m, 0m, true),
-                new ReloadMovement(new DateOnly(2026, 8, 9), 520m, 520m, false),
+                new ReloadMovement(new DateOnly(2026, 7, 28), 148m, 148m, false, "in-1"),
+                new ReloadMovement(new DateOnly(2026, 7, 28), 900m, 900m, false, "in-2"),
+                new ReloadMovement(new DateOnly(2026, 8, 6), -70m, 0m, true, "out-70"),
+                new ReloadMovement(new DateOnly(2026, 8, 9), -125m, 0m, true, "out-125"),
+                new ReloadMovement(new DateOnly(2026, 8, 9), -676.77m, 0m, true, "out-676"),
+                new ReloadMovement(new DateOnly(2026, 8, 9), 520m, 520m, false, "back-520"),
             ]);
 
         Assert.Equal(351.77m, state.Outstanding);
@@ -325,10 +377,14 @@ public class StabilityReloadLedgerTests
         // Transfers arriving before anything was marked repay nothing -- there was no obligation
         // for them to discharge yet.
         Assert.Equal(new DateOnly(2026, 8, 9), state.OldestOutstandingDate);
-        // FIFO retired the 08-06 drawdown outright, so it is no longer outstanding -- but it is
-        // still what this cycle marked and put back, and the reporting window has to reach it or
-        // marked and repaid both lose the same 70.
-        Assert.Equal(new DateOnly(2026, 8, 6), state.OldestMarkedThisRunDate);
+        // FIFO retired the 70 and the 125 outright, so both leave the reported totals entirely: the
+        // only drawdown still owing anything is the 676.77, against which 325 of the 520 went. The
+        // whole-cycle figures -- 871.77 marked and 520 back -- describe activity, not what is owed,
+        // and reporting them made a settled drawdown keep inflating the ask.
+        Assert.Equal(676.77m, state.OpenMarkedTotal);
+        Assert.Equal(325m, state.OpenRepaidTotal);
+        Assert.Equal(state.Outstanding, state.OpenMarkedTotal - state.OpenRepaidTotal);
+        Assert.Equal(871.77m, state.MarkedThisRun);
     }
 
     [Fact]
@@ -378,7 +434,7 @@ public class StabilityReloadLedgerTests
     }
 
     [Fact]
-    public void Replay_AttainmentZeroesMarkedStillOutstandingThisRunWhileMarkedThisRunSurvives()
+    public void Replay_AttainmentZeroesReportedTotalsWhileMarkedThisRunSurvives()
     {
         var state = StabilityReloadLedger.Replay(
             Opening(),
@@ -391,7 +447,9 @@ public class StabilityReloadLedgerTests
 
         Assert.Equal(0m, state.Outstanding);
         Assert.Equal(500m, state.MarkedThisRun);
-        Assert.Equal(0m, state.MarkedStillOutstandingThisRun);
+        // Nothing is owed, so nothing is reported as owed. MarkedThisRun survives as an audit total.
+        Assert.Equal(0m, state.OpenMarkedTotal);
+        Assert.Equal(0m, state.OpenRepaidTotal);
     }
 
     private static ReloadState Opening() => new(0m, null, 0m, 0m);

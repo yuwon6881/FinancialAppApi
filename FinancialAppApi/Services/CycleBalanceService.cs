@@ -79,11 +79,10 @@ public class CycleBalanceService
         decimal essentials = 0m, growth = 0m, stability = 0m, rewards = 0m;
         var reloadState = last == null
             ? new ReloadState(0m, null, 0m, 0m)
-            : new ReloadState(
+            : StabilityReloadObligationCache.OpeningState(
                 last.StabilityReloadOutstanding,
                 last.StabilityReloadOldestDate,
-                0m,
-                0m);
+                last.StabilityReloadObligations);
         int fromYear = startYear, fromMonth = 1;
 
         if (last != null)
@@ -142,7 +141,18 @@ public class CycleBalanceService
                         transaction => StabilityPlanRevisionService.At(
                             planRevisions,
                             transaction.PostedAt).StabilityAlloc));
-                reloadState = reloaded;
+                // Carry only the still-owing entries. A discharged obligation has nothing left to
+                // hand to the next cycle, and keeping them would grow the dictionary for the whole
+                // walk. This is the same set the row below persists.
+                var openObligations = (reloaded.Obligations ?? [])
+                    .Where(obligation => obligation.RemainingAmount > 0m)
+                    .ToList();
+                reloadState = new ReloadState(
+                    reloaded.Outstanding,
+                    reloaded.OldestOutstandingDate,
+                    0m,
+                    0m,
+                    openObligations);
 
                 essentials += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Essentials"));
                 growth += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Growth"));
@@ -157,8 +167,8 @@ public class CycleBalanceService
                     GrowthBalance = growth,
                     StabilityBalance = stability,
                     StabilityReloadOutstanding = reloaded.Outstanding,
-                    StabilityReloadMarkedAmount = reloaded.MarkedStillOutstandingThisRun,
                     StabilityReloadOldestDate = reloaded.OldestOutstandingDate,
+                    StabilityReloadObligations = StabilityReloadObligationCache.Serialize(openObligations),
                     RewardsBalance = rewards
                 };
                 _context.CycleBalances.Add(current);
