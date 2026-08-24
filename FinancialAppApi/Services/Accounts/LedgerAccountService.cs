@@ -98,8 +98,9 @@ public sealed partial class LedgerAccountService
     public Task<LedgerAccountBalanceSnapshot> GetBalanceSnapshotAsync(
         IReadOnlyCollection<LedgerAccount> accounts,
         DateTime throughExclusive,
-        CancellationToken cancellationToken = default) =>
-        _balanceService.GetBalanceSnapshotAsync(accounts, throughExclusive, cancellationToken);
+        CancellationToken cancellationToken = default,
+        int? cycleDay = null) =>
+        _balanceService.GetBalanceSnapshotAsync(accounts, throughExclusive, cancellationToken, cycleDay);
 
     public async Task<LedgerAccountMutationResult> CreateAsync(
         LedgerAccountMutation mutation,

@@ -9,6 +9,10 @@ public class QueryFilterBypassAuditTests
         "FinancialAppApi/Database/DbSeeder.cs",
         "FinancialAppApi/Services/Accounts/LedgerAccountService.Reconciliation.cs",
         "FinancialAppApi/Services/Investments/MarketDataCutoverService.cs",
+        // Retention runs on a background timer with no authenticated user to filter by, and prunes
+        // only derived bookkeeping (market price history, notification receipts) across all
+        // tenants. It reads no financial row and writes none.
+        "FinancialAppApi/Services/LedgerRetentionService.cs",
         "FinancialAppApi/Services/Push/PushDispatchService.cs",
         "FinancialAppApi/Services/Push/PushDispatchService.CategoryAlerts.cs",
     ];

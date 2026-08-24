@@ -90,7 +90,7 @@ public partial class FinancialService
         _ledgerAccountService = ledgerAccountService
             ?? new LedgerAccountService(
                 context,
-                new LedgerAccountBalanceService(context),
+                new LedgerAccountBalanceService(context, cycleBalanceService, _financialClock),
                 cycleBalanceService,
                 _financialClock);
     }
@@ -197,7 +197,8 @@ public partial class FinancialService
         var ledgerAccountBalances = await _ledgerAccountService.GetBalanceSnapshotAsync(
             ledgerAccounts,
             activeRangeEndExclusive,
-            cancellationToken);
+            cancellationToken,
+            cycle.CycleDay);
 
         return new FinancialBootstrapSnapshot(
             cycle,

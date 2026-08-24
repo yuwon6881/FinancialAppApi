@@ -139,6 +139,7 @@ public partial class AppDbContext
             entity.Property(e => e.StabilityReloadOldestDate).HasColumnType("date");
             entity.Property(e => e.StabilityReloadObligations).HasColumnType("jsonb");
             entity.Property(e => e.RewardsBalance).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.AccountBalances).HasColumnType("jsonb");
         });
 
         modelBuilder.Entity<StabilityPlanRevision>(entity =>

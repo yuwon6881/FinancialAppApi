@@ -99,7 +99,9 @@ public class BootstrapController : ControllerBase
             snapshot.Cycle.CycleDay);
         if (transactions.Items.Any(TransactionQueryService.CanCarryStabilityReloadStatus))
         {
-            var stabilityReloadStatuses = await _transactionQueryService.GetStabilityReloadStatusMapAsync(cancellationToken);
+            var stabilityReloadStatuses = await _transactionQueryService.GetStabilityReloadStatusMapAsync(
+                cancellationToken,
+                transactions.Items.Select(item => item.Id).ToList());
             transactions = TransactionQueryService.ProjectCycleTransactions(
                 snapshot.CycleRelevantTransactions,
                 snapshot.Cycle.ActiveYear,

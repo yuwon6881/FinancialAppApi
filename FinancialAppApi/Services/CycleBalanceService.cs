@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Accounts;
 using FinancialAppApi.Services.Stability;
 
 namespace FinancialAppApi.Services;
@@ -36,6 +37,10 @@ public class CycleBalanceService
     // nothing outside the request can invalidate it behind our back. Inside the request the only
     // thing that can is Invalidate*Async, which clears it.
     private readonly Dictionary<(int year, int monthIndex, int cycleDay), (decimal, decimal, decimal, decimal)> _openingBalances = new();
+
+    // Same request-scoped memo, for the per-account view of the same snapshot. /api/bootstrap asks
+    // for it twice (wallet balance and the account rows), and re-reading would re-run the walk.
+    private readonly Dictionary<(int year, int monthIndex, int cycleDay), IReadOnlyDictionary<string, decimal>?> _openingAccountBalances = new();
 
     public CycleBalanceService(
         AppDbContext context,
@@ -76,6 +81,13 @@ public class CycleBalanceService
             ? [new StabilityPlanSnapshot(DateTime.UnixEpoch, 0m, 0m)]
             : await _stabilityPlanRevisionService.GetAsync(setting, cancellationToken);
 
+        // Needed to place each bucket leg into an account. Loaded once for the whole walk; the set
+        // is small and, because an account with ledger activity cannot change bucket, the placement
+        // it produces for an already-dated transaction never changes retroactively.
+        var accountsById = await _context.LedgerAccounts
+            .AsNoTracking()
+            .ToDictionaryAsync(account => account.Id, StringComparer.Ordinal, cancellationToken);
+
         decimal essentials = 0m, growth = 0m, stability = 0m, rewards = 0m;
         var reloadState = last == null
             ? new ReloadState(0m, null, 0m, 0m)
@@ -85,6 +97,11 @@ public class CycleBalanceService
                 last.StabilityReloadObligations);
         int fromYear = startYear, fromMonth = 1;
 
+        // Running per-account balances for the walk. Null means the previous row predates the
+        // AccountBalances column and cannot seed it; recovered below once firstDate is known.
+        Dictionary<string, decimal>? accountBalances =
+            last == null ? new Dictionary<string, decimal>(StringComparer.Ordinal) : null;
+
         if (last != null)
         {
             essentials = last.EssentialsBalance;
@@ -93,6 +110,12 @@ public class CycleBalanceService
             rewards = last.RewardsBalance;
             fromYear = last.MonthIndex == 12 ? last.Year + 1 : last.Year;
             fromMonth = last.MonthIndex == 12 ? 1 : last.MonthIndex + 1;
+
+            var cachedAccounts = LedgerAccountBalanceCache.Deserialize(last.AccountBalances);
+            if (cachedAccounts is not null)
+            {
+                accountBalances = new Dictionary<string, decimal>(cachedAccounts, StringComparer.Ordinal);
+            }
         }
 
         CycleBalance current = last!;
@@ -101,10 +124,49 @@ public class CycleBalanceService
         var finalRange = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
         var firstDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(firstRange.start));
         var finalEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(finalRange.end));
+        // A row written before the AccountBalances column existed cannot seed the account tally.
+        // One scan of everything preceding this walk recovers it; because every row written below
+        // carries the column, no later read has to pay for this again.
+        if (accountBalances is null)
+        {
+            accountBalances = new Dictionary<string, decimal>(StringComparer.Ordinal);
+            await foreach (var transaction in _context.Transactions
+                .AsNoTracking()
+                .Where(transaction => transaction.Date < firstDate)
+                .AsAsyncEnumerable()
+                .WithCancellation(cancellationToken))
+            {
+                LedgerAccountBalanceMath.Accumulate(accountBalances, transaction, accountsById);
+            }
+        }
+
         var timelineTransactions = await _context.Transactions
             .AsNoTracking()
             .Where(transaction => transaction.Date >= firstDate && transaction.Date < finalEndExclusive)
+            .OrderBy(transaction => transaction.Date)
+            .ThenBy(transaction => transaction.PostedAt)
+            .ThenBy(transaction => transaction.Id)
             .ToListAsync(cancellationToken);
+        // Sorted once so each cycle can binary-search its own slice below. Normally only the
+        // current cycle is missing and this costs nothing, but a backdated edit deletes every
+        // snapshot from its cycle forward, so the loop can span years of history -- and
+        // re-filtering the whole timeline inside it made that rebuild quadratic in
+        // cycles x transactions. DescribeAll re-sorts by this same key, so the slices below are
+        // in the order it would have produced anyway.
+        var timelineDates = timelineTransactions.Select(transaction => transaction.Date).ToList();
+
+        // Index of the first transaction dated at or after `value`, over the sorted list above.
+        int LowerBound(DateTime value)
+        {
+            int low = 0, high = timelineDates.Count;
+            while (low < high)
+            {
+                var mid = low + ((high - low) / 2);
+                if (timelineDates[mid] < value) low = mid + 1;
+                else high = mid;
+            }
+            return low;
+        }
 
         for (int y = fromYear; y <= year; y++)
         {
@@ -117,11 +179,10 @@ public class CycleBalanceService
                 var cycleStartDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(cycleStart));
                 var cycleEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(cycleEnd));
 
-                var cycleTxs = timelineTransactions
-                    .Where(transaction =>
-                        transaction.Date >= cycleStartDate &&
-                        transaction.Date < cycleEndExclusive)
-                    .ToList();
+                var sliceStart = LowerBound(cycleStartDate);
+                var cycleTxs = timelineTransactions.GetRange(
+                    sliceStart,
+                    LowerBound(cycleEndExclusive) - sliceStart);
 
                 var stabilityOpening = stability;
                 var cycleStartUtc = DateTime.SpecifyKind(cycleStart, DateTimeKind.Utc);
@@ -154,10 +215,16 @@ public class CycleBalanceService
                     0m,
                     openObligations);
 
-                essentials += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Essentials"));
-                growth += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Growth"));
-                stability += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Stability"));
-                rewards += cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, "Rewards"));
+                // One pass for all four buckets rather than four passes over the same slice, and the
+                // per-account placement of each leg is taken from the same pass.
+                foreach (var transaction in cycleTxs)
+                {
+                    essentials += CategoryAttributionService.GetCategoryAmount(transaction, "Essentials");
+                    growth += CategoryAttributionService.GetCategoryAmount(transaction, "Growth");
+                    stability += CategoryAttributionService.GetCategoryAmount(transaction, "Stability");
+                    rewards += CategoryAttributionService.GetCategoryAmount(transaction, "Rewards");
+                    LedgerAccountBalanceMath.Accumulate(accountBalances, transaction, accountsById);
+                }
 
                 current = new CycleBalance
                 {
@@ -169,7 +236,8 @@ public class CycleBalanceService
                     StabilityReloadOutstanding = reloaded.Outstanding,
                     StabilityReloadOldestDate = reloaded.OldestOutstandingDate,
                     StabilityReloadObligations = StabilityReloadObligationCache.Serialize(openObligations),
-                    RewardsBalance = rewards
+                    RewardsBalance = rewards,
+                    AccountBalances = LedgerAccountBalanceCache.Serialize(accountBalances)
                 };
                 _context.CycleBalances.Add(current);
             }
@@ -238,6 +306,44 @@ public class CycleBalanceService
         return opening;
     }
 
+    // Returns the cumulative per-account balances carried into (year, monthIndex) -- i.e. the
+    // ending balances of the cycle immediately before it -- or null when there is no usable cached
+    // row, in which case the caller must answer from the full transaction history instead. Empty
+    // (not null) for the very first cycle of the timeline.
+    //
+    // Deliberately read-only: unlike GetOpeningBalanceAsync this never triggers the forward walk.
+    // The walk is expensive on a cold cache, and the dashboard runs it moments later anyway, so
+    // forcing it here would move that cost onto every caller instead of removing it. A miss simply
+    // means the caller scans this once; the next request finds the row the dashboard wrote.
+    public async Task<IReadOnlyDictionary<string, decimal>?> GetOpeningAccountBalancesAsync(
+        int year,
+        int monthIndex,
+        int cycleDay,
+        CancellationToken cancellationToken = default)
+    {
+        var startYear = Math.Min(BaselineYear, year);
+        if (year == startYear && monthIndex == 1)
+        {
+            return new Dictionary<string, decimal>(StringComparer.Ordinal);
+        }
+
+        if (_openingAccountBalances.TryGetValue((year, monthIndex, cycleDay), out var memoized))
+        {
+            return memoized;
+        }
+
+        var prevYear = monthIndex == 1 ? year - 1 : year;
+        var prevMonth = monthIndex == 1 ? 12 : monthIndex - 1;
+        var row = await _context.CycleBalances
+            .AsNoTracking()
+            .FirstOrDefaultAsync(
+                balance => balance.Year == prevYear && balance.MonthIndex == prevMonth,
+                cancellationToken);
+        var opening = row is null ? null : LedgerAccountBalanceCache.Deserialize(row.AccountBalances);
+        _openingAccountBalances[(year, monthIndex, cycleDay)] = opening;
+        return opening;
+    }
+
     // Deletes every cached snapshot for cycles at or after (year, monthIndex) -- call whenever a
     // transaction dated in or before that cycle is created/edited/deleted, since the running
     // balance for every cycle downstream of it is now stale.
@@ -250,6 +356,7 @@ public class CycleBalanceService
         // mutation that invalidates cycle X within a request must not let an opening balance
         // resolved earlier in that same request survive, and the memo is a handful of entries.
         _openingBalances.Clear();
+        _openingAccountBalances.Clear();
 
         var query = _context.CycleBalances
             .Where(b => b.Year > year || (b.Year == year && b.MonthIndex >= monthIndex));
@@ -269,6 +376,7 @@ public class CycleBalanceService
     public async Task InvalidateAllAsync(CancellationToken cancellationToken = default)
     {
         _openingBalances.Clear();
+        _openingAccountBalances.Clear();
 
         if (_context.Database.IsRelational())
         {

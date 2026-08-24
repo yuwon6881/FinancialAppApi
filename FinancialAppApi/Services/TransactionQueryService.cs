@@ -205,15 +205,20 @@ public partial class TransactionQueryService
     }
 
     public Task<IReadOnlyDictionary<string, string>> GetStabilityReloadStatusMapAsync(
-        CancellationToken cancellationToken = default) =>
-        _stabilityReloadStatusService.GetStatusMapAsync(cancellationToken);
+        CancellationToken cancellationToken = default,
+        IReadOnlyCollection<string>? forTransactionIds = null) =>
+        _stabilityReloadStatusService.GetStatusMapAsync(cancellationToken, forTransactionIds);
 
     private async Task<IReadOnlyList<TransactionProjection>> ApplyStatusesAsync(
         IReadOnlyList<TransactionProjection> items,
         CancellationToken cancellationToken)
     {
         if (!items.Any(CanCarryStabilityReloadStatus)) return items;
-        var statusMap = await _stabilityReloadStatusService.GetStatusMapAsync(cancellationToken);
+        // Only these rows will render a status, so the replay only has to reach back far enough to
+        // cover them -- otherwise a ten-row page still costs a full-history replay.
+        var statusMap = await _stabilityReloadStatusService.GetStatusMapAsync(
+            cancellationToken,
+            items.Select(item => item.Id).ToList());
         return items
             .Select(item => statusMap.TryGetValue(item.Id, out var status)
                 ? item with { StabilityReloadStatus = status }

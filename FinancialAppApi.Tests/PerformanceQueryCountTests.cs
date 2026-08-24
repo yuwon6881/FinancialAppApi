@@ -38,12 +38,16 @@ public sealed class PerformanceQueryCountTests
         Assert.Equal(2, fixture.Counter.CommandCount);
     }
 
-    // Settings, active payments, cycle transactions, occurrence ledger, accounts, and the full
-    // account-attribution history -- six reads, each of a distinct shared input, and no repeats. The ledger's
-    // backfill deliberately reuses the transactions already loaded here rather than scanning
-    // them a second time; that reuse is what keeps this at four rather than five.
+    // Settings, active payments, cycle transactions, occurrence ledger, accounts, the cached
+    // per-cycle account snapshot, and the account-attribution rows after that snapshot -- seven
+    // reads, each of a distinct shared input, and no repeats. The ledger's backfill deliberately
+    // reuses the transactions already loaded here rather than scanning them a second time.
+    //
+    // The snapshot lookup is the seventh read and it is the point: it is a single-row primary-key
+    // hit that replaces what used to be an unbounded scan of the entire Transactions table, so the
+    // query count rises by one while the rows read stop growing with the age of the account.
     [Fact]
-    public async Task BootstrapSnapshot_LoadsSharedCoreDataInSixQueries()
+    public async Task BootstrapSnapshot_LoadsSharedCoreDataInSevenQueries()
     {
         await using var fixture = await SqliteFixture.CreateAsync();
         fixture.Context.FinancialSettings.Add(new FinancialSetting
@@ -72,7 +76,7 @@ public sealed class PerformanceQueryCountTests
             persistSelection: false,
             CancellationToken.None);
 
-        Assert.Equal(6, fixture.Counter.CommandCount);
+        Assert.Equal(7, fixture.Counter.CommandCount);
     }
 
     // The full dashboard reuses the snapshot's settings and active recurring payments when it

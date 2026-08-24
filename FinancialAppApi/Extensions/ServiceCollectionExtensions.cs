@@ -266,6 +266,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ReceiptScanQueue>();
         services.AddHostedService<ReceiptScanBackgroundService>();
         services.AddHostedService<ReceiptScanCleanupBackgroundService>();
+        services.AddSingleton<LedgerRetentionPolicy>();
+        services.AddScoped<LedgerRetentionService>();
+        services.AddHostedService<LedgerRetentionBackgroundService>();
         services.AddScoped<OcrScanJobService>();
         
         services.AddHttpClient(GcsDocumentVaultStore.HttpClientName, client =>

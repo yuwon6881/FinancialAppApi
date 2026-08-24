@@ -218,7 +218,10 @@ public partial class AiAssistantService
         _loanService = loanService ?? new Loans.LoanService(context);
         _ledgerAccountService = ledgerAccountService ?? new Accounts.LedgerAccountService(
             context,
-            new Accounts.LedgerAccountBalanceService(context),
+            new Accounts.LedgerAccountBalanceService(
+                context,
+                new CycleBalanceService(context),
+                _financialClock),
             new CycleBalanceService(context),
             _financialClock);
     }

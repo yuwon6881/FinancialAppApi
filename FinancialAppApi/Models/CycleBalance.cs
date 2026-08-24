@@ -26,4 +26,11 @@ public class CycleBalance : IUserOwnedEntity
     // drawdowns that were already put back in full.
     public string? StabilityReloadObligations { get; set; }
     public decimal RewardsBalance { get; set; }
+
+    // Cumulative per-account ending balances, serialized by LedgerAccountBalanceCache. Accounts are
+    // a placement of the same bucket legs the columns above already total, so this carries no new
+    // money -- it exists so LedgerAccountBalanceService can resume from a cycle boundary instead of
+    // streaming the entire Transactions table on every dashboard load. Null means "not cached",
+    // which callers must treat as a signal to fall back to the full-history scan.
+    public string? AccountBalances { get; set; }
 }

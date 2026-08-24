@@ -1,6 +1,7 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services.Stability;
+using FinancialAppApi.Services;
 
 namespace FinancialAppApi.Tests;
 
@@ -23,6 +24,41 @@ public sealed class StabilityReloadStatusServiceTests
         Assert.Equal(StabilityReloadStatus.PartlyRepaid, statuses["first"]);
         Assert.Equal(StabilityReloadStatus.Outstanding, statuses["second"]);
         Assert.Equal(StabilityReloadStatus.NotRequired, statuses["spent"]);
+    }
+
+    // Seeding the replay from a cached cycle boundary must reach the same verdict as replaying from
+    // the beginning of time. The drawdown here opens several cycles before the repayment that
+    // partly discharges it, so a seeded replay only agrees if the carried FIFO queue (STAB-10) is
+    // reconstructed correctly across the boundary -- if the identities were lost, "second" would
+    // absorb the repayment instead of "first".
+    [Fact]
+    public async Task GetStatusMapAsync_SeededFromTheCycleCacheMatchesTheFullReplay()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedSetting(context, target: 0m);
+        Add(context, "first", new DateTime(2026, 2, 3), -100m, StabilityReloadIntent.Required);
+        Add(context, "second", new DateTime(2026, 3, 9), -80m, StabilityReloadIntent.Required);
+        Add(context, "repayment", new DateTime(2026, 8, 4), 50m, StabilityReloadIntent.Unanswered,
+            ledgerCategory: "Transfer:Growth->Stability");
+        await context.SaveChangesAsync();
+
+        var full = await new StabilityReloadStatusService(context).GetStatusMapAsync();
+
+        // Warm the per-cycle cache so the next call can seed from it rather than replay everything.
+        // Asking only about "second" and the repayment starts the window in March, which leaves
+        // February's "first" outside it -- reachable only through the cached FIFO queue.
+        await new CycleBalanceService(context).EnsureComputedThroughAsync(2026, 12, cycleDay: 1);
+        var seeded = await new StabilityReloadStatusService(context).GetStatusMapAsync(
+            CancellationToken.None,
+            ["second", "repayment"]);
+
+        Assert.Equal(StabilityReloadStatus.PartlyRepaid, full["first"]);
+        Assert.Equal(StabilityReloadStatus.Outstanding, full["second"]);
+
+        // The repayment must still land on the older obligation carried across the boundary. If the
+        // identities were lost at the seed, it would discharge "second" and this would read
+        // PartlyRepaid instead.
+        Assert.Equal(full["second"], seeded["second"]);
     }
 
     [Fact]

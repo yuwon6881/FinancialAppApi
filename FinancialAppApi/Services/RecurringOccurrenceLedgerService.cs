@@ -7,6 +7,12 @@ namespace FinancialAppApi.Services;
 public sealed partial class RecurringOccurrenceLedgerService
 {
     private const int MaxOccurrencesToScan = 60;
+
+    // How far back GetPendingDueAsync will look for a still-unresolved bill. Two years is well past
+    // any reminder that is still actionable, and it is what stops the dashboard's cost from growing
+    // with the age of the account. Only the reminder read is bounded -- the occurrence ledger itself
+    // keeps its full history.
+    private const int PendingDueLookbackMonths = 24;
     private readonly AppDbContext _context;
     private readonly RecurringOccurrenceService _dates;
     private readonly FinancialClock _clock;
@@ -80,12 +86,19 @@ public sealed partial class RecurringOccurrenceLedgerService
                 ? end
                 : (DateOnly?)null,
             StringComparer.Ordinal);
-        var earliest = active.Min(TrackingStart);
+        // Bounded rather than "everything since the bill started". This method only ever returns
+        // rows that are still unresolved and already due, so reading a decade of settled history to
+        // filter it away is pure cost that grows with the age of the account. Anything older than
+        // the window is left untouched -- paid and discarded rows stay exactly as they are; the
+        // only behavioral consequence is that a bill left unresolved for longer than the window
+        // stops being nagged about, which is the intended reading of a reminder.
+        var windowStart = today.AddMonths(-PendingDueLookbackMonths);
+        var earliest = active.Min(payment => Later(TrackingStart(payment), windowStart));
         await LoadRangeAsync(activeIds, earliest, today, cancellationToken);
         var invented = false;
         foreach (var payment in active)
         {
-            invented |= EnsureRange(payment, TrackingStart(payment), today);
+            invented |= EnsureRange(payment, Later(TrackingStart(payment), windowStart), today);
         }
         // Only a call that actually invented pending rows can have invented one that a tagged
         // settlement already answers -- a bill paid early for a later cycle, say. Reconciling
@@ -110,6 +123,8 @@ public sealed partial class RecurringOccurrenceLedgerService
             cancellationToken);
         return Ordered(occurrences);
     }
+
+    private static DateOnly Later(DateOnly left, DateOnly right) => left > right ? left : right;
 
     // Pending/PartiallyPaid rows are only commitments while their parent exists. Paid and
     // discarded rows are settled history and deliberately survive deletion of the template.
