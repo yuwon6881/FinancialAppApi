@@ -100,6 +100,85 @@ public sealed class LoanRepaymentServiceTests
         Assert.Single(await context.LoanRepaymentActions.ToListAsync());
     }
 
+    // A queued advance repayment can sit in the outbox while the schedule moves underneath it. The
+    // preview fingerprint is what makes the retry safe: it commits the exact occurrence set and
+    // amounts the user approved, so a changed schedule is refused instead of silently charging a
+    // different payment.
+    [Fact]
+    public async Task AdvanceCyclesRepayment_AcceptsTheFingerprintFromItsOwnPreview()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, _, account) = await SeedLoanAsync(context);
+        var service = CreateService(context);
+
+        var preview = await service.PreviewAdvanceRepaymentAsync(loan.Id, cycles: 2);
+        Assert.False(string.IsNullOrWhiteSpace(preview.PreviewFingerprint));
+
+        var result = await service.AdvanceCyclesRepaymentAsync(
+            loan.Id, 2, account.Id, "fingerprint-accepted", preview.PreviewFingerprint);
+
+        Assert.Equal(LoanRepaymentStatus.Success, result.Status);
+        Assert.Equal(2, result.Transactions!.Count);
+    }
+
+    [Fact]
+    public async Task AdvanceCyclesRepayment_RejectsAPreviewThatNoLongerMatchesTheSchedule()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, _, account) = await SeedLoanAsync(context);
+        var service = CreateService(context);
+
+        var reviewed = await service.PreviewAdvanceRepaymentAsync(loan.Id, cycles: 2);
+
+        // The schedule moves on while the approved repayment is still queued: one cycle is paid,
+        // so "the next two" are no longer the two the user reviewed.
+        var interleaved = await service.AdvanceCyclesRepaymentAsync(loan.Id, 1, account.Id, "interleaved");
+        Assert.Equal(LoanRepaymentStatus.Success, interleaved.Status);
+        var transactionsBefore = await context.Transactions.CountAsync();
+
+        var stale = await service.AdvanceCyclesRepaymentAsync(
+            loan.Id, 2, account.Id, "stale-preview", reviewed.PreviewFingerprint);
+
+        Assert.Equal(LoanRepaymentStatus.Conflict, stale.Status);
+        Assert.Equal("stale_repayment_preview", stale.Code);
+        // Refused, not partially applied.
+        Assert.Equal(transactionsBefore, await context.Transactions.CountAsync());
+    }
+
+    [Fact]
+    public async Task AdvanceCyclesRepayment_ReplaysAFingerprintedActionExactlyOnce()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, _, account) = await SeedLoanAsync(context);
+        var service = CreateService(context);
+        var preview = await service.PreviewAdvanceRepaymentAsync(loan.Id, cycles: 2);
+
+        var first = await service.AdvanceCyclesRepaymentAsync(
+            loan.Id, 2, account.Id, "fingerprint-retry", preview.PreviewFingerprint);
+        var retry = await service.AdvanceCyclesRepaymentAsync(
+            loan.Id, 2, account.Id, "fingerprint-retry", preview.PreviewFingerprint);
+
+        Assert.Equal(LoanRepaymentStatus.Success, retry.Status);
+        Assert.Equal(first.ActionId, retry.ActionId);
+        Assert.Equal(2, await context.Transactions.CountAsync());
+        Assert.Single(await context.LoanRepaymentActions.ToListAsync());
+    }
+
+    // An older client sends no fingerprint at all. That must keep working rather than becoming an
+    // unconfirmable repayment.
+    [Fact]
+    public async Task AdvanceCyclesRepayment_StillSucceedsWithoutAFingerprint()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, _, account) = await SeedLoanAsync(context);
+
+        var result = await CreateService(context).AdvanceCyclesRepaymentAsync(
+            loan.Id, 1, account.Id, "no-fingerprint", previewFingerprint: null);
+
+        Assert.Equal(LoanRepaymentStatus.Success, result.Status);
+        Assert.Single(result.Transactions!);
+    }
+
     [Fact]
     public async Task FullSettlementRepayment_ClosesBillAndMarksFutureOccurrencesSettledByLoanPayoff()
     {

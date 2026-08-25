@@ -52,6 +52,7 @@ public sealed class LoansController : ControllerBase
             {
                 cyclesCount = result.CyclesCount,
                 totalAmount = ObfuscationHelper.Obfuscate(result.TotalAmount),
+                previewFingerprint = result.PreviewFingerprint,
                 occurrences = result.Occurrences?.Select(MapToDto).ToList() ?? []
             })
         };
@@ -65,13 +66,14 @@ public sealed class LoansController : ControllerBase
             dto.Cycles,
             dto.AccountId,
             dto.ClientKey,
+            dto.PreviewFingerprint,
             dto.PostedAt,
             HttpContext.RequestAborted);
 
         return result.Status switch
         {
             LoanRepaymentStatus.NotFound => NotFound(),
-            LoanRepaymentStatus.Conflict => Conflict(new { message = result.Message }),
+            LoanRepaymentStatus.Conflict => Conflict(new { code = result.Code, message = result.Message }),
             LoanRepaymentStatus.Invalid => BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets }),
             _ => Ok(new
             {
@@ -346,6 +348,7 @@ public sealed class AdvanceCyclesRepaymentDto
     public int Cycles { get; set; } = 1;
     public string? AccountId { get; set; }
     public string? ClientKey { get; set; }
+    public string? PreviewFingerprint { get; set; }
     public DateTime? PostedAt { get; set; }
 }
 

@@ -437,6 +437,107 @@ public class TransactionQueryServiceTests
         Assert.Equal(["settled"], completeOnly.Items.Select(item => item.Id));
     }
 
+    [Fact]
+    public async Task GetTransactionsAsync_FiltersByAccountOnEitherLeg()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var direct = NewTransaction("direct", "Groceries", "Food", "Essentials", -40m);
+        direct.AccountId = "essentials-wallet";
+
+        // A transfer is attributed to the account it left; the selected account is the counter leg,
+        // and a filter that only looked at AccountId would hide the row from its own account.
+        var counter = NewTransaction("counter", "Top up", "Transfer", "Transfer:Growth->Stability", 150m);
+        counter.AccountId = "growth-pot";
+        counter.CounterAccountId = "essentials-wallet";
+
+        var elsewhere = NewTransaction("elsewhere", "Dining", "Food", "Rewards", -25m);
+        elsewhere.AccountId = "rewards-card";
+
+        var unattributed = NewTransaction("unattributed", "Legacy row", "Food", "Essentials", -5m);
+
+        context.Transactions.AddRange(direct, counter, elsewhere, unattributed);
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var result = await service.GetTransactionsAsync(all: true, accountId: "essentials-wallet");
+
+        Assert.Equal(2, result.Total);
+        Assert.Equal(["counter", "direct"], result.Items.Select(item => item.Id).OrderBy(id => id, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task GetTransactionsAsync_FiltersByAnyOfSeveralAccounts()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var first = NewTransaction("first", "Groceries", "Food", "Essentials", -40m);
+        first.AccountId = "essentials-wallet";
+        var second = NewTransaction("second", "Dining", "Food", "Rewards", -25m);
+        second.AccountId = "rewards-card";
+        var third = NewTransaction("third", "Fuel", "Transport", "Essentials", -60m);
+        third.AccountId = "joint-account";
+        context.Transactions.AddRange(first, second, third);
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        // Blank and duplicate entries are what a URL round-trip can produce; they must not widen
+        // or void the filter.
+        var result = await service.GetTransactionsAsync(
+            all: true, accountId: "essentials-wallet,,rewards-card,essentials-wallet");
+
+        Assert.Equal(2, result.Total);
+        Assert.Equal(["first", "second"], result.Items.Select(item => item.Id).OrderBy(id => id, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task GetTransactionsAsync_AccountFilterIsIgnoredWhenAbsent()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var attributed = NewTransaction("attributed", "Groceries", "Food", "Essentials", -40m);
+        attributed.AccountId = "essentials-wallet";
+        context.Transactions.AddRange(attributed, NewTransaction("legacy", "Legacy", "Food", "Essentials", -5m));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        Assert.Equal(2, (await service.GetTransactionsAsync(all: true)).Total);
+        Assert.Equal(2, (await service.GetTransactionsAsync(all: true, accountId: "   ")).Total);
+    }
+
+    // The authoritative Stability replay treats every intent except an explicit NotRequired as a
+    // promise to put the money back. Ledger filtering used to demand intent == "Required", which
+    // hid legacy rows (null intent) and offline-authored "Unanswered" rows from the very filter
+    // meant to list outstanding obligations.
+    [Fact]
+    public async Task GetTransactionsAsync_TreatsUnansweredAndMissingReloadIntentAsRequired()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var required = NewTransaction("required", "Car repair", "Emergency", "Stability", -400m);
+        required.StabilityReloadIntent = "Required";
+
+        var unanswered = NewTransaction("unanswered", "Vet bill", "Emergency", "Stability", -300m);
+        unanswered.StabilityReloadIntent = "Unanswered";
+
+        // Never answered: the column is non-nullable and defaults to Unanswered, so this is the
+        // shape any drawdown written without the question being answered actually has.
+        var defaulted = NewTransaction("defaulted", "Old drawdown", "Emergency", "Stability", -200m);
+        Assert.Equal(StabilityReloadIntent.Unanswered, defaulted.StabilityReloadIntent);
+
+        var notRequired = NewTransaction("not-required", "Spent for good", "Emergency", "Stability", -100m);
+        notRequired.StabilityReloadIntent = "NotRequired";
+
+        context.Transactions.AddRange(required, unanswered, defaulted, notRequired);
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var putBack = await service.GetTransactionsAsync(all: true, reloadFilter: "put-back");
+        var spentForGood = await service.GetTransactionsAsync(all: true, reloadFilter: "not-required");
+
+        Assert.Equal(3, putBack.Total);
+        Assert.Equal(
+            ["defaulted", "required", "unanswered"],
+            putBack.Items.Select(item => item.Id).OrderBy(id => id, StringComparer.Ordinal));
+        Assert.Equal(["not-required"], spentForGood.Items.Select(item => item.Id));
+    }
+
     private static Transaction NewTransaction(
         string id,
         string description,

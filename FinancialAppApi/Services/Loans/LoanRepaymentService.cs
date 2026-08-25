@@ -1,4 +1,7 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
+using System.Globalization;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
@@ -18,6 +21,7 @@ public sealed record LoanRepaymentPreviewResult(
     int CyclesCount = 0,
     decimal TotalAmount = 0m,
     IReadOnlyList<LoanScheduleEntry>? Occurrences = null,
+    string? PreviewFingerprint = null,
     string? Message = null);
 
 public sealed record LoanRepaymentActionResult(
@@ -126,7 +130,8 @@ public sealed partial class LoanRepaymentService
             LoanRepaymentStatus.Success,
             CyclesCount: count,
             TotalAmount: totalAmount,
-            Occurrences: entries);
+            Occurrences: entries,
+            PreviewFingerprint: BuildPreviewFingerprint(entries));
     }
 
     public async Task<LoanRepaymentActionResult> AdvanceCyclesRepaymentAsync(
@@ -134,6 +139,7 @@ public sealed partial class LoanRepaymentService
         int cycles,
         string? accountId,
         string? clientKey,
+        string? previewFingerprint = null,
         DateTime? postedAt = null,
         CancellationToken cancellationToken = default)
     {
@@ -145,7 +151,7 @@ public sealed partial class LoanRepaymentService
         await using var paymentLease = await AcquireLoanPaymentLockAsync(loanId, cancellationToken);
 
         var outcome = await InTransactionAsync(
-            () => AdvanceCyclesCoreAsync(loanId, cycles, accountId, clientKey, postedAt, cancellationToken),
+            () => AdvanceCyclesCoreAsync(loanId, cycles, accountId, clientKey, previewFingerprint, postedAt, cancellationToken),
             cancellationToken);
         if (outcome.Status != LoanRepaymentStatus.Success) return outcome;
         return outcome with { LoanView = await _loanService.GetLoanAsync(loanId, cancellationToken) };
@@ -156,6 +162,7 @@ public sealed partial class LoanRepaymentService
         int cycles,
         string? accountId,
         string? clientKey,
+        string? previewFingerprint,
         DateTime? postedAt,
         CancellationToken cancellationToken)
     {
@@ -189,6 +196,16 @@ public sealed partial class LoanRepaymentService
 
         var targetCount = Math.Min(cycles, futureSchedule.Count);
         var selectedEntries = futureSchedule.Take(targetCount).ToList();
+        if (!string.IsNullOrWhiteSpace(previewFingerprint)
+            && !CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(previewFingerprint.Trim().ToUpperInvariant()),
+                Encoding.UTF8.GetBytes(BuildPreviewFingerprint(selectedEntries))))
+        {
+            return new LoanRepaymentActionResult(
+                LoanRepaymentStatus.Conflict,
+                Message: "The repayment schedule changed after you reviewed it. Review the repayment again before confirming.",
+                Code: "stale_repayment_preview");
+        }
 
         // A loan repayment is a one-off financing decision, not a change to the linked bill's
         // default account. It may come from any open account; the generated ledger row follows
@@ -276,6 +293,14 @@ public sealed partial class LoanRepaymentService
             ActionId: actionId,
             Kind: LoanRepaymentActionKind.AdvanceCycles,
             Transactions: createdTransactions);
+    }
+
+    private static string BuildPreviewFingerprint(IEnumerable<LoanScheduleEntry> entries)
+    {
+        var canonical = string.Join("|", entries.Select(entry => string.Create(
+            CultureInfo.InvariantCulture,
+            $"{entry.OccurrenceDate:yyyy-MM-dd}:{entry.Payment:0.############################}")));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
 
 }

@@ -44,7 +44,8 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "sort")] string? sort = null,
         [FromQuery(Name = "recurringFilter")] string? recurringFilter = null,
         [FromQuery(Name = "wishlistFilter")] string? wishlistFilter = null,
-        [FromQuery(Name = "reloadFilter")] string? reloadFilter = null)
+        [FromQuery(Name = "reloadFilter")] string? reloadFilter = null,
+        [FromQuery(Name = "accountId")] string? accountId = null)
     {
         if (queryMonth != null && !FinancialConstants.MonthAbbreviations.Contains(queryMonth, StringComparer.Ordinal))
             return BadRequest(new { message = "Month must be a valid three-letter abbreviation." });
@@ -70,6 +71,7 @@ public class TransactionsController : ControllerBase
             recurringFilter,
             wishlistFilter,
             reloadFilter,
+            accountId,
             HttpContext.RequestAborted);
 
         if (result.Total.HasValue)
@@ -147,6 +149,7 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "recurringFilter")] string? recurringFilter = null,
         [FromQuery(Name = "wishlistFilter")] string? wishlistFilter = null,
         [FromQuery(Name = "reloadFilter")] string? reloadFilter = null,
+        [FromQuery(Name = "accountId")] string? accountId = null,
         [FromQuery(Name = "sort")] string? sort = null)
     {
         Response.ContentType = "text/csv; charset=utf-8";
@@ -169,6 +172,7 @@ public class TransactionsController : ControllerBase
             wishlistFilter,
             sort,
             reloadFilter,
+            accountId,
             HttpContext.RequestAborted);
         return new EmptyResult();
     }

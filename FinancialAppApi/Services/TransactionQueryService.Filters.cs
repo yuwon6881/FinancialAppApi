@@ -22,9 +22,25 @@ public partial class TransactionQueryService
         bool wishlistOnly,
         string? recurringFilter,
         string? wishlistFilter,
-        string? reloadFilter = null)
+        string? reloadFilter = null,
+        string? accountId = null)
     {
         query = query.Where(t => t.LedgerCategory != "Discarded");
+
+        if (!string.IsNullOrWhiteSpace(accountId))
+        {
+            var accountIds = accountId.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(id => id.Trim())
+                .Where(id => id.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            if (accountIds.Count > 0)
+            {
+                query = query.Where(t =>
+                    (t.AccountId != null && accountIds.Contains(t.AccountId)) ||
+                    (t.CounterAccountId != null && accountIds.Contains(t.CounterAccountId)));
+            }
+        }
 
         if (TransactionDate.TryParseInputDate(startDate, out var startDateOnly))
         {
@@ -169,8 +185,7 @@ public partial class TransactionQueryService
         {
             query = query.Where(t =>
                 !t.IsAccountBalanceAdjustment &&
-                t.StabilityReloadIntent != null &&
-                t.StabilityReloadIntent.ToLower() == "notrequired" &&
+                t.StabilityReloadIntent != null && t.StabilityReloadIntent.ToLower() == "notrequired" &&
                 ((t.LedgerCategory.ToLower() == "stability" && t.Amount < 0) ||
                  t.LedgerCategory.ToLower().StartsWith("transfer:stability->")));
         }
@@ -178,8 +193,9 @@ public partial class TransactionQueryService
         {
             query = query.Where(t =>
                 !t.IsAccountBalanceAdjustment &&
-                t.StabilityReloadIntent != null &&
-                t.StabilityReloadIntent.ToLower() == "required" &&
+                // Missing/Unanswered is fail-safe Required everywhere else in the Stability
+                // replay. Only an explicit NotRequired may opt a drawdown out.
+                (t.StabilityReloadIntent == null || t.StabilityReloadIntent.ToLower() != "notrequired") &&
                 ((t.LedgerCategory.ToLower() == "stability" && t.Amount < 0) ||
                  t.LedgerCategory.ToLower().StartsWith("transfer:stability->")));
         }

@@ -70,6 +70,7 @@ public partial class TransactionQueryService
         string? recurringFilter = null,
         string? wishlistFilter = null,
         string? reloadFilter = null,
+        string? accountId = null,
         CancellationToken cancellationToken = default)
     {
         page = Math.Max(1, page);
@@ -93,7 +94,8 @@ public partial class TransactionQueryService
                 wishlistOnly,
                 recurringFilter,
                 wishlistFilter,
-                reloadFilter);
+                reloadFilter,
+                accountId);
             query = await ApplyDerivedReloadStatusFilterAsync(query, reloadFilter, cancellationToken);
             var total = await query.CountAsync(cancellationToken);
 
@@ -300,6 +302,7 @@ public partial class TransactionQueryService
         string? wishlistFilter = null,
         string? sort = null,
         string? reloadFilter = null,
+        string? accountId = null,
         CancellationToken cancellationToken = default)
     {
         var query = ApplyAllFilters(
@@ -318,7 +321,8 @@ public partial class TransactionQueryService
             wishlistOnly,
             recurringFilter,
             wishlistFilter,
-            reloadFilter);
+            reloadFilter,
+            accountId);
         query = await ApplyDerivedReloadStatusFilterAsync(query, reloadFilter, cancellationToken);
         var rows = ApplySort(query, sort)
             .Select(t => new
