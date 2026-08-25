@@ -51,32 +51,10 @@ public sealed class StabilityReloadStatusService
             return new Dictionary<string, string>(StringComparer.Ordinal);
 
         var revisions = await _planRevisionService.GetAsync(setting, cancellationToken);
-        var seed = await ResolveSeedAsync(setting, forTransactionIds, cancellationToken);
-
-        var query = _context.Transactions
-            .AsNoTracking()
-            .Where(transaction => transaction.LedgerCategory != "Discarded");
-        if (seed is not null)
-        {
-            var from = seed.Value.From;
-            query = query.Where(transaction => transaction.Date >= from);
-        }
-
-        var transactions = await query
-            .OrderBy(transaction => transaction.Date)
-            .ThenBy(transaction => transaction.PostedAt)
-            .ThenBy(transaction => transaction.Id)
-            .ToListAsync(cancellationToken);
-        var movements = StabilityReloadLedger.DescribeAll(
-            transactions,
-            transaction => StabilityPlanRevisionService.At(
-                revisions,
-                transaction.PostedAt).StabilityAlloc);
-        var state = StabilityReloadLedger.Replay(
-            seed?.Opening ?? new ReloadState(0m, null, 0m, 0m),
-            openingBalance: seed?.OpeningBalance ?? 0m,
-            PlanPointsFrom(revisions, seed?.From),
-            movements);
+        var seed = await ResolveSeedAsync(setting, forTransactionIds is { Count: > 0 }, cancellationToken);
+        var replay = await ReplayAsync(revisions, seed, cancellationToken);
+        var transactions = replay.Transactions;
+        var state = replay.State;
         var obligations = state.Obligations?.ToDictionary(
             obligation => obligation.TransactionId,
             StringComparer.Ordinal)
@@ -120,7 +98,67 @@ public sealed class StabilityReloadStatusService
         return status;
     }
 
+    /// <summary>
+    /// Returns only withdrawals that still have money owing. The healthy path starts from the
+    /// latest closed-cycle FIFO snapshot and replays the current tail, so filtering a deep Ledger
+    /// does not scan history in proportion to the account's age.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, string>> GetOpenStatusMapAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var setting = await _context.FinancialSettings
+            .AsNoTracking()
+            .FirstOrDefaultAsync(cancellationToken);
+        if (setting == null) return new Dictionary<string, string>(StringComparer.Ordinal);
+
+        var revisions = await _planRevisionService.GetAsync(setting, cancellationToken);
+        var seed = await ResolveSeedAsync(setting, useLatestBoundary: true, cancellationToken);
+        var replay = await ReplayAsync(revisions, seed, cancellationToken);
+
+        return (replay.State.Obligations ?? [])
+            .Where(obligation => obligation.RemainingAmount > 0m)
+            .ToDictionary(
+                obligation => obligation.TransactionId,
+                obligation => obligation.RemainingAmount < obligation.OriginalAmount
+                    ? StabilityReloadStatus.PartlyRepaid
+                    : StabilityReloadStatus.Outstanding,
+                StringComparer.Ordinal);
+    }
+
     private readonly record struct ReplaySeed(DateTime From, ReloadState Opening, decimal OpeningBalance);
+    private readonly record struct StatusReplay(IReadOnlyList<Transaction> Transactions, ReloadState State);
+
+    private async Task<StatusReplay> ReplayAsync(
+        IReadOnlyList<StabilityPlanSnapshot> revisions,
+        ReplaySeed? seed,
+        CancellationToken cancellationToken)
+    {
+        var query = _context.Transactions
+            .AsNoTracking()
+            .Where(transaction => transaction.LedgerCategory != "Discarded");
+        if (seed is not null)
+        {
+            var from = seed.Value.From;
+            query = query.Where(transaction => transaction.Date >= from);
+        }
+
+        var transactions = await query
+            .OrderBy(transaction => transaction.Date)
+            .ThenBy(transaction => transaction.PostedAt)
+            .ThenBy(transaction => transaction.Id)
+            .ToListAsync(cancellationToken);
+        var movements = StabilityReloadLedger.DescribeAll(
+            transactions,
+            transaction => StabilityPlanRevisionService.At(
+                revisions,
+                transaction.PostedAt).StabilityAlloc);
+        var state = StabilityReloadLedger.Replay(
+            seed?.Opening ?? new ReloadState(0m, null, 0m, 0m),
+            openingBalance: seed?.OpeningBalance ?? 0m,
+            PlanPointsFrom(revisions, seed?.From),
+            movements);
+        return new StatusReplay(transactions, state);
+    }
 
     /// <summary>
     /// Finds the latest closed-cycle boundary the replay can start from, or null to replay
@@ -134,10 +172,10 @@ public sealed class StabilityReloadStatusService
     /// </summary>
     private async Task<ReplaySeed?> ResolveSeedAsync(
         FinancialSetting setting,
-        IReadOnlyCollection<string>? forTransactionIds,
+        bool useLatestBoundary,
         CancellationToken cancellationToken)
     {
-        if (forTransactionIds is null || forTransactionIds.Count == 0) return null;
+        if (!useLatestBoundary) return null;
 
         var cycleDay = setting.CycleDay;
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(

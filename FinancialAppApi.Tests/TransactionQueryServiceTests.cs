@@ -404,6 +404,39 @@ public class TransactionQueryServiceTests
         Assert.Equal(["putback-1", "putback-tx"], result.Items.Select(i => i.Id).OrderBy(id => id));
     }
 
+    [Fact]
+    public async Task GetTransactionsAsync_FiltersByDerivedStabilityPutBackStatusBeforePaging()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            TargetStabilityFund = 0m,
+            StabilityAlloc = 0.15m,
+            CycleDay = 1,
+            SelectedMonth = "Aug",
+            SelectedYear = 2026,
+        });
+        var settled = NewTransaction("settled", "Settled", "Emergency", "Stability", -100m, date: new DateOnly(2026, 7, 1));
+        var partly = NewTransaction("partly", "Partly", "Emergency", "Stability", -80m, date: new DateOnly(2026, 7, 2));
+        var untouched = NewTransaction("untouched", "Untouched", "Emergency", "Stability", -60m, date: new DateOnly(2026, 7, 3));
+        settled.StabilityReloadIntent = StabilityReloadIntent.Required;
+        partly.StabilityReloadIntent = StabilityReloadIntent.Required;
+        untouched.StabilityReloadIntent = StabilityReloadIntent.Required;
+        var repayment = NewTransaction("repayment", "Refill", "Transfer", "Transfer:Growth->Stability", 130m, date: new DateOnly(2026, 7, 4));
+        context.Transactions.AddRange(settled, partly, untouched, repayment);
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var needs = await service.GetTransactionsAsync(all: true, reloadFilter: "needs-put-back", pageSize: 1);
+        var partlyOnly = await service.GetTransactionsAsync(all: true, reloadFilter: "partly-repaid");
+        var completeOnly = await service.GetTransactionsAsync(all: true, reloadFilter: "complete");
+
+        Assert.Equal(2, needs.Total);
+        Assert.Single(needs.Items);
+        Assert.Equal(["partly"], partlyOnly.Items.Select(item => item.Id));
+        Assert.Equal(["settled"], completeOnly.Items.Select(item => item.Id));
+    }
+
     private static Transaction NewTransaction(
         string id,
         string description,

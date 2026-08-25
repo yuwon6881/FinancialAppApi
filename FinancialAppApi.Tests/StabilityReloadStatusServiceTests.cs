@@ -26,6 +26,25 @@ public sealed class StabilityReloadStatusServiceTests
         Assert.Equal(StabilityReloadStatus.NotRequired, statuses["spent"]);
     }
 
+    [Fact]
+    public async Task GetOpenStatusMapAsync_ReturnsOnlyStillOwingWithdrawalStatuses()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedSetting(context, target: 0m);
+        Add(context, "settled", new DateTime(2026, 7, 1), -100m, StabilityReloadIntent.Required);
+        Add(context, "partly", new DateTime(2026, 7, 2), -80m, StabilityReloadIntent.Required);
+        Add(context, "untouched", new DateTime(2026, 7, 3), -60m, StabilityReloadIntent.Required);
+        Add(context, "repayment", new DateTime(2026, 7, 4), 130m, StabilityReloadIntent.Unanswered,
+            ledgerCategory: "Transfer:Growth->Stability");
+        await context.SaveChangesAsync();
+
+        var statuses = await new StabilityReloadStatusService(context).GetOpenStatusMapAsync();
+
+        Assert.DoesNotContain("settled", statuses.Keys);
+        Assert.Equal(StabilityReloadStatus.PartlyRepaid, statuses["partly"]);
+        Assert.Equal(StabilityReloadStatus.Outstanding, statuses["untouched"]);
+    }
+
     // Seeding the replay from a cached cycle boundary must reach the same verdict as replaying from
     // the beginning of time. The drawdown here opens several cycles before the repayment that
     // partly discharges it, so a seeded replay only agrees if the carried FIFO queue (STAB-10) is

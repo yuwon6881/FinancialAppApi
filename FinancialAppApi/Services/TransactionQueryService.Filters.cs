@@ -164,7 +164,17 @@ public partial class TransactionQueryService
             }
         }
 
-        if (string.Equals(reloadFilter, "put-back", StringComparison.OrdinalIgnoreCase))
+        var reloadMode = NormalizeReloadFilter(reloadFilter);
+        if (reloadMode == "not-required")
+        {
+            query = query.Where(t =>
+                !t.IsAccountBalanceAdjustment &&
+                t.StabilityReloadIntent != null &&
+                t.StabilityReloadIntent.ToLower() == "notrequired" &&
+                ((t.LedgerCategory.ToLower() == "stability" && t.Amount < 0) ||
+                 t.LedgerCategory.ToLower().StartsWith("transfer:stability->")));
+        }
+        else if (reloadMode != "all")
         {
             query = query.Where(t =>
                 !t.IsAccountBalanceAdjustment &&
@@ -176,6 +186,47 @@ public partial class TransactionQueryService
 
         return query;
     }
+
+    private async Task<IQueryable<Transaction>> ApplyDerivedReloadStatusFilterAsync(
+        IQueryable<Transaction> query,
+        string? reloadFilter,
+        CancellationToken cancellationToken)
+    {
+        var mode = NormalizeReloadFilter(reloadFilter);
+        if (mode is not ("needs-put-back" or "outstanding" or "partly-repaid" or "complete"))
+            return query;
+
+        var openStatuses = await _stabilityReloadStatusService.GetOpenStatusMapAsync(cancellationToken);
+        var matchingOpenIds = openStatuses
+            .Where(pair => mode switch
+            {
+                "outstanding" => pair.Value == StabilityReloadStatus.Outstanding,
+                "partly-repaid" => pair.Value == StabilityReloadStatus.PartlyRepaid,
+                _ => true,
+            })
+            .Select(pair => pair.Key)
+            .ToArray();
+
+        if (mode == "complete")
+        {
+            var openIds = openStatuses.Keys.ToArray();
+            return query.Where(transaction => !openIds.Contains(transaction.Id));
+        }
+
+        return query.Where(transaction => matchingOpenIds.Contains(transaction.Id));
+    }
+
+    private static string NormalizeReloadFilter(string? filter) =>
+        filter?.Trim().ToLowerInvariant() switch
+        {
+            "put-back" or "required" or "1" => "put-back",
+            "needs-put-back" => "needs-put-back",
+            "outstanding" => "outstanding",
+            "partly-repaid" => "partly-repaid",
+            "complete" => "complete",
+            "not-required" => "not-required",
+            _ => "all",
+        };
 
     private static string NormalizeLinkFilter(string? filter, bool legacyOnly) =>
         filter?.Trim().ToLowerInvariant() switch

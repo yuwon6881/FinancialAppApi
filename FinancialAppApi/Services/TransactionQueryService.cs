@@ -94,6 +94,7 @@ public partial class TransactionQueryService
                 recurringFilter,
                 wishlistFilter,
                 reloadFilter);
+            query = await ApplyDerivedReloadStatusFilterAsync(query, reloadFilter, cancellationToken);
             var total = await query.CountAsync(cancellationToken);
 
             var txs = await ApplySort(query, sort)
@@ -318,6 +319,7 @@ public partial class TransactionQueryService
             recurringFilter,
             wishlistFilter,
             reloadFilter);
+        query = await ApplyDerivedReloadStatusFilterAsync(query, reloadFilter, cancellationToken);
         var rows = ApplySort(query, sort)
             .Select(t => new
             {
