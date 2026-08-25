@@ -43,7 +43,8 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "wishlistOnly")] bool wishlistOnly = false,
         [FromQuery(Name = "sort")] string? sort = null,
         [FromQuery(Name = "recurringFilter")] string? recurringFilter = null,
-        [FromQuery(Name = "wishlistFilter")] string? wishlistFilter = null)
+        [FromQuery(Name = "wishlistFilter")] string? wishlistFilter = null,
+        [FromQuery(Name = "reloadFilter")] string? reloadFilter = null)
     {
         if (queryMonth != null && !FinancialConstants.MonthAbbreviations.Contains(queryMonth, StringComparer.Ordinal))
             return BadRequest(new { message = "Month must be a valid three-letter abbreviation." });
@@ -68,6 +69,7 @@ public class TransactionsController : ControllerBase
             sort,
             recurringFilter,
             wishlistFilter,
+            reloadFilter,
             HttpContext.RequestAborted);
 
         if (result.Total.HasValue)
@@ -101,11 +103,31 @@ public class TransactionsController : ControllerBase
             return NotFound();
         }
 
-        var statusMap = await _transactionQueryService.GetStabilityReloadStatusMapAsync(
-            HttpContext.RequestAborted);
-        return Ok(MapToDto(
-            transaction,
-            statusMap.TryGetValue(transaction.Id, out var status) ? status : null));
+        var reloadStatus = TransactionQueryService.CanCarryStabilityReloadStatus(new TransactionProjection(
+            transaction.Id,
+            transaction.Date,
+            transaction.PostedAt,
+            transaction.Description,
+            transaction.Category,
+            transaction.LedgerCategory,
+            transaction.Amount,
+            transaction.StabilityRecoveryTopUpAmount,
+            transaction.StabilityReloadIntent,
+            transaction.RecurringPaymentId,
+            transaction.RecurringOccurrenceDate,
+            transaction.WishlistItemId,
+            transaction.SavingsGoalId,
+            null,
+            transaction.AccountId,
+            transaction.CounterAccountId,
+            transaction.ExcludeFromAutocomplete,
+            transaction.IsAccountBalanceAdjustment))
+            ? (await _transactionQueryService.GetStabilityReloadStatusMapAsync(
+                HttpContext.RequestAborted,
+                [transaction.Id])).GetValueOrDefault(transaction.Id)
+            : null;
+
+        return Ok(MapToDto(transaction, reloadStatus));
     }
 
     // GET: api/transactions/export
@@ -124,6 +146,7 @@ public class TransactionsController : ControllerBase
         [FromQuery(Name = "wishlistOnly")] bool wishlistOnly = false,
         [FromQuery(Name = "recurringFilter")] string? recurringFilter = null,
         [FromQuery(Name = "wishlistFilter")] string? wishlistFilter = null,
+        [FromQuery(Name = "reloadFilter")] string? reloadFilter = null,
         [FromQuery(Name = "sort")] string? sort = null)
     {
         Response.ContentType = "text/csv; charset=utf-8";
@@ -145,6 +168,7 @@ public class TransactionsController : ControllerBase
             recurringFilter,
             wishlistFilter,
             sort,
+            reloadFilter,
             HttpContext.RequestAborted);
         return new EmptyResult();
     }

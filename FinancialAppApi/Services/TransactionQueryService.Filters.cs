@@ -21,7 +21,8 @@ public partial class TransactionQueryService
         bool recurringOnly,
         bool wishlistOnly,
         string? recurringFilter,
-        string? wishlistFilter)
+        string? wishlistFilter,
+        string? reloadFilter = null)
     {
         query = query.Where(t => t.LedgerCategory != "Discarded");
 
@@ -95,24 +96,82 @@ public partial class TransactionQueryService
 
         if (!string.IsNullOrWhiteSpace(txType))
         {
-            if (txType == "inflow")
-                query = query.Where(t =>
-                    t.Amount > 0 &&
-                    t.Category.ToLower() != "transfer" &&
-                    t.Category.ToLower() != "adjustment" &&
-                    !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
-                    t.LedgerCategory.ToLower() != "discarded");
-            else if (txType == "outflow")
-                query = query.Where(t =>
-                    t.Amount < 0 &&
-                    t.Category.ToLower() != "transfer" &&
-                    t.Category.ToLower() != "adjustment" &&
-                    !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
-                    t.LedgerCategory.ToLower() != "discarded");
-            else if (txType == "transfer")
-                query = query.Where(t =>
-                    t.Category.ToLower() == "transfer" ||
-                    t.LedgerCategory.ToLower().StartsWith("transfer:"));
+            var types = txType.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(t => t.Trim().ToLowerInvariant())
+                .ToHashSet();
+
+            var hasInflow = types.Contains("inflow");
+            var hasOutflow = types.Contains("outflow");
+            var hasTransfer = types.Contains("transfer");
+
+            if (types.Count > 0 && types.Count < 3)
+            {
+                if (hasInflow && hasOutflow && !hasTransfer)
+                {
+                    query = query.Where(t =>
+                        t.Amount != 0 &&
+                        t.Category.ToLower() != "transfer" &&
+                        t.Category.ToLower() != "adjustment" &&
+                        !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
+                        t.LedgerCategory.ToLower() != "discarded");
+                }
+                else if (hasInflow && !hasOutflow && !hasTransfer)
+                {
+                    query = query.Where(t =>
+                        t.Amount > 0 &&
+                        t.Category.ToLower() != "transfer" &&
+                        t.Category.ToLower() != "adjustment" &&
+                        !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
+                        t.LedgerCategory.ToLower() != "discarded");
+                }
+                else if (!hasInflow && hasOutflow && !hasTransfer)
+                {
+                    query = query.Where(t =>
+                        t.Amount < 0 &&
+                        t.Category.ToLower() != "transfer" &&
+                        t.Category.ToLower() != "adjustment" &&
+                        !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
+                        t.LedgerCategory.ToLower() != "discarded");
+                }
+                else if (!hasInflow && !hasOutflow && hasTransfer)
+                {
+                    query = query.Where(t =>
+                        t.Category.ToLower() == "transfer" ||
+                        t.LedgerCategory.ToLower().StartsWith("transfer:"));
+                }
+                else if (hasInflow && !hasOutflow && hasTransfer)
+                {
+                    query = query.Where(t =>
+                        (t.Amount > 0 &&
+                         t.Category.ToLower() != "transfer" &&
+                         t.Category.ToLower() != "adjustment" &&
+                         !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
+                         t.LedgerCategory.ToLower() != "discarded") ||
+                        (t.Category.ToLower() == "transfer" ||
+                         t.LedgerCategory.ToLower().StartsWith("transfer:")));
+                }
+                else if (!hasInflow && hasOutflow && hasTransfer)
+                {
+                    query = query.Where(t =>
+                        (t.Amount < 0 &&
+                         t.Category.ToLower() != "transfer" &&
+                         t.Category.ToLower() != "adjustment" &&
+                         !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
+                         t.LedgerCategory.ToLower() != "discarded") ||
+                        (t.Category.ToLower() == "transfer" ||
+                         t.LedgerCategory.ToLower().StartsWith("transfer:")));
+                }
+            }
+        }
+
+        if (string.Equals(reloadFilter, "put-back", StringComparison.OrdinalIgnoreCase))
+        {
+            query = query.Where(t =>
+                !t.IsAccountBalanceAdjustment &&
+                t.StabilityReloadIntent != null &&
+                t.StabilityReloadIntent.ToLower() == "required" &&
+                ((t.LedgerCategory.ToLower() == "stability" && t.Amount < 0) ||
+                 t.LedgerCategory.ToLower().StartsWith("transfer:stability->")));
         }
 
         return query;

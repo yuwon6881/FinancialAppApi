@@ -349,6 +349,61 @@ public class TransactionQueryServiceTests
             suggestions.Select(suggestion => suggestion.Description).OrderBy(description => description));
     }
 
+    [Fact]
+    public async Task GetTransactionsAsync_SupportsMultiTypeFilteringAndResetWhenAllThree()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.AddRange(
+            NewTransaction("inflow-1", "Salary", "Salary", "Income", 1000m),
+            NewTransaction("outflow-1", "Groceries", "Food", "Essentials", -50m),
+            NewTransaction("transfer-1", "Move", "transfer", "transfer:Essentials->Rewards", -20m));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var inflowOutflow = await service.GetTransactionsAsync(all: true, txType: "inflow,outflow");
+        Assert.Equal(2, inflowOutflow.Total);
+        Assert.Equal(["inflow-1", "outflow-1"], inflowOutflow.Items.Select(i => i.Id).OrderBy(id => id));
+
+        var inflowTransfer = await service.GetTransactionsAsync(all: true, txType: "inflow,transfer");
+        Assert.Equal(2, inflowTransfer.Total);
+        Assert.Equal(["inflow-1", "transfer-1"], inflowTransfer.Items.Select(i => i.Id).OrderBy(id => id));
+
+        var outflowTransfer = await service.GetTransactionsAsync(all: true, txType: "outflow,transfer");
+        Assert.Equal(2, outflowTransfer.Total);
+        Assert.Equal(["outflow-1", "transfer-1"], outflowTransfer.Items.Select(i => i.Id).OrderBy(id => id));
+
+        var allThree = await service.GetTransactionsAsync(all: true, txType: "inflow,outflow,transfer");
+        Assert.Equal(3, allThree.Total);
+    }
+
+    [Fact]
+    public async Task GetTransactionsAsync_FiltersByStabilityPutBackOnly()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var putBack = NewTransaction("putback-1", "Car repair", "Emergency", "Stability", -400m);
+        putBack.StabilityReloadIntent = "Required";
+
+        var notPutBack = NewTransaction("not-putback", "Permanent emergency", "Emergency", "Stability", -200m);
+        notPutBack.StabilityReloadIntent = "NotRequired";
+
+        var putBackTransfer = NewTransaction("putback-tx", "Stability transfer", "Transfer", "transfer:Stability->Essentials", -150m);
+        putBackTransfer.StabilityReloadIntent = "Required";
+
+        var adjustment = NewTransaction("adj", "Balance adjust", "Adjustment", "Stability", -50m);
+        adjustment.StabilityReloadIntent = "Required";
+        adjustment.IsAccountBalanceAdjustment = true;
+
+        var income = NewTransaction("income", "Salary", "Salary", "Income", 2000m);
+
+        context.Transactions.AddRange(putBack, notPutBack, putBackTransfer, adjustment, income);
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+
+        var result = await service.GetTransactionsAsync(all: true, reloadFilter: "put-back");
+        Assert.Equal(2, result.Total);
+        Assert.Equal(["putback-1", "putback-tx"], result.Items.Select(i => i.Id).OrderBy(id => id));
+    }
+
     private static Transaction NewTransaction(
         string id,
         string description,
