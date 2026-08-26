@@ -38,7 +38,8 @@ public sealed record SavingsGoalFundingResult(
     decimal TotalGranted,
     decimal FreeToSpend,
     decimal EssentialsFreeToSpend,
-    string? Message = null)
+    string? Message = null,
+    string? ActionId = null)
 {
     public decimal RewardsFreeToSpend => FreeToSpend;
 }

@@ -137,8 +137,25 @@ public class SavingsGoalsController : ControllerBase
             totalGranted = ObfuscationHelper.Obfuscate(result.TotalGranted),
             freeToSpend = ObfuscationHelper.Obfuscate(result.RewardsFreeToSpend),
             rewardsFreeToSpend = ObfuscationHelper.Obfuscate(result.RewardsFreeToSpend),
-            essentialsFreeToSpend = ObfuscationHelper.Obfuscate(result.EssentialsFreeToSpend)
+            essentialsFreeToSpend = ObfuscationHelper.Obfuscate(result.EssentialsFreeToSpend),
+            actionId = result.ActionId
         });
+    }
+
+    [HttpPost("fund/{actionId}/undo")]
+    public async Task<IActionResult> UndoCycleFunding(string actionId)
+    {
+        var result = await _savingsGoalService.UndoCycleFundingAsync(actionId, HttpContext.RequestAborted);
+        return result.Status switch
+        {
+            SavingsGoalMutationStatus.NotFound => NotFound(new { message = result.Message }),
+            SavingsGoalMutationStatus.Conflict => Conflict(new { message = result.Message }),
+            _ => Ok(new
+            {
+                goals = result.Goals.Select(MapToDto).ToList(),
+                actionId = result.ActionId
+            })
+        };
     }
 
     // POST: api/savings-goals/{id}/complete

@@ -76,6 +76,7 @@ public partial class AppDbContext
         ConfigureUserOwnership(modelBuilder.Entity<WishlistItem>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<SavingsGoal>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<SavingsGoalCompletion>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<SavingsGoalFundingAction>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<Loan>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<LoanRepaymentAction>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<CycleBalance>(), applyQueryFilter: true);

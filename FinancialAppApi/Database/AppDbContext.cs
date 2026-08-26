@@ -39,6 +39,7 @@ public partial class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<WishlistItem> WishlistItems => Set<WishlistItem>();
     public DbSet<SavingsGoal> SavingsGoals => Set<SavingsGoal>();
     public DbSet<SavingsGoalCompletion> SavingsGoalCompletions => Set<SavingsGoalCompletion>();
+    public DbSet<SavingsGoalFundingAction> SavingsGoalFundingActions => Set<SavingsGoalFundingAction>();
     public DbSet<Loan> Loans => Set<Loan>();
     public DbSet<LoanRepaymentAction> LoanRepaymentActions => Set<LoanRepaymentAction>();
     public DbSet<WebAuthnCredential> WebAuthnCredentials => Set<WebAuthnCredential>();

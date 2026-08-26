@@ -526,6 +526,55 @@ public class SavingsGoalServiceTests
     }
 
     [Fact]
+    public async Task UndoCycleFundingAsync_RestoresEveryGoalAndIsIdempotent()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var first = NewGoal("Car service", 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
+        var second = NewGoal("Laptop", 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
+        context.SavingsGoals.AddRange(first, second);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var funded = await service.FundCurrentCycleAsync();
+        Assert.NotNull(funded.ActionId);
+        Assert.All(context.SavingsGoals, goal => Assert.True(goal.EarmarkedAmount > 400m));
+
+        var undone = await service.UndoCycleFundingAsync(funded.ActionId!);
+        var retry = await service.UndoCycleFundingAsync(funded.ActionId!);
+
+        Assert.Equal(SavingsGoalMutationStatus.Success, undone.Status);
+        Assert.Equal(SavingsGoalMutationStatus.Success, retry.Status);
+        Assert.All(context.SavingsGoals, goal =>
+        {
+            Assert.Equal(400m, goal.EarmarkedAmount);
+            Assert.Null(goal.CycleFundedKey);
+            Assert.Equal(0m, goal.CycleFundedAmount);
+        });
+        Assert.NotNull(context.SavingsGoalFundingActions.Single().ReversedAt);
+    }
+
+    [Fact]
+    public async Task UndoCycleFundingAsync_RejectsAStaleGoalWithoutPartiallyRollingBack()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var goal = NewGoal("Car service", 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
+        context.SavingsGoals.Add(goal);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+        var funded = await service.FundCurrentCycleAsync();
+
+        goal.EarmarkedAmount += 25m;
+        await context.SaveChangesAsync();
+        var staleAmount = goal.EarmarkedAmount;
+
+        var result = await service.UndoCycleFundingAsync(funded.ActionId!);
+
+        Assert.Equal(SavingsGoalMutationStatus.Conflict, result.Status);
+        Assert.Equal(staleAmount, goal.EarmarkedAmount);
+        Assert.Null(context.SavingsGoalFundingActions.Single().ReversedAt);
+    }
+
+    [Fact]
     public async Task FundCurrentCycleAsync_RefundsOnlyWhatWasReleasedAfterFunding()
     {
         await using var context = NewContext(rewardsBalance: 3000m);
