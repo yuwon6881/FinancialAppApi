@@ -1,12 +1,14 @@
 using System.Globalization;
+using System.Linq.Expressions;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
 
 public partial class TransactionQueryService
 {
-    private static IQueryable<Transaction> ApplyAllFilters(
+    internal static IQueryable<Transaction> ApplyAllFilters(
         IQueryable<Transaction> query,
         bool useIlike,
         string? search,
@@ -25,7 +27,10 @@ public partial class TransactionQueryService
         string? reloadFilter = null,
         string? accountId = null)
     {
-        query = query.Where(t => t.LedgerCategory != "Discarded");
+        // Case-insensitive to match the writer-side OrdinalIgnoreCase checks in
+        // TransactionPersistenceService: a row stored as "discarded" is soft-deleted there and
+        // must not reappear here.
+        query = query.Where(t => t.LedgerCategory.ToLower() != "discarded");
 
         if (!string.IsNullOrWhiteSpace(accountId))
         {
@@ -94,13 +99,29 @@ public partial class TransactionQueryService
         if (!string.IsNullOrWhiteSpace(ledgerCategory))
         {
             var buckets = ledgerCategory.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                .Select(b => b.Trim().ToLower()).ToList();
+                .Select(b => b.Trim().ToLower())
+                .Where(b => b.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
 
-            query = query.Where(t =>
-                buckets.Any(bucket =>
-                    bucket == "income"
-                        ? (t.LedgerCategory.ToLower() == "income" || t.LedgerCategory.ToLower().StartsWith("incomesplit:"))
-                        : (t.LedgerCategory.ToLower() == bucket || t.LedgerCategory.ToLower().Contains(bucket))));
+            Expression<Func<Transaction, bool>>? bucketPredicate = null;
+            foreach (var bucket in buckets)
+            {
+                var token = bucket;
+                // Contains subsumes equality, and the substring match is deliberate: bucket
+                // Growth also claims both legs of Transfer:Growth->Rewards. Income is the
+                // exception, matching the IncomeSplit: prefix rather than any route that merely
+                // mentions income.
+                Expression<Func<Transaction, bool>> clause = token == "income"
+                    ? t => t.LedgerCategory.ToLower() == "income"
+                        || t.LedgerCategory.ToLower().StartsWith("incomesplit:")
+                    : t => t.LedgerCategory.ToLower().Contains(token);
+                bucketPredicate = bucketPredicate == null
+                    ? clause
+                    : QueryPredicate.Or(bucketPredicate, clause);
+            }
+
+            if (bucketPredicate != null) query = query.Where(bucketPredicate);
         }
 
         if (!string.IsNullOrWhiteSpace(category))
@@ -119,64 +140,41 @@ public partial class TransactionQueryService
             var hasInflow = types.Contains("inflow");
             var hasOutflow = types.Contains("outflow");
             var hasTransfer = types.Contains("transfer");
+            var selected = (hasInflow ? 1 : 0) + (hasOutflow ? 1 : 0) + (hasTransfer ? 1 : 0);
 
-            if (types.Count > 0 && types.Count < 3)
+            // Selecting all three types is the same as selecting none. Counting the recognized
+            // tokens rather than the raw list means an unknown token cannot pad the count to
+            // three and silently disable the filter.
+            if (selected is > 0 and < 3)
             {
-                if (hasInflow && hasOutflow && !hasTransfer)
+                // A structural row moves money without being spend or income. AccountMove is
+                // named here as well as its Transfer category, which validation already forces,
+                // so the filter agrees with the CSV export's classification either way.
+                Expression<Func<Transaction, bool>> isStructural = t =>
+                    t.Category.ToLower() == "transfer" ||
+                    t.LedgerCategory.ToLower().StartsWith("transfer:") ||
+                    t.LedgerCategory.ToLower() == "accountmove";
+
+                Expression<Func<Transaction, bool>> isCash = t =>
+                    t.Category.ToLower() != "transfer" &&
+                    t.Category.ToLower() != "adjustment" &&
+                    !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
+                    t.LedgerCategory.ToLower() != "accountmove" &&
+                    t.LedgerCategory.ToLower() != "discarded";
+
+                Expression<Func<Transaction, bool>>? predicate = null;
+                if (hasInflow && hasOutflow) predicate = QueryPredicate.And(t => t.Amount != 0, isCash);
+                else if (hasInflow) predicate = QueryPredicate.And(t => t.Amount > 0, isCash);
+                else if (hasOutflow) predicate = QueryPredicate.And(t => t.Amount < 0, isCash);
+
+                if (hasTransfer)
                 {
-                    query = query.Where(t =>
-                        t.Amount != 0 &&
-                        t.Category.ToLower() != "transfer" &&
-                        t.Category.ToLower() != "adjustment" &&
-                        !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
-                        t.LedgerCategory.ToLower() != "discarded");
+                    predicate = predicate == null
+                        ? isStructural
+                        : QueryPredicate.Or(predicate, isStructural);
                 }
-                else if (hasInflow && !hasOutflow && !hasTransfer)
-                {
-                    query = query.Where(t =>
-                        t.Amount > 0 &&
-                        t.Category.ToLower() != "transfer" &&
-                        t.Category.ToLower() != "adjustment" &&
-                        !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
-                        t.LedgerCategory.ToLower() != "discarded");
-                }
-                else if (!hasInflow && hasOutflow && !hasTransfer)
-                {
-                    query = query.Where(t =>
-                        t.Amount < 0 &&
-                        t.Category.ToLower() != "transfer" &&
-                        t.Category.ToLower() != "adjustment" &&
-                        !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
-                        t.LedgerCategory.ToLower() != "discarded");
-                }
-                else if (!hasInflow && !hasOutflow && hasTransfer)
-                {
-                    query = query.Where(t =>
-                        t.Category.ToLower() == "transfer" ||
-                        t.LedgerCategory.ToLower().StartsWith("transfer:"));
-                }
-                else if (hasInflow && !hasOutflow && hasTransfer)
-                {
-                    query = query.Where(t =>
-                        (t.Amount > 0 &&
-                         t.Category.ToLower() != "transfer" &&
-                         t.Category.ToLower() != "adjustment" &&
-                         !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
-                         t.LedgerCategory.ToLower() != "discarded") ||
-                        (t.Category.ToLower() == "transfer" ||
-                         t.LedgerCategory.ToLower().StartsWith("transfer:")));
-                }
-                else if (!hasInflow && hasOutflow && hasTransfer)
-                {
-                    query = query.Where(t =>
-                        (t.Amount < 0 &&
-                         t.Category.ToLower() != "transfer" &&
-                         t.Category.ToLower() != "adjustment" &&
-                         !t.LedgerCategory.ToLower().StartsWith("transfer:") &&
-                         t.LedgerCategory.ToLower() != "discarded") ||
-                        (t.Category.ToLower() == "transfer" ||
-                         t.LedgerCategory.ToLower().StartsWith("transfer:")));
-                }
+
+                if (predicate != null) query = query.Where(predicate);
             }
         }
 
@@ -252,30 +250,44 @@ public partial class TransactionQueryService
             _ => legacyOnly ? "only" : "all"
         };
 
-    private static IOrderedQueryable<Transaction> ApplySort(
+    /// <summary>
+    /// Ordering, with a total tie-breaker so offset paging cannot drop or repeat a row.
+    ///
+    /// The Id tie-break must compare ordinally. Postgres would otherwise use the column's
+    /// database collation, which weights punctuation differently from the ordinal comparison the
+    /// client and the in-memory cycle projection both use, so rows sharing Date and PostedAt
+    /// could straddle a page boundary. Collating at the query level keeps the three comparators
+    /// in agreement without rebuilding the table's indexes.
+    /// </summary>
+    internal static IOrderedQueryable<Transaction> ApplySort(
         IQueryable<Transaction> query,
-        string? sort)
+        string? sort,
+        bool useOrdinalCollation = false)
     {
+        Expression<Func<Transaction, string>> id = useOrdinalCollation
+            ? t => EF.Functions.Collate(t.Id, "C")
+            : t => t.Id;
+
         return sort switch
         {
             "date-asc" => query
                 .OrderBy(t => t.Date)
                 .ThenBy(t => t.PostedAt)
-                .ThenBy(t => t.Id),
+                .ThenBy(id),
             "amount-desc" => query
                 .OrderByDescending(t => t.Amount < 0 ? -t.Amount : t.Amount)
                 .ThenByDescending(t => t.Date)
                 .ThenByDescending(t => t.PostedAt)
-                .ThenByDescending(t => t.Id),
+                .ThenByDescending(id),
             "amount-asc" => query
                 .OrderBy(t => t.Amount < 0 ? -t.Amount : t.Amount)
                 .ThenByDescending(t => t.Date)
                 .ThenByDescending(t => t.PostedAt)
-                .ThenByDescending(t => t.Id),
+                .ThenByDescending(id),
             _ => query
                 .OrderByDescending(t => t.Date)
                 .ThenByDescending(t => t.PostedAt)
-                .ThenByDescending(t => t.Id)
+                .ThenByDescending(id)
         };
     }
 

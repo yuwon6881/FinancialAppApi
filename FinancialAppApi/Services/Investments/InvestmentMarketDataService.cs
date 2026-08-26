@@ -88,6 +88,11 @@ public sealed class InvestmentMarketDataService(
         var heldInstruments = await context.InvestmentInstruments
             .Where(value => instrumentIds.Contains(value.Id) && !value.IsArchived)
             .ToListAsync(cancellationToken);
+        var plannedCurrencies = await context.InvestmentInstruments.AsNoTracking()
+            .Where(value => !value.IsArchived && value.AllocationSleeve != null)
+            .Select(value => value.Currency)
+            .Distinct()
+            .ToListAsync(cancellationToken);
         var instruments = new List<InvestmentInstrument>();
         foreach (var instrument in heldInstruments.Where(value => !value.IsCustom))
         {
@@ -96,6 +101,7 @@ public sealed class InvestmentMarketDataService(
         }
         var hasInvestmentData = transactions.Count > 0 || cashFlows.Count > 0;
         var currencies = heldInstruments.Select(value => value.Currency)
+            .Concat(plannedCurrencies)
             .Concat(cashFlows.Select(value => value.Currency))
             .Concat(cashFlows.Where(value => value.ToCurrency is not null).Select(value => value.ToCurrency!))
             .Concat(appCurrency == "USD" || !hasInvestmentData ? [] : ["USD"])

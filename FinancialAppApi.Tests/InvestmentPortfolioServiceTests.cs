@@ -7,6 +7,32 @@ namespace FinancialAppApi.Tests;
 public sealed class InvestmentPortfolioServiceTests
 {
     [Fact]
+    public async Task GetPortfolioAsync_IncludesPlanFxForClassifiedInstrumentWithoutHoldings()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        context.InvestmentInstruments.Add(new InvestmentInstrument
+        {
+            Symbol = "BND", Name = "US bonds", Type = "ETF", Currency = "USD",
+            AllocationSleeve = "Bonds", IsArchived = false
+        });
+        context.FxRateBars.Add(new FxRateBar
+        {
+            Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR",
+            MarketDate = new DateOnly(2026, 8, 25), Rate = 4.48m
+        });
+        await context.SaveChangesAsync();
+
+        var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
+
+        var fx = Assert.Single(portfolio.PlanFxRates, rate => rate.Currency == "USD");
+        Assert.Equal("USD", fx.Currency);
+        Assert.Equal(4.48m, fx.RateToAppCurrency);
+        Assert.Equal(new DateOnly(2026, 8, 25), fx.AsOf);
+        Assert.Equal("Test data direct", fx.Source);
+    }
+
+    [Fact]
     public async Task GetAllocationAsync_MatchesTheFullPortfolioAllocation()
     {
         await using var context = TestHelpers.NewInMemoryContext();

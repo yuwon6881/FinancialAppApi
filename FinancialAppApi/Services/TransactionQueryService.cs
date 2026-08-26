@@ -49,6 +49,14 @@ public partial class TransactionQueryService
             ?? new StabilityReloadStatusService(context);
     }
 
+    /// <summary>
+    /// Lists transactions, either the whole history (<paramref name="all"/>) or a single cycle.
+    ///
+    /// The filter, sort and paging arguments apply to the <paramref name="all"/> path only. The
+    /// cycle path returns the whole cycle in its canonical order and ignores them, because
+    /// bootstrap and export callers depend on getting the full cycle back; a caller that needs a
+    /// filtered subset of one cycle passes the cycle as a date range with <c>all: true</c>.
+    /// </summary>
     public async Task<TransactionListResult> GetTransactionsAsync(
         string? queryMonth = null,
         int? queryYear = null,
@@ -76,11 +84,13 @@ public partial class TransactionQueryService
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 500);
 
+        var isNpgsql = _context.Database.IsNpgsql();
+
         if (all)
         {
             var query = ApplyAllFilters(
                 _context.Transactions.AsNoTracking(),
-                _context.Database.IsNpgsql(),
+                isNpgsql,
                 search,
                 searchMode,
                 ledgerCategory,
@@ -99,8 +109,13 @@ public partial class TransactionQueryService
             query = await ApplyDerivedReloadStatusFilterAsync(query, reloadFilter, cancellationToken);
             var total = await query.CountAsync(cancellationToken);
 
-            var txs = await ApplySort(query, sort)
-                .Skip((page - 1) * pageSize)
+            // (page - 1) * pageSize overflows int for a large client-supplied page and turns
+            // into a negative OFFSET, which the database rejects. Compute in long and saturate:
+            // an out-of-range page returns an empty page, which is what the client clamps against.
+            var skip = (int)Math.Min((long)(page - 1) * pageSize, int.MaxValue);
+
+            var txs = await ApplySort(query, sort, isNpgsql)
+                .Skip(skip)
                 .Take(pageSize)
                 .Select(t => new TransactionProjection(
                     t.Id,
@@ -134,13 +149,30 @@ public partial class TransactionQueryService
         var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
         if (setting == null)
         {
-            // No settings row means no cycle to bound the query by; cap the result so
-            // this branch can never materialize an unbounded table scan.
-            var txs = await _context.Transactions
-                .AsNoTracking()
-                .OrderByDescending(t => t.Date)
-                .ThenByDescending(t => t.PostedAt)
-                .ThenByDescending(t => t.Id)
+            // No settings row means no cycle to bound the query by; cap the result so this
+            // branch can never materialize an unbounded table scan. The filters still apply —
+            // skipping them here once leaked soft-deleted Discarded rows into the ledger.
+            var unboundedQuery = ApplyAllFilters(
+                _context.Transactions.AsNoTracking(),
+                isNpgsql,
+                search,
+                searchMode,
+                ledgerCategory,
+                category,
+                txType,
+                startDate,
+                endDate,
+                minAmount,
+                maxAmount,
+                recurringOnly,
+                wishlistOnly,
+                recurringFilter,
+                wishlistFilter,
+                reloadFilter,
+                accountId);
+            unboundedQuery = await ApplyDerivedReloadStatusFilterAsync(unboundedQuery, reloadFilter, cancellationToken);
+
+            var txs = await ApplySort(unboundedQuery, sort, isNpgsql)
                 .Take(500)
                 .Select(t => new TransactionProjection(
                     t.Id,
@@ -324,7 +356,7 @@ public partial class TransactionQueryService
             reloadFilter,
             accountId);
         query = await ApplyDerivedReloadStatusFilterAsync(query, reloadFilter, cancellationToken);
-        var rows = ApplySort(query, sort)
+        var rows = ApplySort(query, sort, _context.Database.IsNpgsql())
             .Select(t => new
             {
                 t.Date,

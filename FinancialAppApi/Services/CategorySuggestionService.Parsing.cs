@@ -1,4 +1,5 @@
 using System.Text.Json;
+using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
@@ -108,7 +109,7 @@ public partial class CategorySuggestionService
 
     private static CategoryCleanupReview ParseCategoryCleanupReview(
         string text,
-        IReadOnlyList<string> categoryNames,
+        IReadOnlyList<CategoryReviewCategory> categoryDetails,
         IReadOnlyList<CategoryReviewTransaction> recentTransactions)
     {
         text = StripMarkdownFence(text.Trim());
@@ -126,7 +127,8 @@ public partial class CategorySuggestionService
             return new CategoryCleanupReview([]);
         }
 
-        var canonicalByName = categoryNames.ToDictionary(c => c.ToLowerInvariant(), c => c);
+        var canonicalByName = categoryDetails.ToDictionary(c => c.Name.ToLowerInvariant(), c => c.Name);
+        var flowByName = categoryDetails.ToDictionary(c => c.Name, c => c.Flow, StringComparer.OrdinalIgnoreCase);
         var existingLower = canonicalByName.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var suggestions = new List<CategoryCleanupSuggestion>();
 
@@ -135,7 +137,7 @@ public partial class CategorySuggestionService
             var type = item.TryGetProperty("type", out var typeProp)
                 ? typeProp.GetString()?.Trim().ToLowerInvariant()
                 : null;
-            if (type is not ("delete" or "merge" or "add" or "consolidate")) continue;
+            if (type is not ("delete" or "merge" or "add" or "consolidate" or "changeflow")) continue;
 
             var categories = new List<string>();
             if (item.TryGetProperty("categories", out var categoriesProp) && categoriesProp.ValueKind == JsonValueKind.Array)
@@ -168,6 +170,13 @@ public partial class CategorySuggestionService
             var newCategoryName = item.TryGetProperty("newCategoryName", out var newProp)
                 ? CleanCategoryName(newProp.GetString())
                 : null;
+            var sourceFlow = item.TryGetProperty("sourceFlow", out var sourceFlowProp)
+                ? CategoryFlowType.Normalize(sourceFlowProp.GetString())
+                : null;
+            var targetFlow = item.TryGetProperty("targetFlow", out var targetFlowProp) &&
+                             CategoryFlowType.IsValid(targetFlowProp.GetString())
+                ? CategoryFlowType.Normalize(targetFlowProp.GetString())
+                : null;
 
             // The user picks the destination manually for a low-usage cleanup, so the AI is
             // never trusted to name a target here even if it tried to include one.
@@ -176,9 +185,17 @@ public partial class CategorySuggestionService
                 targetCategory = null;
             }
 
+            if (type == "changeflow")
+            {
+                if (categories.Count != 1 || targetFlow == null || !flowByName.TryGetValue(categories[0], out var currentFlow)) continue;
+                sourceFlow = currentFlow;
+                if (string.Equals(sourceFlow, targetFlow, StringComparison.Ordinal)) continue;
+            }
+
             if (type == "delete" && categories.Count == 0) continue;
             if (type == "merge" && (categories.Count == 0 || targetCategory == null)) continue;
             if (type == "consolidate" && categories.Count != 1) continue;
+            if (type == "changeflow" && categories.Count != 1) continue;
             // A reserved name is filtered out of the list the model sees, so it does not look
             // taken -- and the applier silently refuses it, leaving an accepted suggestion that
             // did nothing. Drop it during review instead.
@@ -186,9 +203,16 @@ public partial class CategorySuggestionService
                 existingLower.Contains(newCategoryName.ToLowerInvariant()) ||
                 TransactionCategoryService.IsReservedName(newCategoryName))) continue;
 
-            var affectedCount = type == "add"
-                ? 0
-                : recentTransactions.Count(t => categories.Contains((string)t.Category, StringComparer.OrdinalIgnoreCase));
+            var affectedCount = type switch
+            {
+                "add" => 0,
+                "changeflow" when targetFlow == CategoryFlowType.Inflow => recentTransactions.Count(t =>
+                    categories.Contains(t.Category, StringComparer.OrdinalIgnoreCase) && t.Amount < 0),
+                "changeflow" when targetFlow == CategoryFlowType.Outflow => recentTransactions.Count(t =>
+                    categories.Contains(t.Category, StringComparer.OrdinalIgnoreCase) && t.Amount > 0),
+                "changeflow" => 0,
+                _ => recentTransactions.Count(t => categories.Contains(t.Category, StringComparer.OrdinalIgnoreCase))
+            };
 
             // A merge folds a whole category's history into another one, so it must be backed by
             // more than a single coincidentally-overlapping transaction -- that case belongs to
@@ -201,6 +225,7 @@ public partial class CategorySuggestionService
                 confidence = confidenceProp.GetDouble();
                 if (confidence > 1.0) confidence /= 100.0;
             }
+            if (type == "changeflow" && confidence < 0.8) continue;
 
             var title = item.TryGetProperty("title", out var titleProp)
                 ? titleProp.GetString()?.Trim()
@@ -211,14 +236,16 @@ public partial class CategorySuggestionService
 
             suggestions.Add(new CategoryCleanupSuggestion(
                 $"cleanup-{suggestions.Count + 1}",
-                type,
+                type == "changeflow" ? "changeFlow" : type,
                 string.IsNullOrWhiteSpace(title) ? DefaultCleanupTitle(type, categories, targetCategory, newCategoryName) : title!,
                 string.IsNullOrWhiteSpace(summary) ? "AI found a category cleanup opportunity." : summary!,
                 categories,
                 targetCategory,
                 newCategoryName,
                 affectedCount,
-                Math.Clamp(confidence, 0.0, 1.0)));
+                Math.Clamp(confidence, 0.0, 1.0),
+                sourceFlow,
+                targetFlow));
         }
 
         return new CategoryCleanupReview(suggestions.Take(5).ToList());
@@ -232,6 +259,7 @@ public partial class CategorySuggestionService
             "merge" => $"Merge into {targetCategory}",
             "consolidate" => $"Consolidate {string.Join(", ", categories)} (low usage)",
             "add" => $"Add {newCategoryName}",
+            "changeflow" => $"Correct {string.Join(", ", categories)} flow",
             _ => "Review category"
         };
     }

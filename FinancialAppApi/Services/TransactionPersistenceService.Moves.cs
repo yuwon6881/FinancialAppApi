@@ -39,6 +39,13 @@ public partial class TransactionPersistenceService
         var strategy = _context.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
+            // The execution strategy may run this body more than once on a transient failure, and
+            // the context is shared across attempts. Without clearing, the re-read below is served
+            // by identity resolution and hands back entities whose Date a failed attempt already
+            // moved — affectedDates would then record the new date as the old one and leave the
+            // source cycle's CycleBalance stale.
+            _context.ChangeTracker.Clear();
+
             await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
             if (_context.Database.IsNpgsql())
             {

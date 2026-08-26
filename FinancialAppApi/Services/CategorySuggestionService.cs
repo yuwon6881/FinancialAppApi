@@ -20,7 +20,9 @@ public sealed record CategoryCleanupSuggestion(
     string? TargetCategory,
     string? NewCategoryName,
     int AffectedTransactionCount,
-    double Confidence);
+    double Confidence,
+    string? SourceFlow = null,
+    string? TargetFlow = null);
 
 public sealed record CategoryCleanupReview(IReadOnlyList<CategoryCleanupSuggestion> Suggestions);
 public sealed record CategoryCleanupAction(
@@ -57,7 +59,8 @@ public sealed record AiOperationResult<T>(AiOperationStatus Status, T? Data, str
 
 public sealed partial class CategorySuggestionService
 {
-    private sealed record CategoryReviewTransaction(string Id, string Description, string Category, string LedgerCategory);
+    private sealed record CategoryReviewTransaction(string Id, string Description, string Category, string LedgerCategory, decimal Amount);
+    private sealed record CategoryReviewCategory(string Name, string Flow);
 
     // Category suggestions run at temperature 0.0 against a fixed (description, txType,
     // categories) input, so an identical call is expected to produce an identical answer --
@@ -256,13 +259,15 @@ Rules:
     public async Task<AiOperationResult<CategoryCleanupReview>> ReviewCategoryCleanupAsync(CancellationToken cancellationToken = default)
     {
         var categories = await _categoryService.GetCategoriesAsync();
-        var visibleCategories = categories
+        var visibleCategoryDetails = categories
             .Where(c => !TransactionCategoryService.IsReservedName(c.Name))
-            .Select(c => c.Name.Trim())
-            .Where(c => !string.IsNullOrWhiteSpace(c))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(c => c)
+            .Where(c => !string.IsNullOrWhiteSpace(c.Name))
+            .Select(c => new CategoryReviewCategory(c.Name.Trim(), CategoryFlowType.Normalize(c.Type)))
+            .GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(c => c.Name)
             .ToList();
+        var visibleCategories = visibleCategoryDetails.Select(category => category.Name).ToList();
 
         if (visibleCategories.Count == 0)
         {
@@ -276,26 +281,30 @@ Rules:
             .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
             .Take(1000)
-            .Select(t => new CategoryReviewTransaction(t.Id, t.Description, t.Category, t.LedgerCategory))
+            .Select(t => new CategoryReviewTransaction(t.Id, t.Description, t.Category, t.LedgerCategory, t.Amount))
             .ToListAsync(cancellationToken);
 
-        var usage = visibleCategories
+        var usage = visibleCategoryDetails
             .Select(category =>
             {
                 var matches = recentTransactions
-                    .Where(t => string.Equals(t.Category, category, StringComparison.OrdinalIgnoreCase))
+                    .Where(t => string.Equals(t.Category, category.Name, StringComparison.OrdinalIgnoreCase))
                     .Take(8)
                     .ToList();
                 return new
                 {
-                    category,
-                    count = recentTransactions.Count(t => string.Equals(t.Category, category, StringComparison.OrdinalIgnoreCase)),
-                    examples = matches.Select(t => t.Description).Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToList()
+                    category = category.Name,
+                    flow = category.Flow,
+                    count = recentTransactions.Count(t => string.Equals(t.Category, category.Name, StringComparison.OrdinalIgnoreCase)),
+                    inflowCount = recentTransactions.Count(t => string.Equals(t.Category, category.Name, StringComparison.OrdinalIgnoreCase) && t.Amount > 0),
+                    outflowCount = recentTransactions.Count(t => string.Equals(t.Category, category.Name, StringComparison.OrdinalIgnoreCase) && t.Amount < 0),
+                    examples = matches.Select(t => new { t.Description, txType = t.Amount < 0 ? "outflow" : "inflow" })
+                        .Distinct().Take(5).ToList()
                 };
             })
             .ToList();
 
-        var content = $@"Existing categories JSON array: {JsonSerializer.Serialize(visibleCategories)}
+        var content = $@"Existing categories JSON array: {JsonSerializer.Serialize(visibleCategoryDetails)}
 Recent usage JSON array: {JsonSerializer.Serialize(usage)}";
 
         var cacheHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
@@ -334,13 +343,6 @@ Recent usage JSON array: {JsonSerializer.Serialize(usage)}";
             .Take(5)
             .ToList();
 
-        if (deterministicSuggestions.Count == 5)
-        {
-            var deterministicReview = new CategoryCleanupReview(deterministicSuggestions);
-            _cache.Set(cleanupCacheKey, deterministicReview, CleanupCacheTtl);
-            return AiOperationResult<CategoryCleanupReview>.Ok(deterministicReview);
-        }
-
         if (!_aiClient.IsConfigured)
         {
             var deterministicReview = new CategoryCleanupReview(deterministicSuggestions);
@@ -368,9 +370,11 @@ Recent usage JSON array: {JsonSerializer.Serialize(usage)}";
             return AiOperationResult<CategoryCleanupReview>.Failed(ex.Message);
         }
 
-        var aiReview = ParseCategoryCleanupReview(text, visibleCategories, recentTransactions);
-        var combined = deterministicSuggestions
-            .Concat(aiReview.Suggestions)
+        var aiReview = ParseCategoryCleanupReview(text, visibleCategoryDetails, recentTransactions);
+        var combined = aiReview.Suggestions
+            .OrderByDescending(suggestion => suggestion.Type == "changeFlow")
+            .ThenByDescending(suggestion => suggestion.Confidence)
+            .Concat(deterministicSuggestions)
             // An "add" carries no source categories, so keying on type+categories alone folded
             // every proposed new category into one row.
             .GroupBy(
@@ -392,6 +396,7 @@ Rules:
 - For merge, only propose it when the two categories are genuinely duplicative in overall purpose across most of their usage (e.g. two categories that mean the same thing, like ""Streaming"" and ""Subscriptions""). Do not propose a merge just because one transaction in a category could also fit under another category -- a single overlapping entry is never sufficient reason to fold an entire category into another one.
 - For consolidate, use this instead of merge when a category has very few recent transactions (roughly 1-3) so it's a candidate for cleanup, but you are not confident every transaction in it belongs in one specific other category. Always leave targetCategory null for consolidate -- never guess a destination category; the app will ask the user to manually pick where those few transactions should go.
 - For add, newCategoryName must not already exist and should be broadly useful.
+- For changeFlow, use exactly one existing category, set sourceFlow to its current flow and targetFlow to both, inflow, or outflow. Only propose it with confidence of at least 0.8 when the category name and/or recent transaction directions strongly show that its saved flow is wrong. Use both for genuinely mixed use. Do not propose a no-op.
 - Never suggest Transfer or Adjustment.
 - Prefer conservative cleanup. If unsure, return fewer suggestions or none at all.";
 

@@ -114,6 +114,44 @@ public class CategorySuggestionServiceTests
             added.Select(suggestion => suggestion.NewCategoryName ?? string.Empty).ToArray());
     }
 
+    [Fact]
+    public async Task ReviewCleanupAsync_ReturnsValidatedFlowCorrectionAndCountsIncompatibleEntries()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.TransactionCategories.Add(new TransactionCategory
+        {
+            Id = "salary",
+            Name = "Salary",
+            Type = CategoryFlowType.Outflow
+        });
+        context.Transactions.AddRange(
+            new Transaction { Id = "income", Description = "Payroll", Category = "Salary", LedgerCategory = "Income", Amount = 5000, Date = DateTime.UtcNow },
+            new Transaction { Id = "mistake", Description = "Correction", Category = "Salary", LedgerCategory = "Essentials", Amount = -10, Date = DateTime.UtcNow });
+        await context.SaveChangesAsync();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var handler = new StubAiHandler(
+            """
+            {
+              "suggestions": [
+                { "type": "changeFlow", "title": "Salary should be money in", "summary": "Salary is normally income.", "categories": ["Salary"], "targetCategory": null, "newCategoryName": null, "sourceFlow": "outflow", "targetFlow": "inflow", "confidence": 0.96 }
+              ]
+            }
+            """);
+        var service = new CategorySuggestionService(
+            new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance),
+            context,
+            new TransactionCategoryService(context, cache),
+            cache,
+            new CategoryCleanupApplier(context));
+
+        var result = await service.ReviewCategoryCleanupAsync();
+
+        var suggestion = Assert.Single(result.Data!.Suggestions, item => item.Type == "changeFlow");
+        Assert.Equal("outflow", suggestion.SourceFlow);
+        Assert.Equal("inflow", suggestion.TargetFlow);
+        Assert.Equal(1, suggestion.AffectedTransactionCount);
+    }
+
     private sealed class StubAiHandler(string text) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

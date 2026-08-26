@@ -27,6 +27,7 @@ public sealed record InvestmentCashBalanceDto(
     decimal? AmountApp);
 
 public sealed record InvestmentContributionDto(DateOnly Date, decimal AmountApp);
+public sealed record InvestmentPlanFxRateDto(string Currency, decimal RateToAppCurrency, DateOnly AsOf, string Source);
 
 public sealed record InvestmentCashFlowDto(
     Guid Id,
@@ -107,6 +108,7 @@ public sealed record InvestmentPortfolioDto(
     string AppCurrency,
     decimal? ReferenceRate,
     string ReferenceCurrency,
+    IReadOnlyList<InvestmentPlanFxRateDto> PlanFxRates,
     InvestmentSummaryDto Summary,
     IReadOnlyList<InvestmentAccountSetupDto> Accounts,
     IReadOnlyList<InvestmentInstrumentSetupDto> Instruments,
@@ -495,11 +497,23 @@ public sealed partial class InvestmentPortfolioService(
         var referenceRate = appCurrency.Equals(CurrencyCatalog.ReferenceCurrency, StringComparison.OrdinalIgnoreCase)
             ? 1m
             : seriesResolver.ResolveFx(CurrencyCatalog.ReferenceCurrency, appCurrency, today, fxBars)?.Rate;
+        var planFxRates = instruments
+            .Where(value => !value.IsArchived && !string.IsNullOrWhiteSpace(value.AllocationSleeve))
+            .Select(value => value.Currency.ToUpperInvariant())
+            .Append(appCurrency)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(currency => (Currency: currency, Fx: seriesResolver.ResolveFx(currency, appCurrency, today, fxBars)))
+            .Where(value => value.Fx is not null)
+            .Select(value => new InvestmentPlanFxRateDto(
+                value.Currency, value.Fx!.Rate, value.Fx.Date, value.Fx.Source))
+            .OrderBy(value => value.Currency)
+            .ToList();
 
         return new InvestmentPortfolioDto(
             appCurrency,
             referenceRate,
             CurrencyCatalog.ReferenceCurrency,
+            planFxRates,
             summary,
             accountDtos,
             instrumentDtos,

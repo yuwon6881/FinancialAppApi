@@ -1,0 +1,172 @@
+{
+  "domain": "ledger-filter-sort",
+  "version": 1,
+  "cases": [
+    {
+      "id": "bucket-lowercase-criteria",
+      "why": "A deep-linked or hand-edited lower-cased bucket name must resolve to that bucket on both sides, not be demoted to a sub-category that matches nothing.",
+      "input": {
+        "rows": [
+          { "id": "tx-1", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Stability draw", "category": "Emergency", "ledgerCategory": "Stability", "amount": -50.0 },
+          { "id": "tx-2", "date": "2026-08-02", "postedAt": "2026-08-02T12:00:00.000Z", "description": "Coffee", "category": "Food", "ledgerCategory": "Essentials", "amount": -10.0 }
+        ],
+        "criteria": { "buckets": ["stability"] }
+      },
+      "expected": { "matchingIds": ["tx-1"] }
+    },
+    {
+      "id": "bucket-claims-both-legs-of-a-transfer-route",
+      "why": "Bucket matching is a substring match, so a bucket claims a transfer route it appears on from either side.",
+      "input": {
+        "rows": [
+          { "id": "tx-1", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Top up", "category": "Transfer", "ledgerCategory": "Transfer:Growth->Rewards", "amount": 50.0 },
+          { "id": "tx-2", "date": "2026-08-02", "postedAt": "2026-08-02T12:00:00.000Z", "description": "Invest", "category": "Other", "ledgerCategory": "Growth", "amount": -20.0 },
+          { "id": "tx-3", "date": "2026-08-03", "postedAt": "2026-08-03T12:00:00.000Z", "description": "Coffee", "category": "Food", "ledgerCategory": "Essentials", "amount": -10.0 }
+        ],
+        "criteria": { "buckets": ["Growth"] }
+      },
+      "expected": { "matchingIds": ["tx-1", "tx-2"] }
+    },
+    {
+      "id": "income-bucket-excludes-income-transfer-routes",
+      "why": "Income means the plain bucket or an IncomeSplit parent, never a Transfer:Income-> leg, so the two do not double-count a salary.",
+      "input": {
+        "rows": [
+          { "id": "tx-1", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Salary", "category": "Salary", "ledgerCategory": "Income", "amount": 1000.0 },
+          { "id": "tx-2", "date": "2026-08-02", "postedAt": "2026-08-02T12:00:00.000Z", "description": "Salary", "category": "Salary", "ledgerCategory": "IncomeSplit:50,25,15,10", "amount": 1000.0 },
+          { "id": "tx-3", "date": "2026-08-03", "postedAt": "2026-08-03T12:00:00.000Z", "description": "[Split: Growth] Salary", "category": "Transfer", "ledgerCategory": "Transfer:Income->Growth", "amount": 250.0 }
+        ],
+        "criteria": { "buckets": ["Income"] }
+      },
+      "expected": { "matchingIds": ["tx-1", "tx-2"] }
+    },
+    {
+      "id": "sub-category-lowercase-criteria",
+      "why": "Sub-category matching lowercases both sides, so case alone never changes the result set.",
+      "input": {
+        "rows": [
+          { "id": "tx-1", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Coffee", "category": "Food", "ledgerCategory": "Essentials", "amount": -10.0 },
+          { "id": "tx-2", "date": "2026-08-02", "postedAt": "2026-08-02T12:00:00.000Z", "description": "Bus", "category": "Transport", "ledgerCategory": "Essentials", "amount": -2.0 }
+        ],
+        "criteria": { "categories": ["food"] }
+      },
+      "expected": { "matchingIds": ["tx-1"] }
+    },
+    {
+      "id": "account-move-is-a-transfer-never-an-inflow",
+      "why": "An account move is structural: it belongs to the transfer type and must never be counted as income, whichever of its two tokens a caller keys on.",
+      "input": {
+        "rows": [
+          { "id": "tx-1", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Wallet to card", "category": "Transfer", "ledgerCategory": "AccountMove", "amount": 200.0 },
+          { "id": "tx-2", "date": "2026-08-02", "postedAt": "2026-08-02T12:00:00.000Z", "description": "Salary", "category": "Salary", "ledgerCategory": "Income", "amount": 1000.0 }
+        ],
+        "criteria": { "txType": ["transfer"] }
+      },
+      "expected": { "matchingIds": ["tx-1"] }
+    },
+    {
+      "id": "account-move-excluded-from-inflows",
+      "why": "The inflow type is spend-and-income only, so the account move above must not appear as a phantom credit.",
+      "input": {
+        "rows": [
+          { "id": "tx-1", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Wallet to card", "category": "Transfer", "ledgerCategory": "AccountMove", "amount": 200.0 },
+          { "id": "tx-2", "date": "2026-08-02", "postedAt": "2026-08-02T12:00:00.000Z", "description": "Salary", "category": "Salary", "ledgerCategory": "Income", "amount": 1000.0 }
+        ],
+        "criteria": { "txType": ["inflow"] }
+      },
+      "expected": { "matchingIds": ["tx-2"] }
+    },
+    {
+      "id": "discarded-marker-excluded-in-either-case",
+      "why": "The soft-delete marker is compared case-insensitively on both sides, matching every writer-side OrdinalIgnoreCase check.",
+      "input": {
+        "rows": [
+          { "id": "tx-1", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Removed", "category": "Food", "ledgerCategory": "Discarded", "amount": -10.0 },
+          { "id": "tx-2", "date": "2026-08-02", "postedAt": "2026-08-02T12:00:00.000Z", "description": "Removed legacy", "category": "Food", "ledgerCategory": "discarded", "amount": -20.0 },
+          { "id": "tx-3", "date": "2026-08-03", "postedAt": "2026-08-03T12:00:00.000Z", "description": "Coffee", "category": "Food", "ledgerCategory": "Essentials", "amount": -10.0 }
+        ],
+        "criteria": {}
+      },
+      "expected": { "matchingIds": ["tx-3"] }
+    },
+    {
+      "id": "ordinal-id-tie-break-newest-first",
+      "why": "Rows sharing a date and timestamp tie-break on the id ordinally. ICU collation orders these differently, which on a paged list can render a row on two pages or on neither.",
+      "input": {
+        "rows": [
+          { "id": "tx-9", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Nine", "category": "Food", "ledgerCategory": "Essentials", "amount": -1.0 },
+          { "id": "tx-10", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Ten", "category": "Food", "ledgerCategory": "Essentials", "amount": -2.0 },
+          { "id": "tx-1-split-Growth", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Leg", "category": "Transfer", "ledgerCategory": "Transfer:Income->Growth", "amount": 3.0 },
+          { "id": "tx-11", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Eleven", "category": "Food", "ledgerCategory": "Essentials", "amount": -4.0 },
+          { "id": "Tx-2", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Capital", "category": "Food", "ledgerCategory": "Essentials", "amount": -5.0 },
+          { "id": "a_b", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Underscore", "category": "Food", "ledgerCategory": "Essentials", "amount": -6.0 },
+          { "id": "ab", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Plain", "category": "Food", "ledgerCategory": "Essentials", "amount": -7.0 }
+        ],
+        "criteria": {},
+        "sort": "date-desc"
+      },
+      "expected": {
+        "matchingIds": ["tx-9", "tx-10", "tx-1-split-Growth", "tx-11", "Tx-2", "a_b", "ab"],
+        "orderedIds": ["tx-9", "tx-11", "tx-10", "tx-1-split-Growth", "ab", "a_b", "Tx-2"]
+      }
+    },
+    {
+      "id": "ordinal-id-tie-break-oldest-first",
+      "why": "The ascending sort reverses the same ordinal tie-break rather than switching collation.",
+      "input": {
+        "rows": [
+          { "id": "tx-9", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Nine", "category": "Food", "ledgerCategory": "Essentials", "amount": -1.0 },
+          { "id": "tx-10", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Ten", "category": "Food", "ledgerCategory": "Essentials", "amount": -2.0 },
+          { "id": "Tx-2", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Capital", "category": "Food", "ledgerCategory": "Essentials", "amount": -5.0 }
+        ],
+        "criteria": {},
+        "sort": "date-asc"
+      },
+      "expected": {
+        "matchingIds": ["tx-9", "tx-10", "Tx-2"],
+        "orderedIds": ["Tx-2", "tx-10", "tx-9"]
+      }
+    },
+    {
+      "id": "inclusive-date-bounds",
+      "why": "Both date bounds include their own day on both sides.",
+      "input": {
+        "rows": [
+          { "id": "tx-before", "date": "2026-07-31", "postedAt": "2026-07-31T12:00:00.000Z", "description": "Before", "category": "Food", "ledgerCategory": "Essentials", "amount": -1.0 },
+          { "id": "tx-start", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Start", "category": "Food", "ledgerCategory": "Essentials", "amount": -2.0 },
+          { "id": "tx-end", "date": "2026-08-31", "postedAt": "2026-08-31T12:00:00.000Z", "description": "End", "category": "Food", "ledgerCategory": "Essentials", "amount": -3.0 },
+          { "id": "tx-after", "date": "2026-09-01", "postedAt": "2026-09-01T12:00:00.000Z", "description": "After", "category": "Food", "ledgerCategory": "Essentials", "amount": -4.0 }
+        ],
+        "criteria": { "startDate": "2026-08-01", "endDate": "2026-08-31" }
+      },
+      "expected": { "matchingIds": ["tx-start", "tx-end"] }
+    },
+    {
+      "id": "absolute-amount-bounds",
+      "why": "Amount bounds compare the absolute value, so one range covers inflows and outflows alike.",
+      "input": {
+        "rows": [
+          { "id": "tx-small", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Small", "category": "Food", "ledgerCategory": "Essentials", "amount": -5.0 },
+          { "id": "tx-out", "date": "2026-08-02", "postedAt": "2026-08-02T12:00:00.000Z", "description": "Out", "category": "Food", "ledgerCategory": "Essentials", "amount": -50.0 },
+          { "id": "tx-in", "date": "2026-08-03", "postedAt": "2026-08-03T12:00:00.000Z", "description": "In", "category": "Salary", "ledgerCategory": "Income", "amount": 50.0 },
+          { "id": "tx-large", "date": "2026-08-04", "postedAt": "2026-08-04T12:00:00.000Z", "description": "Large", "category": "Food", "ledgerCategory": "Essentials", "amount": -500.0 }
+        ],
+        "criteria": { "minAmount": 10.0, "maxAmount": 100.0 }
+      },
+      "expected": { "matchingIds": ["tx-out", "tx-in"] }
+    },
+    {
+      "id": "search-is-case-insensitive-across-three-fields",
+      "why": "Free-text search folds case invariantly and covers description, sub-category and ledger category.",
+      "input": {
+        "rows": [
+          { "id": "tx-desc", "date": "2026-08-01", "postedAt": "2026-08-01T12:00:00.000Z", "description": "Morning COFFEE", "category": "Food", "ledgerCategory": "Essentials", "amount": -5.0 },
+          { "id": "tx-cat", "date": "2026-08-02", "postedAt": "2026-08-02T12:00:00.000Z", "description": "Beans", "category": "Coffee", "ledgerCategory": "Essentials", "amount": -6.0 },
+          { "id": "tx-other", "date": "2026-08-03", "postedAt": "2026-08-03T12:00:00.000Z", "description": "Bus", "category": "Transport", "ledgerCategory": "Essentials", "amount": -2.0 }
+        ],
+        "criteria": { "search": "coffee" }
+      },
+      "expected": { "matchingIds": ["tx-desc", "tx-cat"] }
+    }
+  ]
+}

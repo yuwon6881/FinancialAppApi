@@ -202,15 +202,17 @@ internal static class AiResponseSchemas
             ["suggestions"] = Arr(Obj(
                 new Dictionary<string, object>
                 {
-                    ["type"] = Str(enums: ["delete", "merge", "add", "consolidate"]),
+                    ["type"] = Str(enums: ["delete", "merge", "add", "consolidate", "changeFlow"]),
                     ["title"] = Str("Short title."),
                     ["summary"] = Str("One-sentence reason."),
                     ["categories"] = Arr(Str("Existing category name.")),
                     ["targetCategory"] = NullableString("Existing destination category for merge; null otherwise."),
                     ["newCategoryName"] = NullableString("New category for add; null otherwise."),
+                    ["sourceFlow"] = NullableString("Current flow for changeFlow; null otherwise."),
+                    ["targetFlow"] = NullableString("New both, inflow, or outflow value for changeFlow; null otherwise."),
                     ["confidence"] = Num("Confidence from 0 to 1.", 0, 1)
                 },
-                ["type", "title", "summary", "categories", "targetCategory", "newCategoryName", "confidence"]),
+                ["type", "title", "summary", "categories", "targetCategory", "newCategoryName", "sourceFlow", "targetFlow", "confidence"]),
                 maxItems: 5)
         },
         ["suggestions"]);
