@@ -66,8 +66,11 @@ public class RecurringPayment : IUserOwnedEntity
     [Required]
     public bool PushReminderEnabled { get; set; }
 
-    // "Once" sends a single catch-up reminder anywhere inside the lead window; "Countdown"
-    // sends one reminder per day counting down from PushReminderLeadDays to 0 with no backfill.
+    // "Once" sends exactly one reminder, on the day that is PushReminderLeadDays before the due
+    // date and no other day -- there is no catch-up, so a dispatch run missed on that single day
+    // means that occurrence gets no reminder at all. "Daily" sends one reminder per day counting
+    // down from PushReminderLeadDays to 0, also with no backfill for a day the run missed.
+    // Only "Once" and "Daily" are accepted; a check constraint enforces it.
     [Required]
     [StringLength(20)]
     public string PushReminderMode { get; set; } = "Once";

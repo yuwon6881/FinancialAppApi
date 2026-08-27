@@ -4,7 +4,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services.Push;
 
-public sealed record CategoryLimitAlertDispatchSummary(int Sent, int Skipped, int Disabled);
+public sealed record CategoryLimitAlertDispatchSummary(int Sent, int Skipped, int Disabled, int Failed = 0);
 
 // Converts durable ledger-change evaluations into at most two alerts per category/cycle, then
 // delivers pending events through the same FCM transport as recurring-payment reminders.
@@ -56,6 +56,16 @@ public sealed class CategoryLimitAlertProcessor
             .AnyAsync(item => item.Enabled && item.CategoryAlertsEnabled, cancellationToken);
         if (setting == null || !setting.CategoryLimitAlertsEnabled || !canDeliver)
         {
+            // Logged because this is indistinguishable, from the outside, from a crossing that
+            // never happened: no event row, no delivery attempt, no warning, no notification. It
+            // is the most common reason a spending alert "just does not arrive", and diagnosing it
+            // previously meant reading the database. Reasons only -- never a category or an amount.
+            _logger.LogInformation(
+                "Discarded {Count} category limit evaluation(s) before evaluating: settingsMissing={SettingsMissing}, alertsConsent={Consent}, deviceOptedIn={CanDeliver}.",
+                evaluations.Count,
+                setting == null,
+                setting?.CategoryLimitAlertsEnabled ?? false,
+                canDeliver);
             _context.CategoryLimitAlertEvaluations.RemoveRange(evaluations);
             await _context.SaveChangesAsync(cancellationToken);
             return;
@@ -69,6 +79,12 @@ public sealed class CategoryLimitAlertProcessor
 
         if (deltas.Count == 0)
         {
+            // Every changed row was an inflow, a transfer/adjustment, or attributed to a different
+            // cycle, so nothing could move a category total.
+            _logger.LogInformation(
+                "Discarded {Count} category limit evaluation(s): no in-cycle outflow delta for cycle {CycleKey}.",
+                evaluations.Count,
+                cycleKey);
             _context.CategoryLimitAlertEvaluations.RemoveRange(evaluations);
             await _context.SaveChangesAsync(cancellationToken);
             return;
@@ -133,6 +149,14 @@ public sealed class CategoryLimitAlertProcessor
         _context.CategoryLimitAlertEvaluations.RemoveRange(evaluations);
         if (crossings.Count == 0)
         {
+            // Spend moved but no milestone was crossed. The case worth telling apart is
+            // limitsFound=0: the category has no spending guide effective this cycle (or its flow
+            // type does not allow one), so no amount of overspending can ever raise an alert.
+            _logger.LogInformation(
+                "No category limit crossing for cycle {CycleKey}: {DeltaCount} category delta(s), {LimitCount} with an effective limit.",
+                cycleKey,
+                deltas.Count,
+                limits.Count);
             await _context.SaveChangesAsync(cancellationToken);
             return;
         }
@@ -153,14 +177,26 @@ public sealed class CategoryLimitAlertProcessor
             return;
         }
 
-        var now = DateTime.UtcNow;
+        var now = _financialClock.UtcNow;
         var eventId = $"clae-{Guid.NewGuid():N}";
         var content = BuildEventContent(crossings, cycleKey);
-        // Expire at the end of the local day the crossing happened on, the same rule the
-        // recurring reminder TTL uses. A flat 24h window let an alert about "this cycle so far"
-        // arrive the following day, after the figure it described had already moved on.
-        var endOfLocalDay = _financialClock.Today.ToDateTime(TimeOnly.MinValue).AddDays(1);
-        var expiresAt = now.AddMinutes(Math.Max(1d, (endOfLocalDay - _financialClock.LocalNow).TotalMinutes));
+        // How long the EVENT stays deliverable -- not how long a push may sit at FCM. Those are
+        // two different clocks and conflating them silently swallowed every alert the inline
+        // attempt missed. The inline attempt runs from Response.OnCompleted, so it can be starved
+        // or interrupted, and the only other caller is the 09:00 local scheduled dispatch: an
+        // event that expired at the end of its own local day was always already expired by the
+        // time that run could see it. Nothing was ever recovered, and a crossing does not repeat
+        // (it needs before < limit && after >= limit), so releasing its milestone does not give
+        // the user a second chance -- the alert was simply lost. It also made
+        // AwaitingDeviceRecovery unreachable: an event held for a device that has to renew its
+        // token cannot survive to the renewal.
+        // Staying valid into the next morning is honest because the wording is cycle-scoped
+        // ("this cycle"), and a crossing cannot un-cross. Clamped to the end of its own cycle so
+        // it can never describe a cycle that has since rolled over.
+        var endOfNextLocalDay = _financialClock.Today.ToDateTime(TimeOnly.MinValue).AddDays(2);
+        var endOfOwnCycle = cycleEnd.Date.AddDays(1);
+        var validUntilLocal = endOfNextLocalDay < endOfOwnCycle ? endOfNextLocalDay : endOfOwnCycle;
+        var expiresAt = now.AddMinutes(Math.Max(1d, (validUntilLocal - _financialClock.LocalNow).TotalMinutes));
         _context.CategoryLimitAlertEvents.Add(new CategoryLimitAlertEvent
         {
             Id = eventId,
@@ -206,7 +242,7 @@ public sealed class CategoryLimitAlertProcessor
             .ToListAsync(cancellationToken);
         if (events.Count == 0) return new CategoryLimitAlertDispatchSummary(0, 0, 0);
 
-        var now = DateTime.UtcNow;
+        var now = _financialClock.UtcNow;
         if (setting == null || !setting.CategoryLimitAlertsEnabled)
         {
             var dropped = events.Where(item => !item.AwaitingDeviceRecovery || item.ExpiresAt <= now).ToList();
@@ -230,9 +266,13 @@ public sealed class CategoryLimitAlertProcessor
             return new CategoryLimitAlertDispatchSummary(0, dropped.Count, 0);
         }
 
+        var endOfSendLocalDay = _financialClock.Today.ToDateTime(TimeOnly.MinValue).AddDays(1);
+        var sendDayTtl = endOfSendLocalDay - _financialClock.LocalNow;
+
         var sent = 0;
         var skipped = 0;
         var disabled = 0;
+        var failed = 0;
         foreach (var alertEvent in events)
         {
             if (alertEvent.ExpiresAt <= now)
@@ -272,7 +312,12 @@ public sealed class CategoryLimitAlertProcessor
                     continue;
                 }
 
+                // The push itself must not outlive the local day it is SENT on: a delivery FCM
+                // queued and released later would describe a figure that has moved on. That is a
+                // tighter bound than the event's own validity window, which exists purely so a
+                // missed inline attempt can still be recovered by the next scheduled run.
                 var ttl = alertEvent.ExpiresAt - now;
+                if (sendDayTtl < ttl) ttl = sendDayTtl;
                 var data = new Dictionary<string, string>
                 {
                     ["cycleKey"] = alertEvent.CycleKey
@@ -311,6 +356,7 @@ public sealed class CategoryLimitAlertProcessor
                     _context.CategoryLimitAlertDeliveries.Remove(claim);
                     await _context.SaveChangesAsync(cancellationToken);
                     skipped++;
+                    failed++;
                     _logger.LogWarning("Category limit push event {EventId} could not be sent.", alertEvent.Id);
                 }
             }
@@ -329,7 +375,7 @@ public sealed class CategoryLimitAlertProcessor
         }
 
         await _context.SaveChangesAsync(cancellationToken);
-        return new CategoryLimitAlertDispatchSummary(sent, skipped, disabled);
+        return new CategoryLimitAlertDispatchSummary(sent, skipped, disabled, failed);
     }
 
     private async Task ReleaseMilestonesAsync(

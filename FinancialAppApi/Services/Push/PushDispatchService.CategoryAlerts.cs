@@ -27,6 +27,7 @@ public partial class PushDispatchService
         var sent = 0;
         var skipped = 0;
         var disabled = 0;
+        var failed = 0;
         foreach (var userId in userIds)
         {
             try
@@ -39,14 +40,16 @@ public partial class PushDispatchService
                 sent += summary.Sent;
                 skipped += summary.Skipped;
                 disabled += summary.Disabled;
+                failed += summary.Failed;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 skipped++;
+                failed++;
                 _logger.LogWarning(ex, "Pending category limit push processing failed for one account.");
             }
         }
 
-        return new CategoryLimitAlertDispatchSummary(sent, skipped, disabled);
+        return new CategoryLimitAlertDispatchSummary(sent, skipped, disabled, failed);
     }
 }

@@ -102,16 +102,22 @@ public class PushController : ControllerBase
 
         // Omitted flags mean "leave this device's other choice alone", so enabling one kind can
         // never switch on the other as a side effect.
-        await _subscriptionService.SubscribeAsync(
+        var subscription = await _subscriptionService.SubscribeAsync(
             dto.DeviceId.Trim(),
             dto.FcmToken.Trim(),
             dto.BillReminders,
             dto.CategoryAlerts,
             HttpContext.RequestAborted);
-        if (dto.CategoryAlerts == true)
+
+        // Keyed on what this device now RECEIVES, not on whether this particular request asked to
+        // turn the channel on. The client re-registers its rotated token on every launch and omits
+        // the channel flags when the device is already enrolled, so testing dto.CategoryAlerts
+        // meant the launch that could have drained a waiting alert never did -- only the rarer
+        // explicit opt-in did. Undelivered spending alerts are exactly the ones that need a second
+        // chance: their inline attempt runs after the response and can be starved, and the
+        // scheduled dispatch does not run until 09:00 local.
+        if (subscription?.CategoryAlertsEnabled == true)
         {
-            // A renewed token may have durable category alerts waiting from the provider failure
-            // that retired the previous token. Deliver them as part of the acknowledged repair.
             await _categoryLimitAlertProcessor.ProcessPendingAsync(HttpContext.RequestAborted);
         }
         return Ok();
@@ -127,17 +133,33 @@ public class PushController : ControllerBase
     }
 
     // POST: api/push/dispatch — invoked only by Cloud Scheduler with a Google-signed OIDC token.
+    //
+    // The status code is the only part of this response the caller can act on, and Cloud
+    // Scheduler's retry policy is the only thing that gets a transiently lost reminder a second
+    // chance inside the day its TTL allows. So a run that could not deliver answers 503 rather
+    // than 200: a wholly dead pipeline (missing Fcm:ProjectId, no send credential, FCM
+    // unreachable) used to look identical in Scheduler history to a day with nothing due.
+    // Anything already sent still reports 200 — retrying a partially successful run would only
+    // re-walk claims that are already committed.
     [HttpPost("dispatch")]
     [AuthorizeGoogleOidc]
     public async Task<IActionResult> Dispatch()
     {
         var summary = await _dispatchService.DispatchAsync(HttpContext.RequestAborted);
-        return Ok(new
+        var body = new
         {
             sent = summary.Sent,
             skipped = summary.Skipped,
-            disabled = summary.Disabled
-        });
+            disabled = summary.Disabled,
+            failed = summary.Failed,
+            configured = summary.Configured
+        };
+
+        if (!summary.Configured || (summary.Failed > 0 && summary.Sent == 0))
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, body);
+        }
+        return Ok(body);
     }
 }
 

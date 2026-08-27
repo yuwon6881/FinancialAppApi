@@ -89,7 +89,7 @@ public class PushDispatchEndpointIntegrationTests : IntegrationTestBase
     [Fact]
     public async Task Dispatch_Succeeds_ForAValidTokenFromAnAllowlistedServiceAccount()
     {
-        var client = CreateDispatchClient(verifier: new StubVerifier(ValidPayload()));
+        var client = CreateDispatchClient(verifier: new StubVerifier(ValidPayload()), fcmProjectId: "test-project");
         AddBearerToken(client, "token");
 
         var response = await client.PostAsync("/api/push/dispatch", null);
@@ -97,15 +97,36 @@ public class PushDispatchEndpointIntegrationTests : IntegrationTestBase
         response.EnsureSuccessStatusCode();
     }
 
+    [Fact]
+    public async Task Dispatch_ReportsServiceUnavailable_WhenTheFcmProjectIsNotConfigured()
+    {
+        // Cloud Scheduler can only act on the status code. Answering 200 with a zeroed body meant a
+        // pipeline that could not send anything at all -- no Fcm:ProjectId, so every reminder and
+        // spending alert is silently dropped -- looked exactly like a day with nothing due, in both
+        // Scheduler job history and the response body.
+        var client = CreateDispatchClient(verifier: new StubVerifier(ValidPayload()), fcmProjectId: null);
+        AddBearerToken(client, "token");
+
+        var response = await client.PostAsync("/api/push/dispatch", null);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Contains("\"configured\":false", await response.Content.ReadAsStringAsync());
+    }
+
     private HttpClient CreateDispatchClient(
         string audience = Audience,
         string[]? allowlist = null,
-        IGoogleIdTokenVerifier? verifier = null)
+        IGoogleIdTokenVerifier? verifier = null,
+        string? fcmProjectId = null)
     {
         allowlist ??= [ServiceAccountEmail];
         var factory = Factory.WithWebHostBuilder(builder =>
         {
             builder.UseSetting("Push:OidcAudience", audience);
+            if (fcmProjectId != null)
+            {
+                builder.UseSetting("Fcm:ProjectId", fcmProjectId);
+            }
             for (var i = 0; i < allowlist.Length; i++)
             {
                 builder.UseSetting($"Push:AllowlistedServiceAccounts:{i}", allowlist[i]);

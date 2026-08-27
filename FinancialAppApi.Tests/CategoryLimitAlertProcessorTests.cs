@@ -321,6 +321,101 @@ public class CategoryLimitAlertProcessorTests
         Assert.Empty(sender.Sent);
     }
 
+    [Fact]
+    public async Task ProcessPendingAsync_UndeliveredEvent_IsStillDeliverableByTheNextMorningScheduledRun()
+    {
+        // The inline attempt runs from Response.OnCompleted and can be starved or interrupted; the
+        // only other caller is the 09:00 local scheduled dispatch. An event that expired at the end
+        // of its own local day was always already expired by the time that run could see it, so a
+        // crossing the inline attempt missed was lost for good -- a crossing needs
+        // before < limit && after >= limit and therefore never fires twice.
+        var dbName = NewDbName();
+        await SeedAsync(dbName, ("Dining", 100m, 79m));
+        await using var context = NewContext(dbName, authenticated: true);
+
+        var failing = new FakeSender { Result = new FcmSendResult(FcmSendStatus.TransientFailure) };
+        await AddExpenseAsync(context, "tx-limit", "Dining", 25m);
+        var firstSummary = await NewProcessorAt(context, failing, CurrentDate.AddHours(1)).ProcessPendingAsync();
+
+        Assert.Equal(0, firstSummary.Sent);
+        Assert.Equal(1, firstSummary.Failed);
+        var pending = await context.CategoryLimitAlertEvents.SingleAsync();
+        Assert.Null(pending.CompletedAt);
+        // End of the *next* local day: far short of this cycle's end, so the clamp does not bite.
+        Assert.Equal(new DateTime(2026, 8, 11, 0, 0, 0, DateTimeKind.Utc), pending.ExpiresAt);
+
+        var recovering = new FakeSender();
+        var nextMorning = new DateTime(2026, 8, 10, 9, 0, 0, DateTimeKind.Utc);
+        var secondSummary = await NewProcessorAt(context, recovering, nextMorning).ProcessPendingAsync();
+
+        Assert.Equal(1, secondSummary.Sent);
+        Assert.Equal("Dining has gone past what you planned to spend on it this cycle.",
+            Assert.Single(recovering.Sent).Content.Body);
+        Assert.NotNull((await context.CategoryLimitAlertEvents.SingleAsync()).CompletedAt);
+        // Milestones stay claimed, so the recovered alert is not followed by a duplicate.
+        Assert.Single(await context.CategoryLimitAlertMilestones.ToListAsync());
+    }
+
+    [Fact]
+    public async Task ProcessPendingAsync_PushTtlNeverOutlivesTheDayItIsSentOn()
+    {
+        // The event stays deliverable into the next morning so a missed inline attempt can be
+        // recovered; the push itself must not, because FCM holding a delivery past the day it was
+        // sent on would surface a figure that has already moved on. The two bounds are different
+        // numbers here on purpose: 47h of event validity, 23h of push TTL.
+        var dbName = NewDbName();
+        await SeedAsync(dbName, ("Dining", 100m, 79m));
+        await using var context = NewContext(dbName, authenticated: true);
+
+        var sender = new FakeSender();
+        await AddExpenseAsync(context, "tx-limit", "Dining", 25m);
+        await NewProcessorAt(context, sender, CurrentDate.AddHours(1)).ProcessPendingAsync();
+
+        var alertEvent = await context.CategoryLimitAlertEvents.SingleAsync();
+        Assert.Equal(TimeSpan.FromHours(47), alertEvent.ExpiresAt - CurrentDate.AddHours(1));
+        Assert.Equal(TimeSpan.FromHours(23), Assert.Single(sender.Sent).Content.TimeToLive);
+    }
+
+    [Fact]
+    public async Task ProcessPendingAsync_EventIsDroppedOnceItsRecoveryWindowHasPassed()
+    {
+        var dbName = NewDbName();
+        await SeedAsync(dbName, ("Dining", 100m, 79m));
+        await using var context = NewContext(dbName, authenticated: true);
+
+        await AddExpenseAsync(context, "tx-limit", "Dining", 25m);
+        await NewProcessorAt(context, new FakeSender { Result = new FcmSendResult(FcmSendStatus.TransientFailure) },
+            CurrentDate.AddHours(1)).ProcessPendingAsync();
+
+        var tooLate = new FakeSender();
+        var secondMorning = new DateTime(2026, 8, 11, 9, 0, 0, DateTimeKind.Utc);
+        var summary = await NewProcessorAt(context, tooLate, secondMorning).ProcessPendingAsync();
+
+        Assert.Equal(0, summary.Sent);
+        Assert.Empty(tooLate.Sent);
+        Assert.NotNull((await context.CategoryLimitAlertEvents.SingleAsync()).CompletedAt);
+        // The latch is released rather than left spent on an alert nobody ever received.
+        Assert.Empty(await context.CategoryLimitAlertMilestones.ToListAsync());
+    }
+
+    [Fact]
+    public async Task ProcessPendingAsync_RecoveryWindowIsClampedToTheEndOfItsOwnCycle()
+    {
+        // Cycle day 10 makes 2026-08-09 the final day of cycle 2026-07. Carrying the event into
+        // 2026-08-11 would let it describe "this cycle" after the cycle had rolled over.
+        var dbName = NewDbName();
+        await SeedAsync(dbName, [("Dining", 100m, 79m)], categoryAlertsEnabled: true, cycleDay: 10, guideCycleKey: "2026-07");
+        await using var context = NewContext(dbName, authenticated: true);
+
+        await AddExpenseAsync(context, "tx-limit", "Dining", 25m);
+        await NewProcessorAt(context, new FakeSender { Result = new FcmSendResult(FcmSendStatus.TransientFailure) },
+            CurrentDate.AddHours(1)).ProcessPendingAsync();
+
+        var alertEvent = await context.CategoryLimitAlertEvents.SingleAsync();
+        Assert.Equal("2026-07", alertEvent.CycleKey);
+        Assert.Equal(new DateTime(2026, 8, 10, 0, 0, 0, DateTimeKind.Utc), alertEvent.ExpiresAt);
+    }
+
     private static readonly DateTime CurrentDate = new(2026, 8, 9, 0, 0, 0, DateTimeKind.Utc);
 
     private static string NewDbName() => $"category-limit-alert-{Guid.NewGuid():N}";
@@ -344,13 +439,15 @@ public class CategoryLimitAlertProcessorTests
     private static async Task SeedAsync(
         string dbName,
         (string Category, decimal Limit, decimal Spent)[] categories,
-        bool categoryAlertsEnabled)
+        bool categoryAlertsEnabled,
+        int cycleDay = 1,
+        string guideCycleKey = "2026-08")
     {
         await using var context = NewContext(dbName, authenticated: false);
         context.FinancialSettings.Add(new FinancialSetting
         {
             UserId = "user-a",
-            CycleDay = 1,
+            CycleDay = cycleDay,
             CategoryLimitAlertsEnabled = categoryAlertsEnabled
         });
         context.PushSubscriptions.Add(new PushSubscription
@@ -381,7 +478,7 @@ public class CategoryLimitAlertProcessorTests
                 Id = $"guide-{category}",
                 UserId = "user-a",
                 CategoryName = category,
-                EffectiveFromCycleKey = "2026-08",
+                EffectiveFromCycleKey = guideCycleKey,
                 LimitAmount = limit
             });
             context.Transactions.Add(new Transaction
@@ -414,16 +511,19 @@ public class CategoryLimitAlertProcessorTests
         Amount = -amount
     };
 
-    private static CategoryLimitAlertProcessor NewProcessor(AppDbContext context, IFcmPushSender sender)
+    private static CategoryLimitAlertProcessor NewProcessor(AppDbContext context, IFcmPushSender sender) =>
+        NewProcessorAt(context, sender, CurrentDate.AddHours(1));
+
+    private static CategoryLimitAlertProcessor NewProcessorAt(AppDbContext context, IFcmPushSender sender, DateTime nowUtc)
     {
         var configuration = TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC"));
         var clock = new FinancialClock(
             configuration,
-            new FixedTimeProvider(new DateTimeOffset(CurrentDate.AddHours(1))));
+            new FixedTimeProvider(new DateTimeOffset(nowUtc)));
         return new CategoryLimitAlertProcessor(
             context,
             sender,
-            new PushSubscriptionService(context, new FixedTimeProvider(CurrentDate.AddHours(1))),
+            new PushSubscriptionService(context, new FixedTimeProvider(nowUtc)),
             clock,
             NullLogger<CategoryLimitAlertProcessor>.Instance);
     }

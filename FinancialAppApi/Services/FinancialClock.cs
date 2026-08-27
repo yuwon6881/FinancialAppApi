@@ -36,6 +36,15 @@ public sealed class FinancialClock
 
     public TimeZoneInfo TimeZone { get; }
 
+    /// <summary>
+    /// The same instant as <see cref="LocalNow"/>, expressed in UTC. Callers that derive a stored
+    /// UTC timestamp from a window measured against <see cref="LocalNow"/> or <see cref="Today"/>
+    /// must read it from here rather than <c>DateTime.UtcNow</c>: two clocks agree in production
+    /// and disagree under an injected TimeProvider, which is exactly where the arithmetic is
+    /// checked.
+    /// </summary>
+    public DateTime UtcNow => _timeProvider.GetUtcNow().UtcDateTime;
+
     public DateTime LocalNow => TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), TimeZone).DateTime;
 
     public DateOnly Today => DateOnly.FromDateTime(LocalNow);

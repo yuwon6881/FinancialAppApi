@@ -6,7 +6,13 @@ using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services.Push;
 
-public sealed record PushDispatchSummary(int Sent, int Skipped, int Disabled);
+// Failed counts sends a retry could still rescue (network, 5xx, credential trouble) and is
+// deliberately separate from Skipped, which is dominated by the benign "already claimed today"
+// case. Configured is false only when the run could not begin at all. Both exist so the HTTP
+// endpoint can answer non-2xx: Cloud Scheduler's retry policy is the only thing that gets a
+// transiently lost reminder a second chance inside the same day, and it can only see the status
+// code. Answering 200 with a zeroed body made a wholly broken pipeline look like a quiet day.
+public sealed record PushDispatchSummary(int Sent, int Skipped, int Disabled, int Failed = 0, bool Configured = true);
 
 // The daily fan-out job: for every user with push reminders enabled who has at least one enabled
 // device subscription, finds each of their recurring payments' next due (unpaid) occurrence and, if
@@ -46,12 +52,13 @@ public sealed partial class PushDispatchService
         if (string.IsNullOrWhiteSpace(_configuration["Fcm:ProjectId"]))
         {
             _logger.LogWarning("Push dispatch skipped: Fcm:ProjectId is not configured.");
-            return new PushDispatchSummary(0, 0, 0);
+            return new PushDispatchSummary(0, 0, 0, Failed: 0, Configured: false);
         }
 
         var sent = 0;
         var skipped = 0;
         var disabled = 0;
+        var failed = 0;
 
         using var scope = _scopeFactory.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -67,7 +74,8 @@ public sealed partial class PushDispatchService
             return new PushDispatchSummary(
                 sent + categoryInitialSummary.Sent,
                 skipped + categoryInitialSummary.Skipped,
-                disabled + categoryInitialSummary.Disabled);
+                disabled + categoryInitialSummary.Disabled,
+                failed + categoryInitialSummary.Failed);
         }
 
         foreach (var (userId, candidate) in candidates)
@@ -185,7 +193,7 @@ public sealed partial class PushDispatchService
                         // take down the rest of this user's devices or any other user's reminders.
                         try
                         {
-                            var (outcome, sentIncrement, skippedIncrement, disabledIncrement) = await TrySendOneAsync(
+                            var (outcome, sentIncrement, skippedIncrement, disabledIncrement, failedIncrement) = await TrySendOneAsync(
                                 userContext,
                                 fcmSender,
                                 userSubscriptionService,
@@ -205,11 +213,13 @@ public sealed partial class PushDispatchService
                             sent += sentIncrement;
                             skipped += skippedIncrement;
                             disabled += disabledIncrement;
+                            failed += failedIncrement;
                             _ = outcome;
                         }
                         catch (Exception ex) when (ex is not OperationCanceledException)
                         {
                             skipped++;
+                            failed++;
                             _logger.LogWarning(
                                 ex,
                                 "Push reminder send threw unexpectedly for recurring payment {RecurringPaymentId}; isolated to this device.",
@@ -222,6 +232,7 @@ public sealed partial class PushDispatchService
             {
                 // Never let one account's unexpected failure abort the whole run — every other
                 // account still gets its own chance at its reminders.
+                failed++;
                 _logger.LogWarning(ex, "Push dispatch failed for one account; continuing with the rest.");
             }
         }
@@ -230,10 +241,11 @@ public sealed partial class PushDispatchService
         return new PushDispatchSummary(
             sent + categorySummary.Sent,
             skipped + categorySummary.Skipped,
-            disabled + categorySummary.Disabled);
+            disabled + categorySummary.Disabled,
+            failed + categorySummary.Failed);
     }
 
-    private async Task<(string Outcome, int Sent, int Skipped, int Disabled)> TrySendOneAsync(
+    private async Task<(string Outcome, int Sent, int Skipped, int Disabled, int Failed)> TrySendOneAsync(
         AppDbContext context,
         IFcmPushSender fcmSender,
         PushSubscriptionService subscriptionService,
@@ -264,10 +276,12 @@ public sealed partial class PushDispatchService
         var unclaimed = new List<string>(kinds.Count);
         foreach (var kind in kinds)
         {
-            // Once sends a single catch-up reminder anywhere inside the lead window, so "already
-            // sent" ignores the offset it was originally claimed at. Countdown sends once per day,
-            // and a shortfall alert is about one specific day, so both keep the offset in the key and
-            // no backfill ever happens for a missed day.
+            // Once fires on exactly one offset (see shouldSendStandard), so its "already sent"
+            // lookup deliberately ignores the offset it was claimed at: the case that matters is
+            // PushReminderLeadDays being edited mid-window, which would otherwise present the same
+            // occurrence at a second offset and send a duplicate. Daily sends once per day, and a
+            // shortfall alert is about one specific day, so both keep the offset in the key and no
+            // backfill ever happens for a missed day.
             var offsetScoped = isDaily || kind == PushReminderDeliveryKind.Shortfall;
             var claimed = offsetScoped
                 ? await context.PushReminderDeliveries.AnyAsync(d =>
@@ -289,7 +303,7 @@ public sealed partial class PushDispatchService
 
         if (unclaimed.Count == 0)
         {
-            return ("AlreadySent", 0, 1, 0);
+            return ("AlreadySent", 0, 1, 0, 0);
         }
 
         var claims = unclaimed
@@ -319,7 +333,7 @@ public sealed partial class PushDispatchService
             {
                 context.Entry(claim).State = EntityState.Detached;
             }
-            return ("RaceLost", 0, 1, 0);
+            return ("RaceLost", 0, 1, 0, 0);
         }
 
         var isPartiallyPaid = due.Status == RecurringOccurrenceStatus.PartiallyPaid;
@@ -329,13 +343,13 @@ public sealed partial class PushDispatchService
         switch (result.Status)
         {
             case FcmSendStatus.Sent:
-                return ("Sent", 1, 0, 0);
+                return ("Sent", 1, 0, 0, 0);
             case FcmSendStatus.InvalidOrUnregistered:
                 // This send is known not to have reached the device. Release the claims before
                 // retiring the token so a renewed registration can receive the reminder later.
                 context.PushReminderDeliveries.RemoveRange(claims);
                 await subscriptionService.RetireInvalidTokenAsync(subscription, cancellationToken);
-                return ("Disabled", 0, 0, 1);
+                return ("Disabled", 0, 0, 1, 0);
             default:
                 // Never logs the token or any payment amount — just that a send failed. The claim
                 // above is removed, so a same-day retry may send this reminder again.
@@ -345,7 +359,7 @@ public sealed partial class PushDispatchService
                     "Push reminder send failed for recurring payment {RecurringPaymentId} occurrence {OccurrenceDate}.",
                     payment.Id,
                     occurrenceDate);
-                return ("TransientFailure", 0, 1, 0);
+                return ("TransientFailure", 0, 1, 0, 1);
         }
     }
 
