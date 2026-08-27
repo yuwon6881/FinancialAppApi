@@ -255,6 +255,25 @@ public class SavingsGoalPacingTests
     }
 
     [Fact]
+    public void ComputePace_RedistributesAPartialCycleShortfallAcrossCyclesRemaining()
+    {
+        var goal = NewGoal(target: 160m, earmarked: 30m, targetDate: new DateOnly(2026, 10, 20));
+        goal.CycleFundedKey = CycleKey;
+        goal.CycleFundedAmount = 30m;
+
+        var current = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 7, 15), CycleDay, CycleKey);
+        var next = SavingsGoalPacing.ComputePace(goal, new DateOnly(2026, 8, 15), CycleDay, "2026-08");
+
+        // July required 40, but only 30 was set aside. The 10 shortfall remains in the total
+        // balance; once July closes it is spread over August, September and October (130 / 3).
+        Assert.Equal(40m, current.RequiredPerCycle);
+        Assert.Equal(10m, current.OutstandingThisCycle);
+        Assert.Equal(3, next.CyclesRemaining);
+        Assert.Equal(130m, next.Remaining);
+        Assert.Equal(43.34m, next.RequiredPerCycle);
+    }
+
+    [Fact]
     public void Distribute_SkipsGoalsAlreadyFundedThisCycleAndFundsOnlyTheRest()
     {
         var alreadyFunded = NewGoal(id: 1, target: 1200m, earmarked: 666.67m, targetDate: new DateOnly(2026, 9, 20));
