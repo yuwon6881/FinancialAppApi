@@ -194,6 +194,7 @@ public static class PerformanceSeed
 public static async Task SeedAsync(AppDbContext context, PerformanceProfile profile)
     {
         var userId = UserId(profile);
+        var marketDataProvider = profile == PerformanceProfile.Small ? "performance-small" : "performance-long";
         context.SetCurrentUser(userId);
         var transactionDate = UtcDate(2026, 7, 10);
         context.AppUsers.Add(new AppUser
@@ -351,7 +352,7 @@ public static async Task SeedAsync(AppDbContext context, PerformanceProfile prof
         });
         context.MarketPriceBars.Add(new MarketPriceBar
         {
-            Provider = "performance",
+            Provider = marketDataProvider,
             ExternalInstrumentId = "PERF",
             Symbol = "PERF",
             Mic = "XNAS",
@@ -360,7 +361,7 @@ public static async Task SeedAsync(AppDbContext context, PerformanceProfile prof
         });
         context.FxRateBars.Add(new FxRateBar
         {
-            Provider = "performance",
+            Provider = marketDataProvider,
             BaseCurrency = "USD",
             QuoteCurrency = "MYR",
             MarketDate = new DateOnly(2026, 7, 10),
