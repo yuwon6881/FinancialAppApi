@@ -97,9 +97,6 @@ public partial class AiAssistantService
                 "Sensitive mode is on. Unhide balances before asking for exact amounts or financial analysis.",
                 [], State: contextResult.OutgoingState));
         }
-        var pendingSyncWarning = invocationContext?.HasPendingLocalChanges == true
-            ? " This uses saved server data and does not include changes still syncing."
-            : string.Empty;
         if (context.SensitiveMode &&
             (LooksLikeProtectedMutationCommand(message) ||
              intentPlan.Intents.Contains(AiIntent.LedgerAdd)))
@@ -210,7 +207,7 @@ public partial class AiAssistantService
         parsed = parsed with { Reply = EnforceApproximateWording(parsed.Reply, contextResult.Sufficiency.Approximate) };
         parsed = parsed with
         {
-            Reply = BuildCoverageSentence(contextResult, pendingSyncWarning) + parsed.Reply
+            Reply = BuildCoverageSentence(contextResult) + parsed.Reply
         };
         // Round-trip the structured references so the client can echo them back on the next
         // turn (see AiConversationState). Not attached to small-talk/guardrail replies -- those

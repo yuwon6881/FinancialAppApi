@@ -1623,7 +1623,7 @@ public class AiAssistantServiceTests
         var outcome = await service.ChatAsync(new AiChatRequest(
             "Explain my plan",
             [],
-            Context: new AiInvocationContext("wishlist", "rewards-plan", HasPendingLocalChanges: true)));
+            Context: new AiInvocationContext("wishlist", "rewards-plan")));
 
         Assert.Equal(1, handler.CallCount);
         Assert.False(handler.WasClassifierCall(0));
@@ -1644,7 +1644,11 @@ public class AiAssistantServiceTests
         Assert.Contains("\"status\":\"claimed\"", handler.LastUserContent);
         Assert.Contains("\"claimable\":", handler.LastUserContent);
         Assert.Contains("\"rewardForecast\":", handler.LastUserContent);
-        Assert.Contains("does not include changes still syncing", outcome.Response.Reply);
+        // Replies used to be prefixed with a pending-sync notice that duplicated the panel's own
+        // banner. Both were removed; the coverage/approximate prefix is a separate disclosure and
+        // stays, so a complete-coverage reply now carries no prefix at all.
+        Assert.DoesNotContain("does not include changes still syncing", outcome.Response.Reply);
+        Assert.Equal("Your plan is ready.", outcome.Response.Reply);
     }
 
     private static AiAssistantService NewService(

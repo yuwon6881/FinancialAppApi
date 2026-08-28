@@ -56,7 +56,7 @@ public partial class AiAssistantService
             error = "That loan reference is not valid.";
             return false;
         }
-        normalized = new AiInvocationContext(surface, preset, cycleKey, range, context.SavingsGoalId, context.HasPendingLocalChanges, loanId);
+        normalized = new AiInvocationContext(surface, preset, cycleKey, range, context.SavingsGoalId, loanId);
         return true;
     }
 

@@ -79,7 +79,6 @@ public sealed record AiInvocationContext(
     string? CycleKey = null,
     string? InvestmentRange = null,
     int? SavingsGoalId = null,
-    bool HasPendingLocalChanges = false,
     string? LoanId = null);
 
 public sealed record AiChatMessage(string Role, string Content);
@@ -353,16 +352,13 @@ public partial class AiAssistantService
         intentPlan.Intents.Any(intent =>
             AiCapabilities.Any(capability => capability.Intent == intent && capability.RequiresSensitiveReveal));
 
-    private static string BuildCoverageSentence(
-        AiContextBuildResult contextResult,
-        string pendingSyncWarning)
+    private static string BuildCoverageSentence(AiContextBuildResult contextResult)
     {
         var scope = contextResult.Sufficiency.Approximate
                 ? "Coverage: some saved rows were sampled, so the figures below are approximate."
                 : string.Empty;
 
-        var combined = (scope + pendingSyncWarning).Trim();
-        return string.IsNullOrEmpty(combined) ? string.Empty : combined + " ";
+        return string.IsNullOrEmpty(scope) ? string.Empty : scope + " ";
     }
 
 }
