@@ -3,12 +3,14 @@ using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [Route("api/recurring-payments")]
 [AuthorizeToken]
+[RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.Recurring, RefreshSliceNames.Loans)]
 public class RecurringPaymentsController : ControllerBase
 {
     private readonly RecurringPaymentService _recurringPaymentService;
@@ -197,6 +199,7 @@ public class RecurringPaymentsController : ControllerBase
 
     // PUT: api/recurring-payments/{id}/reminder
     [HttpPut("{id}/reminder")]
+    [RefreshSlices(RefreshSliceNames.Recurring)]
     public async Task<IActionResult> PutReminder(string id, RecurringPaymentReminderDto dto)
     {
         var result = await _recurringPaymentService.UpdateReminderAsync(
@@ -222,6 +225,7 @@ public class RecurringPaymentsController : ControllerBase
 
     // POST: api/recurring-payments/{id}/pay-early
     [HttpPost("{id}/pay-early")]
+    [RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.Recurring, RefreshSliceNames.Loans)]
     public async Task<IActionResult> PostPayEarly(string id, PayEarlyRequestDto dto)
     {
         if (!DateOnly.TryParseExact(dto.OccurrenceDate, "yyyy-MM-dd", out var occurrenceDate))
@@ -254,6 +258,7 @@ public class RecurringPaymentsController : ControllerBase
     }
 
     [HttpPost("{id}/occurrences/{occurrenceDate}/settle")]
+    [RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.Recurring, RefreshSliceNames.Loans)]
     public async Task<IActionResult> PostSettlement(
         string id,
         string occurrenceDate,

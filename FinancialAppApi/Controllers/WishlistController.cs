@@ -4,12 +4,14 @@ using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [Route("api/wishlist")]
 [AuthorizeToken]
+[RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.Wishlist)]
 public class WishlistController : ControllerBase
 {
     private readonly WishlistService _wishlistService;
@@ -29,6 +31,7 @@ public class WishlistController : ControllerBase
 
     // POST: api/wishlist
     [HttpPost]
+    [RefreshSlices(RefreshSliceNames.Wishlist)]
     public async Task<ActionResult<WishlistItemDto>> PostWishlistItem(WishlistItemMutationDto dto)
     {
         var item = ToWishlistItem(dto);
@@ -48,6 +51,7 @@ public class WishlistController : ControllerBase
 
     // PUT: api/wishlist/{id}
     [HttpPut("{id}")]
+    [RefreshSlices(RefreshSliceNames.Wishlist)]
     public async Task<IActionResult> PutWishlistItem(int id, WishlistItemMutationDto dto)
     {
         var updatedItem = ToWishlistItem(dto);

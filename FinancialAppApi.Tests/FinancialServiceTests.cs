@@ -145,10 +145,19 @@ public class FinancialServiceTests
     private static FinancialService NewService(AppDbContext context)
     {
         var occurrences = new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
+        var clock = new FinancialClock(
+            TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+            new FixedTimeProvider(new DateTimeOffset(2026, 8, 15, 0, 0, 0, TimeSpan.Zero)));
         return new FinancialService(
             context,
             new CycleBalanceService(context),
-            new RecurringPaymentAlertService(context, occurrences),
-            occurrences);
+            new RecurringPaymentAlertService(context, occurrences, clock),
+            occurrences,
+            clock);
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

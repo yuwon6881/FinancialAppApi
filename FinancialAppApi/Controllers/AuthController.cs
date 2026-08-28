@@ -8,6 +8,7 @@ namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [Route("api/auth")]
+[NoFinancialRefresh]
 public class AuthController : ControllerBase
 {
     private readonly AuthAccountService _authAccountService;

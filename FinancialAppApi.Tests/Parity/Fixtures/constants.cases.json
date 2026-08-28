@@ -19,6 +19,8 @@
     "FundingBucket": ["Essentials", "Rewards"],
     "LedgerBucket": ["Essentials", "Growth", "Stability", "Rewards"],
     "PushChannel": ["billReminders", "categoryAlerts"],
-    "InvestmentChartRange": ["1m", "3m", "6m", "1y", "3y", "5y", "all"]
+    "InvestmentChartRange": ["1m", "3m", "6m", "1y", "3y", "5y", "all"],
+    "RefreshSlice": ["core", "recurring", "categories", "wishlist", "savingsGoals", "loans", "investments", "documents"],
+    "RefreshHeader": ["X-FinancialApp-Refresh-Slices"]
   }
 }

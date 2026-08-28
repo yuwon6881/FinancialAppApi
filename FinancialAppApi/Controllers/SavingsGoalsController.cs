@@ -4,12 +4,14 @@ using FinancialAppApi.Filters;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services.SavingsGoals;
 using Microsoft.AspNetCore.Mvc;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [Route("api/savings-goals")]
 [AuthorizeToken]
+[RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.SavingsGoals)]
 public class SavingsGoalsController : ControllerBase
 {
     private readonly SavingsGoalService _savingsGoalService;
@@ -38,6 +40,7 @@ public class SavingsGoalsController : ControllerBase
 
     // POST: api/savings-goals
     [HttpPost]
+    [RefreshSlices(RefreshSliceNames.SavingsGoals)]
     public async Task<ActionResult<SavingsGoalDto>> PostGoal(SavingsGoalMutationDto dto)
     {
         var result = await _savingsGoalService.CreateGoalAsync(ToGoal(dto), HttpContext.RequestAborted);
@@ -50,6 +53,7 @@ public class SavingsGoalsController : ControllerBase
 
     // PUT: api/savings-goals/{id}
     [HttpPut("{id}")]
+    [RefreshSlices(RefreshSliceNames.SavingsGoals)]
     public async Task<IActionResult> PutGoal(int id, SavingsGoalMutationDto dto)
     {
         var result = await _savingsGoalService.UpdateGoalAsync(id, ToGoal(dto), HttpContext.RequestAborted);
@@ -65,6 +69,7 @@ public class SavingsGoalsController : ControllerBase
     // DELETE: api/savings-goals/{id}
     // Releases the earmark; the money returns to the free-to-spend remainder.
     [HttpDelete("{id}")]
+    [RefreshSlices(RefreshSliceNames.SavingsGoals)]
     public async Task<IActionResult> DeleteGoal(int id)
     {
         var status = await _savingsGoalService.DeleteGoalAsync(id, HttpContext.RequestAborted);
@@ -83,6 +88,7 @@ public class SavingsGoalsController : ControllerBase
     // Authoritative Undo for a synced delete; preserves lifecycle fields that ordinary creation
     // deliberately resets and revalidates the earmark against today's shared pool.
     [HttpPost("restore")]
+    [RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.SavingsGoals)]
     public async Task<ActionResult<SavingsGoalDto>> RestoreGoal(SavingsGoalRestoreDto dto)
     {
         var goal = ToGoal(dto);

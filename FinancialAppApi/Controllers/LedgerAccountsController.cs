@@ -5,12 +5,14 @@ using FinancialAppApi.Filters;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services.Accounts;
 using Microsoft.AspNetCore.Mvc;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [Route("api/accounts")]
 [AuthorizeToken]
+[RefreshSlices(RefreshSliceNames.Core)]
 public sealed class LedgerAccountsController : ControllerBase
 {
     private readonly LedgerAccountService _accountService;

@@ -1,0 +1,43 @@
+name: PostgreSQL performance benchmark
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: financialapp_perf
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d financialapp_perf"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore FinancialAppApi.PerformanceTests/FinancialAppApi.PerformanceTests.csproj
+      - name: Run sequential and concurrent profiles
+        env:
+          FINANCIALAPP_PERFORMANCE_CONNECTION: Host=127.0.0.1;Port=5432;Database=financialapp_perf;Username=postgres;Password=postgres;SSL Mode=Disable
+          FINANCIALAPP_PERFORMANCE_PROFILE: both
+        run: dotnet run --project FinancialAppApi.PerformanceTests --configuration Release --no-restore > performance-report.json
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: postgres-performance-${{ github.run_id }}
+          path: performance-report.json
+          retention-days: 30

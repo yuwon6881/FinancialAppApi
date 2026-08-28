@@ -3,6 +3,7 @@ using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
 using FinancialAppApi.Services.Investments;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Tests.Parity;
 
@@ -37,6 +38,8 @@ public sealed class ConstantContractTests
             ["LedgerBucket"] = FinancialConstants.BudgetCategories,
             ["PushChannel"] = [PushChannel.BillReminders, PushChannel.CategoryAlerts],
             ["InvestmentChartRange"] = InvestmentChartRange.Allowed,
+            ["RefreshSlice"] = RefreshSliceNames.All,
+            ["RefreshHeader"] = [RefreshSliceNames.HeaderName],
         };
 
         Assert.True(backendSets.Keys.Order().SequenceEqual(fixtureSets.Keys.Order()));

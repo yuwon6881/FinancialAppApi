@@ -13,14 +13,52 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: '10.0.x'
       - run: dotnet restore
+      - name: NuGet vulnerability audit
+        shell: bash
+        run: |
+          set -o pipefail
+          dotnet list FinancialAppApi.sln package --vulnerable --include-transitive 2>&1 | tee nuget-audit.txt
+          if grep -Eiq '\b(high|critical)\b' nuget-audit.txt; then
+            echo 'High or critical NuGet vulnerability detected.' >&2
+            exit 1
+          fi
+      - name: Secret-pattern scan
+        run: node scripts/check-secrets.mjs
       - run: dotnet build --no-restore --configuration Release
       - run: dotnet test --no-build --configuration Release
       - run: |
           dotnet tool install --global dotnet-ef
           dotnet ef migrations list --project FinancialAppApi --startup-project FinancialAppApi
           dotnet ef migrations has-pending-model-changes --project FinancialAppApi --startup-project FinancialAppApi
+
+  performance:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: financialapp_perf
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d financialapp_perf"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore FinancialAppApi.PerformanceTests/FinancialAppApi.PerformanceTests.csproj
+      - name: PostgreSQL scale regression
+        env:
+          FINANCIALAPP_PERFORMANCE_CONNECTION: Host=127.0.0.1;Port=5432;Database=financialapp_perf;Username=postgres;Password=postgres;SSL Mode=Disable
+          FINANCIALAPP_PERFORMANCE_PROFILE: both
+        run: dotnet run --project FinancialAppApi.PerformanceTests --configuration Release --no-restore

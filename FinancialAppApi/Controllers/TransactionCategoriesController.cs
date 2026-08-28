@@ -6,12 +6,14 @@ using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
 using FinancialAppApi.Database;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [Route("api/categories")]
 [AuthorizeToken]
+[RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.Categories, RefreshSliceNames.Recurring)]
 public class TransactionCategoriesController : ControllerBase
 {
     private readonly TransactionCategoryService _categoryService;
@@ -54,6 +56,7 @@ public class TransactionCategoriesController : ControllerBase
 
     // POST: api/categories
     [HttpPost]
+    [RefreshSlices(RefreshSliceNames.Categories)]
     public async Task<ActionResult<TransactionCategory>> PostCategory(TransactionCategoryMutationDto dto)
     {
         var category = new TransactionCategory { Id = dto.Id, Name = dto.Name, Type = CategoryFlowType.Normalize(dto.Type) };
@@ -73,6 +76,7 @@ public class TransactionCategoriesController : ControllerBase
 
     // PUT: api/categories/{id}
     [HttpPut("{id}")]
+    [RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.Categories)]
     public async Task<IActionResult> UpdateCategory(string id, UpdateCategoryDto dto)
     {
         decimal? limit = null;
@@ -101,6 +105,7 @@ public class TransactionCategoriesController : ControllerBase
 
     // PUT: api/categories/{id}/cycle-limit
     [HttpPut("{id}/cycle-limit")]
+    [RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.Categories)]
     public async Task<IActionResult> UpdateCycleLimit(string id, UpdateCategoryCycleLimitDto dto)
     {
         decimal? limit = null;
@@ -128,6 +133,7 @@ public class TransactionCategoriesController : ControllerBase
 
     [EnableRateLimiting("ai-assist")]
     [HttpPost("suggest")]
+    [NoFinancialRefresh]
     public async Task<IActionResult> SuggestCategories(CategorySuggestionRequest request, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Description))
@@ -165,6 +171,7 @@ public class TransactionCategoriesController : ControllerBase
 
     [EnableRateLimiting("ai-assist")]
     [HttpPost("suggest-notes")]
+    [NoFinancialRefresh]
     public async Task<IActionResult> SuggestNotes(TransactionNoteSuggestionRequest request, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Description))
@@ -209,6 +216,7 @@ public class TransactionCategoriesController : ControllerBase
 
     [EnableRateLimiting("ai-assist")]
     [HttpPost("cleanup/review")]
+    [NoFinancialRefresh]
     public async Task<IActionResult> ReviewCleanup(CancellationToken cancellationToken)
     {
         try

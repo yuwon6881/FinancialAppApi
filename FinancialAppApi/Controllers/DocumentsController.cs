@@ -5,6 +5,7 @@ using FinancialAppApi.Services.Documents;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
 
@@ -15,6 +16,7 @@ namespace FinancialAppApi.Controllers;
 [Route("api/documents")]
 [AuthorizeToken]
 [EnableRateLimiting("documents")]
+[RefreshSlices(RefreshSliceNames.Documents)]
 public partial class DocumentsController : ControllerBase
 {
     private readonly DocumentVaultService _service;
@@ -244,6 +246,7 @@ public partial class DocumentsController : ControllerBase
     }
 
     [HttpPost("export-selected")]
+    [NoFinancialRefresh]
     public async Task<IActionResult> ExportSelected(
         [FromBody] BulkExportDocumentsRequest? request,
         CancellationToken ct)

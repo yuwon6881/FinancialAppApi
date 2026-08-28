@@ -35,6 +35,7 @@ using (var providerValidationScope = app.Services.CreateScope())
 }
 
 app.UseExceptionHandler();
+app.UseMiddleware<SecurityHeadersMiddleware>();
 
 app.Use(async (context, next) =>
 {

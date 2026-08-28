@@ -3,12 +3,14 @@ using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [Route("api/transactions")]
 [AuthorizeToken]
+[RefreshSlices(RefreshSliceNames.Core)]
 public class TransactionsController : ControllerBase
 {
     private readonly TransactionQueryService _transactionQueryService;

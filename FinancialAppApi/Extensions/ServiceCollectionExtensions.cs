@@ -16,6 +16,8 @@ using OpenTelemetry.Resources;
 using FinancialAppApi.Diagnostics;
 using FinancialAppApi.Services.Documents;
 using FinancialAppApi.Services.Investments;
+using FinancialAppApi.Filters;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Extensions;
 
@@ -26,7 +28,7 @@ public static class ServiceCollectionExtensions
         IConfiguration configuration,
         IHostEnvironment environment)
     {
-        services.AddControllers().AddJsonOptions(options =>
+        services.AddControllers(options => options.Filters.Add<RefreshSlicesResultFilter>()).AddJsonOptions(options =>
         {
             options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
         });
@@ -96,7 +98,7 @@ public static class ServiceCollectionExtensions
                 policy.WithOrigins(corsOrigins)
                       .AllowAnyHeader()
                       .AllowAnyMethod()
-                      .WithExposedHeaders(AuthCookieService.CsrfHeaderName, HeaderNames.ETag)
+                      .WithExposedHeaders(AuthCookieService.CsrfHeaderName, HeaderNames.ETag, RefreshSliceNames.HeaderName)
                       .SetPreflightMaxAge(TimeSpan.FromMinutes(10))
                       .AllowCredentials();
             }
@@ -107,7 +109,7 @@ public static class ServiceCollectionExtensions
                 policy.SetIsOriginAllowed(origin => true)
                       .AllowAnyHeader()
                       .AllowAnyMethod()
-                      .WithExposedHeaders(AuthCookieService.CsrfHeaderName, HeaderNames.ETag)
+                      .WithExposedHeaders(AuthCookieService.CsrfHeaderName, HeaderNames.ETag, RefreshSliceNames.HeaderName)
                       .SetPreflightMaxAge(TimeSpan.FromMinutes(10))
                       .AllowCredentials();
             }
@@ -118,7 +120,8 @@ public static class ServiceCollectionExtensions
                 // for cookie-authenticated requests. Allow anonymous cross-origin reads only.
                 policy.SetIsOriginAllowed(origin => true)
                       .AllowAnyHeader()
-                      .AllowAnyMethod();
+                      .AllowAnyMethod()
+                      .WithExposedHeaders(RefreshSliceNames.HeaderName);
             }
         }));
 

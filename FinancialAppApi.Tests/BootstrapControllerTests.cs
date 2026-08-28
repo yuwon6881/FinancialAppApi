@@ -3,6 +3,8 @@ using FinancialAppApi.Controllers;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
+using FinancialAppApi.Services.Documents;
+using FinancialAppApi.Services.Investments;
 using FinancialAppApi.Services.Loans;
 using FinancialAppApi.Services.SavingsGoals;
 using Microsoft.AspNetCore.Http;
@@ -28,6 +30,16 @@ public sealed class BootstrapControllerTests
         var savingsGoalService = new SavingsGoalService(context, cycleBalanceService);
         var wishlistService = new WishlistService(context, cycleBalanceService, savingsGoalService);
         var loanService = new LoanService(context);
+        var investmentPortfolioService = new InvestmentPortfolioService(
+            context,
+            new InvestmentAccountingService(),
+            new LocalMarketDataProvider());
+        var documentVaultService = new DocumentVaultService(
+            context,
+            new FakeDocumentVaultStore(),
+            new FixedOptionsMonitor<DocumentVaultOptions>(new DocumentVaultOptions()),
+            NullLogger<DocumentVaultService>.Instance);
+        var documentRetentionService = new DocumentRetentionService(context);
 
         return new BootstrapController(
             financialService,
@@ -37,13 +49,46 @@ public sealed class BootstrapControllerTests
             categoryService,
             wishlistService,
             savingsGoalService,
-            loanService)
+            loanService,
+            investmentPortfolioService,
+            documentVaultService,
+            documentRetentionService)
         {
             ControllerContext = new ControllerContext
             {
                 HttpContext = new DefaultHttpContext()
             }
         };
+    }
+
+    private sealed class LocalMarketDataProvider : IMarketDataProvider
+    {
+        public MarketDataProviderDescriptor Descriptor => new(
+            "bootstrap-test",
+            "Bootstrap test provider",
+            false,
+            MarketDataCapabilities.RequiredForActivation,
+            new MarketDataQuotaPolicy(10, 100, 100));
+
+        public Task<IReadOnlyList<InstrumentSearchResult>> SearchAsync(
+            string query,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<InstrumentSearchResult>>([]);
+
+        public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(
+            MarketInstrumentReference instrument,
+            DateOnly startDate,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<ProviderPriceBar>>([]);
+
+        public Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(
+            string baseCurrency,
+            string quoteCurrency,
+            DateOnly startDate,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<ProviderFxBar>>([]);
+
+        public MarketInstrumentReference? TryResolveLegacyReference(string? symbol, string? mic) => null;
     }
 
     private static JsonElement ToJsonElement(object value)

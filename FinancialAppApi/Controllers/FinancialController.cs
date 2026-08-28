@@ -2,12 +2,14 @@ using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
 using FinancialAppApi.Database;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [Route("api/financial")]
 [AuthorizeToken]
+[RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.Recurring, RefreshSliceNames.Categories, RefreshSliceNames.Wishlist, RefreshSliceNames.SavingsGoals, RefreshSliceNames.Loans, RefreshSliceNames.Investments, RefreshSliceNames.Documents)]
 public class FinancialController : ControllerBase
 {
     private readonly FinancialService _financialService;
@@ -81,6 +83,7 @@ public class FinancialController : ControllerBase
 
     // PUT: api/financial/dark-mode
     [HttpPut("dark-mode")]
+    [NoFinancialRefresh]
     public async Task<IActionResult> UpdateDarkMode([FromBody] UpdateDarkModeDto dto)
     {
         await _financialService.UpdateDarkModeAsync(dto.DarkMode, HttpContext.RequestAborted);
@@ -89,6 +92,7 @@ public class FinancialController : ControllerBase
 
     // PUT: api/financial/hide-sensitive
     [HttpPut("hide-sensitive")]
+    [NoFinancialRefresh]
     public async Task<IActionResult> UpdateHideSensitive([FromBody] UpdateHideSensitiveDto dto)
     {
         await _financialService.UpdateHideSensitiveAsync(dto.HideSensitive, HttpContext.RequestAborted);
@@ -97,6 +101,7 @@ public class FinancialController : ControllerBase
 
     // PUT: api/financial/summary-seen
     [HttpPut("summary-seen")]
+    [NoFinancialRefresh]
     public async Task<IActionResult> UpdateSummarySeen([FromBody] UpdateSummarySeenDto dto)
     {
         if (!string.IsNullOrWhiteSpace(dto.CycleKey) &&
@@ -110,6 +115,7 @@ public class FinancialController : ControllerBase
 
     // POST: api/financial/select-period
     [HttpPost("select-period")]
+    [RefreshSlices(RefreshSliceNames.Core)]
     public async Task<IActionResult> SelectPeriod([FromBody] SelectPeriodDto periodDto)
     {
         if (!IsValidPeriod(periodDto.SelectedMonth, periodDto.SelectedYear))

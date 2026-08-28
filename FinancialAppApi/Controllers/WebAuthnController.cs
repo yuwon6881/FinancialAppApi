@@ -9,6 +9,7 @@ namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [Route("api/auth/webauthn")]
+[NoFinancialRefresh]
 public class WebAuthnController : ControllerBase
 {
     private readonly WebAuthnService _webAuthnService;

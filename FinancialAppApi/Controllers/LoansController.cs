@@ -5,12 +5,14 @@ using FinancialAppApi.Filters;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services.Loans;
 using Microsoft.AspNetCore.Mvc;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [Route("api/loans")]
 [AuthorizeToken]
+[RefreshSlices(RefreshSliceNames.Loans, RefreshSliceNames.Recurring)]
 public sealed class LoansController : ControllerBase
 {
     private const int BootstrapSchedulePreviewLength = 6;
@@ -40,6 +42,7 @@ public sealed class LoansController : ControllerBase
     }
 
     [HttpPost("{id}/repayments/preview")]
+    [NoFinancialRefresh]
     public async Task<IActionResult> PreviewRepayment(string id, [FromBody] AdvanceRepaymentPreviewRequestDto? dto = null)
     {
         var cycles = dto?.Cycles ?? 1;
@@ -59,6 +62,7 @@ public sealed class LoansController : ControllerBase
     }
 
     [HttpPost("{id}/repayments/advance-cycles")]
+    [RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.Loans, RefreshSliceNames.Recurring)]
     public async Task<IActionResult> AdvanceCyclesRepayment(string id, [FromBody] AdvanceCyclesRepaymentDto dto)
     {
         var result = await _repaymentService.AdvanceCyclesRepaymentAsync(
@@ -86,6 +90,7 @@ public sealed class LoansController : ControllerBase
     }
 
     [HttpPost("{id}/repayments/full-settlement")]
+    [RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.Loans, RefreshSliceNames.Recurring)]
     public async Task<IActionResult> FullSettlementRepayment(string id, [FromBody] FullSettlementRepaymentDto dto)
     {
         if (!ObfuscationHelper.TryDeobfuscate(dto.LenderQuoteAmount, out var quote) || quote < 0.01m)
@@ -117,6 +122,7 @@ public sealed class LoansController : ControllerBase
     }
 
     [HttpPost("repayments/{actionId}/undo")]
+    [RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.Loans, RefreshSliceNames.Recurring)]
     public async Task<IActionResult> UndoRepayment(string actionId)
     {
         var result = await _repaymentService.UndoRepaymentActionAsync(actionId, HttpContext.RequestAborted);
@@ -135,6 +141,7 @@ public sealed class LoansController : ControllerBase
     }
 
     [HttpPost]
+    [RefreshSlices(RefreshSliceNames.Loans, RefreshSliceNames.Recurring)]
     public async Task<ActionResult<LoanDto>> PostLoan(LoanMutationDto dto)
     {
         var result = await _loanService.CreateLoanAsync(ToLoan(dto), HttpContext.RequestAborted);
@@ -148,6 +155,7 @@ public sealed class LoansController : ControllerBase
     }
 
     [HttpPut("{id}")]
+    [RefreshSlices(RefreshSliceNames.Loans, RefreshSliceNames.Recurring)]
     public async Task<IActionResult> PutLoan(string id, LoanMutationDto dto)
     {
         var result = await _loanService.UpdateLoanAsync(id, ToLoan(dto), HttpContext.RequestAborted);
@@ -162,6 +170,7 @@ public sealed class LoansController : ControllerBase
     }
 
     [HttpDelete("{id}")]
+    [RefreshSlices(RefreshSliceNames.Loans, RefreshSliceNames.Recurring)]
     public async Task<IActionResult> DeleteLoan(string id)
     {
         var status = await _loanService.DeleteLoanAsync(id, HttpContext.RequestAborted);

@@ -3,6 +3,7 @@ using FinancialAppApi.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Text.Json;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
 
@@ -10,6 +11,7 @@ namespace FinancialAppApi.Controllers;
 [Route("api/ai")]
 [AuthorizeToken]
 [EnableRateLimiting("ai")]
+[NoFinancialRefresh]
 public class AiController : ControllerBase
 {
     public sealed record ResolveAiActionBatchRequest(string Resolution);
@@ -79,6 +81,7 @@ public class AiController : ControllerBase
     }
 
     [HttpPost("action-batches/{batchId:guid}/resolve")]
+    [RefreshSlices(RefreshSliceNames.Core)]
     public async Task<IActionResult> ResolveActionBatch(
         Guid batchId,
         [FromBody] ResolveAiActionBatchRequest request,

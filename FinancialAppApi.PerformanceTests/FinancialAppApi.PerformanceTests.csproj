@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- Npgsql 10.0.2's metadata was built against EF 10.0.4 while the API pins EF 10.0.10;
+         the runtime unifies this compatible dependency, but MSBuild otherwise reports a noisy
+         transitive assembly conflict for this isolated harness. -->
+    <NoWarn>$(NoWarn);MSB3277</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+    <ProjectReference Include="..\FinancialAppApi\FinancialAppApi.csproj" />
+  </ItemGroup>
+</Project>

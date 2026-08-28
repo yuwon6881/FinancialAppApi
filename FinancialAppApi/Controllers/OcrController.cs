@@ -9,6 +9,7 @@ namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [Route("api/ocr")]
+[NoFinancialRefresh]
 public class OcrController : ControllerBase
 {
     private readonly OcrScanJobService _scanJobService;

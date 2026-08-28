@@ -2,12 +2,14 @@ using FinancialAppApi.Filters;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services.Investments;
 using Microsoft.AspNetCore.Mvc;
+using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [AuthorizeToken]
 [Route("api/investments")]
+[RefreshSlices(RefreshSliceNames.Investments)]
 public sealed class InvestmentAllocationController(
     InvestmentPortfolioService portfolioService,
     InvestmentAllocationService allocationService) : ControllerBase

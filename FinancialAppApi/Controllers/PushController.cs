@@ -7,6 +7,7 @@ namespace FinancialAppApi.Controllers;
 
 [ApiController]
 [Route("api/push")]
+[NoFinancialRefresh]
 public class PushController : ControllerBase
 {
     private readonly PushSubscriptionService _subscriptionService;
