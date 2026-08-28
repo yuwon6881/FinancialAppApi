@@ -86,6 +86,44 @@ public class FinancialServiceDashboardTests
     }
 
     [Fact]
+    public async Task GetDashboardInsightsAsync_CurrentYearRunsThroughCurrentCycleNotSelectedCycle()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Mar", SelectedYear = 2026 });
+        context.Transactions.AddRange(
+            Tx("jan", 2026, 1, 10, "January", -10m),
+            Tx("jul", 2026, 7, 10, "July", -70m),
+            Tx("aug", 2026, 8, 10, "August", -80m));
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context, new DateTimeOffset(2026, 7, 15, 0, 0, 0, TimeSpan.Zero))
+            .GetDashboardInsightsAsync("Mar", 2026);
+
+        Assert.Equal(
+            new[] { ("July", 70m), ("January", 10m) },
+            GetBreakdown(response, "yearlyCategoryBreakdown"));
+    }
+
+    [Fact]
+    public async Task GetDashboardInsightsAsync_CompletedYearIncludesCyclesAfterSelectedCycle()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1, SelectedMonth = "Mar", SelectedYear = 2025 });
+        context.Transactions.AddRange(
+            Tx("jan", 2025, 1, 10, "January", -10m),
+            Tx("dec", 2025, 12, 10, "December", -120m),
+            Tx("next-year", 2026, 1, 10, "Next year", -200m));
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context, new DateTimeOffset(2026, 7, 15, 0, 0, 0, TimeSpan.Zero))
+            .GetDashboardInsightsAsync("Mar", 2025);
+
+        Assert.Equal(
+            new[] { ("December", 120m), ("January", 10m) },
+            GetBreakdown(response, "yearlyCategoryBreakdown"));
+    }
+
+    [Fact]
     public async Task GetDashboardDataAsync_NoLongerReturnsHistoricalInsightsFields()
     {
         await using var context = TestHelpers.NewInMemoryContext();

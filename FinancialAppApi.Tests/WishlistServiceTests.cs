@@ -152,6 +152,46 @@ public class WishlistServiceTests
     }
 
     [Fact]
+    public async Task PurchaseWishlistItemAsync_UsesCurrentPoolWhenSavedPeriodIsHistorical()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = 1,
+            SelectedMonth = "Jan",
+            SelectedYear = 2025,
+        });
+        context.WishlistItems.Add(NewItem(1, "Headphones", active: true, price: 80m));
+        context.Transactions.AddRange(
+            new Transaction
+            {
+                Id = "historical-rewards",
+                Date = new DateTime(2025, 1, 10),
+                Description = "Historical Rewards balance",
+                Category = "Other",
+                LedgerCategory = "Rewards",
+                Amount = 1000m,
+            },
+            new Transaction
+            {
+                Id = "later-rewards-spend",
+                Date = new DateTime(2026, 7, 10),
+                Description = "Later Rewards spending",
+                Category = "Other",
+                LedgerCategory = "Rewards",
+                Amount = -950m,
+            });
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context, new DateOnly(2026, 7, 15))
+            .PurchaseWishlistItemAsync(1, accountId: "acct-rewards");
+
+        Assert.Equal(WishlistMutationStatus.PriceInvalid, result.Status);
+        Assert.False(context.WishlistItems.Single().IsPurchased);
+        Assert.DoesNotContain(context.Transactions, transaction => transaction.WishlistItemId == 1);
+    }
+
+    [Fact]
     public async Task PurchaseWishlistItemAsync_RejectsFutureClaimDate()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -262,7 +302,7 @@ public class WishlistServiceTests
         Assert.Null(await context.Transactions.FindAsync("legacy-purchase"));
     }
 
-    private static WishlistService NewService(Database.AppDbContext context)
+    private static WishlistService NewService(Database.AppDbContext context, DateOnly? today = null)
     {
         if (context.LedgerAccounts.All(account => account.Id != "acct-rewards"))
         {
@@ -276,8 +316,26 @@ public class WishlistServiceTests
             context.SaveChanges();
         }
         var cycleBalanceService = new CycleBalanceService(context);
-        var savingsGoalService = new FinancialAppApi.Services.SavingsGoals.SavingsGoalService(context, cycleBalanceService);
-        return new WishlistService(context, cycleBalanceService, savingsGoalService);
+        FinancialClock? clock = null;
+        if (today.HasValue)
+        {
+            var configuration = TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC"));
+            clock = new FinancialClock(
+                configuration,
+                new FixedTimeProvider(new DateTimeOffset(
+                    today.Value.ToDateTime(new TimeOnly(1, 0)),
+                    TimeSpan.Zero)));
+        }
+        var savingsGoalService = new FinancialAppApi.Services.SavingsGoals.SavingsGoalService(
+            context,
+            cycleBalanceService,
+            clock);
+        return new WishlistService(context, cycleBalanceService, savingsGoalService, clock);
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 
     private static WishlistItem NewItem(

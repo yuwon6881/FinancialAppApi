@@ -28,6 +28,35 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
+    public void ProjectCycleTransactions_UsesPostingCycleRatherThanRecurringOccurrenceCycle()
+    {
+        var paidEarlyForAugust = NewTransaction(
+            "paid-early-for-august",
+            "August bill paid in July",
+            "Bills",
+            "Essentials",
+            -80m,
+            date: new DateOnly(2026, 7, 20),
+            recurringPaymentId: "monthly-bill");
+        paidEarlyForAugust.RecurringOccurrenceDate = new DateOnly(2026, 8, 10);
+
+        var paidEarlyInJuneForJuly = NewTransaction(
+            "paid-in-june-for-july",
+            "July bill paid in June",
+            "Bills",
+            "Essentials",
+            -80m,
+            date: new DateOnly(2026, 6, 20),
+            recurringPaymentId: "monthly-bill");
+        paidEarlyInJuneForJuly.RecurringOccurrenceDate = new DateOnly(2026, 7, 10);
+
+        var projected = TransactionQueryService.ProjectCycleTransactions(
+            [paidEarlyForAugust, paidEarlyInJuneForJuly], 2026, 7, cycleDay: 1);
+
+        Assert.Equal("paid-early-for-august", Assert.Single(projected.Items).Id);
+    }
+
+    [Fact]
     public void ProjectCycleTransactions_PreservesAccountPlacement()
     {
         var transaction = NewTransaction("ordinary", "Groceries", "Food", "Essentials", -40m);

@@ -32,6 +32,44 @@ public class SavingsGoalServiceTests
     }
 
     [Fact]
+    public async Task GetPoolSummaryAsync_IsIndependentOfTheSavedReportingPeriod()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var setting = context.FinancialSettings.Single();
+        setting.SelectedMonth = "Jan";
+        setting.SelectedYear = 2025;
+        await context.SaveChangesAsync();
+
+        var historicalSelection = await NewService(context).GetPoolSummaryAsync();
+
+        setting.SelectedMonth = "Dec";
+        setting.SelectedYear = 2030;
+        await context.SaveChangesAsync();
+        var futureSelection = await NewService(context).GetPoolSummaryAsync();
+
+        Assert.Equal("2026-07", historicalSelection.CurrentCycleKey);
+        Assert.Equal(historicalSelection, futureSelection);
+    }
+
+    [Fact]
+    public async Task FundCurrentCycleAsync_UsesClockCycleWhenSavedPeriodIsHistorical()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var setting = context.FinancialSettings.Single();
+        setting.SelectedMonth = "Jan";
+        setting.SelectedYear = 2025;
+        var goal = NewGoal("Current commitment", 1200m, new DateOnly(2026, 9, 20));
+        context.SavingsGoals.Add(goal);
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).FundCurrentCycleAsync();
+
+        Assert.Equal(SavingsGoalMutationStatus.Success, result.Status);
+        Assert.True(result.TotalGranted > 0m);
+        Assert.Equal("2026-07", context.SavingsGoals.Single().CycleFundedKey);
+    }
+
+    [Fact]
     public async Task GetPoolSummaryAsync_SeparatesEssentialsFromRewards()
     {
         await using var context = NewContext(rewardsBalance: 0m);
