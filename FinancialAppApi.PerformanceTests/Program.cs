@@ -398,21 +398,24 @@ public static async Task SeedAsync(AppDbContext context, PerformanceProfile prof
         var rows = new List<Transaction>(Math.Min(count, 2_000));
         for (var index = 0; index < count; index++)
         {
+            var isIncome = index % 10 == 0;
+            var isRecurring = index % 500 == 1;
             rows.Add(new Transaction
             {
                 Id = $"{userId}-tx-{index:D6}", UserId = userId,
                 Date = start.AddDays(index % (profile == PerformanceProfile.Small ? 365 : 3650)),
                 PostedAt = start.AddDays(index % (profile == PerformanceProfile.Small ? 365 : 3650)).AddHours(12),
                 Description = $"Performance transaction {index:D6}",
-                Category = index % 10 == 0 ? "Salary" : "Food", LedgerCategory = index % 10 == 0 ? "Income" : "Essentials",
-                Amount = index % 10 == 0 ? 2500 : -25, AccountId = accounts[index % accounts.Count].Id,
+                Category = isIncome ? "Salary" : "Food", LedgerCategory = isIncome ? "Income" : "Essentials",
+                Amount = isIncome ? 2500 : -25, AccountId = isIncome ? null : accounts[index % accounts.Count].Id,
                 StabilityReloadIntent = StabilityReloadIntent.Unanswered,
-                RecurringPaymentId = index % 500 == 0 ? recurringId : null,
-                RecurringOccurrenceDate = index % 500 == 0 ? new DateOnly(2026, 1, 1).AddMonths(index / 500) : null,
+                RecurringPaymentId = isRecurring ? recurringId : null,
+                RecurringOccurrenceDate = isRecurring ? new DateOnly(2026, 1, 1).AddMonths(index / 500) : null,
             });
             if (rows.Count < 2_000 && index + 1 < count) continue;
             context.Transactions.AddRange(rows);
             await context.SaveChangesAsync();
+            context.ChangeTracker.Clear();
             rows.Clear();
         }
         await context.SaveChangesAsync();
