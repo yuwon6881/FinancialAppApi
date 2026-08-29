@@ -380,7 +380,10 @@ public static class ServiceCollectionExtensions
             ConnectionIdleLifetime = 30,
             ConnectionPruningInterval = 5,
             MaxAutoPrepare = 0,
-            NoResetOnClose = true,
+            // Advisory locks are session-scoped. Keep Npgsql's connection reset enabled so an
+            // interrupted unlock cannot return a lock-bearing session to the pool and block every
+            // later mutation for that user/entity until the command timeout.
+            NoResetOnClose = false,
             Timeout = 5,
             CommandTimeout = 15,
             SslMode = SslMode.Require,

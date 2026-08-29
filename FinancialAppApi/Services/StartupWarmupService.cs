@@ -47,8 +47,8 @@ public sealed class StartupWarmupService(
             _ = context.Model;
 
             // Pays the TLS handshake against the pooler and Npgsql's first-use type-handler setup.
-            // Closing returns the connection to the pool physically open (NoResetOnClose, and a
-            // 30s ConnectionIdleLifetime), so the first real request reuses it.
+            // Closing returns the physical connection to the pool (with its session state reset),
+            // so the first real request can reuse the already-established TLS connection.
             await context.Database.OpenConnectionAsync(cancellationToken);
             await context.Database.CloseConnectionAsync();
 
