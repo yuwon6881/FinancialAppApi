@@ -359,6 +359,20 @@ public static class ServiceCollectionExtensions
         return connectionString;
     }
 
+    /// <summary>
+    /// Raise the command timeout for EF migrations and seeding.
+    ///
+    /// Schema maintenance runs on the same <see cref="AppDbContext"/> as request traffic, so it
+    /// inherits the deliberately short request-path command timeout. One index build over a large
+    /// table outruns that and would abort the deploy's migrate step, so the maintenance scope gets
+    /// its own ceiling. Request handling is unaffected: only this scope's connection is retimed.
+    /// </summary>
+    public static void UseSchemaMaintenanceCommandTimeout(this AppDbContext context, IConfiguration configuration)
+    {
+        context.Database.SetCommandTimeout(
+            configuration.GetValue("Database:MaintenanceCommandTimeout", 600));
+    }
+
     public static IServiceCollection AddPersistence(
         this IServiceCollection services,
         IConfiguration configuration,
@@ -377,9 +391,15 @@ public static class ServiceCollectionExtensions
             Pooling = configuration.GetValue("Database:Pooling", true),
             MinPoolSize = 0,
             MaxPoolSize = configuration.GetValue("Database:MaxPoolSize", 8),
-            ConnectionIdleLifetime = configuration.GetValue("Database:ConnectionIdleLifetime", 10),
-            ConnectionPruningInterval = configuration.GetValue("Database:ConnectionPruningInterval", 2),
-            ConnectionLifetime = configuration.GetValue("Database:ConnectionLifetime", 15),
+            ConnectionIdleLifetime = configuration.GetValue("Database:ConnectionIdleLifetime", 30),
+            ConnectionPruningInterval = configuration.GetValue("Database:ConnectionPruningInterval", 5),
+            // Cloud Run freezes the CPU at scale-to-zero, so the idle-pruning timer cannot run
+            // while the container sleeps and the pooler/NAT silently drops the TCP connections it
+            // holds. ConnectionLifetime is the only one of these checked when a connection is
+            // handed out, so a connector that outlived a sleep is discarded on checkout instead of
+            // hanging until the command timeout. It only has to undercut the intermediary idle
+            // timeout (minutes), not the sleep itself -- a shorter value just reopens sockets.
+            ConnectionLifetime = configuration.GetValue("Database:ConnectionLifetime", 60),
             MaxAutoPrepare = 0,
             // Advisory locks are session-scoped. Keep Npgsql's connection reset enabled so an
             // interrupted unlock cannot return a lock-bearing session to the pool and block every
@@ -399,9 +419,18 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<RequestPerformanceContext>();
         services.AddScoped<PerformanceDbCommandInterceptor>();
+
+        // Bound the retry budget explicitly. The defaults (6 retries, delays up to 30s) let a
+        // wedged socket stack six full command timeouts plus backoff into one request, which is far
+        // longer than any caller waits. A stale connector is replaced on the first retry, so a small
+        // budget with a short ceiling recovers the real case and fails fast otherwise.
+        var maxRetryCount = configuration.GetValue("Database:MaxRetryCount", 3);
+        var maxRetryDelay = TimeSpan.FromSeconds(configuration.GetValue("Database:MaxRetryDelaySeconds", 1));
         services.AddDbContext<AppDbContext>((serviceProvider, options) =>
         {
-            options.UseNpgsql(npgsqlConnectionString, npgsql => npgsql.EnableRetryOnFailure());
+            options.UseNpgsql(
+                npgsqlConnectionString,
+                npgsql => npgsql.EnableRetryOnFailure(maxRetryCount, maxRetryDelay, errorCodesToAdd: null));
             options.AddInterceptors(serviceProvider.GetRequiredService<PerformanceDbCommandInterceptor>());
         });
         var dataProtection = services.AddDataProtection()

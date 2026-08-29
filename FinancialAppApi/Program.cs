@@ -83,6 +83,7 @@ if (migrateOnStartup || seedOnStartup || seedDatabase || migrateOnly)
     try
     {
         var context = services.GetRequiredService<AppDbContext>();
+        context.UseSchemaMaintenanceCommandTimeout(app.Configuration);
         if (migrateOnStartup || migrateOnly)
         {
             context.Database.Migrate();

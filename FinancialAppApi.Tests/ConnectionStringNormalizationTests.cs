@@ -68,9 +68,9 @@ public class ConnectionStringNormalizationTests
         var builder = new NpgsqlConnectionStringBuilder(context.Database.GetDbConnection().ConnectionString);
 
         Assert.True(builder.Pooling);
-        Assert.Equal(15, builder.ConnectionLifetime);
-        Assert.Equal(10, builder.ConnectionIdleLifetime);
-        Assert.Equal(2, builder.ConnectionPruningInterval);
+        Assert.Equal(60, builder.ConnectionLifetime);
+        Assert.Equal(30, builder.ConnectionIdleLifetime);
+        Assert.Equal(5, builder.ConnectionPruningInterval);
         Assert.Equal(5, builder.CommandTimeout);
         Assert.Equal(5, builder.Timeout);
         Assert.Equal(15, builder.KeepAlive);
@@ -117,5 +117,88 @@ public class ConnectionStringNormalizationTests
         Assert.True(builder.TcpKeepAlive);
         Assert.Equal(20, builder.TcpKeepAliveTime);
         Assert.Equal(4, builder.TcpKeepAliveInterval);
+    }
+
+    [Fact]
+    public void AddPersistence_BoundsTheTransientRetryBudget()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                {"ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test"}
+            })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddPersistence(configuration, migrateOnly: false);
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var strategy = context.Database.CreateExecutionStrategy();
+
+        // A wedged socket burns a full command timeout per attempt, so the retry budget -- not the
+        // per-command timeout -- is what actually bounds how long one request can hang.
+        Assert.True(strategy.RetriesOnFailure);
+        Assert.Equal(3, GetProtected<int>(strategy, "MaxRetryCount"));
+        Assert.Equal(TimeSpan.FromSeconds(1), GetProtected<TimeSpan>(strategy, "MaxRetryDelay"));
+    }
+
+    [Fact]
+    public void UseSchemaMaintenanceCommandTimeout_OutlivesTheRequestPathTimeout()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                {"ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test"}
+            })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddPersistence(configuration, migrateOnly: true);
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        // Migrations and seeding share the request-path context; without this the deploy's migrate
+        // step inherits the short request timeout and a single index build aborts it.
+        context.UseSchemaMaintenanceCommandTimeout(configuration);
+
+        Assert.Equal(600, context.Database.GetCommandTimeout());
+    }
+
+    [Fact]
+    public void UseSchemaMaintenanceCommandTimeout_HonoursConfiguredOverride()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                {"ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test"},
+                {"Database:MaintenanceCommandTimeout", "45"}
+            })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddPersistence(configuration, migrateOnly: true);
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        context.UseSchemaMaintenanceCommandTimeout(configuration);
+
+        Assert.Equal(45, context.Database.GetCommandTimeout());
+    }
+
+    private static T GetProtected<T>(object instance, string propertyName)
+    {
+        var property = instance.GetType().GetProperty(
+            propertyName,
+            System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic
+                | System.Reflection.BindingFlags.Public);
+        Assert.NotNull(property);
+        return (T)property!.GetValue(instance)!;
     }
 }
