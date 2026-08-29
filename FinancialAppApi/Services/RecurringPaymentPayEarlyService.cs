@@ -169,9 +169,11 @@ public class RecurringPaymentPayEarlyService
         // settles it where it was scheduled, while the bucket is checked against the payment's
         // current LedgerCategory because that is what the row below is written with. A bill moved
         // to another bucket therefore fails here rather than writing a leg the attribution rules
-        // cannot place. Legacy occurrences carry no account and fall back to the parent.
-        var scheduledAccountId = occurrenceRow!.AccountId ?? payment.AccountId;
-        if (!string.Equals(requestedAccountId, scheduledAccountId, StringComparison.Ordinal))
+        // cannot place. An occurrence with no account of its own falls back to the parent, and a
+        // bill that never had one has no identity to preserve -- only the bucket check applies.
+        var scheduledAccountId = RecurringOccurrenceAccounts.Scheduled(occurrenceRow!.AccountId, payment.AccountId);
+        if (scheduledAccountId is not null
+            && !string.Equals(requestedAccountId, scheduledAccountId, StringComparison.Ordinal))
             return new PayEarlyResult(
                 PayEarlyStatus.InvalidAccount,
                 Message: "The account for this bill changed. Refresh and try again.",

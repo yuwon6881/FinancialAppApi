@@ -145,7 +145,7 @@ public sealed class RecurringOccurrenceSettlementService
         var scheduledBucket = occurrence.LedgerCategory ?? payment.LedgerCategory;
         if (status == RecurringOccurrenceStatus.Paid)
         {
-            var scheduledAccountId = occurrence.AccountId ?? payment.AccountId;
+            var scheduledAccountId = RecurringOccurrenceAccounts.Scheduled(occurrence.AccountId, payment.AccountId);
             var requestedAccountId = string.IsNullOrWhiteSpace(accountId) ? null : accountId.Trim();
             if (requestedAccountId is null)
                 return new RecurringSettlementResult(
@@ -153,7 +153,8 @@ public sealed class RecurringOccurrenceSettlementService
                     Message: "Choose the account assigned to this recurring payment.",
                     Code: "ledger_account_required",
                     MissingBuckets: [scheduledBucket]);
-            if (!string.Equals(requestedAccountId, scheduledAccountId, StringComparison.Ordinal))
+            if (scheduledAccountId is not null
+                && !string.Equals(requestedAccountId, scheduledAccountId, StringComparison.Ordinal))
                 return new RecurringSettlementResult(
                     RecurringSettlementStatus.Invalid,
                     Message: "The account for this bill changed. Refresh and try again.",
@@ -168,6 +169,9 @@ public sealed class RecurringOccurrenceSettlementService
                     Message: "Choose an open account in the recurring payment's bucket.",
                     Code: "ledger_account_invalid",
                     MissingBuckets: [scheduledBucket]);
+            // Freeze the answer so a part payment and the payment that finishes it cannot land in
+            // two different accounts once the occurrence had none of its own to preserve.
+            if (scheduledAccountId is null) occurrence.AccountId = requestedAccountId;
         }
 
         var postingDate = paidDate ?? _clock.Today;

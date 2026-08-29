@@ -370,6 +370,49 @@ public class RecurringPaymentPayEarlyServiceTests
         Assert.Empty(context.Transactions);
     }
 
+    /// <summary>
+    /// A bill authored before account attribution carries a blank account, and that blank
+    /// propagates onto every occurrence it materialises. There is no identity to preserve, so any
+    /// open account in the bill's bucket is accepted -- otherwise the refusal asked for an account
+    /// and then rejected every account the client could offer, and the payment never synced.
+    /// </summary>
+    [Fact]
+    public async Task PayEarlyAsync_AcceptsAnyOpenBucketAccountWhenTheBillNeverHadOne()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var payment = NewPayment("rec-1", startDate: "2026-01-01", dueDate: 15);
+        payment.AccountId = string.Empty;
+        context.RecurringPayments.Add(payment);
+        await context.SaveChangesAsync();
+        var service = NewService(context, Today(2026, 7, 10));
+
+        var result = await service.PayEarlyAsync("rec-1", new DateOnly(2026, 7, 15), accountId: "acct-essentials");
+
+        Assert.Equal(PayEarlyStatus.Success, result.Status);
+        Assert.Equal("acct-essentials", Assert.Single(context.Transactions).AccountId);
+    }
+
+    [Fact]
+    public async Task PayEarlyAsync_StillRefusesAnAccountOutsideTheBucketWhenTheBillNeverHadOne()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var payment = NewPayment("rec-1", startDate: "2026-01-01", dueDate: 15);
+        payment.AccountId = string.Empty;
+        context.RecurringPayments.Add(payment);
+        context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = "acct-rewards", Name = "Fun money", Bucket = "Rewards", Kind = LedgerAccountKind.Bank,
+        });
+        await context.SaveChangesAsync();
+        var service = NewService(context, Today(2026, 7, 10));
+
+        var result = await service.PayEarlyAsync("rec-1", new DateOnly(2026, 7, 15), accountId: "acct-rewards");
+
+        Assert.Equal(PayEarlyStatus.InvalidAccount, result.Status);
+        Assert.Equal("ledger_account_invalid", result.Code);
+        Assert.Empty(context.Transactions);
+    }
+
     [Fact]
     public async Task PayEarlyAsync_WritesTheOccurrenceSAccountOntoTheSettlementRow()
     {
