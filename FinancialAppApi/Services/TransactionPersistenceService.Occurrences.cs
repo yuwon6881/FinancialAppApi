@@ -76,7 +76,7 @@ public partial class TransactionPersistenceService
         }
         var existingTxs = await _context.Transactions.AsNoTracking().Where(t =>
             t.RecurringPaymentId == payment.Id && t.RecurringOccurrenceDate == matchedOccurrence
-            && !string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase))
+            && t.LedgerCategory.ToUpper() != "DISCARDED")
             .ToListAsync(cancellationToken);
         var paidSoFar = existingTxs.Sum(t => Math.Abs(t.Amount));
         var scheduled = Math.Abs(occurrenceRow?.ScheduledAmount ?? payment.Amount);
