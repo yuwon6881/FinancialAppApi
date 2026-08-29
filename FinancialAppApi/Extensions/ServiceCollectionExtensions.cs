@@ -395,18 +395,17 @@ public static class ServiceCollectionExtensions
             ConnectionPruningInterval = configuration.GetValue("Database:ConnectionPruningInterval", 5),
             // Cloud Run freezes the CPU at scale-to-zero, so the idle-pruning timer cannot run
             // while the container sleeps and the pooler/NAT silently drops the TCP connections it
-            // holds. ConnectionLifetime is the only one of these checked when a connection is
-            // handed out, so a connector that outlived a sleep is discarded on checkout instead of
-            // hanging until the command timeout. It only has to undercut the intermediary idle
-            // timeout (minutes), not the sleep itself -- a shorter value just reopens sockets.
-            ConnectionLifetime = configuration.GetValue("Database:ConnectionLifetime", 60),
+            // holds. ConnectionLifetime is checked when a connection is handed out, so a connector
+            // that outlived a sleep is discarded on checkout instead of hanging until the command
+            // timeout.
+            ConnectionLifetime = configuration.GetValue("Database:ConnectionLifetime", 300),
             MaxAutoPrepare = 0,
             // Advisory locks are session-scoped. Keep Npgsql's connection reset enabled so an
             // interrupted unlock cannot return a lock-bearing session to the pool and block every
             // later mutation for that user/entity until the command timeout.
             NoResetOnClose = false,
-            Timeout = configuration.GetValue("Database:Timeout", 5),
-            CommandTimeout = configuration.GetValue("Database:CommandTimeout", 5),
+            Timeout = configuration.GetValue("Database:Timeout", 15),
+            CommandTimeout = configuration.GetValue("Database:CommandTimeout", 30),
             KeepAlive = configuration.GetValue("Database:KeepAlive", 15),
             TcpKeepAlive = configuration.GetValue("Database:TcpKeepAlive", true),
             TcpKeepAliveTime = configuration.GetValue("Database:TcpKeepAliveTime", 15),

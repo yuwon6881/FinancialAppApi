@@ -68,11 +68,11 @@ public class ConnectionStringNormalizationTests
         var builder = new NpgsqlConnectionStringBuilder(context.Database.GetDbConnection().ConnectionString);
 
         Assert.True(builder.Pooling);
-        Assert.Equal(60, builder.ConnectionLifetime);
+        Assert.Equal(300, builder.ConnectionLifetime);
         Assert.Equal(30, builder.ConnectionIdleLifetime);
         Assert.Equal(5, builder.ConnectionPruningInterval);
-        Assert.Equal(5, builder.CommandTimeout);
-        Assert.Equal(5, builder.Timeout);
+        Assert.Equal(30, builder.CommandTimeout);
+        Assert.Equal(15, builder.Timeout);
         Assert.Equal(15, builder.KeepAlive);
         Assert.True(builder.TcpKeepAlive);
         Assert.Equal(15, builder.TcpKeepAliveTime);
