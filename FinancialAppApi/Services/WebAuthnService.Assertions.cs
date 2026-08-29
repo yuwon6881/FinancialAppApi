@@ -40,7 +40,7 @@ public partial class WebAuthnService
         });
 
         var challengeId = Guid.NewGuid().ToString("N");
-        _context.WebAuthnChallenges.Add(new WebAuthnChallenge
+        await PersistChallengeAsync(new WebAuthnChallenge
         {
             Id = challengeId,
             UserId = userId,
@@ -48,8 +48,7 @@ public partial class WebAuthnService
             Username = username,
             OptionsJson = options.ToJson(),
             ExpiresAt = DateTime.UtcNow.Add(ChallengeLifetime)
-        });
-        await _context.SaveChangesAsync(cancellationToken);
+        }, cancellationToken);
 
         return new OkObjectResult(new { challengeId, options });
     }
@@ -225,6 +224,35 @@ public partial class WebAuthnService
             ServerName = "FinancialApp Ledger",
             Origins = origins
         });
+    }
+
+    internal async Task PersistChallengeAsync(
+        WebAuthnChallenge challenge,
+        CancellationToken cancellationToken = default)
+    {
+        _context.WebAuthnChallenges.Add(challenge);
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            // EnableRetryOnFailure can replay SaveChanges when PostgreSQL committed the insert but
+            // the acknowledgement was lost. The replay then reports a duplicate primary key even
+            // though this exact challenge is already durable. Accept only that exact committed
+            // payload; a real collision or a different database failure must still surface.
+            _context.Entry(challenge).State = EntityState.Detached;
+            var alreadyCommitted = await _context.WebAuthnChallenges
+                .AsNoTracking()
+                .AnyAsync(candidate =>
+                    candidate.Id == challenge.Id &&
+                    candidate.UserId == challenge.UserId &&
+                    candidate.Purpose == challenge.Purpose &&
+                    candidate.Username == challenge.Username &&
+                    candidate.OptionsJson == challenge.OptionsJson,
+                    cancellationToken);
+            if (!alreadyCommitted) throw;
+        }
     }
 
     private async Task<WebAuthnChallenge?> ClaimChallengeAsync(

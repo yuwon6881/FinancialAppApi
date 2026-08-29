@@ -68,7 +68,7 @@ public partial class WebAuthnService
         });
 
         var challengeId = Guid.NewGuid().ToString("N");
-        _context.WebAuthnChallenges.Add(new WebAuthnChallenge
+        await PersistChallengeAsync(new WebAuthnChallenge
         {
             Id = challengeId,
             UserId = userId,
@@ -76,8 +76,7 @@ public partial class WebAuthnService
             Username = username,
             OptionsJson = options.ToJson(),
             ExpiresAt = DateTime.UtcNow.Add(ChallengeLifetime)
-        });
-        await _context.SaveChangesAsync(cancellationToken);
+        }, cancellationToken);
 
         return new OkObjectResult(new { challengeId, options });
     }
@@ -206,7 +205,7 @@ public partial class WebAuthnService
         });
 
         var challengeId = Guid.NewGuid().ToString("N");
-        _context.WebAuthnChallenges.Add(new WebAuthnChallenge
+        await PersistChallengeAsync(new WebAuthnChallenge
         {
             Id = challengeId,
             UserId = user.Id,
@@ -214,8 +213,7 @@ public partial class WebAuthnService
             Username = user.Username,
             OptionsJson = options.ToJson(),
             ExpiresAt = DateTime.UtcNow.Add(ChallengeLifetime)
-        });
-        await _context.SaveChangesAsync(cancellationToken);
+        }, cancellationToken);
 
         return new OkObjectResult(new { challengeId, options });
     }
