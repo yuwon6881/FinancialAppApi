@@ -388,17 +388,12 @@ public static class ServiceCollectionExtensions
 
         var npgsqlConnectionString = new NpgsqlConnectionStringBuilder(connectionString)
         {
-            Pooling = configuration.GetValue("Database:Pooling", true),
+            Pooling = configuration.GetValue("Database:Pooling", false),
             MinPoolSize = 0,
             MaxPoolSize = configuration.GetValue("Database:MaxPoolSize", 8),
-            ConnectionIdleLifetime = configuration.GetValue("Database:ConnectionIdleLifetime", 30),
-            ConnectionPruningInterval = configuration.GetValue("Database:ConnectionPruningInterval", 5),
-            // Cloud Run freezes the CPU at scale-to-zero, so the idle-pruning timer cannot run
-            // while the container sleeps and the pooler/NAT silently drops the TCP connections it
-            // holds. ConnectionLifetime is checked when a connection is handed out, so a connector
-            // that outlived a sleep is discarded on checkout instead of hanging until the command
-            // timeout.
-            ConnectionLifetime = configuration.GetValue("Database:ConnectionLifetime", 300),
+            ConnectionIdleLifetime = configuration.GetValue("Database:ConnectionIdleLifetime", 15),
+            ConnectionPruningInterval = configuration.GetValue("Database:ConnectionPruningInterval", 2),
+            ConnectionLifetime = configuration.GetValue("Database:ConnectionLifetime", 0),
             MaxAutoPrepare = 0,
             // Advisory locks are session-scoped. Keep Npgsql's connection reset enabled so an
             // interrupted unlock cannot return a lock-bearing session to the pool and block every
@@ -406,8 +401,8 @@ public static class ServiceCollectionExtensions
             NoResetOnClose = false,
             Timeout = configuration.GetValue("Database:Timeout", 15),
             CommandTimeout = configuration.GetValue("Database:CommandTimeout", 30),
-            KeepAlive = configuration.GetValue("Database:KeepAlive", 15),
-            TcpKeepAlive = configuration.GetValue("Database:TcpKeepAlive", true),
+            KeepAlive = configuration.GetValue("Database:KeepAlive", 0),
+            TcpKeepAlive = configuration.GetValue("Database:TcpKeepAlive", false),
             TcpKeepAliveTime = configuration.GetValue("Database:TcpKeepAliveTime", 15),
             TcpKeepAliveInterval = configuration.GetValue("Database:TcpKeepAliveInterval", 5),
             SslMode = SslMode.Require,
