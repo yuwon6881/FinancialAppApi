@@ -374,18 +374,19 @@ public static class ServiceCollectionExtensions
 
         var npgsqlConnectionString = new NpgsqlConnectionStringBuilder(connectionString)
         {
-            Pooling = true,
+            Pooling = configuration.GetValue("Database:Pooling", true),
             MinPoolSize = 0,
             MaxPoolSize = configuration.GetValue("Database:MaxPoolSize", 8),
-            ConnectionIdleLifetime = 30,
-            ConnectionPruningInterval = 5,
+            ConnectionIdleLifetime = configuration.GetValue("Database:ConnectionIdleLifetime", 10),
+            ConnectionPruningInterval = configuration.GetValue("Database:ConnectionPruningInterval", 2),
+            ConnectionLifetime = configuration.GetValue("Database:ConnectionLifetime", 15),
             MaxAutoPrepare = 0,
             // Advisory locks are session-scoped. Keep Npgsql's connection reset enabled so an
             // interrupted unlock cannot return a lock-bearing session to the pool and block every
             // later mutation for that user/entity until the command timeout.
             NoResetOnClose = false,
-            Timeout = 5,
-            CommandTimeout = 15,
+            Timeout = configuration.GetValue("Database:Timeout", 5),
+            CommandTimeout = configuration.GetValue("Database:CommandTimeout", 5),
             KeepAlive = configuration.GetValue("Database:KeepAlive", 15),
             TcpKeepAlive = configuration.GetValue("Database:TcpKeepAlive", true),
             TcpKeepAliveTime = configuration.GetValue("Database:TcpKeepAliveTime", 15),

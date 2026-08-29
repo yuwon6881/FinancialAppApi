@@ -50,7 +50,7 @@ public class ConnectionStringNormalizationTests
     }
 
     [Fact]
-    public void AddPersistence_DefaultsKeepAliveToFifteenSeconds()
+    public void AddPersistence_DefaultsKeepAliveAndConnectionLifetime()
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -67,6 +67,12 @@ public class ConnectionStringNormalizationTests
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var builder = new NpgsqlConnectionStringBuilder(context.Database.GetDbConnection().ConnectionString);
 
+        Assert.True(builder.Pooling);
+        Assert.Equal(15, builder.ConnectionLifetime);
+        Assert.Equal(10, builder.ConnectionIdleLifetime);
+        Assert.Equal(2, builder.ConnectionPruningInterval);
+        Assert.Equal(5, builder.CommandTimeout);
+        Assert.Equal(5, builder.Timeout);
         Assert.Equal(15, builder.KeepAlive);
         Assert.True(builder.TcpKeepAlive);
         Assert.Equal(15, builder.TcpKeepAliveTime);
@@ -74,12 +80,18 @@ public class ConnectionStringNormalizationTests
     }
 
     [Fact]
-    public void AddPersistence_ConfiguresCustomKeepAliveAndTcpKeepAlive()
+    public void AddPersistence_ConfiguresCustomPoolAndTimeoutSettings()
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 {"ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test"},
+                {"Database:Pooling", "false"},
+                {"Database:ConnectionLifetime", "30"},
+                {"Database:ConnectionIdleLifetime", "20"},
+                {"Database:ConnectionPruningInterval", "5"},
+                {"Database:CommandTimeout", "10"},
+                {"Database:Timeout", "8"},
                 {"Database:KeepAlive", "10"},
                 {"Database:TcpKeepAlive", "true"},
                 {"Database:TcpKeepAliveTime", "20"},
@@ -95,6 +107,12 @@ public class ConnectionStringNormalizationTests
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var builder = new NpgsqlConnectionStringBuilder(context.Database.GetDbConnection().ConnectionString);
 
+        Assert.False(builder.Pooling);
+        Assert.Equal(30, builder.ConnectionLifetime);
+        Assert.Equal(20, builder.ConnectionIdleLifetime);
+        Assert.Equal(5, builder.ConnectionPruningInterval);
+        Assert.Equal(10, builder.CommandTimeout);
+        Assert.Equal(8, builder.Timeout);
         Assert.Equal(10, builder.KeepAlive);
         Assert.True(builder.TcpKeepAlive);
         Assert.Equal(20, builder.TcpKeepAliveTime);
