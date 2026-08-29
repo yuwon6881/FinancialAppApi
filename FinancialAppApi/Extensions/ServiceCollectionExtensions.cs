@@ -386,6 +386,10 @@ public static class ServiceCollectionExtensions
             NoResetOnClose = false,
             Timeout = 5,
             CommandTimeout = 15,
+            KeepAlive = configuration.GetValue("Database:KeepAlive", 15),
+            TcpKeepAlive = configuration.GetValue("Database:TcpKeepAlive", true),
+            TcpKeepAliveTime = configuration.GetValue("Database:TcpKeepAliveTime", 15),
+            TcpKeepAliveInterval = configuration.GetValue("Database:TcpKeepAliveInterval", 5),
             SslMode = SslMode.Require,
         }.ConnectionString;
 
