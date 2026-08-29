@@ -130,9 +130,27 @@ public class AuthSessionService
     {
         if (string.IsNullOrWhiteSpace(token)) return false;
 
+        // An inactivity lock is issued only after 5 minutes of idle time. If the session was
+        // actively used or unlocked recently (within the last 4 minutes), reject the lock request
+        // as a stale in-flight race against user activity or unlock.
+        var recentThreshold = DateTime.UtcNow.AddMinutes(-4);
+
+        if (_context.Database.IsRelational())
+        {
+            var updated = await _context.UserSessions
+                .Where(s => s.Token == token && (!s.LastActiveAt.HasValue || s.LastActiveAt.Value <= recentThreshold))
+                .ExecuteUpdateAsync(s => s.SetProperty(b => b.IsLocked, true), cancellationToken);
+            return updated > 0;
+        }
+
         var session = await _context.UserSessions
             .FirstOrDefaultAsync(s => s.Token == token, cancellationToken);
         if (session == null)
+        {
+            return false;
+        }
+
+        if (session.LastActiveAt.HasValue && session.LastActiveAt.Value > recentThreshold)
         {
             return false;
         }
@@ -148,11 +166,23 @@ public class AuthSessionService
     {
         if (string.IsNullOrWhiteSpace(token)) return;
 
+        var now = DateTime.UtcNow;
+        if (_context.Database.IsRelational())
+        {
+            await _context.UserSessions
+                .Where(s => s.Token == token)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(b => b.IsLocked, false)
+                    .SetProperty(b => b.LastActiveAt, now), cancellationToken);
+            return;
+        }
+
         var session = await _context.UserSessions
             .FirstOrDefaultAsync(s => s.Token == token, cancellationToken);
         if (session != null)
         {
             session.IsLocked = false;
+            session.LastActiveAt = now;
             await _context.SaveChangesAsync(cancellationToken);
         }
     }

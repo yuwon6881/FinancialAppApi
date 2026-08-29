@@ -60,7 +60,8 @@ public class AuthSessionServiceTests
             Token = "token",
             Username = "alice",
             CreatedAt = DateTime.UtcNow,
-            ExpiresAt = DateTime.UtcNow.AddDays(7)
+            ExpiresAt = DateTime.UtcNow.AddDays(7),
+            LastActiveAt = DateTime.UtcNow.AddMinutes(-10)
         });
         await context.SaveChangesAsync();
         var service = new AuthSessionService(context);
@@ -69,6 +70,11 @@ public class AuthSessionServiceTests
         Assert.True(context.UserSessions.Single().IsLocked);
 
         await service.UnlockSessionAsync("token");
+        Assert.False(context.UserSessions.Single().IsLocked);
+        Assert.NotNull(context.UserSessions.Single().LastActiveAt);
+
+        // A stale in-flight lock request immediately following an unlock is rejected.
+        Assert.False(await service.LockSessionAsync("token"));
         Assert.False(context.UserSessions.Single().IsLocked);
     }
 
