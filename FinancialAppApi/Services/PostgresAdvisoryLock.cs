@@ -2,6 +2,7 @@ using System.Data;
 using System.Data.Common;
 using FinancialAppApi.Database;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace FinancialAppApi.Services;
 
@@ -68,13 +69,30 @@ internal static class PostgresAdvisoryLock
         {
             if (_released) return;
             _released = true;
-            if (_connection.State == ConnectionState.Open)
+            try
             {
-                await ExecuteAsync(_connection, "pg_advisory_unlock", _key, CancellationToken.None);
+                if (_connection.State == ConnectionState.Open)
+                {
+                    await ExecuteAsync(_connection, "pg_advisory_unlock", _key, CancellationToken.None);
+                }
             }
-            if (_openedByLease && _context.Database.CurrentTransaction == null)
+            catch
             {
-                await _connection.CloseAsync();
+                // NoResetOnClose deliberately avoids a remote reset on the hot path. If the
+                // explicit unlock cannot be confirmed, never let this possibly lock-bearing
+                // connector serve another request.
+                if (_connection is NpgsqlConnection npgsqlConnection)
+                {
+                    NpgsqlConnection.ClearPool(npgsqlConnection);
+                }
+                throw;
+            }
+            finally
+            {
+                if (_openedByLease && _context.Database.CurrentTransaction == null)
+                {
+                    await _connection.CloseAsync();
+                }
             }
         }
     }

@@ -29,7 +29,7 @@ public class ConnectionStringNormalizationTests
     }
 
     [Fact]
-    public void AddPersistence_ResetsPooledSessionsForAdvisoryLockSafety()
+    public void AddPersistence_SkipsPerCommandSessionResetForTransactionPoolerPerformance()
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -46,7 +46,7 @@ public class ConnectionStringNormalizationTests
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var connectionString = context.Database.GetDbConnection().ConnectionString;
 
-        Assert.False(new NpgsqlConnectionStringBuilder(connectionString).NoResetOnClose);
+        Assert.True(new NpgsqlConnectionStringBuilder(connectionString).NoResetOnClose);
     }
 
     [Fact]
@@ -67,12 +67,12 @@ public class ConnectionStringNormalizationTests
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var builder = new NpgsqlConnectionStringBuilder(context.Database.GetDbConnection().ConnectionString);
 
-        Assert.False(builder.Pooling);
-        Assert.Equal(0, builder.ConnectionLifetime);
-        Assert.Equal(15, builder.ConnectionIdleLifetime);
-        Assert.Equal(2, builder.ConnectionPruningInterval);
-        Assert.Equal(30, builder.CommandTimeout);
-        Assert.Equal(15, builder.Timeout);
+        Assert.True(builder.Pooling);
+        Assert.Equal(60, builder.ConnectionLifetime);
+        Assert.Equal(30, builder.ConnectionIdleLifetime);
+        Assert.Equal(5, builder.ConnectionPruningInterval);
+        Assert.Equal(15, builder.CommandTimeout);
+        Assert.Equal(5, builder.Timeout);
         Assert.Equal(0, builder.KeepAlive);
         Assert.False(builder.TcpKeepAlive);
         Assert.Equal(15, builder.TcpKeepAliveTime);

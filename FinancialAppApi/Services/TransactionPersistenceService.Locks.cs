@@ -1,10 +1,24 @@
+using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
-
 
 namespace FinancialAppApi.Services;
 
 public partial class TransactionPersistenceService
 {
+    private static bool ReducesCommitmentBacking(Transaction transaction) =>
+        CategoryAttributionService.GetCategoryAmount(transaction, "Essentials") < 0m
+        || CategoryAttributionService.GetCategoryAmount(transaction, "Rewards") < 0m;
+
+    private static bool ReducesCommitmentBacking(Transaction current, Transaction proposed) =>
+        CategoryAttributionService.GetCategoryAmount(proposed, "Essentials")
+            < CategoryAttributionService.GetCategoryAmount(current, "Essentials")
+        || CategoryAttributionService.GetCategoryAmount(proposed, "Rewards")
+            < CategoryAttributionService.GetCategoryAmount(current, "Rewards");
+
+    private static bool RemovingReducesCommitmentBacking(Transaction transaction) =>
+        CategoryAttributionService.GetCategoryAmount(transaction, "Essentials") > 0m
+        || CategoryAttributionService.GetCategoryAmount(transaction, "Rewards") > 0m;
+
     private sealed class NoOpPoolLock : IAsyncDisposable
     {
         public static readonly NoOpPoolLock Instance = new();

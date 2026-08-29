@@ -641,6 +641,42 @@ public class StabilityRecoveryServiceTests
         Assert.Null(recovery.LastDrawdownCycleKey);
     }
 
+    [Fact]
+    public async Task BuildAsync_OrdinarySalaryThatRestoresTheTargetCompletesACarriedObligation()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 1000m);
+        Add(context, "opening", new DateTime(2026, 5, 4), "Stability", 1000m);
+        Add(context, "prior-drawdown", new DateTime(2026, 6, 4), "Stability", -300m);
+
+        var salary = Add(context, "salary", new DateTime(2026, 7, 4), "Income", 2000m);
+        salary.StabilityRecoveryTopUpAmount = 0m;
+        var stabilityShare = Add(
+            context,
+            "salary-split-Stability",
+            new DateTime(2026, 7, 4),
+            "Transfer:Income->Stability",
+            300m,
+            category: "Transfer");
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(
+            context,
+            setting,
+            2026,
+            7,
+            opening: 700m,
+            current: 1000m,
+            salary,
+            stabilityShare);
+
+        Assert.False(recovery.IsActive);
+        Assert.Equal(0m, Money(recovery.OutstandingShortfall));
+        Assert.Equal(0m, Money(recovery.MarkedTotal));
+        Assert.Equal(0m, Money(recovery.RepaidTotal));
+        Assert.Null(recovery.RecoveryFromDate);
+    }
+
     private static async Task<StabilityRecoveryDto> Build(
         AppDbContext context,
         FinancialSetting setting,

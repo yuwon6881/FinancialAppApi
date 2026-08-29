@@ -388,19 +388,26 @@ public static class ServiceCollectionExtensions
 
         var npgsqlConnectionString = new NpgsqlConnectionStringBuilder(connectionString)
         {
-            Pooling = configuration.GetValue("Database:Pooling", false),
+            // Bootstrap and mutation requests issue several short commands. Without pooling every
+            // command opens a new remote TLS/database session, so network setup dominates the SQL
+            // itself and request time grows roughly in proportion to the command count.
+            Pooling = configuration.GetValue("Database:Pooling", true),
             MinPoolSize = 0,
             MaxPoolSize = configuration.GetValue("Database:MaxPoolSize", 8),
-            ConnectionIdleLifetime = configuration.GetValue("Database:ConnectionIdleLifetime", 15),
-            ConnectionPruningInterval = configuration.GetValue("Database:ConnectionPruningInterval", 2),
-            ConnectionLifetime = configuration.GetValue("Database:ConnectionLifetime", 0),
+            ConnectionIdleLifetime = configuration.GetValue("Database:ConnectionIdleLifetime", 30),
+            ConnectionPruningInterval = configuration.GetValue("Database:ConnectionPruningInterval", 5),
+            // Cloud Run can freeze its pruning timer while an instance is idle. Lifetime is checked
+            // when a pooled connector is checked out, so a connector that slept through an
+            // intermediary timeout is replaced before request SQL uses it.
+            ConnectionLifetime = configuration.GetValue("Database:ConnectionLifetime", 60),
             MaxAutoPrepare = 0,
-            // Advisory locks are session-scoped. Keep Npgsql's connection reset enabled so an
-            // interrupted unlock cannot return a lock-bearing session to the pool and block every
-            // later mutation for that user/entity until the command timeout.
-            NoResetOnClose = false,
-            Timeout = configuration.GetValue("Database:Timeout", 15),
-            CommandTimeout = configuration.GetValue("Database:CommandTimeout", 30),
+            // The production endpoint is a transaction pooler. Resetting a session on every close
+            // makes each short EF command pay another remote round trip and has caused reset/retry
+            // stalls there. Advisory locks are explicitly released by PostgresAdvisoryLock; if an
+            // unlock fails, that helper clears this connector from the client pool.
+            NoResetOnClose = true,
+            Timeout = configuration.GetValue("Database:Timeout", 5),
+            CommandTimeout = configuration.GetValue("Database:CommandTimeout", 15),
             KeepAlive = configuration.GetValue("Database:KeepAlive", 0),
             TcpKeepAlive = configuration.GetValue("Database:TcpKeepAlive", false),
             TcpKeepAliveTime = configuration.GetValue("Database:TcpKeepAliveTime", 15),

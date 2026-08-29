@@ -738,6 +738,33 @@ public class SavingsGoalServiceTests
     }
 
     [Fact]
+    public async Task CompleteGoalAsync_RejectsAnEarmarkThatEarlierRewardsSpendingLeftUnderBacked()
+    {
+        await using var context = NewContext(rewardsBalance: 1000m);
+        var goal = NewGoal("Car service", 800m, earmarked: 800m, targetDate: new DateOnly(2026, 9, 20));
+        context.SavingsGoals.Add(goal);
+        context.Transactions.Add(new Transaction
+        {
+            Id = "unplanned-reward-spend",
+            Date = new DateTime(2026, 7, 10, 0, 0, 0, DateTimeKind.Utc),
+            PostedAt = new DateTime(2026, 7, 10, 0, 0, 0, DateTimeKind.Utc),
+            Description = "Unplanned reward spend",
+            Category = "Other",
+            LedgerCategory = "Rewards",
+            Amount = -300m,
+            AccountId = "acct-rewards",
+        });
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).CompleteGoalAsync(goal.Id, "acct-rewards");
+
+        Assert.Equal(SavingsGoalMutationStatus.ExceedsAvailable, result.Status);
+        Assert.Contains("Restore 100.00", result.Message);
+        Assert.Equal(800m, context.SavingsGoals.Single().EarmarkedAmount);
+        Assert.Empty(context.Transactions.Where(transaction => transaction.SavingsGoalId == goal.Id));
+    }
+
+    [Fact]
     public async Task CompleteGoalAsync_RollsARecurringGoalForwardInsteadOfClosingIt()
     {
         await using var context = NewContext(rewardsBalance: 5000m);

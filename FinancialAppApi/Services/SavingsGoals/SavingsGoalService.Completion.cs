@@ -77,6 +77,17 @@ public partial class SavingsGoalService
                 Message: $"Set aside some {goal.FundingBucket.ToLowerInvariant()} money before marking this commitment done.");
         }
 
+        var coverageShortfall = await GetCommitmentCoverageShortfallAsync(
+            goal.FundingBucket,
+            cancellationToken);
+        if (coverageShortfall > 0m)
+        {
+            return new SavingsGoalResult(
+                SavingsGoalMutationStatus.ExceedsAvailable,
+                goal,
+                Message: $"This commitment is no longer fully backed by the {goal.FundingBucket} pool. Restore {coverageShortfall:0.00} before marking it done.");
+        }
+
         var requestedAccountId = string.IsNullOrWhiteSpace(accountId) ? null : accountId.Trim();
         if (requestedAccountId is null)
             return new SavingsGoalResult(

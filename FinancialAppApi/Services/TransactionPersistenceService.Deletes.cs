@@ -36,6 +36,7 @@ public partial class TransactionPersistenceService
         }
 
         await using var poolLock = transaction.SavingsGoalId.HasValue
+            || RemovingReducesCommitmentBacking(transaction)
             ? await _sharedPoolMutationLock.AcquireAsync(cancellationToken)
             : NoOpPoolLock.Instance;
 
@@ -113,6 +114,9 @@ public partial class TransactionPersistenceService
         await using var recurringLeases = await AcquireRecurringLocksAsync(
             transactions.Select(transaction => transaction.RecurringPaymentId),
             cancellationToken);
+        await using var poolLock = transactions.Any(RemovingReducesCommitmentBacking)
+            ? await _sharedPoolMutationLock.AcquireAsync(cancellationToken)
+            : NoOpPoolLock.Instance;
         if (!allowLoanRepaymentActionTransactions)
         {
             var protectedIds = await LoanRepaymentActionTransactionIdsAsync(cancellationToken);

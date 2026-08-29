@@ -141,6 +141,12 @@ public partial class TransactionPersistenceService
             transaction.CounterAccountId = null;
         }
         transaction.ExcludeFromAutocomplete = TransactionAutocompletePolicy.ShouldExclude(transaction);
+        // A real expense is still recordable when it crosses an earmark, but serialize it with
+        // commitment funding/completion. Completion then either happens before this spend or sees
+        // the resulting coverage shortfall; the two operations cannot both consume the same money.
+        await using var poolLock = ReducesCommitmentBacking(transaction)
+            ? await _sharedPoolMutationLock.AcquireAsync(cancellationToken)
+            : NoOpPoolLock.Instance;
         var accountValidation = await ValidateAccountReferencesAsync(transaction, cancellationToken);
         if (accountValidation is not null) return accountValidation;
         var occurrence = await ResolveRecurringOccurrenceDateAsync(
@@ -285,7 +291,7 @@ public partial class TransactionPersistenceService
                 "A loan repayment entry cannot be edited. Use Undo repayment from the loan instead.");
         }
 
-        await using var poolLock = transaction.SavingsGoalId.HasValue
+        await using var completionPoolLock = transaction.SavingsGoalId.HasValue
             ? await _sharedPoolMutationLock.AcquireAsync(cancellationToken)
             : NoOpPoolLock.Instance;
 
@@ -406,6 +412,9 @@ public partial class TransactionPersistenceService
             accountProbe.AccountId = null;
             accountProbe.CounterAccountId = null;
         }
+        await using var backingPoolLock = ReducesCommitmentBacking(transaction, accountProbe)
+            ? await _sharedPoolMutationLock.AcquireAsync(cancellationToken)
+            : NoOpPoolLock.Instance;
         var accountValidation = await ValidateAccountReferencesAsync(accountProbe, cancellationToken);
         if (accountValidation is not null) return accountValidation;
 

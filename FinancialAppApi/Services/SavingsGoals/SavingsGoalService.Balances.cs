@@ -52,6 +52,30 @@ public partial class SavingsGoalService
     }
 
     /// <summary>
+    /// Returns how much of a bucket's active commitments and pending bills is no longer backed by
+    /// its ledger balance. Ordinary ledger entries remain recordable even when they describe real
+    /// spending that crossed an earmark; completion must not spend that same earmark a second time.
+    /// Callers hold the shared-pool mutation lease while reading this value.
+    /// </summary>
+    private async Task<decimal> GetCommitmentCoverageShortfallAsync(
+        string fundingBucket,
+        CancellationToken cancellationToken)
+    {
+        EnsureFundingBucket(fundingBucket);
+        var cycleDay = await GetCycleDayAsync(cancellationToken);
+        var bucketBalance = await GetBucketBalanceAsync(fundingBucket, cycleDay, cancellationToken);
+        var pendingBucket = await GetPendingBucketRecurringAsync(fundingBucket, cycleDay, cancellationToken);
+        var totalEarmarked = await _context.SavingsGoals
+            .Where(goal => goal.Status == SavingsGoalStatus.Active && goal.FundingBucket == fundingBucket)
+            .SumAsync(goal => goal.EarmarkedAmount, cancellationToken);
+
+        return Math.Round(
+            Math.Max(0m, totalEarmarked + pendingBucket - bucketBalance),
+            2,
+            MidpointRounding.AwayFromZero);
+    }
+
+    /// <summary>
     /// Holds an unsettled Rewards subscription out of the same pool that goals and wishlist claims
     /// use. Occurrence-tagged transactions are matched by their exact occurrence date; untagged
     /// transactions retain the legacy posting-date fallback because older ledger rows predate the

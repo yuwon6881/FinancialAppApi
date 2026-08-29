@@ -562,7 +562,10 @@ public class TransactionPersistenceServiceTests
         Assert.Equal(5, await context.Transactions.CountAsync());
     }
 
-    private static TransactionPersistenceService NewService(AppDbContext context, FinancialClock? clock = null)
+    private static TransactionPersistenceService NewService(
+        AppDbContext context,
+        FinancialClock? clock = null,
+        Services.SavingsGoals.ISharedPoolMutationLock? sharedPoolMutationLock = null)
     {
         var occurrenceService = new RecurringOccurrenceService(
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RecurringOccurrenceService>.Instance);
@@ -571,7 +574,41 @@ public class TransactionPersistenceServiceTests
             context,
             cycleBalanceService,
             occurrenceService,
-            new Services.Stability.StabilityRecoveryService(context, cycleBalanceService, clock));
+            new Services.Stability.StabilityRecoveryService(context, cycleBalanceService, clock),
+            clock: clock,
+            sharedPoolMutationLock: sharedPoolMutationLock);
+    }
+
+    [Fact]
+    public async Task Transactions_SerializeEveryMutationThatCanReduceCommitmentBacking()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        await context.SaveChangesAsync();
+        var mutationLock = new CountingSharedPoolMutationLock();
+
+        var service = NewService(context, sharedPoolMutationLock: mutationLock);
+        var result = await service
+            .CreateTransactionAsync(NewRequest("reward-spend", ledgerCategory: "Rewards", amount: -25m));
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal(
+            TransactionMutationStatus.Updated,
+            (await service.UpdateTransactionAsync(
+                "reward-spend",
+                NewRequest("reward-spend", ledgerCategory: "Rewards", amount: -50m))).Status);
+
+        context.Transactions.AddRange(
+            NewTransaction("reward-income", ledgerCategory: "Rewards", amount: 100m),
+            NewTransaction("essential-income", ledgerCategory: "Essentials", amount: 100m));
+        await context.SaveChangesAsync();
+
+        Assert.Equal(TransactionMutationStatus.Deleted, (await service.DeleteTransactionAsync("reward-income")).Status);
+        Assert.Equal(
+            TransactionMutationStatus.Deleted,
+            (await service.DeleteTransactionsAsync(["essential-income"])).Status);
+
+        Assert.Equal(4, mutationLock.AcquisitionCount);
     }
 
     /// <summary>
@@ -598,6 +635,47 @@ public class TransactionPersistenceServiceTests
         // Nothing is lost on the way: the 90 that could not fit still reaches the other buckets.
         var splits = await context.Transactions.Where(t => t.Id.StartsWith("salary-split-")).ToListAsync();
         Assert.Equal(1000m, splits.Sum(t => t.Amount));
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_PlacesRedirectedStabilityOverflowInTheChosenBucketAccount()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedSettings(context, targetStabilityFund: 1000m);
+        context.FinancialSettings.Local.Single().StabilityOverflowRedirect =
+            StabilityOverflowRedirectOptions.RewardsOnly;
+        context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = "rewards-overflow",
+            Name = "Rewards overflow",
+            Bucket = "Rewards",
+            Kind = LedgerAccountKind.EWallet,
+        });
+        context.Transactions.Add(NewTransaction("seed", ledgerCategory: "Stability", amount: 940m));
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context, ClockAt(2026, 7, 9)).CreateTransactionAsync(
+            NewRequest("salary-overflow", ledgerCategory: "Income", amount: 1000m) with
+            {
+                SplitAccountIds = new Dictionary<string, string>
+                {
+                    ["Essentials"] = "default-essentials",
+                    ["Growth"] = "default-growth",
+                    ["Stability"] = "default-stability",
+                    ["Rewards"] = "rewards-overflow",
+                },
+            });
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal(
+            60m,
+            (await context.Transactions.SingleAsync(
+                transaction => transaction.Id == "salary-overflow-split-Stability")).Amount);
+        var overflow = await context.Transactions.SingleAsync(
+            transaction => transaction.Id == "salary-overflow-split-Rewards");
+        Assert.Equal(190m, overflow.Amount);
+        Assert.Equal("rewards-overflow", overflow.AccountId);
     }
 
     [Fact]
@@ -1116,5 +1194,22 @@ public class TransactionPersistenceServiceTests
             CounterAccountId = ResolveAccountIds(ledgerCategory).CounterAccountId,
             WishlistItemId = wishlistItemId
         };
+    }
+
+    private sealed class CountingSharedPoolMutationLock : Services.SavingsGoals.ISharedPoolMutationLock
+    {
+        public int AcquisitionCount { get; private set; }
+
+        public Task<IAsyncDisposable> AcquireAsync(CancellationToken cancellationToken = default)
+        {
+            AcquisitionCount++;
+            return Task.FromResult<IAsyncDisposable>(NoOpLease.Instance);
+        }
+
+        private sealed class NoOpLease : IAsyncDisposable
+        {
+            public static readonly NoOpLease Instance = new();
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
     }
 }
