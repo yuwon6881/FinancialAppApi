@@ -18,6 +18,16 @@ public sealed record StabilityReloadObligationDto(
     string RemainingAmount,
     string? Date);
 
+/// <summary>One origin cycle's independent three-cycle recovery schedule.</summary>
+public sealed record StabilityRecoveryCohortDto(
+    string OriginCycleKey,
+    string FromDate,
+    int TransactionCount,
+    string RemainingShortfall,
+    int CyclesRemaining,
+    string RequiredThisCycle,
+    bool IsOverdue);
+
 /// <summary>
 /// The emergency-fund recovery state the dashboard carries. Money fields are obfuscated strings,
 /// matching every other money field in the dashboard payload.
@@ -36,6 +46,7 @@ public sealed record StabilityRecoveryDto(
     string OpeningOutstanding,
     string? OpeningOldestDate,
     IReadOnlyList<StabilityReloadObligationDto> OpeningObligations,
+    IReadOnlyList<StabilityRecoveryCohortDto> RecoveryCohorts,
     int CyclesRemaining,
     string RequiredThisCycle,
     string ToppedUpThisCycle,
@@ -79,17 +90,74 @@ public partial class StabilityRecoveryService
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly FinancialClock _financialClock;
     private readonly StabilityPlanRevisionService _planRevisionService;
+    private readonly ILogger<StabilityRecoveryService>? _logger;
 
     public StabilityRecoveryService(
         AppDbContext context,
         CycleBalanceService cycleBalanceService,
         FinancialClock? financialClock = null,
-        StabilityPlanRevisionService? planRevisionService = null)
+        StabilityPlanRevisionService? planRevisionService = null,
+        ILogger<StabilityRecoveryService>? logger = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
         _financialClock = financialClock ?? FinancialClock.Utc;
         _planRevisionService = planRevisionService ?? new StabilityPlanRevisionService(context);
+        _logger = logger;
+    }
+
+    private async Task<ReloadState> LoadOpeningReloadAsync(
+        int year,
+        int monthIndex,
+        int cycleDay,
+        CancellationToken cancellationToken)
+    {
+        async Task<(decimal Outstanding, DateOnly? OldestDate, string? Obligations)?> LoadPreviousAsync()
+        {
+            return await _context.CycleBalances
+                .AsNoTracking()
+                .Where(balance => balance.Year < year || (balance.Year == year && balance.MonthIndex < monthIndex))
+                .OrderByDescending(balance => balance.Year)
+                .ThenByDescending(balance => balance.MonthIndex)
+                .Select(balance => new ValueTuple<decimal, DateOnly?, string?>(
+                    balance.StabilityReloadOutstanding,
+                    balance.StabilityReloadOldestDate,
+                    balance.StabilityReloadObligations))
+                .FirstOrDefaultAsync(cancellationToken);
+        }
+
+        static ReloadState ToOpening((decimal Outstanding, DateOnly? OldestDate, string? Obligations)? row) =>
+            row is null
+                ? new ReloadState(0m, null, 0m, 0m)
+                : StabilityReloadObligationCache.OpeningState(
+                    row.Value.Outstanding,
+                    row.Value.OldestDate,
+                    row.Value.Obligations);
+
+        static bool HasCompleteCohortDetail(ReloadState opening) =>
+            opening.Outstanding <= 0m
+            || opening.Obligations is { Count: > 0 }
+                && opening.Obligations.All(obligation => obligation.Date.HasValue)
+                && opening.Obligations.Sum(obligation => obligation.RemainingAmount) == opening.Outstanding;
+
+        var opening = ToOpening(await LoadPreviousAsync());
+        if (HasCompleteCohortDetail(opening)) return opening;
+
+        // An anonymous aggregate can preserve the amount but cannot assign independent deadlines.
+        // CycleBalance is derived, so rebuild it from the authoritative transaction history once
+        // instead of silently giving old money a new three-cycle window.
+        _logger?.LogWarning(
+            "Rebuilding derived cycle balances because Stability recovery cohort detail is incomplete");
+        await _cycleBalanceService.InvalidateAllAsync(cancellationToken);
+        await _cycleBalanceService.EnsureComputedThroughAsync(
+            year, monthIndex, cycleDay, cancellationToken);
+        opening = ToOpening(await LoadPreviousAsync());
+        if (!HasCompleteCohortDetail(opening))
+        {
+            throw new InvalidOperationException(
+                "Stability recovery cohort detail could not be rebuilt from transaction history.");
+        }
+        return opening;
     }
 
     private async Task BackfillCurrentCycleRecoveryIntentAsync(
@@ -170,27 +238,11 @@ public partial class StabilityRecoveryService
         // table would silently forget an older obligation.
         await _cycleBalanceService.EnsureComputedThroughAsync(year, monthIndex, setting.CycleDay, cancellationToken);
 
-        // Only the cycle immediately before this one is needed: it carries the whole queue forward,
-        // identities included. Nothing reads further back now that the pace anchors on the oldest
-        // obligation still owing rather than on the last cycle that recorded a marked amount.
-        var previous = await _context.CycleBalances
-            .AsNoTracking()
-            .Where(balance => balance.Year < year || (balance.Year == year && balance.MonthIndex < monthIndex))
-            .OrderByDescending(balance => balance.Year)
-            .ThenByDescending(balance => balance.MonthIndex)
-            .Select(balance => new
-            {
-                balance.StabilityReloadOutstanding,
-                balance.StabilityReloadOldestDate,
-                balance.StabilityReloadObligations
-            })
-            .FirstOrDefaultAsync(cancellationToken);
-        var openingReload = previous == null
-            ? new ReloadState(0m, null, 0m, 0m)
-            : StabilityReloadObligationCache.OpeningState(
-                previous.StabilityReloadOutstanding,
-                previous.StabilityReloadOldestDate,
-                previous.StabilityReloadObligations);
+        // The immediately preceding snapshot carries every still-open FIFO identity and date. If a
+        // legacy or malformed row lacks that detail, LoadOpeningReloadAsync replaces the derived
+        // snapshots from authoritative history before any cohort deadline is calculated.
+        var openingReload = await LoadOpeningReloadAsync(
+            year, monthIndex, setting.CycleDay, cancellationToken);
         var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, setting.CycleDay);
         var cycleStartUtc = DateTime.SpecifyKind(cycleStart, DateTimeKind.Utc);
         var cycleEndExclusiveUtc = DateTime.SpecifyKind(cycleEnd.Date.AddDays(1), DateTimeKind.Utc);
@@ -223,13 +275,35 @@ public partial class StabilityRecoveryService
                 .GetCycleYearAndMonthIndexForDate(anchorDate.Value, setting.CycleDay);
             lastDrawdownCycleKey = StabilityRecoveryPlanner.CycleKey(anchorYear, anchorMonthIndex);
         }
+        var repaidByObligation = replay.RepaidByObligationThisRun
+            ?? new Dictionary<string, decimal>(StringComparer.Ordinal);
+        var cohortInputs = (replay.Obligations ?? [])
+            .Where(obligation => obligation.Date.HasValue
+                && (obligation.RemainingAmount > 0m
+                    || repaidByObligation.GetValueOrDefault(obligation.TransactionId) > 0m))
+            .GroupBy(obligation =>
+            {
+                var (cohortYear, cohortMonthIndex) = CategoryAttributionService
+                    .GetCycleYearAndMonthIndexForDate(obligation.Date!.Value, setting.CycleDay);
+                return StabilityRecoveryPlanner.CycleKey(cohortYear, cohortMonthIndex);
+            }, StringComparer.Ordinal)
+            .Select(group => new RecoveryCohortInput(
+                group.Key,
+                group.Min(obligation => obligation.Date!.Value),
+                group.Count(),
+                group.Sum(obligation => Math.Max(0m, obligation.RemainingAmount)),
+                group.Sum(obligation => Math.Max(
+                    0m,
+                    repaidByObligation.GetValueOrDefault(obligation.TransactionId)))))
+            .ToList();
         var currentCycleKey = StabilityRecoveryPlanner.CycleKey(year, monthIndex);
-        var cyclesRemaining = StabilityRecoveryPlanner.CyclesRemaining(
-            lastDrawdownCycleKey, currentCycleKey, FinancialConstants.StabilityRecoveryCycles);
-        var pace = StabilityRecoveryPlanner.ComputePace(
+        var cohortPlan = StabilityRecoveryPlanner.ComputeCohortPlan(
+            cohortInputs,
+            currentCycleKey,
+            FinancialConstants.StabilityRecoveryCycles,
             replay.Outstanding,
-            cyclesRemaining,
             replay.RepaidThisRun);
+        var pace = cohortPlan.Aggregate;
 
         var goalCommitments = await GetGoalCommitmentsAsync(year, monthIndex, setting.CycleDay, cancellationToken);
         var committedEssentials = essentialsCommitted + goalCommitments.Essentials;
@@ -251,6 +325,16 @@ public partial class StabilityRecoveryService
                     ObfuscationHelper.Obfuscate(obligation.OriginalAmount),
                     ObfuscationHelper.Obfuscate(obligation.RemainingAmount),
                     obligation.Date?.ToString("yyyy-MM-dd")))
+                .ToList(),
+            cohortPlan.Cohorts
+                .Select(cohort => new StabilityRecoveryCohortDto(
+                    cohort.OriginCycleKey,
+                    cohort.FromDate.ToString("yyyy-MM-dd"),
+                    cohort.TransactionCount,
+                    ObfuscationHelper.Obfuscate(cohort.RemainingShortfall),
+                    cohort.CyclesRemaining,
+                    ObfuscationHelper.Obfuscate(cohort.RequiredThisCycle),
+                    cohort.IsOverdue))
                 .ToList(),
             pace.CyclesRemaining,
             ObfuscationHelper.Obfuscate(pace.RequiredThisCycle),

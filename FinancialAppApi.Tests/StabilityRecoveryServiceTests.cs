@@ -16,6 +16,40 @@ public class StabilityRecoveryServiceTests
     private const int CycleDay = 1;
 
     [Fact]
+    public async Task BuildAsync_GivesASecondCycleDrawdownItsOwnRecoveryCohort()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "opening", new DateTime(2026, 4, 4), "Stability", 3000m);
+        Add(context, "old-drawdown", new DateTime(2026, 6, 4), "Stability", -900m);
+        Add(context, "old-repayment", new DateTime(2026, 6, 20), "Stability", 300m, "Reimbursement");
+        var newDrawdown = Add(context, "new-drawdown", new DateTime(2026, 7, 4), "Stability", -300m);
+        var currentRepayment = Add(
+            context, "current-repayment", new DateTime(2026, 7, 20), "Stability", 100m, "Reimbursement");
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(
+            context,
+            setting,
+            2026,
+            7,
+            opening: 2400m,
+            current: 2200m,
+            newDrawdown,
+            currentRepayment);
+
+        Assert.Equal(800m, Money(recovery.OutstandingShortfall));
+        Assert.Equal(400m, Money(recovery.RequiredThisCycle));
+        Assert.Equal(100m, Money(recovery.ToppedUpThisCycle));
+        Assert.Equal(300m, Money(recovery.OutstandingThisCycle));
+        Assert.Equal(["2026-06", "2026-07"], recovery.RecoveryCohorts.Select(cohort => cohort.OriginCycleKey));
+        Assert.Equal([2, 3], recovery.RecoveryCohorts.Select(cohort => cohort.CyclesRemaining));
+        Assert.Equal(
+            [300m, 100m],
+            recovery.RecoveryCohorts.Select(cohort => Money(cohort.RequiredThisCycle)));
+    }
+
+    [Fact]
     public async Task BuildAsync_AsksNothingOfAFundThatHasOnlyEverGoneUp()
     {
         await using var context = NewContext();
@@ -426,6 +460,35 @@ public class StabilityRecoveryServiceTests
         var recovery = await Build(context, setting, 2026, 7, opening: 2100m, current: 2100m);
 
         Assert.Equal(900m, Money(recovery.OutstandingShortfall));
+    }
+
+    [Fact]
+    public async Task BuildAsync_RebuildsMalformedPositiveOpeningObligationsFromHistory()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "in-1", new DateTime(2026, 4, 4), "Stability", 1000m);
+        Add(context, "old-drawdown", new DateTime(2026, 6, 4), "Stability", -300m);
+        context.CycleBalances.Add(new CycleBalance
+        {
+            Year = 2026,
+            MonthIndex = 6,
+            StabilityBalance = 700m,
+            StabilityReloadOutstanding = 300m,
+            StabilityReloadOldestDate = new DateOnly(2026, 6, 4),
+            StabilityReloadObligations = null
+        });
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 700m, current: 700m);
+
+        var cohort = Assert.Single(recovery.RecoveryCohorts);
+        Assert.Equal("2026-06", cohort.OriginCycleKey);
+        Assert.Equal(2, cohort.CyclesRemaining);
+        Assert.Equal(150m, Money(cohort.RequiredThisCycle));
+        var rebuiltJune = await context.CycleBalances.SingleAsync(
+            balance => balance.Year == 2026 && balance.MonthIndex == 6);
+        Assert.False(string.IsNullOrWhiteSpace(rebuiltJune.StabilityReloadObligations));
     }
 
     [Fact]

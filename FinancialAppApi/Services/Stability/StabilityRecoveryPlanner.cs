@@ -19,6 +19,26 @@ public sealed record RecoveryPace(
     decimal OutstandingThisCycle,
     bool IsOverdue);
 
+public sealed record RecoveryCohortInput(
+    string OriginCycleKey,
+    DateOnly FromDate,
+    int TransactionCount,
+    decimal RemainingShortfall,
+    decimal RepaidThisCycle);
+
+public sealed record RecoveryCohortPace(
+    string OriginCycleKey,
+    DateOnly FromDate,
+    int TransactionCount,
+    decimal RemainingShortfall,
+    int CyclesRemaining,
+    decimal RequiredThisCycle,
+    bool IsOverdue);
+
+public sealed record RecoveryCohortPlan(
+    RecoveryPace Aggregate,
+    IReadOnlyList<RecoveryCohortPace> Cohorts);
+
 /// <summary>
 /// Pure emergency-fund recovery math: how much of an explicit reload obligation to ask back each
 /// cycle, and how much of a given salary can safely provide it.
@@ -74,6 +94,73 @@ public static class StabilityRecoveryPlanner
 
         return new RecoveryPace(
             shortfall, cycles, required, funded, outstanding, cyclesRemaining <= 0);
+    }
+
+    /// <summary>
+    /// Gives each origin cycle its own recovery window while retaining one combined amount to ask
+    /// from income. A cohort's anchor is its live remainder plus money applied to that cohort during
+    /// this cycle, so its quoted share does not shrink while the user funds it.
+    /// </summary>
+    public static RecoveryCohortPlan ComputeCohortPlan(
+        IEnumerable<RecoveryCohortInput> cohorts,
+        string currentCycleKey,
+        int horizon,
+        decimal outstandingShortfall,
+        decimal toppedUpThisCycle)
+    {
+        var paces = cohorts
+            .Where(cohort => cohort.RemainingShortfall > 0m || cohort.RepaidThisCycle > 0m)
+            .GroupBy(cohort => cohort.OriginCycleKey, StringComparer.Ordinal)
+            .Select(group => new RecoveryCohortInput(
+                group.Key,
+                group.Min(cohort => cohort.FromDate),
+                group.Sum(cohort => Math.Max(1, cohort.TransactionCount)),
+                group.Sum(cohort => Math.Max(0m, cohort.RemainingShortfall)),
+                group.Sum(cohort => Math.Max(0m, cohort.RepaidThisCycle))))
+            .Select(cohort =>
+            {
+                var rawCyclesRemaining = CyclesRemaining(
+                    cohort.OriginCycleKey,
+                    currentCycleKey,
+                    horizon);
+                var cyclesRemaining = Math.Max(1, rawCyclesRemaining);
+                var anchor = Math.Max(0m, cohort.RemainingShortfall)
+                    + Math.Max(0m, cohort.RepaidThisCycle);
+                var required = cyclesRemaining <= 1
+                    ? anchor
+                    : RoundUpToCent(anchor / cyclesRemaining);
+                return new RecoveryCohortPace(
+                    cohort.OriginCycleKey,
+                    cohort.FromDate,
+                    Math.Max(1, cohort.TransactionCount),
+                    Math.Max(0m, cohort.RemainingShortfall),
+                    cyclesRemaining,
+                    required,
+                    rawCyclesRemaining <= 0 && cohort.RemainingShortfall > 0m);
+            })
+            .OrderBy(cohort => cohort.OriginCycleKey, StringComparer.Ordinal)
+            .ThenBy(cohort => cohort.FromDate)
+            .ToList();
+
+        var shortfall = Math.Max(0m, outstandingShortfall);
+        var funded = Math.Max(0m, toppedUpThisCycle);
+        var requiredThisCycle = paces.Sum(cohort => cohort.RequiredThisCycle);
+        var outstandingThisCycle = Math.Clamp(requiredThisCycle - funded, 0m, shortfall);
+        var open = paces.Where(cohort => cohort.RemainingShortfall > 0m).ToList();
+        var urgentCyclesRemaining = open.Count == 0
+            ? Math.Max(1, horizon)
+            : open.Min(cohort => cohort.CyclesRemaining);
+        var isOverdue = open.Any(cohort => cohort.IsOverdue);
+
+        return new RecoveryCohortPlan(
+            new RecoveryPace(
+                shortfall,
+                urgentCyclesRemaining,
+                requiredThisCycle,
+                funded,
+                outstandingThisCycle,
+                isOverdue),
+            paces);
     }
 
     public static string CycleKey(int year, int monthIndex) => $"{year:0000}-{monthIndex:00}";

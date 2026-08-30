@@ -35,7 +35,11 @@ public sealed record ReloadState(
     // instead let a settled drawdown keep inflating the reported total for as long as anything else
     // was owed.
     decimal OpenMarkedTotal = 0m,
-    decimal OpenRepaidTotal = 0m);
+    decimal OpenRepaidTotal = 0m,
+    // Current-run FIFO attribution is transient planning detail. It is deliberately not persisted
+    // in CycleBalance: the next cycle starts with zero current-cycle repayment, while the recovery
+    // planner needs this map to hold each origin-cycle cohort's requirement still as it is funded.
+    IReadOnlyDictionary<string, decimal>? RepaidByObligationThisRun = null);
 
 /// <summary>
 /// Replays the user's explicit emergency-fund reload choices. Balance movement and reload intent
@@ -91,6 +95,7 @@ public static class StabilityReloadLedger
         var running = openingBalance;
         var markedThisRun = 0m;
         var repaidThisRun = 0m;
+        var repaidByObligationThisRun = new Dictionary<string, decimal>(StringComparer.Ordinal);
         var points = planPoints
             .OrderBy(point => Normalize(point.EffectiveAt))
             .ToList();
@@ -117,6 +122,7 @@ public static class StabilityReloadLedger
             // Attainment settles everything: nothing is owed, so nothing is reported as owed. Only
             // MarkedThisRun survives, as an audit total of what left the fund during this run.
             repaidThisRun = 0m;
+            repaidByObligationThisRun.Clear();
         }
 
         void ApplyPlanPoint(ReloadPlanPoint point)
@@ -175,6 +181,8 @@ public static class StabilityReloadLedger
                     {
                         RemainingAmount = Math.Max(0m, obligation.RemainingAmount - discharged)
                     };
+                    repaidByObligationThisRun[oldest.TransactionId] =
+                        repaidByObligationThisRun.GetValueOrDefault(oldest.TransactionId) + discharged;
                 }
                 if (left > 0m)
                 {
@@ -246,7 +254,8 @@ public static class StabilityReloadLedger
             repaidThisRun,
             orderedObligations,
             openMarkedTotal,
-            openRepaidTotal);
+            openRepaidTotal,
+            repaidByObligationThisRun);
     }
 
     /// <summary>Describes one raw transaction when it is already a logical Stability movement.</summary>

@@ -8,6 +8,64 @@ namespace FinancialAppApi.Tests;
 /// </summary>
 public class StabilityRecoveryPlannerTests
 {
+    [Fact]
+    public void ComputeCohortPlan_GivesANewDrawdownItsOwnThreeCycleWindow()
+    {
+        var plan = StabilityRecoveryPlanner.ComputeCohortPlan(
+        [
+            new RecoveryCohortInput("2026-06", new DateOnly(2026, 6, 4), 1, 600m, 0m),
+            new RecoveryCohortInput("2026-07", new DateOnly(2026, 7, 4), 1, 300m, 0m)
+        ],
+        currentCycleKey: "2026-07",
+        horizon: 3,
+        outstandingShortfall: 900m,
+        toppedUpThisCycle: 0m);
+
+        Assert.Equal([300m, 100m], plan.Cohorts.Select(cohort => cohort.RequiredThisCycle));
+        Assert.Equal([2, 3], plan.Cohorts.Select(cohort => cohort.CyclesRemaining));
+        Assert.Equal(400m, plan.Aggregate.RequiredThisCycle);
+        Assert.Equal(400m, plan.Aggregate.OutstandingThisCycle);
+    }
+
+    [Fact]
+    public void ComputeCohortPlan_CreditsReimbursementAgainstTheCombinedRequirement()
+    {
+        var plan = StabilityRecoveryPlanner.ComputeCohortPlan(
+        [
+            // The old cohort has 500 left after 100 went back this cycle, so its requirement stays
+            // anchored on 600. The new cohort independently starts a three-cycle 300 plan.
+            new RecoveryCohortInput("2026-06", new DateOnly(2026, 6, 4), 1, 500m, 100m),
+            new RecoveryCohortInput("2026-07", new DateOnly(2026, 7, 4), 1, 300m, 0m)
+        ],
+        currentCycleKey: "2026-07",
+        horizon: 3,
+        outstandingShortfall: 800m,
+        toppedUpThisCycle: 100m);
+
+        Assert.Equal(400m, plan.Aggregate.RequiredThisCycle);
+        Assert.Equal(300m, plan.Aggregate.OutstandingThisCycle);
+    }
+
+    [Fact]
+    public void ComputeCohortPlan_RoundsPerCohortAndKeepsMixedOverdueState()
+    {
+        var plan = StabilityRecoveryPlanner.ComputeCohortPlan(
+        [
+            new RecoveryCohortInput("2026-04", new DateOnly(2026, 4, 1), 1, 20m, 0m),
+            new RecoveryCohortInput("2026-07", new DateOnly(2026, 7, 1), 2, 100m, 0m)
+        ],
+        currentCycleKey: "2026-07",
+        horizon: 3,
+        outstandingShortfall: 120m,
+        toppedUpThisCycle: 0m);
+
+        Assert.True(plan.Aggregate.IsOverdue);
+        Assert.Equal(1, plan.Aggregate.CyclesRemaining);
+        Assert.Equal(20m, plan.Cohorts[0].RequiredThisCycle);
+        Assert.Equal(33.34m, plan.Cohorts[1].RequiredThisCycle);
+        Assert.Equal(53.34m, plan.Aggregate.RequiredThisCycle);
+    }
+
     [Theory]
     [InlineData("2026-06", "2026-06", 3)]
     [InlineData("2026-06", "2026-07", 2)]
