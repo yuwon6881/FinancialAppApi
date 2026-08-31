@@ -8,6 +8,70 @@ namespace FinancialAppApi.Tests;
 public class TransactionPersistenceServiceTests
 {
     [Fact]
+    public async Task UpdateTransactionAsync_RejectsEditingRewardClaimTransaction()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.Transactions.Add(NewTransaction("reward-claim", wishlistItemId: 7));
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).UpdateTransactionAsync(
+            "reward-claim",
+            NewRequest("reward-claim", amount: -30m));
+
+        Assert.Equal(TransactionMutationStatus.Conflict, result.Status);
+        Assert.Equal(-25m, (await context.Transactions.FindAsync("reward-claim"))!.Amount);
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_RestoresRewardClaimThroughAuthoritativeRules()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.WishlistItems.Add(new WishlistItem
+        {
+            Id = 7,
+            Name = "Headphones",
+            Price = 25m,
+            CreatedAt = DateTime.UtcNow,
+            IsActive = true,
+        });
+        context.Transactions.Add(NewTransaction("reward-funds", amount: 100m));
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).CreateTransactionAsync(
+            NewRequest("restored-reward-claim") with { WishlistItemId = 7 });
+
+        Assert.Equal(TransactionMutationStatus.Created, result.Status);
+        Assert.Equal("Purchased: Headphones (Wish List)", result.Transaction!.Description);
+        Assert.Equal(7, result.Transaction.WishlistItemId);
+        Assert.True((await context.WishlistItems.FindAsync(7))!.IsPurchased);
+    }
+
+    [Fact]
+    public async Task CreateTransactionAsync_RejectsForgedRewardClaimAmount()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.WishlistItems.Add(new WishlistItem
+        {
+            Id = 7,
+            Name = "Headphones",
+            Price = 50m,
+            CreatedAt = DateTime.UtcNow,
+        });
+        context.Transactions.Add(NewTransaction("reward-funds", amount: 100m));
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).CreateTransactionAsync(
+            NewRequest("forged-reward-claim", amount: -25m) with { WishlistItemId = 7 });
+
+        Assert.Equal(TransactionMutationStatus.Conflict, result.Status);
+        Assert.False((await context.WishlistItems.FindAsync(7))!.IsPurchased);
+        Assert.False(await context.Transactions.AnyAsync(transaction => transaction.Id == "forged-reward-claim"));
+    }
+
+    [Fact]
     public async Task CreateTransactionAsync_RejectsMissingBucketAccountBeforeSaving()
     {
         await using var context = TestHelpers.NewInMemoryContext();

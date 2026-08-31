@@ -242,19 +242,6 @@ public class WishlistService
             _context.Transactions.Remove(transaction);
         }
 
-        _context.WishlistItems.Remove(item);
-        await _context.SaveChangesAsync(cancellationToken);
-
-        if (affectedDate.HasValue)
-        {
-            var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
-            if (setting != null)
-            {
-                var (cycleYear, cycleMonthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(affectedDate.Value), setting.CycleDay);
-                await _cycleBalanceService.InvalidateFromAsync(cycleYear, cycleMonthIndex);
-            }
-        }
-
         if (wasActive)
         {
             var nextItem = await _context.WishlistItems
@@ -264,12 +251,44 @@ public class WishlistService
             if (nextItem != null)
             {
                 var otherActiveItems = await _context.WishlistItems
-                    .Where(w => w.IsActive && w.Id != nextItem.Id)
+                    .Where(w => w.IsActive && w.Id != nextItem.Id && w.Id != item.Id)
                     .ToListAsync(cancellationToken);
                 foreach (var activeItem in otherActiveItems) activeItem.IsActive = false;
                 nextItem.IsActive = true;
-                await _context.SaveChangesAsync(cancellationToken);
             }
+        }
+
+        _context.WishlistItems.Remove(item);
+
+        async Task SaveDeleteAsync()
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            if (affectedDate.HasValue)
+            {
+                var setting = await _context.FinancialSettings.FirstOrDefaultAsync(cancellationToken);
+                if (setting != null)
+                {
+                    var (cycleYear, cycleMonthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+                        TransactionDate.ToDateOnly(affectedDate.Value),
+                        setting.CycleDay);
+                    await _cycleBalanceService.InvalidateFromAsync(cycleYear, cycleMonthIndex);
+                }
+            }
+        }
+
+        if (_context.Database.IsRelational())
+        {
+            var strategy = _context.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+                await SaveDeleteAsync();
+                await dbTransaction.CommitAsync(cancellationToken);
+            });
+        }
+        else
+        {
+            await SaveDeleteAsync();
         }
 
         return WishlistMutationStatus.Success;

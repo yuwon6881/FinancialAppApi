@@ -55,6 +55,7 @@ public partial class TransactionPersistenceService
     private readonly FinancialClock _clock;
     private readonly SavingsGoals.ISharedPoolMutationLock _sharedPoolMutationLock;
     private readonly IRecurringPaymentMutationLock _recurringPaymentMutationLock;
+    private readonly WishlistService _wishlistService;
 
     public TransactionPersistenceService(
         AppDbContext context,
@@ -65,7 +66,8 @@ public partial class TransactionPersistenceService
         FinancialClock? clock = null,
         Stability.StabilityPlanRevisionService? stabilityPlanRevisionService = null,
         SavingsGoals.ISharedPoolMutationLock? sharedPoolMutationLock = null,
-        IRecurringPaymentMutationLock? recurringPaymentMutationLock = null)
+        IRecurringPaymentMutationLock? recurringPaymentMutationLock = null,
+        WishlistService? wishlistService = null)
     {
         _context = context;
         _cycleBalanceService = cycleBalanceService;
@@ -77,6 +79,18 @@ public partial class TransactionPersistenceService
         _occurrenceLedger = occurrenceLedger ?? new RecurringOccurrenceLedgerService(context, occurrenceService, _clock);
         _sharedPoolMutationLock = sharedPoolMutationLock ?? new SavingsGoals.SharedPoolMutationLock(context);
         _recurringPaymentMutationLock = recurringPaymentMutationLock ?? new RecurringPaymentMutationLock(context);
+        _wishlistService = wishlistService ?? new WishlistService(
+            context,
+            cycleBalanceService,
+            new SavingsGoals.SavingsGoalService(
+                context,
+                cycleBalanceService,
+                _clock,
+                occurrenceService,
+                _occurrenceLedger,
+                _sharedPoolMutationLock),
+            _clock,
+            _sharedPoolMutationLock);
     }
 
     public async Task<TransactionMutationResult> CreateTransactionAsync(
@@ -135,6 +149,10 @@ public partial class TransactionPersistenceService
             AccountId = NormalizeOptionalId(request.AccountId),
             CounterAccountId = NormalizeOptionalId(request.CounterAccountId),
         };
+        if (transaction.WishlistItemId.HasValue)
+        {
+            return await RestoreWishlistPurchaseAsync(request, transaction, cancellationToken);
+        }
         if (IsIncomeLedgerCategory(transaction.LedgerCategory))
         {
             transaction.AccountId = null;
@@ -289,6 +307,22 @@ public partial class TransactionPersistenceService
                 TransactionMutationStatus.Conflict,
                 transaction,
                 "A loan repayment entry cannot be edited. Use Undo repayment from the loan instead.");
+        }
+
+        if (transaction.WishlistItemId.HasValue)
+        {
+            return new TransactionMutationResult(
+                TransactionMutationStatus.Conflict,
+                transaction,
+                "A reward claim cannot be edited. Delete it to restore the reward, then claim it again.");
+        }
+
+        if (request.WishlistItemId.HasValue)
+        {
+            return new TransactionMutationResult(
+                TransactionMutationStatus.Conflict,
+                transaction,
+                "A reward can only be claimed from the Rewards plan.");
         }
 
         await using var completionPoolLock = transaction.SavingsGoalId.HasValue
@@ -446,7 +480,6 @@ public partial class TransactionPersistenceService
         transaction.StabilityReloadIntent = request.StabilityReloadIntent == null
             ? originalReloadIntent
             : StabilityReloadIntent.Normalize(request.StabilityReloadIntent);
-        transaction.WishlistItemId = request.WishlistItemId ?? transaction.WishlistItemId;
         transaction.AccountId = accountProbe.AccountId;
         transaction.CounterAccountId = accountProbe.CounterAccountId;
         transaction.ExcludeFromAutocomplete = TransactionAutocompletePolicy.ShouldExclude(transaction);

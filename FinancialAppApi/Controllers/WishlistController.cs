@@ -84,8 +84,12 @@ public class WishlistController : ControllerBase
     public async Task<IActionResult> PurchaseWishlistItem(int id, [FromBody] PurchaseWishlistRequestDto? dto = null)
     {
         DateTime? customDate = null;
-        if (!string.IsNullOrWhiteSpace(dto?.Date) && TransactionDate.TryParseInputDate(dto.Date, out var parsedDate))
+        if (!string.IsNullOrWhiteSpace(dto?.Date))
         {
+            if (!TransactionDate.TryParseInputDate(dto.Date, out var parsedDate))
+            {
+                return BadRequest(new { message = "Date must be a valid calendar date." });
+            }
             customDate = TransactionDate.FromInputDate(parsedDate);
         }
 
@@ -117,7 +121,11 @@ public class WishlistController : ControllerBase
             return NotFound();
         }
 
-        return Ok(MapToDto(result.Item!));
+        var dto = MapToDto(result.Item!);
+        dto.UndoTransaction = result.Transaction == null
+            ? null
+            : TransactionsController.MapToDto(result.Transaction);
+        return Ok(dto);
     }
 
     private static WishlistItem ToWishlistItem(WishlistItemMutationDto dto)
@@ -205,6 +213,7 @@ public class WishlistItemDto
     public string? PurchaseTransactionId { get; set; }
     public DateTime CreatedAt { get; set; }
     public bool IsActive { get; set; }
+    public TransactionDto? UndoTransaction { get; set; }
 }
 
 public class PurchaseWishlistRequestDto

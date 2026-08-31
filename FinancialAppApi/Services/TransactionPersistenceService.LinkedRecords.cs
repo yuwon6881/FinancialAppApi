@@ -5,6 +5,69 @@ namespace FinancialAppApi.Services;
 
 public partial class TransactionPersistenceService
 {
+    private async Task<TransactionMutationResult> RestoreWishlistPurchaseAsync(
+        TransactionMutationRequest request,
+        Transaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var item = await _context.WishlistItems
+            .AsNoTracking()
+            .FirstOrDefaultAsync(candidate => candidate.Id == transaction.WishlistItemId, cancellationToken);
+        if (item == null)
+        {
+            return new TransactionMutationResult(
+                TransactionMutationStatus.Conflict,
+                Message: "The linked reward no longer exists.");
+        }
+
+        if (item.IsPurchased && !string.Equals(item.PurchaseTransactionId, transaction.Id, StringComparison.Ordinal))
+        {
+            return new TransactionMutationResult(
+                TransactionMutationStatus.Conflict,
+                Message: "This reward has already been claimed.");
+        }
+
+        var hasCanonicalShape =
+            string.Equals(transaction.Category, "Other", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(transaction.LedgerCategory, "Rewards", StringComparison.OrdinalIgnoreCase)
+            && transaction.Amount == -item.Price
+            && string.IsNullOrWhiteSpace(transaction.RecurringPaymentId)
+            && transaction.StabilityRecoveryTopUpAmount.GetValueOrDefault() == 0m
+            && string.IsNullOrWhiteSpace(transaction.CounterAccountId)
+            && (request.SplitAccountIds == null || request.SplitAccountIds.Count == 0);
+        if (!hasCanonicalShape)
+        {
+            return new TransactionMutationResult(
+                TransactionMutationStatus.Conflict,
+                Message: "The reward claim no longer matches the saved reward. Claim it again from the Rewards plan.");
+        }
+
+        var result = await _wishlistService.PurchaseWishlistItemAsync(
+            item.Id,
+            transaction.Date,
+            cancellationToken,
+            transaction.Id,
+            transaction.PostedAt,
+            transaction.AccountId);
+        return result.Status switch
+        {
+            WishlistMutationStatus.Success => new TransactionMutationResult(
+                TransactionMutationStatus.Created,
+                result.Transaction),
+            WishlistMutationStatus.InvalidAccount => new TransactionMutationResult(
+                TransactionMutationStatus.InvalidAccount,
+                Message: result.Message,
+                Code: result.Code,
+                MissingBuckets: result.MissingBuckets),
+            WishlistMutationStatus.DateInvalid => new TransactionMutationResult(
+                TransactionMutationStatus.InvalidDate,
+                Message: result.Message),
+            _ => new TransactionMutationResult(
+                TransactionMutationStatus.Conflict,
+                Message: result.Message ?? "The reward claim could not be restored."),
+        };
+    }
+
     private async Task ApplyWishlistPurchaseLinkAsync(
         Transaction transaction,
         CancellationToken cancellationToken)

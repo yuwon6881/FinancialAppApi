@@ -159,6 +159,27 @@ public class WishlistIntegrationTests : IntegrationTestBase
 
         var body = await unpurchase.Content.ReadFromJsonAsync<JsonElement>();
         Assert.False(body.GetProperty("isPurchased").GetBoolean());
+        var undoTransaction = body.GetProperty("undoTransaction");
+        Assert.Equal(id, undoTransaction.GetProperty("wishlistItemId").GetInt32());
+        Assert.Equal(AccountIdFor("Rewards"), undoTransaction.GetProperty("accountId").GetString());
+    }
+
+    [Fact]
+    public async Task PurchaseWishlistItem_WithMalformedDate_Returns400WithoutPurchasing()
+    {
+        var client = await CreateSignedInClientAsync();
+        var id = await CreateItemAsync(client, "Camera", 80m);
+
+        var purchase = await client.PostAsJsonAsync($"/api/wishlist/{id}/purchase", new
+        {
+            date = "not-a-date",
+            accountId = AccountIdFor("Rewards"),
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, purchase.StatusCode);
+        var items = await client.GetFromJsonAsync<JsonElement>("/api/wishlist");
+        Assert.False(items.EnumerateArray().Single(item => item.GetProperty("id").GetInt32() == id)
+            .GetProperty("isPurchased").GetBoolean());
     }
 
     [Fact]
