@@ -280,7 +280,7 @@ public partial class AiAssistantService
         var queryPlan = intentPlan.QueryPlan;
         var setting = await LoadFinancialSettingAsync(cancellationToken);
         var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
-        var selectedMonth = setting?.SelectedMonth ?? _financialClock.LocalNow.ToString("MMM");
+        var selectedMonth = setting?.SelectedMonth ?? FinancialConstants.MonthAbbreviations[_financialClock.LocalNow.Month - 1];
         var selectedYear = setting?.SelectedYear ?? _financialClock.LocalNow.Year;
         var selectedMonthIndex = Array.IndexOf(FinancialConstants.MonthAbbreviations, selectedMonth) + 1;
         if (selectedMonthIndex <= 0) selectedMonthIndex = _financialClock.LocalNow.Month;

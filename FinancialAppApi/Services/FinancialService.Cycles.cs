@@ -52,7 +52,7 @@ public partial class FinancialService
             setting = new FinancialSetting
             {
                 TargetStabilityFund = 10000.00m,
-                SelectedMonth = now.ToString("MMM"),
+                SelectedMonth = FinancialConstants.MonthAbbreviations[now.Month - 1],
                 SelectedYear = now.Year,
                 EssentialsAlloc = 0.50m,
                 GrowthAlloc = 0.25m,

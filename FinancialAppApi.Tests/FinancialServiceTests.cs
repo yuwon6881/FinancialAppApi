@@ -15,7 +15,7 @@ public class FinancialServiceTests
         context.Transactions.Add(new Transaction
         {
             Id = "tx-1",
-            Date = DateTime.UtcNow,
+            Date = new DateTime(2026, 8, 15, 0, 0, 0, DateTimeKind.Utc),
             Description = "Reward",
             Category = "Other",
             LedgerCategory = "Rewards",
