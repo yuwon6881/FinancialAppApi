@@ -7,7 +7,7 @@ namespace FinancialAppApi.Services;
 
 public partial class ReceiptScanProcessor
 {
-    private static readonly string[] ValidLedgerCategories = ["Essentials", "Growth", "Stability", "Rewards", "Income"];
+    private static readonly string[] ValidReceiptLedgerCategories = ["Essentials", "Growth", "Stability", "Rewards"];
 
     // Bounds on one split extraction. Anything past these is reported as truncated rather
     // than silently dropped, because the review sheet spreads charges over the kept lines.
@@ -50,6 +50,7 @@ Rules:
         }
 
         var categories = (await _categoryService.GetCategoriesAsync(cancellationToken))
+            .Where(category => !TransactionCategoryService.IsReservedName(category.Name))
             .Select(c => c.Name)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -104,7 +105,7 @@ Rules:
             ?? categories.FirstOrDefault(c => string.Equals(c, "Other", StringComparison.OrdinalIgnoreCase))
             ?? categories[0];
         var rawLedgerCategory = root.TryGetProperty("ledgerCategory", out var lcProp) ? lcProp.GetString() : null;
-        string ledgerCategory = ValidLedgerCategories.FirstOrDefault(c => string.Equals(c, rawLedgerCategory, StringComparison.OrdinalIgnoreCase))
+        string ledgerCategory = ValidReceiptLedgerCategories.FirstOrDefault(c => string.Equals(c, rawLedgerCategory, StringComparison.OrdinalIgnoreCase))
             ?? "Essentials";
         double confidence = root.TryGetProperty("confidence", out var confProp) && confProp.ValueKind == JsonValueKind.Number
             ? Math.Clamp(confProp.GetDouble(), 0, 1)
@@ -126,6 +127,7 @@ Rules:
             return ScanOutcome.Failed("Receipt splitting is not configured for this app.");
 
         var categories = (await _categoryService.GetCategoriesAsync(cancellationToken))
+            .Where(category => !TransactionCategoryService.IsReservedName(category.Name))
             .Select(c => c.Name)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -176,7 +178,7 @@ Rules:
                 string.Equals(c, result.Category, StringComparison.OrdinalIgnoreCase))
             ?? categories.FirstOrDefault(c => string.Equals(c, "Other", StringComparison.OrdinalIgnoreCase))
             ?? categories[0];
-        var ledgerCategory = ValidLedgerCategories.FirstOrDefault(c =>
+        var ledgerCategory = ValidReceiptLedgerCategories.FirstOrDefault(c =>
                 string.Equals(c, result.LedgerCategory, StringComparison.OrdinalIgnoreCase))
             ?? "Essentials";
         var rawItems = result.Items ?? [];
@@ -271,7 +273,8 @@ Rules:
 - Use Deposit or Withdrawal for money moved into or out of the broker account.
 - Use Conversion only for an exchange between two currencies; currency/cashAmount are the source leg and toCurrency/toAmount are the destination leg.
 - cashAmount is the positive gross trade amount, gross dividend, standalone charge, deposit, withdrawal, or source conversion amount.
-- fees and taxes are separate non-negative amounts.
+- For Buy, Sell, and Dividend, inspect the whole confirmation for attached costs. Put commissions, platform fees, and other broker fees in fees; put stamp duty, withholding tax, and other taxes in taxes. Do not fold them into cashAmount.
+- fees and taxes are separate non-negative amounts; use 0 only when the image clearly shows none, otherwise null.
 - Return null for every field that is unclear, absent, or not applicable. Never guess.
 - For dropdown fields, choose the single most confident supported option; otherwise return null.
 - Dates must be YYYY-MM-DD and must be visibly supported by the image.";
@@ -313,7 +316,7 @@ Rules:
                 new AiGenerationOptions(
                     Feature: "investment-ocr",
                     Temperature: 0,
-                    MaxOutputTokens: 280,
+                    MaxOutputTokens: 800,
                     SystemInstruction: InvestmentScanSystemInstruction,
                     OutputJsonSchema: AiResponseSchemas.InvestmentActivityScan,
                     ThinkingLevel: "low",

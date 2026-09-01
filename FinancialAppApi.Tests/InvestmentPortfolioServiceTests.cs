@@ -335,6 +335,40 @@ public sealed class InvestmentPortfolioServiceTests
     }
 
     [Fact]
+    public async Task Cash_ReplaysTemporaryUsdOverdraftAndLaterConversionToExplicitZero()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "USD" });
+        var account = new InvestmentAccount { Name = "Moomoo", BaseCurrency = "USD" };
+        var voo = new InvestmentInstrument { Symbol = "VOO", Name = "Vanguard S&P 500", Type = "ETF", Currency = "USD", IsCustom = true };
+        var vxus = new InvestmentInstrument { Symbol = "VXUS", Name = "Vanguard Total International", Type = "ETF", Currency = "USD", IsCustom = true };
+        var bnd = new InvestmentInstrument { Symbol = "BND", Name = "Vanguard Total Bond", Type = "ETF", Currency = "USD", IsCustom = true };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.AddRange(voo, vxus, bnd);
+        await context.SaveChangesAsync();
+
+        context.InvestmentCashFlows.AddRange(
+            new InvestmentCashFlow { AccountId = account.Id, Currency = "USD", Type = "Deposit", Amount = 0.26m, Date = new DateOnly(2026, 8, 1) },
+            new InvestmentCashFlow { AccountId = account.Id, Currency = "MYR", Type = "Deposit", Amount = 572.04m, Date = new DateOnly(2026, 8, 1) },
+            new InvestmentCashFlow
+            {
+                AccountId = account.Id, Currency = "MYR", Type = "Conversion", Amount = -572.04m,
+                ToCurrency = "USD", ToAmount = 140.80m, Date = new DateOnly(2026, 8, 3)
+            });
+        context.InvestmentTransactions.AddRange(
+            new InvestmentTransaction { AccountId = account.Id, InstrumentId = voo.Id, Instrument = voo, Type = "Buy", TradeDate = new DateOnly(2026, 8, 2), Units = 1, UnitPrice = 104.99m, CashAmount = 104.99m, Fees = 1.24m },
+            new InvestmentTransaction { AccountId = account.Id, InstrumentId = vxus.Id, Instrument = vxus, Type = "Buy", TradeDate = new DateOnly(2026, 8, 2), Units = 1, UnitPrice = 10.99m, CashAmount = 10.99m, Fees = 0.36m },
+            new InvestmentTransaction { AccountId = account.Id, InstrumentId = bnd.Id, Instrument = bnd, Type = "Buy", TradeDate = new DateOnly(2026, 8, 2), Units = 1, UnitPrice = 23m, CashAmount = 23m, Fees = 0.48m });
+        await context.SaveChangesAsync();
+
+        var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
+
+        Assert.Equal(0m, Assert.Single(portfolio.CashBalances, value => value.Currency == "USD").Amount);
+        Assert.Equal(0m, Assert.Single(portfolio.CashBalances, value => value.Currency == "MYR").Amount);
+        Assert.Equal(0m, portfolio.Summary.CashValue);
+    }
+
+    [Fact]
     public async Task FundingSummary_SeparatesGrowthContributions_CurrentGrowthBalance_AndBrokerNetDeposits()
     {
         await using var context = TestHelpers.NewInMemoryContext();

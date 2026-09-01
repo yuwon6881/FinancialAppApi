@@ -345,51 +345,22 @@ public sealed partial class InvestmentPortfolioService(
         var growthContributions = completedCycles.Sum(value => value.GrowthContributions)
             + uncachedGrowthAmounts.Where(value => value.Amount > 0).Sum(value => value.Amount);
 
-        // Uninvested cash per account+currency: explicit deposits/withdrawals plus
-        // the implicit cash effect of trades and income.
-        var cashByKey = new Dictionary<(Guid AccountId, string Currency), decimal>();
-        void AddCash(Guid accountId, string currency, decimal amount)
-        {
-            var key = (accountId, currency.ToUpperInvariant());
-            cashByKey[key] = cashByKey.GetValueOrDefault(key) + amount;
-        }
-        foreach (var flow in cashFlows)
-        {
-            AddCash(flow.AccountId, flow.Currency, flow.Amount);
-            // A conversion also credits the bought currency; its Amount leg is
-            // already stored negative, so the pair nets to zero in value terms.
-            if (flow.ToCurrency is not null && flow.ToAmount is not null)
-                AddCash(flow.AccountId, flow.ToCurrency, flow.ToAmount.Value);
-        }
-        foreach (var transaction in transactions)
-        {
-            var currency = transaction.Instrument.Currency;
-            var feesAndTaxes = transaction.Fees + transaction.Taxes;
-            switch (transaction.Type)
-            {
-                case "Buy":
-                    AddCash(transaction.AccountId, currency, -((transaction.CashAmount ?? 0) + feesAndTaxes));
-                    break;
-                case "Sell":
-                    AddCash(transaction.AccountId, currency, (transaction.CashAmount ?? 0) - feesAndTaxes);
-                    break;
-                case "Dividend":
-                    AddCash(transaction.AccountId, currency, (transaction.CashAmount ?? 0) - feesAndTaxes);
-                    break;
-                case "FeeTax":
-                    AddCash(transaction.AccountId, currency, -((transaction.CashAmount ?? 0) + feesAndTaxes));
-                    break;
-            }
-        }
+        // Replay the single chronological cash-event contract used by mutation
+        // validation so fees, executions, and conversions cannot drift apart.
+        var cashByKey = InvestmentHistoryValidationService.ReplayCashEvents(
+            InvestmentHistoryValidationService.BuildCashEvents(transactions, cashFlows),
+            validateRestrictedDebits: false).Balances;
 
         decimal? CurrencyFx(string currency) =>
             seriesResolver.ResolveFx(currency, appCurrency, today, fxBars)?.Rate;
 
         var cashBalances = cashByKey
-            .Where(pair => pair.Value != 0)
             .Select(pair =>
             {
-                var fx = CurrencyFx(pair.Key.Currency);
+                // Zero is zero in every currency and does not require market data.
+                // Keeping touched zero balances visible lets the UI distinguish a
+                // fully settled currency from one that has no recorded history.
+                var fx = pair.Value == 0 ? 0m : CurrencyFx(pair.Key.Currency);
                 if (fx is null)
                 {
                     warnings.Add($"Current FX is missing for {pair.Key.Currency}/{appCurrency}; cash totals are incomplete.");
@@ -399,7 +370,7 @@ public sealed partial class InvestmentPortfolioService(
                     accountById.TryGetValue(pair.Key.AccountId, out var account) ? account.Name : "Account",
                     pair.Key.Currency,
                     pair.Value,
-                    fx is null ? null : pair.Value * fx.Value);
+                    fx is null ? null : pair.Value == 0 ? 0m : pair.Value * fx.Value);
             })
             .OrderByDescending(value => value.AmountApp ?? decimal.MinValue)
             .ToList();

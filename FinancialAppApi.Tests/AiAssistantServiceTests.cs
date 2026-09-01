@@ -666,6 +666,10 @@ public class AiAssistantServiceTests
     public async Task ChatAsync_SingleLineLedgerShorthand_UsesDraftSchemaAndReturnsAutomaticDraftAction()
     {
         await using var context = NewContextWithSettings(hideSensitive: false);
+        context.TransactionCategories.AddRange(
+            new TransactionCategory { Id = "transfer", Name = "Transfer" },
+            new TransactionCategory { Id = "adjustment", Name = "Adjustment" });
+        await context.SaveChangesAsync();
         var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat(
             "Staging Badminton for review.",
             actionsJson: "[{\"type\":\"openAddLedgerDraft\",\"payload\":{\"description\":\"Badminton\",\"amount\":10,\"txType\":\"outflow\",\"category\":\"Hobbies\",\"ledgerCategory\":\"Essentials\",\"ledgerCategorySpecified\":false}}]"));
@@ -688,6 +692,11 @@ public class AiAssistantServiceTests
             .GetProperty("actions");
         Assert.Equal(1, actionsSchema.GetProperty("minItems").GetInt32());
         Assert.Equal(1, actionsSchema.GetProperty("maxItems").GetInt32());
+        var categoryEnum = actionsSchema.GetProperty("items").GetProperty("properties")
+            .GetProperty("payload").GetProperty("properties").GetProperty("category").GetProperty("enum")
+            .EnumerateArray().Select(value => value.GetString()).ToList();
+        Assert.DoesNotContain("Transfer", categoryEnum);
+        Assert.DoesNotContain("Adjustment", categoryEnum);
     }
 
     [Fact]

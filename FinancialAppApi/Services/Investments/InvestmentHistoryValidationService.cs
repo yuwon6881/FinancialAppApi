@@ -76,6 +76,13 @@ public sealed class InvestmentHistoryValidationService(
         IEnumerable<InvestmentTransaction> transactions,
         IEnumerable<InvestmentCashFlow> flows)
     {
+        return ReplayCashEvents(BuildCashEvents(transactions, flows), validateRestrictedDebits: true).Error;
+    }
+
+    internal static List<InvestmentCashEvent> BuildCashEvents(
+        IEnumerable<InvestmentTransaction> transactions,
+        IEnumerable<InvestmentCashFlow> flows)
+    {
         var events = new List<InvestmentCashEvent>();
         foreach (var flow in flows)
         {
@@ -119,11 +126,12 @@ public sealed class InvestmentHistoryValidationService(
                     transaction.Id,
                     transaction.AccountId,
                     currency,
-                    amount));
+                    amount,
+                    transaction.Type is "Buy" or "FeeTax"));
             }
         }
 
-        return ValidateCashEvents(events);
+        return events;
     }
 
     private Task<List<InvestmentTransaction>> LoadTransactionsAsync(
@@ -144,6 +152,11 @@ public sealed class InvestmentHistoryValidationService(
             .ToListAsync(cancellationToken);
 
     internal static string? ValidateCashEvents(IEnumerable<InvestmentCashEvent> events)
+        => ReplayCashEvents(events, validateRestrictedDebits: true).Error;
+
+    internal static InvestmentCashReplayResult ReplayCashEvents(
+        IEnumerable<InvestmentCashEvent> events,
+        bool validateRestrictedDebits)
     {
         var balances = new Dictionary<(Guid AccountId, string Currency), decimal>();
         foreach (var cashEvent in events
@@ -153,13 +166,19 @@ public sealed class InvestmentHistoryValidationService(
         {
             var key = (cashEvent.AccountId, cashEvent.Currency.ToUpperInvariant());
             var balance = balances.GetValueOrDefault(key) + cashEvent.Amount;
-            if (balance < 0)
+            // Broker executions and broker-assessed charges can temporarily overdraw
+            // a currency before a later conversion settles it. Explicit withdrawals
+            // and conversion source legs must still be covered when they occur.
+            if (validateRestrictedDebits && cashEvent.Amount < 0 &&
+                !cashEvent.AllowsTemporaryNegativeBalance && balance < 0)
             {
-                return $"Insufficient {key.Item2} cash in this account on {cashEvent.Date:yyyy-MM-dd}. Deposit or convert funds before recording this activity.";
+                return new InvestmentCashReplayResult(
+                    balances,
+                    $"Insufficient {key.Item2} cash in this account on {cashEvent.Date:yyyy-MM-dd}. Deposit or convert funds before recording this activity.");
             }
             balances[key] = balance;
         }
-        return null;
+        return new InvestmentCashReplayResult(balances, null);
     }
 
     private HashSet<Guid> GetAffectedAccountIds()
@@ -225,7 +244,12 @@ internal sealed record InvestmentCashEvent(
     Guid Id,
     Guid AccountId,
     string Currency,
-    decimal Amount);
+    decimal Amount,
+    bool AllowsTemporaryNegativeBalance = false);
+
+internal sealed record InvestmentCashReplayResult(
+    IReadOnlyDictionary<(Guid AccountId, string Currency), decimal> Balances,
+    string? Error);
 
 public sealed record InvestmentHistoryValidationResult(
     string? PositionError,

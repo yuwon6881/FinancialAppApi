@@ -217,6 +217,124 @@ public class ReceiptScanProcessorTests
     }
 
     [Fact]
+    public async Task ProcessAsync_ReceiptScanExcludesReservedCategoriesAndNeverReturnsIncome()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "alice", PasswordHash = "hash" });
+        foreach (var name in new[] { "Adjustment", "Food", "Other", "Transfer" })
+        {
+            context.TransactionCategories.Add(new TransactionCategory
+            {
+                Id = name.ToLowerInvariant(), UserId = "test-user", Name = name,
+            });
+        }
+        var imageStore = new FakeReceiptImageStore();
+        imageStore.Objects.Add("receipts/scan-1.jpg", "receipt-image"u8.ToArray());
+        context.ReceiptScanJobs.Add(new ReceiptScanJob
+        {
+            Id = "scan-1", UserId = "test-user", Username = "alice", Status = "queued",
+            StorageObjectPath = "receipts/scan-1.jpg", MimeType = "image/jpeg",
+        });
+        await context.SaveChangesAsync();
+
+        string? requestJson = null;
+        var modelJson = """
+            {"description":"Lunch","amount":12,"date":null,"category":"Transfer","ledgerCategory":"Income","confidence":0.9}
+            """;
+        var handler = new DelegateHandler(async (request, cancellationToken) =>
+        {
+            requestJson = await request.Content!.ReadAsStringAsync(cancellationToken);
+            return SuccessResponse(modelJson);
+        });
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var processor = new ReceiptScanProcessor(
+            new AiClient(
+                new HttpClient(handler),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
+                NullLogger<AiClient>.Instance),
+            context,
+            imageStore,
+            new TransactionCategoryService(context, cache),
+            NullLogger<ReceiptScanProcessor>.Instance);
+
+        Assert.Equal(ReceiptScanProcessStatus.Processed, await processor.ProcessAsync("scan-1"));
+
+        using var request = JsonDocument.Parse(requestJson!);
+        var categoryEnum = request.RootElement.GetProperty("text").GetProperty("format").GetProperty("schema")
+            .GetProperty("properties").GetProperty("category").GetProperty("enum")
+            .EnumerateArray().Select(value => value.GetString()).ToList();
+        Assert.DoesNotContain("Transfer", categoryEnum);
+        Assert.DoesNotContain("Adjustment", categoryEnum);
+        using var result = JsonDocument.Parse(context.ReceiptScanJobs.Single().ResultJson!);
+        Assert.Equal("Other", result.RootElement.GetProperty("category").GetString());
+        Assert.Equal("Essentials", result.RootElement.GetProperty("ledgerCategory").GetString());
+    }
+
+    [Fact]
+    public async Task ProcessAsync_InvestmentScanSendsSelectableContextWithEnoughOutputBudget()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var accountId = Guid.NewGuid();
+        var instrumentId = Guid.NewGuid();
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "alice", PasswordHash = "hash" });
+        context.InvestmentAccounts.Add(new InvestmentAccount
+        {
+            Id = accountId, UserId = "test-user", Name = "Moomoo MY", BaseCurrency = "MYR",
+        });
+        context.InvestmentInstruments.Add(new InvestmentInstrument
+        {
+            Id = instrumentId, UserId = "test-user", Symbol = "VOO", Name = "Vanguard S&P 500 ETF",
+            Type = "ETF", Currency = "USD", Exchange = "NASDAQ",
+        });
+        var imageStore = new FakeReceiptImageStore();
+        imageStore.Objects.Add("receipts/scan-1.jpg", "investment-image"u8.ToArray());
+        context.ReceiptScanJobs.Add(new ReceiptScanJob
+        {
+            Id = "scan-1", UserId = "test-user", Username = "alice", Status = "queued", ScanType = "investment",
+            StorageObjectPath = "receipts/scan-1.jpg", MimeType = "image/jpeg",
+        });
+        await context.SaveChangesAsync();
+
+        string? requestJson = null;
+        var modelJson = $$"""
+            {"type":"Buy","accountId":"{{accountId}}","instrumentId":"{{instrumentId}}","tradeDate":"2026-01-01","units":2,"unitPrice":100,"cashAmount":200,"fees":1.25,"taxes":0.75,"currency":"USD","toCurrency":null,"toAmount":null,"confidence":0.9}
+            """;
+        var handler = new DelegateHandler(async (request, cancellationToken) =>
+        {
+            requestJson = await request.Content!.ReadAsStringAsync(cancellationToken);
+            return SuccessResponse(modelJson);
+        });
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var processor = new ReceiptScanProcessor(
+            new AiClient(
+                new HttpClient(handler),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
+                NullLogger<AiClient>.Instance),
+            context,
+            imageStore,
+            new TransactionCategoryService(context, cache),
+            NullLogger<ReceiptScanProcessor>.Instance);
+
+        Assert.Equal(ReceiptScanProcessStatus.Processed, await processor.ProcessAsync("scan-1"));
+
+        using var request = JsonDocument.Parse(requestJson!);
+        Assert.True(request.RootElement.GetProperty("max_output_tokens").GetInt32() >= 800);
+        var userText = request.RootElement.GetProperty("input")[0].GetProperty("content")
+            .EnumerateArray().Where(part => part.GetProperty("type").GetString() == "input_text")
+            .Select(part => part.GetProperty("text").GetString()).Single();
+        const string prefix = "Available options JSON: ";
+        Assert.StartsWith(prefix, userText);
+        using var options = JsonDocument.Parse(userText![prefix.Length..]);
+        var account = Assert.Single(options.RootElement.GetProperty("accounts").EnumerateArray());
+        Assert.Equal(accountId, account.GetProperty("id").GetGuid());
+        Assert.Equal("Moomoo MY", account.GetProperty("name").GetString());
+        var instrument = Assert.Single(options.RootElement.GetProperty("instruments").EnumerateArray());
+        Assert.Equal(instrumentId, instrument.GetProperty("id").GetGuid());
+        Assert.Equal("VOO", instrument.GetProperty("symbol").GetString());
+        Assert.Equal("Vanguard S&P 500 ETF", instrument.GetProperty("name").GetString());
+    }
+
+    [Fact]
     public async Task ProcessAsync_WhenASplitScanIsCappedItReportsTruncationAndLostChargeScope()
     {
         await using var context = TestHelpers.NewInMemoryContext();

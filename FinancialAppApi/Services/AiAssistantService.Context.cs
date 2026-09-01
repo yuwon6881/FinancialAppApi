@@ -286,6 +286,7 @@ public partial class AiAssistantService
         if (selectedMonthIndex <= 0) selectedMonthIndex = _financialClock.LocalNow.Month;
 
         var categories = (await _categoryService.GetCategoriesAsync())
+            .Where(category => !TransactionCategoryService.IsReservedName(category.Name))
             .Select(c => c.Name)
             .OrderBy(name => name)
             .ToList();
