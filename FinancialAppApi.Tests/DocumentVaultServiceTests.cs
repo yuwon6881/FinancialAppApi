@@ -515,6 +515,73 @@ public class DocumentVaultServiceTests
         Assert.Null(result.Document.AmountConfidence);
     }
 
+    [Fact]
+    public void GetConstraints_ReturnsConfiguredLimitsAndAcceptedUploadTypes()
+    {
+        using var context = TestHelpers.NewInMemoryContext("test-user");
+        var service = NewService(context, new FakeDocumentVaultStore(), maxBytes: 20 * 1024 * 1024, maxTotalBytes: 500 * 1024 * 1024);
+
+        var constraints = service.GetConstraints();
+
+        Assert.Equal(20 * 1024 * 1024, constraints.MaxDocumentBytes);
+        Assert.Equal(500 * 1024 * 1024, constraints.MaxTotalBytesPerUser);
+        Assert.Contains("application/pdf", constraints.AcceptedUploadTypes);
+        Assert.Contains("image/jpeg", constraints.AcceptedUploadTypes);
+        Assert.DoesNotContain("application/json", constraints.AcceptedUploadTypes);
+        Assert.DoesNotContain("application/xml", constraints.AcceptedUploadTypes);
+    }
+
+    [Fact]
+    public async Task GetTaxYearSummaryAsync_ReportsOtherCurrencyCount_And_ExcludesNonMyrFromPendingReviewCount()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        AddTestCategory(context, 2026);
+
+        var doc1 = VaultDocumentForYear(2026, 1);
+        doc1.ReliefCategory = "test-category";
+        doc1.Amount = 100m;
+        doc1.AmountCurrency = "MYR";
+        doc1.AmountStatus = "Confirmed";
+
+        var doc2 = VaultDocumentForYear(2026, 2);
+        doc2.ReliefCategory = "test-category";
+        doc2.Amount = 50m;
+        doc2.AmountCurrency = "MYR";
+        doc2.AmountStatus = "NeedsReview";
+
+        var doc3 = VaultDocumentForYear(2026, 3);
+        doc3.ReliefCategory = "test-category";
+        doc3.Amount = 200m;
+        doc3.AmountCurrency = "OTHER";
+        doc3.AmountStatus = "NeedsReview";
+
+        var doc4 = VaultDocumentForYear(2026, 4);
+        doc4.ReliefCategory = "test-category";
+        doc4.Amount = 300m;
+        doc4.AmountCurrency = "OTHER";
+        doc4.AmountStatus = "Confirmed";
+
+        context.VaultDocuments.AddRange(doc1, doc2, doc3, doc4);
+        await context.SaveChangesAsync();
+
+        var service = NewService(context, new FakeDocumentVaultStore());
+        var summary = await service.GetTaxYearSummaryAsync(2026);
+
+        Assert.NotNull(summary);
+        Assert.Equal(4, summary.DocumentCount);
+        Assert.Equal(100m, summary.ConfirmedAmount);
+        Assert.Equal(50m, summary.PendingReviewAmount);
+
+        var category = Assert.Single(summary.Categories);
+        Assert.Equal("test-category", category.Id);
+        Assert.Equal(4, category.DocumentCount);
+        Assert.Equal(100m, category.ConfirmedAmount);
+        Assert.Equal(50m, category.PendingReviewAmount);
+        Assert.Equal(1, category.PendingReviewCount);
+        Assert.Equal(2, category.OtherCurrencyDocumentCount);
+    }
+
     private static DocumentVaultService NewService(AppDbContext context, IDocumentVaultStore store, long maxBytes = 10 * 1024 * 1024, long maxTotalBytes = 100 * 1024 * 1024)
     {
         var options = new FixedOptionsMonitor<DocumentVaultOptions>(new DocumentVaultOptions

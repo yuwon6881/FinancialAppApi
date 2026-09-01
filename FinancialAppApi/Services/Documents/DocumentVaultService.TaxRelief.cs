@@ -28,7 +28,10 @@ public partial class DocumentVaultService
                     document.AmountStatus == "NeedsReview" && document.AmountCurrency == "MYR"
                         ? document.Amount ?? 0
                         : 0),
-                PendingReviewCount = group.Count(document => document.AmountStatus == "NeedsReview"),
+                PendingReviewCount = group.Count(document =>
+                    document.AmountStatus == "NeedsReview" && document.AmountCurrency == "MYR"),
+                OtherCurrencyDocumentCount = group.Count(document =>
+                    document.AmountCurrency != "MYR"),
             })
             .ToListAsync(ct);
 
@@ -49,7 +52,8 @@ public partial class DocumentVaultService
                 totals?.Confirmed ?? 0,
                 totals?.Pending ?? 0,
                 totals?.DocumentCount ?? 0,
-                totals?.PendingReviewCount ?? 0);
+                totals?.PendingReviewCount ?? 0,
+                totals?.OtherCurrencyDocumentCount ?? 0);
         }).ToList();
 
         return new TaxYearReliefSummary(

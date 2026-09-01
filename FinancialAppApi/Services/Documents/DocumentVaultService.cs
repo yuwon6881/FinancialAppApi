@@ -29,7 +29,11 @@ public sealed record VaultDocumentDto(
 /// from configuration so the client's usage meter reports the real limit rather than assuming one.
 /// </summary>
 public sealed record DocumentVaultUsage(long TotalBytes, int DocumentCount, long QuotaBytes);
-public sealed record DocumentVaultConstraints(long MaxDocumentBytes, int MaxBulkDocuments, long MaxTotalBytesPerUser);
+public sealed record DocumentVaultConstraints(
+    long MaxDocumentBytes,
+    int MaxBulkDocuments,
+    long MaxTotalBytesPerUser,
+    IReadOnlyList<string> AcceptedUploadTypes);
 public sealed record TaxReliefCategoryDefinition(
     string Id,
     string Name,
@@ -42,7 +46,8 @@ public sealed record TaxReliefCategorySummary(
     decimal ConfirmedAmount,
     decimal PendingReviewAmount,
     int DocumentCount,
-    int PendingReviewCount);
+    int PendingReviewCount,
+    int OtherCurrencyDocumentCount);
 public sealed record TaxYearReliefSummary(
     int TaxYear,
     decimal ConfirmedAmount,
@@ -404,7 +409,11 @@ public sealed partial class DocumentVaultService
     public DocumentVaultConstraints GetConstraints()
     {
         var options = _options.CurrentValue;
-        return new(options.MaxDocumentBytes, options.MaxBulkDocuments, options.MaxTotalBytesPerUser);
+        return new(
+            options.MaxDocumentBytes,
+            options.MaxBulkDocuments,
+            options.MaxTotalBytesPerUser,
+            AcceptedUploadTypesInOrder);
     }
 
 }

@@ -27,6 +27,12 @@ public partial class DocumentVaultService
         "application/pdf",
     };
 
+    /// <summary>
+    /// The same allowlist in the stable order the client advertises in its file picker. Precomputed
+    /// because <see cref="GetConstraints"/> is called more than once per upload request.
+    /// </summary>
+    private static readonly string[] AcceptedUploadTypesInOrder = AcceptedUploadTypes.OrderBy(type => type, StringComparer.Ordinal).ToArray();
+
     private async Task<bool> IsReliefCategoryConfiguredAsync(
         int taxYear,
         string categoryId,
