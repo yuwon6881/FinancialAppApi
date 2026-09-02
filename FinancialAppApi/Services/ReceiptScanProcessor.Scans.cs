@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Investments;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
@@ -39,6 +40,22 @@ Rules:
 - fieldConfidence reports confidence separately for merchant, date, currency, subtotal, and total.
 - Never invent an item, amount, rate, charge rule, date, or currency. Use low confidence and null values for unclear fields.";
 
+    /// <summary>
+    /// The category names a scanned receipt may be filed under. Every scan is spending, and the
+    /// transaction form only offers outflow-capable categories, so handing the model an
+    /// inflow-only name gives it an option the review form then silently replaces with Other —
+    /// losing what it actually read. Mirrors the flow filter in CategorySuggestionService.
+    /// </summary>
+    private async Task<List<string>> LoadSpendingCategoryNamesAsync(CancellationToken cancellationToken) =>
+        (await _categoryService.GetCategoriesAsync(cancellationToken))
+            .Where(category => !TransactionCategoryService.IsReservedName(category.Name))
+            .Where(category => CategoryFlowType.Normalize(category.Type) != CategoryFlowType.Inflow)
+            .Select(category => category.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name)
+            .ToList();
+
     private async Task<ScanOutcome> ScanReceiptImageAsync(
         string base64Image,
         string mimeType,
@@ -49,16 +66,10 @@ Rules:
             return ScanOutcome.Failed("Receipt scanning is not configured for this app.");
         }
 
-        var categories = (await _categoryService.GetCategoriesAsync(cancellationToken))
-            .Where(category => !TransactionCategoryService.IsReservedName(category.Name))
-            .Select(c => c.Name)
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name)
-            .ToList();
+        var categories = await LoadSpendingCategoryNamesAsync(cancellationToken);
         if (categories.Count == 0)
         {
-            return ScanOutcome.Failed("No transaction categories are configured.");
+            return ScanOutcome.Failed("No spending categories are configured.");
         }
 
         var content = $"Available categories JSON array: {JsonSerializer.Serialize(categories)}";
@@ -126,15 +137,9 @@ Rules:
         if (!_aiClient.IsConfigured)
             return ScanOutcome.Failed("Receipt splitting is not configured for this app.");
 
-        var categories = (await _categoryService.GetCategoriesAsync(cancellationToken))
-            .Where(category => !TransactionCategoryService.IsReservedName(category.Name))
-            .Select(c => c.Name)
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name)
-            .ToList();
+        var categories = await LoadSpendingCategoryNamesAsync(cancellationToken);
         if (categories.Count == 0)
-            return ScanOutcome.Failed("No transaction categories are configured.");
+            return ScanOutcome.Failed("No spending categories are configured.");
 
         string text;
         try
@@ -369,8 +374,11 @@ Rules:
         var currency = ReadString("currency")?.Trim().ToUpperInvariant();
         var toCurrency = ReadString("toCurrency")?.Trim().ToUpperInvariant();
         var toAmount = ReadNonNegative("toAmount", positive: true);
-        if (currency is { Length: not 3 }) currency = null;
-        if (toCurrency is { Length: not 3 }) toCurrency = null;
+        // The cash form's currency pickers are backed by CurrencyCatalog, and the API rejects
+        // anything outside it. A merely three-letter code the model read off a statement would
+        // land in the dropdown as an option that does not exist and cannot be saved.
+        if (!CurrencyCatalog.Contains(currency)) currency = null;
+        if (!CurrencyCatalog.Contains(toCurrency)) toCurrency = null;
         if (type == "FeeTax")
         {
             var charge = (fees ?? 0) + (taxes ?? 0);

@@ -270,6 +270,112 @@ public class ReceiptScanProcessorTests
         Assert.Equal("Essentials", result.RootElement.GetProperty("ledgerCategory").GetString());
     }
 
+    // A receipt is always spending, and the transaction form only offers outflow-capable
+    // categories. Offering an inflow-only name gives the model a choice the review form then
+    // silently rewrites to Other, throwing away what it actually read off the receipt.
+    [Fact]
+    public async Task ProcessAsync_ReceiptScanOffersOnlySpendingCategories()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "alice", PasswordHash = "hash" });
+        foreach (var (name, type) in new[]
+                 {
+                     ("Food", CategoryFlowType.Outflow),
+                     ("Gifts", CategoryFlowType.Both),
+                     ("Other", CategoryFlowType.Both),
+                     ("Salary", CategoryFlowType.Inflow),
+                 })
+        {
+            context.TransactionCategories.Add(new TransactionCategory
+            {
+                Id = name.ToLowerInvariant(), UserId = "test-user", Name = name, Type = type,
+            });
+        }
+        var imageStore = new FakeReceiptImageStore();
+        imageStore.Objects.Add("receipts/scan-1.jpg", "receipt-image"u8.ToArray());
+        context.ReceiptScanJobs.Add(new ReceiptScanJob
+        {
+            Id = "scan-1", UserId = "test-user", Username = "alice", Status = "queued",
+            StorageObjectPath = "receipts/scan-1.jpg", MimeType = "image/jpeg",
+        });
+        await context.SaveChangesAsync();
+
+        string? requestJson = null;
+        var modelJson = """
+            {"description":"Lunch","amount":12,"date":null,"category":"Food","ledgerCategory":"Essentials","confidence":0.9}
+            """;
+        var handler = new DelegateHandler(async (request, cancellationToken) =>
+        {
+            requestJson = await request.Content!.ReadAsStringAsync(cancellationToken);
+            return SuccessResponse(modelJson);
+        });
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var processor = new ReceiptScanProcessor(
+            new AiClient(
+                new HttpClient(handler),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
+                NullLogger<AiClient>.Instance),
+            context,
+            imageStore,
+            new TransactionCategoryService(context, cache),
+            NullLogger<ReceiptScanProcessor>.Instance);
+
+        Assert.Equal(ReceiptScanProcessStatus.Processed, await processor.ProcessAsync("scan-1"));
+
+        using var request = JsonDocument.Parse(requestJson!);
+        var categoryEnum = request.RootElement.GetProperty("text").GetProperty("format").GetProperty("schema")
+            .GetProperty("properties").GetProperty("category").GetProperty("enum")
+            .EnumerateArray().Select(value => value.GetString()).ToList();
+        Assert.Equal(new[] { "Food", "Gifts", "Other" }, categoryEnum);
+        var userText = request.RootElement.GetProperty("input")[0].GetProperty("content")
+            .EnumerateArray().Where(part => part.GetProperty("type").GetString() == "input_text")
+            .Select(part => part.GetProperty("text").GetString()).Single();
+        Assert.DoesNotContain("Salary", userText);
+    }
+
+    // The cash form's currency pickers are backed by CurrencyCatalog and the API rejects anything
+    // outside it, so a merely three-letter code would arrive as an unselectable, unsaveable value.
+    [Fact]
+    public async Task ProcessAsync_InvestmentScanDropsCurrencyCodesOutsideTheCatalog()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var accountId = Guid.NewGuid();
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "alice", PasswordHash = "hash" });
+        context.InvestmentAccounts.Add(new InvestmentAccount
+        {
+            Id = accountId, UserId = "test-user", Name = "Moomoo MY", BaseCurrency = "MYR",
+        });
+        var imageStore = new FakeReceiptImageStore();
+        imageStore.Objects.Add("receipts/scan-1.jpg", "investment-image"u8.ToArray());
+        context.ReceiptScanJobs.Add(new ReceiptScanJob
+        {
+            Id = "scan-1", UserId = "test-user", Username = "alice", Status = "queued", ScanType = "investment",
+            StorageObjectPath = "receipts/scan-1.jpg", MimeType = "image/jpeg",
+        });
+        await context.SaveChangesAsync();
+
+        var modelJson = $$"""
+            {"type":"Conversion","accountId":"{{accountId}}","instrumentId":null,"tradeDate":"2026-01-01","units":null,"unitPrice":null,"cashAmount":500,"fees":null,"taxes":null,"currency":"USD","toCurrency":"XBT","toAmount":0.01,"confidence":0.9}
+            """;
+        var handler = new DelegateHandler((_, _) => Task.FromResult(SuccessResponse(modelJson)));
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var processor = new ReceiptScanProcessor(
+            new AiClient(
+                new HttpClient(handler),
+                TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")),
+                NullLogger<AiClient>.Instance),
+            context,
+            imageStore,
+            new TransactionCategoryService(context, cache),
+            NullLogger<ReceiptScanProcessor>.Instance);
+
+        Assert.Equal(ReceiptScanProcessStatus.Processed, await processor.ProcessAsync("scan-1"));
+
+        using var result = JsonDocument.Parse(context.ReceiptScanJobs.Single().ResultJson!);
+        Assert.Equal("USD", result.RootElement.GetProperty("currency").GetString());
+        Assert.Equal(JsonValueKind.Null, result.RootElement.GetProperty("toCurrency").ValueKind);
+    }
+
     [Fact]
     public async Task ProcessAsync_InvestmentScanSendsSelectableContextWithEnoughOutputBudget()
     {
