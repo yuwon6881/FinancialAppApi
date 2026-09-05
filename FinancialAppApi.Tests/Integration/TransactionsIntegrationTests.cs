@@ -237,4 +237,104 @@ public class TransactionsIntegrationTests : IntegrationTestBase
             HttpStatusCode.OK,
             (await alice.GetAsync("/api/transactions/alice-private-transaction")).StatusCode);
     }
+
+    [Fact]
+    public async Task BulkCreateTransactions_CreatesMultipleAndAppearsInList()
+    {
+        var client = await CreateSignedInClientAsync();
+
+        var request = new
+        {
+            transactions = new[]
+            {
+                new
+                {
+                    id = "tx-bulk-1",
+                    date = "2026-06-15",
+                    description = "Batch lunch",
+                    category = "Food",
+                    ledgerCategory = "Essentials",
+                    accountId = AccountIdFor("Essentials"),
+                    amount = ObfuscationHelper.Obfuscate(-15.50m),
+                },
+                new
+                {
+                    id = "tx-bulk-2",
+                    date = "2026-06-15",
+                    description = "Batch transport",
+                    category = "Transport",
+                    ledgerCategory = "Essentials",
+                    accountId = AccountIdFor("Essentials"),
+                    amount = ObfuscationHelper.Obfuscate(-7.20m),
+                },
+            }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/transactions/bulk-create", request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var created = body.GetProperty("created");
+        Assert.Equal(2, created.GetArrayLength());
+
+        var list = await client.GetFromJsonAsync<JsonElement>("/api/transactions?all=true");
+        var items = list.GetProperty("items");
+        Assert.Contains(items.EnumerateArray(),
+            t => t.GetProperty("description").GetString() == "Batch lunch");
+        Assert.Contains(items.EnumerateArray(),
+            t => t.GetProperty("description").GetString() == "Batch transport");
+    }
+
+    [Fact]
+    public async Task BulkCreateTransactions_EmptyList_Returns400()
+    {
+        var client = await CreateSignedInClientAsync();
+
+        var request = new
+        {
+            transactions = Array.Empty<object>()
+        };
+
+        var response = await client.PostAsJsonAsync("/api/transactions/bulk-create", request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task BulkCreateTransactions_WithInvalidItem_Returns400WithFailedIndex()
+    {
+        var client = await CreateSignedInClientAsync();
+
+        var request = new
+        {
+            transactions = new[]
+            {
+                new
+                {
+                    id = "tx-bulk-ok",
+                    date = "2026-06-15",
+                    description = "Valid item",
+                    category = "Food",
+                    ledgerCategory = "Essentials",
+                    accountId = AccountIdFor("Essentials"),
+                    amount = ObfuscationHelper.Obfuscate(-10m),
+                },
+                new
+                {
+                    id = "tx-bulk-bad",
+                    date = "2026-06-15",
+                    description = "Invalid category",
+                    category = "NoSuchCategoryEver",
+                    ledgerCategory = "Essentials",
+                    accountId = AccountIdFor("Essentials"),
+                    amount = ObfuscationHelper.Obfuscate(-10m),
+                },
+            }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/transactions/bulk-create", request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetProperty("index").GetInt32());
+    }
 }

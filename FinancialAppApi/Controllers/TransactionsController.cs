@@ -225,6 +225,38 @@ public class TransactionsController : ControllerBase
                     : null));
     }
 
+    [HttpPost("bulk-create")]
+    public async Task<IActionResult> BulkCreateTransactions(
+        [FromBody] BulkCreateTransactionsRequest? request)
+    {
+        var transactions = request?.Transactions ?? [];
+        if (transactions.Count < 1) return BadRequest(new { message = "Choose at least one transaction to create." });
+        if (transactions.Count > 100) return BadRequest(new { message = "Create at most 100 transactions at a time." });
+
+        var result = await _transactionPersistenceService.CreateTransactionsAsync(
+            transactions.Select(ToMutationRequest).ToList(),
+            HttpContext.RequestAborted);
+
+        if (result.Status == TransactionMutationStatus.Conflict)
+        {
+            return Conflict(new { message = result.Message, index = result.FailedIndex });
+        }
+        if (result.Status is TransactionMutationStatus.InvalidDate
+            or TransactionMutationStatus.InvalidAmount
+            or TransactionMutationStatus.InvalidRecurringOccurrence)
+        {
+            return BadRequest(new { message = result.Message, index = result.FailedIndex });
+        }
+        if (result.Status is TransactionMutationStatus.InvalidCategory
+            or TransactionMutationStatus.InvalidLedgerCategory
+            or TransactionMutationStatus.InvalidAccount)
+        {
+            return BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets, index = result.FailedIndex });
+        }
+
+        return Ok(new { created = result.Transactions.Select(t => MapToDto(t)).ToList() });
+    }
+
     [HttpPost("bulk-delete")]
     public async Task<IActionResult> BulkDeleteTransactions(
         [FromBody] BulkDeleteTransactionsRequest? request)
@@ -473,4 +505,9 @@ public sealed class BulkMoveTransactionItem
 {
     public string Id { get; set; } = string.Empty;
     public string TargetDate { get; set; } = string.Empty;
+}
+
+public sealed class BulkCreateTransactionsRequest
+{
+    public List<TransactionDto> Transactions { get; set; } = [];
 }

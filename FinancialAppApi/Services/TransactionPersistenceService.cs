@@ -286,6 +286,26 @@ public partial class TransactionPersistenceService
         return new TransactionMutationResult(TransactionMutationStatus.Created, transaction);
     }
 
+    public async Task<(TransactionMutationStatus Status, List<Transaction> Transactions, string? Message, string? Code, int? FailedIndex, IReadOnlyList<string>? MissingBuckets)> CreateTransactionsAsync(
+        IReadOnlyList<TransactionMutationRequest> requests,
+        CancellationToken cancellationToken = default)
+    {
+        var created = new List<Transaction>();
+        for (var i = 0; i < requests.Count; i++)
+        {
+            var result = await CreateTransactionAsync(requests[i], cancellationToken);
+            if (result.Status is not (TransactionMutationStatus.Created or TransactionMutationStatus.Existing))
+            {
+                return (result.Status, [], result.Message, result.Code, i, result.MissingBuckets);
+            }
+            if (result.Transaction != null)
+            {
+                created.Add(result.Transaction);
+            }
+        }
+        return (TransactionMutationStatus.Created, created, null, null, null, null);
+    }
+
     public async Task<TransactionMutationResult> UpdateTransactionAsync(
         string id,
         TransactionMutationRequest request,
