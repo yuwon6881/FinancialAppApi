@@ -5,6 +5,10 @@ namespace FinancialAppApi.Services.Documents;
 public sealed record ReliefCategoryDocumentUpdate(int Id, string? ReliefCategory);
 public sealed record ReliefCategoryDocumentUpdateResult(int Id, bool Updated, string? Message = null);
 
+/// <summary>A document's new owning transaction, or null to detach it from the one it has.</summary>
+public sealed record TransactionLinkDocumentUpdate(int Id, string? TransactionId);
+public sealed record TransactionLinkDocumentUpdateResult(int Id, bool Updated, string? Message = null);
+
 /// <summary>
 /// Outcome codes for a vault document metadata update.
 /// </summary>
@@ -203,6 +207,67 @@ public sealed partial class DocumentVaultService
             if (!string.Equals(document.ReliefCategory, reliefCategory, StringComparison.Ordinal))
             {
                 document.ReliefCategory = reliefCategory;
+                hasChanges = true;
+            }
+
+            results.Add(new(update.Id, true));
+        }
+
+        if (hasChanges)
+        {
+            await _context.SaveChangesAsync(ct);
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Re-points or detaches several documents' owning transaction in one write.
+    ///
+    /// The client reconciles a synced transaction's document changes, and a batch of drafts pushed
+    /// together produced one PATCH per document -- a burst of round trips over a link change that
+    /// touches a single column. It reuses <see cref="UpdateAsync"/>'s rule for the detach flag
+    /// rather than restating it: an explicit re-point is the user's final word on where the
+    /// document belongs, so a later restore of its previous transaction must not re-link it.
+    /// </summary>
+    public async Task<IReadOnlyList<TransactionLinkDocumentUpdateResult>> UpdateTransactionLinksAsync(
+        IReadOnlyCollection<TransactionLinkDocumentUpdate> updates,
+        CancellationToken ct = default)
+    {
+        var requested = updates
+            .GroupBy(update => update.Id)
+            .Select(group => group.Last())
+            .ToList();
+
+        if (requested.Count == 0) return [];
+
+        var ids = requested
+            .Where(update => update.Id > 0)
+            .Select(update => update.Id)
+            .ToArray();
+        var documents = await _context.VaultDocuments
+            .Where(document => ids.Contains(document.Id))
+            .ToListAsync(ct);
+        var documentsById = documents.ToDictionary(document => document.Id);
+        var results = new List<TransactionLinkDocumentUpdateResult>(requested.Count);
+        var hasChanges = false;
+
+        foreach (var update in requested)
+        {
+            // Same answer for "deleted" and "another account's": the tenancy filter makes them
+            // indistinguishable above, and it must stay that way.
+            if (!documentsById.TryGetValue(update.Id, out var document))
+            {
+                results.Add(new(update.Id, false, DocumentNotFoundMessage));
+                continue;
+            }
+
+            var transactionId = string.IsNullOrWhiteSpace(update.TransactionId) ? null : update.TransactionId.Trim();
+            if (!string.Equals(document.TransactionId, transactionId, StringComparison.Ordinal)
+                || document.DetachedFromTransactionId != null)
+            {
+                document.TransactionId = transactionId;
+                document.DetachedFromTransactionId = null;
                 hasChanges = true;
             }
 

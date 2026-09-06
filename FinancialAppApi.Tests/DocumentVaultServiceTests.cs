@@ -582,6 +582,106 @@ public class DocumentVaultServiceTests
         Assert.Equal(2, category.OtherCurrencyDocumentCount);
     }
 
+    // ---------- Bulk transaction relinking ----------
+    // Post-sync reconciliation detaches every document a synced transaction gave up, and did it one
+    // PATCH at a time; a batch of drafts pushed together turned that into a burst of round trips
+    // over a change that touches one column.
+
+    [Fact]
+    public async Task UpdateTransactionLinksAsync_RelinksAndDetachesInOneWrite()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        var linked = VaultDocumentForYear(2026, 1);
+        linked.TransactionId = "tx-old";
+        var unlinked = VaultDocumentForYear(2026, 2);
+        context.VaultDocuments.AddRange(linked, unlinked);
+        await context.SaveChangesAsync();
+        var service = NewService(context, new FakeDocumentVaultStore());
+
+        var results = await service.UpdateTransactionLinksAsync(
+        [
+            new TransactionLinkDocumentUpdate(1, null),
+            new TransactionLinkDocumentUpdate(2, "tx-new"),
+        ]);
+
+        Assert.All(results, result => Assert.True(result.Updated));
+        Assert.Null((await context.VaultDocuments.FindAsync(1))!.TransactionId);
+        Assert.Equal("tx-new", (await context.VaultDocuments.FindAsync(2))!.TransactionId);
+    }
+
+    [Fact]
+    public async Task UpdateTransactionLinksAsync_ClearsTheDetachedMarkerSoARestoreCannotRelink()
+    {
+        // Same rule the single-document path applies: an explicit re-point is the user's final word
+        // on where the document belongs, so restoring the transaction it used to hang off must not
+        // drag it back. Without this the bulk path would quietly disagree with the single one.
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        var document = VaultDocumentForYear(2026, 1);
+        document.TransactionId = null;
+        document.DetachedFromTransactionId = "tx-deleted";
+        context.VaultDocuments.Add(document);
+        await context.SaveChangesAsync();
+        var service = NewService(context, new FakeDocumentVaultStore());
+
+        await service.UpdateTransactionLinksAsync([new TransactionLinkDocumentUpdate(1, "tx-new")]);
+
+        var saved = await context.VaultDocuments.FindAsync(1);
+        Assert.Equal("tx-new", saved!.TransactionId);
+        Assert.Null(saved.DetachedFromTransactionId);
+    }
+
+    [Fact]
+    public async Task UpdateTransactionLinksAsync_ReportsAMissingDocumentWithoutFailingTheBatch()
+    {
+        // A partial answer is the point: the caller is reconciling many documents at once, and one
+        // deleted row must not cost the others their relink.
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        context.VaultDocuments.Add(VaultDocumentForYear(2026, 1));
+        await context.SaveChangesAsync();
+        var service = NewService(context, new FakeDocumentVaultStore());
+
+        var results = await service.UpdateTransactionLinksAsync(
+        [
+            new TransactionLinkDocumentUpdate(1, "tx-new"),
+            new TransactionLinkDocumentUpdate(404, "tx-new"),
+        ]);
+
+        Assert.True(results.Single(result => result.Id == 1).Updated);
+        var missing = results.Single(result => result.Id == 404);
+        Assert.False(missing.Updated);
+        Assert.NotNull(missing.Message);
+        Assert.Equal("tx-new", (await context.VaultDocuments.FindAsync(1))!.TransactionId);
+    }
+
+    [Fact]
+    public async Task UpdateTransactionLinksAsync_LeavesAnotherAccountsDocumentAlone()
+    {
+        // Tenancy fails closed: the query filter hides the row, so it must read as "not found" here
+        // rather than as a relink the caller believes succeeded.
+        await using var context = TestHelpers.NewInMemoryContext(currentUserId: null);
+        context.AppUsers.AddRange(
+            new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" },
+            new AppUser { Id = "other-user", Username = "other", PasswordHash = "hash" });
+        var foreign = VaultDocumentForYear(2026, 7);
+        foreign.UserId = "other-user";
+        foreign.TransactionId = "tx-theirs";
+        context.VaultDocuments.Add(foreign);
+        await context.SaveChangesAsync();
+        context.ChangeTracker.Clear();
+        context.SetCurrentUser("test-user");
+        var service = NewService(context, new FakeDocumentVaultStore());
+
+        var results = await service.UpdateTransactionLinksAsync([new TransactionLinkDocumentUpdate(7, "tx-mine")]);
+
+        Assert.False(results.Single().Updated);
+        context.ChangeTracker.Clear();
+        context.SetCurrentUser("other-user");
+        Assert.Equal("tx-theirs", (await context.VaultDocuments.FindAsync(7))!.TransactionId);
+    }
+
     private static DocumentVaultService NewService(AppDbContext context, IDocumentVaultStore store, long maxBytes = 10 * 1024 * 1024, long maxTotalBytes = 100 * 1024 * 1024)
     {
         var options = new FixedOptionsMonitor<DocumentVaultOptions>(new DocumentVaultOptions

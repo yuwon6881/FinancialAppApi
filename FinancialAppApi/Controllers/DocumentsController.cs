@@ -181,6 +181,23 @@ public partial class DocumentsController : ControllerBase
         return Ok(new { results });
     }
 
+    [HttpPost("bulk-update-transaction-links")]
+    public async Task<IActionResult> BulkUpdateTransactionLinks(
+        [FromBody] BulkUpdateDocumentTransactionLinksRequest? request,
+        CancellationToken ct)
+    {
+        if (request?.Updates is not { Count: > 0 })
+            return BadRequest(new { message = "Choose at least one document to relink." });
+        if (request.Updates.Count > 100)
+            return BadRequest(new { message = "Relink at most 100 documents at a time." });
+
+        var updates = request.Updates
+            .Select(update => new TransactionLinkDocumentUpdate(update.Id, update.TransactionId))
+            .ToArray();
+        var results = await _service.UpdateTransactionLinksAsync(updates, ct);
+        return Ok(new { results });
+    }
+
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] int? taxYear,
@@ -328,4 +345,16 @@ public sealed class BulkDocumentCategoryUpdate
 {
     public int Id { get; set; }
     public string? ReliefCategory { get; set; }
+}
+
+public sealed class BulkUpdateDocumentTransactionLinksRequest
+{
+    public List<BulkDocumentTransactionLinkUpdate>? Updates { get; set; } = [];
+}
+
+public sealed class BulkDocumentTransactionLinkUpdate
+{
+    public int Id { get; set; }
+    /// <summary>Null or blank detaches the document from the transaction it currently has.</summary>
+    public string? TransactionId { get; set; }
 }
