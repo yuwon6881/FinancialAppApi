@@ -911,14 +911,21 @@ public class AiAssistantHistoricalContextTests
 
         var handler = new CapturingHandler();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache));
+        var clock = new FinancialClock(
+            TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+            new FixedTimeProvider(new DateTimeOffset(new DateTime(2026, 9, 6, 12, 0, 0, DateTimeKind.Utc))));
+        var service = new AiAssistantService(new AiClient(new HttpClient(handler), TestHelpers.NewConfiguration(("OpenAiApiKey", "key"), ("OpenAiModel", "test-model")), NullLogger<AiClient>.Instance), context, new TransactionCategoryService(context, cache), financialClock: clock);
 
         await service.ChatAsync(new AiChatRequest("when is my next bill due?", []));
 
         Assert.Contains("upcomingBills", handler.UserContent);
-        Assert.Contains("\"nextDueDate\":\"2026-07-20\"", handler.UserContent);
+        // Derived from the schedule, not from the seeded NextDueDate column. That column is a
+        // legacy cache the settlement and edit paths null out, and here it holds a date already two
+        // months past -- surfacing it would have the assistant call July 20 the *next* due date.
+        Assert.Contains("\"nextDueDate\":\"2026-09-20\"", handler.UserContent);
+        Assert.DoesNotContain("\"nextDueDate\":\"2026-07-20\"", handler.UserContent);
         Assert.Contains("\"frequency\":\"Monthly\"", handler.UserContent);
-        // Soonest first: Spotify (Jul 20) before Domain (Nov 1).
+        // Soonest first: Spotify (Sep 20) before Domain (next annual anchor, Jan 1 2027).
         Assert.True(handler.UserContent.IndexOf("Spotify", StringComparison.Ordinal) < handler.UserContent.IndexOf("Domain Renewal", StringComparison.Ordinal));
     }
 

@@ -394,6 +394,65 @@ public class AiAssistantServiceTests
         Assert.Contains("\"amount\":15", handler.LastUserContent);
     }
 
+    // The stored RecurringPayment.NextDueDate column is a legacy cache that settlement and edits
+    // null out, so reading it fed the assistant an empty date for nearly every bill and it answered
+    // "next due dates are not available" about dates plainly visible in the Recurring view.
+    [Fact]
+    public async Task ChatAsync_RecurringQuestion_DerivesNextDueDateWhenStoredCacheIsEmpty()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "bill-gym",
+            Name = "Gym",
+            Amount = 80m,
+            Category = "Health",
+            LedgerCategory = "Essentials",
+            Active = true,
+            Frequency = "Monthly",
+            DueDate = 8,
+            StartDate = "2026-01-08",
+            NextDueDate = null,
+        });
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("Here are your subscriptions."));
+        var service = NewService(context, handler, clock: FixedClockAt(new DateTime(2026, 9, 6, 12, 0, 0, DateTimeKind.Utc)));
+
+        await service.ChatAsync(new AiChatRequest("which subscriptions are due next?", []));
+
+        Assert.Contains("\"nextDueDate\":\"2026-09-08\"", handler.LastUserContent);
+        Assert.DoesNotContain("\"nextDueDate\":\"\"", handler.LastUserContent);
+    }
+
+    // An inactive bill genuinely has no next occurrence. It must stay empty rather than acquire a
+    // derived date, or the assistant would start announcing due dates for cancelled subscriptions.
+    [Fact]
+    public async Task ChatAsync_RecurringQuestion_LeavesInactiveBillWithoutADerivedDueDate()
+    {
+        await using var context = NewContextWithSettings(hideSensitive: false);
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "bill-old",
+            Name = "Cancelled service",
+            Amount = 20m,
+            Category = "Software",
+            LedgerCategory = "Essentials",
+            Active = false,
+            Frequency = "Monthly",
+            DueDate = 8,
+            StartDate = "2026-01-08",
+            NextDueDate = null,
+        });
+        await context.SaveChangesAsync();
+        var handler = new ScriptedAiHandler(ScriptedAiHandler.Chat("Here are your subscriptions."));
+        var service = NewService(context, handler, clock: FixedClockAt(new DateTime(2026, 9, 6, 12, 0, 0, DateTimeKind.Utc)));
+
+        await service.ChatAsync(new AiChatRequest("which subscriptions are due next?", []));
+
+        Assert.Contains("Cancelled service", handler.LastUserContent);
+        Assert.DoesNotContain("2026-09-08", handler.LastUserContent);
+    }
+
     [Fact]
     public async Task ChatAsync_SensitiveMode_OmitsRecurringAmounts()
     {
@@ -1663,7 +1722,8 @@ public class AiAssistantServiceTests
     private static AiAssistantService NewService(
         AppDbContext context,
         ScriptedAiHandler handler,
-        bool withCategorySuggestions = false)
+        bool withCategorySuggestions = false,
+        FinancialClock? clock = null)
     {
         var cache = new MemoryCache(new MemoryCacheOptions());
         var client = new AiClient(
@@ -1674,7 +1734,18 @@ public class AiAssistantServiceTests
         var suggestions = withCategorySuggestions
             ? new CategorySuggestionService(client, context, categoryService, cache, new CategoryCleanupApplier(context))
             : null;
-        return new AiAssistantService(client, context, categoryService, suggestions);
+        return new AiAssistantService(
+            client, context, categoryService, suggestions,
+            recurringOccurrenceService: null, financialClock: clock);
+    }
+
+    private static FinancialClock FixedClockAt(DateTime utcNow) => new(
+        TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+        new FixedTimeProvider(new DateTimeOffset(utcNow)));
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
     }
 
     private static Transaction Txn(string id, DateTime date, string description, decimal amount) => new()
