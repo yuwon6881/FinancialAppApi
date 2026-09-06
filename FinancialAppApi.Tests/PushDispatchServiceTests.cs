@@ -681,7 +681,8 @@ public class PushDispatchServiceTests
         Assert.Equal("Netflix", content.Title);
         Assert.DoesNotContain("54.9", content.Title);
         Assert.DoesNotContain("54.9", content.Body);
-        Assert.Equal($"payment:rec-1:{today:yyyy-MM-dd}", content.Tag);
+        // PUSH-03: the same tag the client's buildNotificationTag() derives from this payload.
+        Assert.Equal($"recurring-reminder-rec-1-{today:yyyy-MM-dd}", content.Tag);
         Assert.Equal("/recurring?subscription=rec-1", content.Route);
         Assert.Equal("recurring-payment", content.Kind);
         Assert.Equal("rec-1", content.Data["recurringPaymentId"]);

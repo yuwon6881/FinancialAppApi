@@ -102,6 +102,35 @@
         "paymentCount": 1,
         "futureScheduleCount": 0
       }
+    },
+    {
+      "id": "tracking-starts-before-the-schedule-year",
+      "why": "Tracking may begin before the linked bill does; the first scheduled occurrence is the bill own start date, not a month derived from both bounds.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 600.0,
+          "annualRatePercent": 0.0,
+          "termPeriods": 6,
+          "interestMethod": "ReducingBalance",
+          "trackingStartDate": "2026-09-06",
+          "scheduleFrequency": "Monthly",
+          "scheduleDueDay": 10,
+          "scheduleStartDate": "2027-01-10",
+          "scheduleStatus": "Complete"
+        },
+        "inputs": []
+      },
+      "expected": {
+        "outstandingBalance": 600.0,
+        "scheduledPayment": 100.0,
+        "totalScheduledInterest": 0.0,
+        "totalInterestPaid": 0.0,
+        "payoffDate": "2027-06-10",
+        "lastOccurrenceDate": null,
+        "paymentCount": 0,
+        "futureScheduleCount": 6,
+        "firstFutureOccurrenceDate": "2027-01-10"
+      }
     }
   ]
 }

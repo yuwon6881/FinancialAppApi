@@ -211,6 +211,41 @@ public sealed class LoanReplayTests
         Assert.Equal(new DateOnly(2026, 2, 1), result.FutureSchedule[0].OccurrenceDate);
     }
 
+    // Tracking can start before the linked bill does -- the loan form defaults it to today and puts
+    // no floor at the bill's start date. When that pushes the search into an earlier year, the
+    // schedule walk used to jump to the wrong month, so the whole projected amortisation ran from a
+    // date LoanTermSchedule (which walks forward from tracking start) would never agree with.
+    [Fact]
+    public void FirstScheduledOccurrence_WhenTrackingStartsBeforeTheScheduleYear()
+    {
+        var loan = NewLoan(rate: 0m);
+        loan.TrackingStartDate = new DateOnly(2026, 9, 6);
+        loan.ScheduleStartDate = new DateOnly(2027, 1, 10);
+        loan.ScheduleDueDay = 10;
+
+        var result = LoanReplay.Replay(loan, []);
+
+        Assert.Equal(new DateOnly(2027, 1, 10), result.FutureSchedule[0].OccurrenceDate);
+    }
+
+    // The replay's own first-occurrence answer has to be the one LoanTermSchedule uses to convert
+    // between term length and the bill's end date, or the two halves of LOAN-05 describe different
+    // schedules for the same loan.
+    [Fact]
+    public void FirstScheduledOccurrence_AgreesWithLoanTermSchedule()
+    {
+        var loan = NewLoan(rate: 0m);
+        loan.TrackingStartDate = new DateOnly(2026, 9, 6);
+        loan.ScheduleStartDate = new DateOnly(2027, 1, 10);
+        loan.ScheduleDueDay = 10;
+        loan.TermPeriods = 1;
+
+        var result = LoanReplay.Replay(loan, []);
+        Assert.True(LoanTermSchedule.TryGetEndDate(loan, out var firstFromTermSchedule));
+
+        Assert.Equal(firstFromTermSchedule, result.FutureSchedule[0].OccurrenceDate);
+    }
+
     private static Loan NewLoan(decimal rate) => new()
     {
         Id = "loan-test",

@@ -96,7 +96,7 @@ public class RecurringPaymentsController : ControllerBase
         }
         if (result.Status == CreateRecurringPaymentStatus.Existing)
         {
-            return Ok(MapToDto(result.Payment!));
+            return Ok(MapToDto(result.Payment!, result.LinkedLoanId, result.LinkedLoanName));
         }
 
         return CreatedAtAction(nameof(GetRecurringPayments), new { id = payment.Id }, MapToDto(payment));
@@ -116,7 +116,7 @@ public class RecurringPaymentsController : ControllerBase
         if (result.Status == ToggleRecurringPaymentStatus.InvalidAccount)
             return BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets });
 
-        return Ok(MapToDto(result.Payment!));
+        return Ok(MapToDto(result.Payment!, result.LinkedLoanId, result.LinkedLoanName));
     }
 
     // PUT: api/recurring-payments/{id}
@@ -172,7 +172,7 @@ public class RecurringPaymentsController : ControllerBase
             return BadRequest(new { code = result.Code, message = result.Message, missingBuckets = result.MissingBuckets });
         }
 
-        return Ok(MapToDto(result.Payment!));
+        return Ok(MapToDto(result.Payment!, result.LinkedLoanId, result.LinkedLoanName));
     }
 
     // DELETE: api/recurring-payments/{id}
@@ -358,8 +358,17 @@ public class RecurringPaymentsController : ControllerBase
         LinkedLoanName = rp.LinkedLoanName
     };
 
-    internal static RecurringPaymentDto MapToDto(RecurringPayment rp) => new()
+    // The write-path overload (POST/PUT/toggle responses). It deliberately mirrors every field the
+    // projection overload above returns except the loan link, which it cannot see from the entity
+    // alone -- callers that know it pass it in, so a create/edit response never reports a loan-linked
+    // bill as unlinked and silently disarms the client's "cannot delete" guard.
+    internal static RecurringPaymentDto MapToDto(
+        RecurringPayment rp,
+        string? linkedLoanId = null,
+        string? linkedLoanName = null) => new()
     {
+        LinkedLoanId = linkedLoanId,
+        LinkedLoanName = linkedLoanName,
         Id = rp.Id,
         Name = rp.Name,
         Amount = ObfuscationHelper.Obfuscate(rp.Amount),

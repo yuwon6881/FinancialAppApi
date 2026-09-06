@@ -98,10 +98,16 @@ public class RecurringOccurrenceService
             return annualCandidate;
         }
 
-        var year = Math.Max(start.Year, date.Year);
-        var month = year == start.Year ? Math.Max(start.Month, date.Month) : date.Month;
+        // Search from whichever of the two bounds is later, then take that month's anchored day.
+        // Deriving the month from Math.Max(start.Month, date.Month) looked equivalent but was not:
+        // the guard it sat behind is also true when `date` falls in a year *before* the schedule
+        // starts, and it then skipped to the later of two unrelated month numbers.
+        var floor = date > start ? date : start;
+        var year = floor.Year;
+        var month = floor.Month;
         var candidate = AnchoredDate(year, month, dueDay);
-        if (candidate < start || candidate < date)
+        // At most one step: the next month begins after `floor`, so its anchored day cannot precede it.
+        if (candidate < floor)
         {
             month++;
             if (month == 13) { month = 1; year++; }

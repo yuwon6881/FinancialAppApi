@@ -382,12 +382,9 @@ public sealed partial class PushDispatchService
 
         if (shortfall.HasValue && shortfall.Value > 0)
         {
-            body = offsetDays switch
-            {
-                0 => $"Auto-deducts today: needs {shortfall.Value:N2} more in {accountName ?? "account"}",
-                1 => $"Auto-deducts tomorrow: needs {shortfall.Value:N2} more in {accountName ?? "account"}",
-                _ => $"Auto-deducts in {offsetDays} days: needs {shortfall.Value:N2} more in {accountName ?? "account"}"
-            };
+            // One arm, deliberately: a shortfall alert is only ever raised at offsetDays == 1 (see
+            // isShortfallOneDayPrior), so same-day and multi-day wordings were unreachable copy.
+            body = $"Auto-deducts tomorrow: needs {shortfall.Value:N2} more in {accountName ?? "account"}";
             data["shortfall"] = shortfall.Value.ToString("F2", CultureInfo.InvariantCulture);
             if (!string.IsNullOrWhiteSpace(accountName))
             {
@@ -424,7 +421,10 @@ public sealed partial class PushDispatchService
             Body: body,
             // Stable across resends for the same occurrence so the OS collapses/replaces the
             // notification instead of stacking a new one for every countdown day.
-            Tag: $"payment:{payment.Id}:{occurrenceDate:yyyy-MM-dd}",
+            // Must equal the client's buildNotificationTag() for this payload (PUSH-03). The worker
+            // recomputes it from `data` and ignores whatever arrives here, so a different value was
+            // never wrong on screen -- it just described a tagging scheme nothing implements.
+            Tag: $"recurring-reminder-{payment.Id}-{occurrenceDate:yyyy-MM-dd}",
             Route: $"/recurring?subscription={Uri.EscapeDataString(payment.Id)}",
             TimeToLive: timeToLive,
             Data: data);

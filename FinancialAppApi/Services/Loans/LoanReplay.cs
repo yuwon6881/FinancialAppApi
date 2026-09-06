@@ -249,12 +249,14 @@ public static class LoanReplay
             return candidate;
         }
 
-        var candidateYear = Math.Max(start.Year, date.Year);
-        var candidateMonth = candidateYear == start.Year
-            ? Math.Max(start.Month, date.Month)
-            : date.Month;
+        // Mirrors RecurringOccurrenceService.FindOccurrenceOnOrAfter and loanMath.ts: search from
+        // the later of the two bounds rather than from a month number picked out of both, which
+        // went wrong whenever tracking started in a year before the schedule did.
+        var floor = date > start ? date : start;
+        var candidateYear = floor.Year;
+        var candidateMonth = floor.Month;
         var monthlyCandidate = AnchoredDate(candidateYear, candidateMonth, dueDay);
-        if (monthlyCandidate < start || monthlyCandidate < date)
+        if (monthlyCandidate < floor)
         {
             candidateMonth++;
             if (candidateMonth == 13)

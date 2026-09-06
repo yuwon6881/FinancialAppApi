@@ -64,6 +64,15 @@ public sealed class LoanReplayParityTests
 
         Assert.Equal(expected.GetProperty("paymentCount").GetInt32(), result.Payments.Count);
         Assert.Equal(expected.GetProperty("futureScheduleCount").GetInt32(), result.FutureSchedule.Count);
+
+        // Optional: only cases that turn on where the schedule *starts* need to pin it, and every
+        // other assertion above is blind to a schedule shifted wholesale by a whole number of months.
+        if (expected.TryGetProperty("firstFutureOccurrenceDate", out var expectedFirst))
+        {
+            Assert.Equal(
+                DateOnly.Parse(expectedFirst.GetString()!),
+                result.FutureSchedule[0].OccurrenceDate);
+        }
     }
 
     private static string FixturePath => Path.Combine(

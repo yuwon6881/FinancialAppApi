@@ -75,13 +75,21 @@ public class RecurringPaymentAlertService
                 .ToDictionary(g => g.Key, g => g.ToList());
         }
 
+        // A legacy occurrence can carry no scheduled amount of its own; the parent's is the honest
+        // fallback, and quoting zero would have understated a real bill rather than admitted it.
+        var parentAmounts = activeRecurring.ToDictionary(
+            payment => payment.Id,
+            payment => Math.Abs(payment.Amount),
+            StringComparer.Ordinal);
+
         return occurrences.Select(occurrence =>
         {
             var txs = transactionsByOcc.GetValueOrDefault((occurrence.RecurringPaymentId, occurrence.OccurrenceDate)) ?? [];
-            var nonDiscarded = txs.Where(t => !string.Equals(t.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase)).ToList();
-            var paidSoFar = nonDiscarded.Sum(t => Math.Abs(t.Amount));
-            var scheduled = occurrence.ScheduledAmount ?? 0m;
-            var remaining = Math.Max(0m, scheduled - paidSoFar);
+            // The shared helper, not a local copy: the discarded-marker rule and the compare-by-
+            // magnitude rule have to be the same ones settlement and the shortfall surfaces apply.
+            var paidSoFar = RecurringOccurrenceAmounts.PaidSoFar(txs);
+            var scheduled = Math.Abs(occurrence.ScheduledAmount ?? parentAmounts.GetValueOrDefault(occurrence.RecurringPaymentId));
+            var remaining = RecurringOccurrenceAmounts.Remaining(scheduled, paidSoFar);
 
             var (month, year) = CategoryAttributionService.GetCycleMonthAndYearForDate(
                 occurrence.OccurrenceDate.ToDateTime(TimeOnly.MinValue), cycleDay);

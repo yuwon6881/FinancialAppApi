@@ -21,7 +21,9 @@ public sealed record UpdateRecurringPaymentResult(
     RecurringPayment? Payment = null,
     string? Message = null,
     string? Code = null,
-    IReadOnlyList<string>? MissingBuckets = null);
+    IReadOnlyList<string>? MissingBuckets = null,
+    string? LinkedLoanId = null,
+    string? LinkedLoanName = null);
 
 public enum ToggleRecurringPaymentStatus
 {
@@ -36,7 +38,9 @@ public sealed record ToggleRecurringPaymentResult(
     RecurringPayment? Payment = null,
     string? Message = null,
     string? Code = null,
-    IReadOnlyList<string>? MissingBuckets = null);
+    IReadOnlyList<string>? MissingBuckets = null,
+    string? LinkedLoanId = null,
+    string? LinkedLoanName = null);
 
 public enum UpdateReminderStatus
 {
@@ -64,7 +68,9 @@ public sealed record CreateRecurringPaymentResult(
     RecurringPayment? Payment = null,
     string? Message = null,
     string? Code = null,
-    IReadOnlyList<string>? MissingBuckets = null);
+    IReadOnlyList<string>? MissingBuckets = null,
+    string? LinkedLoanId = null,
+    string? LinkedLoanName = null);
 
 public sealed record RecurringPaymentProjection(
     string Id,
@@ -169,7 +175,9 @@ public class RecurringPaymentService
             var existing = await _context.RecurringPayments.FirstOrDefaultAsync(p => p.Id == payment.Id, cancellationToken);
             if (existing != null)
             {
-                return new CreateRecurringPaymentResult(CreateRecurringPaymentStatus.Existing, existing);
+                var (loanId, loanName) = await LinkedLoanAsync(existing.Id, cancellationToken);
+                return new CreateRecurringPaymentResult(
+                    CreateRecurringPaymentStatus.Existing, existing, LinkedLoanId: loanId, LinkedLoanName: loanName);
             }
         }
 
@@ -247,7 +255,9 @@ public class RecurringPaymentService
             await _context.SaveChangesAsync(cancellationToken);
         }
 
-        return new ToggleRecurringPaymentResult(ToggleRecurringPaymentStatus.Updated, payment);
+        var (toggledLoanId, toggledLoanName) = await LinkedLoanAsync(payment.Id, cancellationToken);
+        return new ToggleRecurringPaymentResult(
+            ToggleRecurringPaymentStatus.Updated, payment, LinkedLoanId: toggledLoanId, LinkedLoanName: toggledLoanName);
     }
 
     public async Task<UpdateRecurringPaymentResult> UpdateRecurringPaymentAsync(string id, RecurringPayment updated, CancellationToken cancellationToken = default)
@@ -336,7 +346,11 @@ public class RecurringPaymentService
             throw;
         }
 
-        return new UpdateRecurringPaymentResult(UpdateRecurringPaymentStatus.Updated, existing);
+        return new UpdateRecurringPaymentResult(
+            UpdateRecurringPaymentStatus.Updated,
+            existing,
+            LinkedLoanId: linkedLoan?.Id,
+            LinkedLoanName: linkedLoan?.Name);
     }
 
     public async Task<DeleteRecurringPaymentResult> DeleteRecurringPaymentAsync(
@@ -471,6 +485,18 @@ public class RecurringPaymentService
             || (requireOpen && account.IsArchived))
             return ("ledger_account_invalid", "Choose an open account in the recurring payment's bucket.");
         return null;
+    }
+
+    // The write paths answer with the same shape the list projection does, loan link included, so a
+    // create/edit/toggle response never reports a loan-linked bill as unlinked. One indexed read on
+    // a table with at most a handful of rows per user.
+    private async Task<(string? Id, string? Name)> LinkedLoanAsync(string paymentId, CancellationToken cancellationToken)
+    {
+        var loan = await _context.Loans.AsNoTracking()
+            .Where(candidate => candidate.RecurringPaymentId == paymentId)
+            .Select(candidate => new { candidate.Id, candidate.Name })
+            .FirstOrDefaultAsync(cancellationToken);
+        return (loan?.Id, loan?.Name);
     }
 
     private static IReadOnlyList<string>? MissingBucketsFor(string? ledgerCategory)

@@ -12,7 +12,8 @@ public enum LoanMutationStatus
     Invalid,
     RecurringPaymentNotFound,
     RecurringPaymentAlreadyLinked,
-    Conflict
+    Conflict,
+    SettlementStanding
 }
 
 public sealed record LoanResult(
@@ -208,6 +209,23 @@ public sealed class LoanService
             .FirstOrDefaultAsync(candidate => candidate.Id == id, cancellationToken);
         if (loan == null) return LoanMutationStatus.NotFound;
 
+        var repaymentActions = await _context.LoanRepaymentActions
+            .Where(action => action.LoanId == id)
+            .ToListAsync(cancellationToken);
+
+        // A payoff closed the linked bill and marked its occurrences SettledByLoanPayoff; only this
+        // loan's undo can put that back. Deleting it here would leave a bill that is inactive, ended
+        // and full of payoff-settled occurrences with nothing left to explain or reverse them, so the
+        // user undoes the settlement first and then deletes.
+        if (repaymentActions.Any(action => action.Kind == LoanRepaymentActionKind.FullSettlement))
+        {
+            return LoanMutationStatus.SettlementStanding;
+        }
+
+        // Advance-cycle rows are undo handles for a loan that is about to stop existing. Their ledger
+        // transactions stay — they are real settlements of real occurrences — but the handles cannot
+        // be reached again and would keep occupying the one-payoff-per-loan index for a dead id.
+        _context.LoanRepaymentActions.RemoveRange(repaymentActions);
         _context.Loans.Remove(loan);
         await _context.SaveChangesAsync(cancellationToken);
         return LoanMutationStatus.Success;
@@ -241,20 +259,22 @@ public sealed class LoanService
             .GroupBy(transaction => transaction.RecurringPaymentId!, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
 
-        var inactivePaymentLoanIds = loans
-            .Where(loan => payments.TryGetValue(loan.RecurringPaymentId, out var payment) && !payment.Active)
-            .Select(loan => loan.Id)
-            .ToArray();
+        // Every loan in the view, not only those whose bill is currently inactive. A payoff sets the
+        // bill inactive, but the user can resume it again — and keying the lookup on that flag meant
+        // resuming resurrected the balance and future schedule, dropped the undo handle, and left a
+        // second payoff refused as "already settled" with nothing to undo. The standing settlement
+        // action is the authority; the bill's Active flag is not.
+        var loanIds = loans.Select(loan => loan.Id).ToArray();
 
         var fullSettlementActions = new Dictionary<string, LoanRepaymentAction>(StringComparer.Ordinal);
-        if (inactivePaymentLoanIds.Length > 0)
+        if (loanIds.Length > 0)
         {
             // Grouped rather than ToDictionaryAsync keyed on LoanId: a unique index now stops a
             // second settlement per loan, but a pre-existing duplicate must not throw here and take
             // the entire loan list — and global search with it — down for good.
             var settlementRows = await _context.LoanRepaymentActions
                 .AsNoTracking()
-                .Where(action => inactivePaymentLoanIds.Contains(action.LoanId) && action.Kind == LoanRepaymentActionKind.FullSettlement)
+                .Where(action => loanIds.Contains(action.LoanId) && action.Kind == LoanRepaymentActionKind.FullSettlement)
                 .ToListAsync(cancellationToken);
             fullSettlementActions = settlementRows
                 .GroupBy(action => action.LoanId, StringComparer.Ordinal)

@@ -174,7 +174,15 @@ public sealed class LoansController : ControllerBase
     public async Task<IActionResult> DeleteLoan(string id)
     {
         var status = await _loanService.DeleteLoanAsync(id, HttpContext.RequestAborted);
-        return status == LoanMutationStatus.NotFound ? NotFound() : NoContent();
+        return status switch
+        {
+            LoanMutationStatus.NotFound => NotFound(),
+            LoanMutationStatus.SettlementStanding => Conflict(new
+            {
+                message = "This loan has been settled. Undo the settlement before deleting it, so its bill and occurrences are put back."
+            }),
+            _ => NoContent()
+        };
     }
 
     internal static LoanDto MapToDto(LoanView view)

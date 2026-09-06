@@ -317,6 +317,80 @@ public sealed class LoanServiceTests
         Assert.Equal(full.Replay.PayoffDate, preview.Replay.PayoffDate);
     }
 
+    // A standing payoff, not the linked bill's Active flag, is what says a loan is settled. The
+    // settlement action was only looked up for loans whose bill was inactive, so resuming the bill
+    // brought the balance and future schedule back and took the undo handle away -- while a second
+    // payoff was still refused as "already settled", leaving no way out.
+    [Fact]
+    public async Task GetLoansAsync_KeepsALoanSettledAfterItsBillIsResumed()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var payment = NewPayment();
+        payment.Active = true;
+        context.RecurringPayments.Add(payment);
+        context.Loans.Add(NewLoan());
+        context.LoanRepaymentActions.Add(NewFullSettlementAction());
+        await context.SaveChangesAsync();
+
+        var view = Assert.Single(await new LoanService(context).GetLoansAsync());
+
+        Assert.Equal(0m, view.Replay.OutstandingBalance);
+        Assert.Equal(new DateOnly(2026, 3, 1), view.Replay.PayoffDate);
+        Assert.Empty(view.Replay.FutureSchedule);
+        Assert.Equal("repay-settle-one", view.SettlementActionId);
+    }
+
+    [Fact]
+    public async Task DeleteLoanAsync_RefusesWhileAFullSettlementStands()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment());
+        context.Loans.Add(NewLoan());
+        context.LoanRepaymentActions.Add(NewFullSettlementAction());
+        await context.SaveChangesAsync();
+
+        var status = await new LoanService(context).DeleteLoanAsync("loan-one");
+
+        Assert.Equal(LoanMutationStatus.SettlementStanding, status);
+        Assert.NotNull(await context.Loans.FindAsync("loan-one"));
+    }
+
+    // Advance-cycle rows are only an undo handle for a loan that still exists. Left behind they are
+    // unreachable, and they keep the one-payoff-per-loan index populated for an id nothing owns.
+    [Fact]
+    public async Task DeleteLoanAsync_RemovesTheLoansRepaymentActionRows()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.RecurringPayments.Add(NewPayment());
+        context.Loans.Add(NewLoan());
+        context.LoanRepaymentActions.Add(new LoanRepaymentAction
+        {
+            Id = "repay-advance-one",
+            UserId = TestHelpers.DefaultUserId,
+            LoanId = "loan-one",
+            RecurringPaymentId = "bill-loan",
+            Kind = LoanRepaymentActionKind.AdvanceCycles,
+            EffectiveDate = new DateOnly(2026, 2, 1)
+        });
+        await context.SaveChangesAsync();
+
+        var status = await new LoanService(context).DeleteLoanAsync("loan-one");
+
+        Assert.Equal(LoanMutationStatus.Success, status);
+        Assert.Empty(context.LoanRepaymentActions);
+    }
+
+    private static LoanRepaymentAction NewFullSettlementAction() => new()
+    {
+        Id = "repay-settle-one",
+        UserId = TestHelpers.DefaultUserId,
+        LoanId = "loan-one",
+        RecurringPaymentId = "bill-loan",
+        Kind = LoanRepaymentActionKind.FullSettlement,
+        LenderQuoteAmount = 900m,
+        EffectiveDate = new DateOnly(2026, 3, 1)
+    };
+
     private static RecurringPayment NewPayment() => new()
     {
         Id = "bill-loan",
