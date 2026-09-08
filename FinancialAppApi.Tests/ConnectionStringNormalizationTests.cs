@@ -226,23 +226,82 @@ public class ConnectionStringNormalizationTests
     [Fact]
     public void AddPersistence_DropsQueryParametersNpgsqlHasNoEquivalentFor()
     {
+        // fallback_application_name is a real libpq parameter with no Npgsql counterpart under any
+        // spelling, unlike channel_binding or gssencmode which are only spelled differently.
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 {
                     "ConnectionStrings:DefaultConnection",
-                    "postgresql://owner:secret@ep-test-123.aws.neon.tech/neondb?sslmode=require&gssencmode=disable"
+                    "postgresql://owner:secret@ep-test-123.aws.neon.tech/neondb" +
+                    "?sslmode=require&fallback_application_name=probe"
                 }
             })
             .Build();
         var services = new ServiceCollection();
         services.AddLogging();
 
-        // Dropping the unusable parameter keeps a pasted dashboard URL working; SSL is forced
-        // unconditionally below regardless of what the query string did or did not say.
+        // Dropping the unusable parameter keeps a pasted dashboard URL working, and must not cost
+        // the parameters either side of it.
         var exception = Record.Exception(() => services.AddPersistence(configuration, migrateOnly: false));
-
         Assert.Null(exception);
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var builder = new NpgsqlConnectionStringBuilder(context.Database.GetDbConnection().ConnectionString);
+
+        Assert.Equal("ep-test-123.aws.neon.tech", builder.Host);
+        Assert.Equal("neondb", builder.Database);
+        Assert.Equal(SslMode.Require, builder.SslMode);
+    }
+
+    [Fact]
+    public void AddPersistence_DisablesGssEncryptionNegotiation()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                {"ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test"}
+            })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddPersistence(configuration, migrateOnly: false);
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var builder = new NpgsqlConnectionStringBuilder(context.Database.GetDbConnection().ConnectionString);
+
+        // Left at its default, Npgsql attempts GSS encryption on every new physical connection and
+        // has to load libgssapi to do it -- absent from the chiseled runtime image, so each attempt
+        // logs a library-load failure. SCRAM over TLS means the negotiation can never succeed.
+        Assert.Equal(GssEncryptionMode.Disable, builder.GssEncryptionMode);
+    }
+
+    [Fact]
+    public void AddPersistence_DisablesGssEncryptionEvenWhenTheUrlAsksForIt()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                {
+                    "ConnectionStrings:DefaultConnection",
+                    "postgresql://owner:secret@ep-test-123.aws.neon.tech/neondb?gssencmode=require"
+                }
+            })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddPersistence(configuration, migrateOnly: false);
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var builder = new NpgsqlConnectionStringBuilder(context.Database.GetDbConnection().ConnectionString);
+
+        Assert.Equal(GssEncryptionMode.Disable, builder.GssEncryptionMode);
     }
 
     [Theory]

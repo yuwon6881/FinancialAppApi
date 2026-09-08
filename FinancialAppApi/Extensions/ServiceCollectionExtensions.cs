@@ -312,6 +312,7 @@ public static class ServiceCollectionExtensions
     private static readonly Dictionary<string, string> LibpqKeywordAliases = new(StringComparer.OrdinalIgnoreCase)
     {
         ["channel_binding"] = "Channel Binding",
+        ["gssencmode"] = "GSS Encryption Mode",
         ["connect_timeout"] = "Timeout",
         ["application_name"] = "Application Name",
         ["target_session_attrs"] = "Target Session Attributes",
@@ -471,6 +472,12 @@ public static class ServiceCollectionExtensions
             TcpKeepAliveTime = configuration.GetValue("Database:TcpKeepAliveTime", 15),
             TcpKeepAliveInterval = configuration.GetValue("Database:TcpKeepAliveInterval", 5),
             SslMode = SslMode.Require,
+            // Forced off rather than left at the default. Npgsql otherwise tries to negotiate GSS
+            // encryption on every new physical connection, which means loading libgssapi -- absent
+            // from the chiseled runtime image, so each attempt logs a library-load failure before
+            // falling back. The negotiation could never succeed anyway: the database authenticates
+            // with SCRAM over TLS and has no Kerberos to offer.
+            GssEncryptionMode = GssEncryptionMode.Disable,
         }.ConnectionString;
 
         services.AddHealthChecks()
