@@ -191,6 +191,109 @@ public class ConnectionStringNormalizationTests
         Assert.Equal(45, context.Database.GetCommandTimeout());
     }
 
+    [Fact]
+    public void AddPersistence_AcceptsAProviderUriUsingLibpqKeywordSpelling()
+    {
+        // Neon's dashboard hands out exactly this. `channel_binding` is a real Npgsql setting under
+        // a different name ("Channel Binding"), so pasting the URL verbatim used to throw
+        // "Keyword not supported" and take the app down at startup.
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                {
+                    "ConnectionStrings:DefaultConnection",
+                    "postgresql://owner:secret@ep-test-123.ap-southeast-1.aws.neon.tech/neondb" +
+                    "?sslmode=require&channel_binding=require"
+                }
+            })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddPersistence(configuration, migrateOnly: false);
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var builder = new NpgsqlConnectionStringBuilder(context.Database.GetDbConnection().ConnectionString);
+
+        Assert.Equal("ep-test-123.ap-southeast-1.aws.neon.tech", builder.Host);
+        Assert.Equal("neondb", builder.Database);
+        Assert.Equal("owner", builder.Username);
+        Assert.Equal(SslMode.Require, builder.SslMode);
+        Assert.Equal("Require", builder["Channel Binding"]?.ToString());
+    }
+
+    [Fact]
+    public void AddPersistence_DropsQueryParametersNpgsqlHasNoEquivalentFor()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                {
+                    "ConnectionStrings:DefaultConnection",
+                    "postgresql://owner:secret@ep-test-123.aws.neon.tech/neondb?sslmode=require&gssencmode=disable"
+                }
+            })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+
+        // Dropping the unusable parameter keeps a pasted dashboard URL working; SSL is forced
+        // unconditionally below regardless of what the query string did or did not say.
+        var exception = Record.Exception(() => services.AddPersistence(configuration, migrateOnly: false));
+
+        Assert.Null(exception);
+    }
+
+    [Theory]
+    [InlineData("postgresql://owner:secret@ep-test-123-pooler.ap-southeast-1.aws.neon.tech/neondb")]
+    [InlineData("Host=ep-test-123-pooler.ap-southeast-1.aws.neon.tech;Database=neondb;Username=owner;Password=secret")]
+    public void AddPersistence_UsesTheDirectEndpointForSchemaMaintenance(string connectionString)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                {"ConnectionStrings:DefaultConnection", connectionString}
+            })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddPersistence(configuration, migrateOnly: true);
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var builder = new NpgsqlConnectionStringBuilder(context.Database.GetDbConnection().ConnectionString);
+
+        // Migrations hold session state across statements, which a transaction pooler is free to
+        // serve from a different backend. Neon separates the endpoints by host label, not by port.
+        Assert.Equal("ep-test-123.ap-southeast-1.aws.neon.tech", builder.Host);
+    }
+
+    [Fact]
+    public void AddPersistence_LeavesThePooledEndpointAloneForRequestTraffic()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                {
+                    "ConnectionStrings:DefaultConnection",
+                    "postgresql://owner:secret@ep-test-123-pooler.ap-southeast-1.aws.neon.tech/neondb"
+                }
+            })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddPersistence(configuration, migrateOnly: false);
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var builder = new NpgsqlConnectionStringBuilder(context.Database.GetDbConnection().ConnectionString);
+
+        Assert.Equal("ep-test-123-pooler.ap-southeast-1.aws.neon.tech", builder.Host);
+    }
+
     private static T GetProtected<T>(object instance, string propertyName)
     {
         var property = instance.GetType().GetProperty(

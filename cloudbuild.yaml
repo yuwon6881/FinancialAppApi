@@ -25,9 +25,9 @@ steps:
   # job, so the project is compiled exactly once (in BuildPush). `--migrate` tells the
   # app to apply pending migrations and exit; `--seed-database` seeds idempotently.
   # No shell/entrypoint override is needed: the image's default entrypoint is
-  # `dotnet FinancialAppApi.dll`, and Program.cs rewrites the pooler port to session
-  # mode (6543 -> 5432) internally when --migrate is set -- which is why the runtime
-  # image can now be chiseled (shell-free).
+  # `dotnet FinancialAppApi.dll`, and AddPersistence rewrites a pooled endpoint host to
+  # its direct equivalent (`ep-x-pooler.…` -> `ep-x.…`) internally when --migrate is set
+  # -- which is why the runtime image can now be chiseled (shell-free).
   - name: 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/financialapp-api:$COMMIT_SHA'
     dir: '/app'
     args:
@@ -68,9 +68,13 @@ steps:
       # (which CPU throttling can stall after the 202 response) to a Cloud Tasks HTTP
       # callback, so OCR work always runs inside a billed request. All four keys plus
       # OcrWorkerKey must be non-empty or the dispatcher silently keeps the fallback.
-      - '--update-env-vars=Database__MigrateOnStartup=false,Database__SeedOnStartup=false,SupabaseStorage__ProjectUrl=${_SUPABASE_PROJECT_URL},CloudTasks__ProjectId=$PROJECT_ID,CloudTasks__LocationId=asia-southeast1,CloudTasks__QueueId=receipt-scan,CloudTasks__WorkerBaseUrl=https://financialapp-api-i47taxhzba-as.a.run.app,Fcm__ProjectId=$PROJECT_ID,Push__OidcAudience=https://financialapp-api-i47taxhzba-as.a.run.app/api/push/dispatch,Push__AllowlistedServiceAccounts__0=financialapp-scheduler@$PROJECT_ID.iam.gserviceaccount.com,DocumentVault__Bucket=${_DOCUMENT_VAULT_BUCKET}'
-      - '--remove-secrets=AiApiKey'
-      - '--update-secrets=OcrWorkerKey=financialapp-ocr-worker-key:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest,MarketData__Providers__TwelveData__ApiKey=financialapp-twelvedata-api-key:latest,OpenAiApiKey=financialapp-openai-api-key:latest'
+      - '--update-env-vars=Database__MigrateOnStartup=false,Database__SeedOnStartup=false,ReceiptScanStorage__Bucket=${_RECEIPT_SCAN_BUCKET},CloudTasks__ProjectId=$PROJECT_ID,CloudTasks__LocationId=asia-southeast1,CloudTasks__QueueId=receipt-scan,CloudTasks__WorkerBaseUrl=https://financialapp-api-i47taxhzba-as.a.run.app,Fcm__ProjectId=$PROJECT_ID,Push__OidcAudience=https://financialapp-api-i47taxhzba-as.a.run.app/api/push/dispatch,Push__AllowlistedServiceAccounts__0=financialapp-scheduler@$PROJECT_ID.iam.gserviceaccount.com,DocumentVault__Bucket=${_DOCUMENT_VAULT_BUCKET}'
+      # Retired configuration is removed explicitly: --update-env-vars/--update-secrets only
+      # add or overwrite, so a stale Supabase URL and API key would otherwise stay bound to
+      # the revision long after the code stopped reading them.
+      - '--remove-env-vars=SupabaseStorage__ProjectUrl'
+      - '--remove-secrets=AiApiKey,SupabaseStorage__ApiKey'
+      - '--update-secrets=OcrWorkerKey=financialapp-ocr-worker-key:latest,MarketData__Providers__TwelveData__ApiKey=financialapp-twelvedata-api-key:latest,OpenAiApiKey=financialapp-openai-api-key:latest'
     id: Deploy
     waitFor:
       - Migrate
@@ -81,13 +85,15 @@ options:
 availableSecrets:
   secretManager:
     # Injected directly as the config key the app reads (ConnectionStrings:DefaultConnection),
-    # so the migrate step needs no shell to rename it. The secret targets the transaction
-    # pooler (port 6543); Program.cs swaps it to session mode (5432) under --migrate.
+    # so the migrate step needs no shell to rename it. Store Neon's DIRECT (non-pooled)
+    # endpoint here: at max-instances=2 x MaxPoolSize=8 the service tops out at 16
+    # connections, well inside a direct endpoint's budget, and that keeps session-scoped
+    # advisory locks honest. AddPersistence strips a `-pooler` host under --migrate anyway.
     - versionName: projects/$PROJECT_ID/secrets/financialapp-db/versions/latest
       env: 'ConnectionStrings__DefaultConnection'
 
 # Non-sensitive deployment configuration. Keeping this as a substitution makes
 # the normal Cloud Run environment value explicit and overridable per project.
 substitutions:
-  _SUPABASE_PROJECT_URL: 'https://wdbdsnpldtiwsmscwyqt.supabase.co'
+  _RECEIPT_SCAN_BUCKET: 'financialapp-receipts-396431756440'
   _DOCUMENT_VAULT_BUCKET: 'financialapp-vault-396431756440'

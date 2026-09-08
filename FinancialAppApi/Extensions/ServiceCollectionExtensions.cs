@@ -253,12 +253,12 @@ public static class ServiceCollectionExtensions
 
         services.AddHttpClient<AiClient>(client => client.Timeout = TimeSpan.FromSeconds(30));
         services.AddHttpClient<ReceiptScanTaskDispatcher>(client => client.Timeout = TimeSpan.FromSeconds(15));
-        services.AddHttpClient(SupabaseReceiptImageStore.HttpClientName, client =>
+        services.AddHttpClient(GcsReceiptImageStore.HttpClientName, client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
             client.DefaultRequestHeaders.UserAgent.ParseAdd("FinancialAppApi/1.0");
         });
-        services.AddSingleton<IReceiptImageStore, SupabaseReceiptImageStore>();
+        services.AddSingleton<IReceiptImageStore, GcsReceiptImageStore>();
         services.AddSingleton<ReceiptScanRetentionPolicy>();
         services.AddScoped<ReceiptScanProcessor>();
         services.AddScoped<ReceiptScanJobCleanupService>();
@@ -285,6 +285,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<DocumentRetentionService>();
         services.AddScoped<VaultAmountExtractor>();
         services.Configure<DocumentVaultOptions>(configuration.GetSection("DocumentVault"));
+        services.Configure<ReceiptScanStorageOptions>(configuration.GetSection("ReceiptScanStorage"));
 
         return services;
     }
@@ -301,6 +302,36 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>
+    /// libpq query keys that Npgsql spells differently. Provider dashboards hand out
+    /// <c>postgresql://</c> URIs in libpq spelling, so a verbatim paste of Neon's string carries
+    /// <c>channel_binding=require</c> — a keyword Npgsql has (as <c>Channel Binding</c>) but does
+    /// not recognise under the underscored name. Assigning it unmapped throws at startup, which is
+    /// why the mapping is explicit and anything still unrecognised is dropped rather than fatal.
+    /// </summary>
+    private static readonly Dictionary<string, string> LibpqKeywordAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["channel_binding"] = "Channel Binding",
+        ["connect_timeout"] = "Timeout",
+        ["application_name"] = "Application Name",
+        ["target_session_attrs"] = "Target Session Attributes",
+        ["sslrootcert"] = "Root Certificate",
+        ["sslcert"] = "SSL Certificate",
+        ["sslkey"] = "SSL Key",
+        ["sslpassword"] = "SSL Password",
+    };
+
+    private const string PoolerHostLabelSuffix = "-pooler";
+
+    /// <summary>
+    /// Accepts either Npgsql keyword form or a libpq <c>postgresql://</c> URI, and returns keyword form.
+    ///
+    /// When <paramref name="migrateOnly"/> is set the endpoint is rewritten to the provider's direct
+    /// (non-pooled) host. Schema maintenance must not run through a transaction pooler: it holds
+    /// session state across statements that the pooler is free to serve from a different backend.
+    /// Neon separates the two by hostname label (<c>ep-x-pooler.…</c> vs <c>ep-x.…</c>) rather than
+    /// by port, so the rewrite targets the host.
+    /// </summary>
     private static string NormalizeConnectionString(string connectionString, bool migrateOnly)
     {
         if (connectionString.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase) ||
@@ -311,17 +342,11 @@ public static class ServiceCollectionExtensions
             var username = Uri.UnescapeDataString(userInfoParts[0]);
             var password = userInfoParts.Length > 1 ? Uri.UnescapeDataString(userInfoParts[1]) : "";
             var database = uri.AbsolutePath.TrimStart('/');
-            var port = uri.Port > 0 ? uri.Port : 5432;
-
-            if (migrateOnly && port == 6543)
-            {
-                port = 5432;
-            }
 
             var builder = new NpgsqlConnectionStringBuilder
             {
-                Host = uri.Host,
-                Port = port,
+                Host = migrateOnly ? ToDirectEndpointHost(uri.Host) : uri.Host,
+                Port = uri.Port > 0 ? uri.Port : 5432,
                 Database = database,
                 Username = username,
                 Password = password,
@@ -334,9 +359,24 @@ public static class ServiceCollectionExtensions
                 foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
                 {
                     var kv = pair.Split('=', 2);
-                    if (kv.Length == 2)
+                    if (kv.Length != 2) continue;
+
+                    var keyword = Uri.UnescapeDataString(kv[0]);
+                    var value = Uri.UnescapeDataString(kv[1]);
+                    if (LibpqKeywordAliases.TryGetValue(keyword, out var npgsqlKeyword))
                     {
-                        builder[Uri.UnescapeDataString(kv[0])] = Uri.UnescapeDataString(kv[1]);
+                        keyword = npgsqlKeyword;
+                    }
+
+                    try
+                    {
+                        builder[keyword] = value;
+                    }
+                    catch (Exception exception) when (exception is ArgumentException or FormatException)
+                    {
+                        // A provider-specific parameter Npgsql has no equivalent for. Dropping it keeps
+                        // a pasted dashboard URL usable, and costs nothing security-wise: SSL is forced
+                        // unconditionally in AddPersistence and channel binding is mapped above.
                     }
                 }
             }
@@ -344,19 +384,36 @@ public static class ServiceCollectionExtensions
             return builder.ConnectionString;
         }
 
-        if (migrateOnly)
+        if (!migrateOnly)
         {
-            if (connectionString.Contains("Port=6543", StringComparison.OrdinalIgnoreCase))
-            {
-                connectionString = connectionString.Replace("Port=6543", "Port=5432", StringComparison.OrdinalIgnoreCase);
-            }
-            else if (connectionString.Contains(":6543", StringComparison.OrdinalIgnoreCase))
-            {
-                connectionString = connectionString.Replace(":6543", ":5432", StringComparison.OrdinalIgnoreCase);
-            }
+            return connectionString;
         }
 
-        return connectionString;
+        var keywordBuilder = new NpgsqlConnectionStringBuilder(connectionString);
+        if (string.IsNullOrWhiteSpace(keywordBuilder.Host))
+        {
+            return connectionString;
+        }
+
+        keywordBuilder.Host = ToDirectEndpointHost(keywordBuilder.Host);
+        return keywordBuilder.ConnectionString;
+    }
+
+    /// <summary>
+    /// Maps a pooled endpoint host onto its direct equivalent by dropping the <c>-pooler</c> suffix
+    /// from the first label. A host that is already direct is returned unchanged.
+    /// </summary>
+    private static string ToDirectEndpointHost(string host)
+    {
+        var firstDot = host.IndexOf('.');
+        var label = firstDot < 0 ? host : host[..firstDot];
+        if (!label.EndsWith(PoolerHostLabelSuffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return host;
+        }
+
+        var directLabel = label[..^PoolerHostLabelSuffix.Length];
+        return firstDot < 0 ? directLabel : directLabel + host[firstDot..];
     }
 
     /// <summary>
@@ -401,10 +458,11 @@ public static class ServiceCollectionExtensions
             // intermediary timeout is replaced before request SQL uses it.
             ConnectionLifetime = configuration.GetValue("Database:ConnectionLifetime", 60),
             MaxAutoPrepare = 0,
-            // The production endpoint is a transaction pooler. Resetting a session on every close
-            // makes each short EF command pay another remote round trip and has caused reset/retry
-            // stalls there. Advisory locks are explicitly released by PostgresAdvisoryLock; if an
-            // unlock fails, that helper clears this connector from the client pool.
+            // Resetting a session on every close makes each short EF command pay another remote
+            // round trip, which dominates the SQL on a request that issues several of them. The app
+            // sets no session state worth discarding: advisory locks are explicitly released by
+            // PostgresAdvisoryLock, and if an unlock fails that helper clears this connector from
+            // the client pool rather than returning it dirty.
             NoResetOnClose = true,
             Timeout = configuration.GetValue("Database:Timeout", 5),
             CommandTimeout = configuration.GetValue("Database:CommandTimeout", 15),

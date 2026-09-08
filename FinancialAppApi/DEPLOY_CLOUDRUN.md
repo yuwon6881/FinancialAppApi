@@ -21,40 +21,66 @@ gcloud services enable run.googleapis.com cloudbuild.googleapis.com
 ```
 
 ## Store the database connection string as a secret
-Reuse the **same Postgres connection string you already use on Render** — it's
-known-good. Cloud Run maps the env var `ConnectionStrings__DefaultConnection`
-(double underscore) onto the app's `ConnectionStrings:DefaultConnection` config.
+The database is **Neon** serverless Postgres. Cloud Run maps the env var
+`ConnectionStrings__DefaultConnection` (double underscore) onto the app's
+`ConnectionStrings:DefaultConnection` config.
 
 ```bash
-# Paste your Npgsql connection string when prompted (no trailing newline).
-printf '%s' 'Host=...;Port=...;Database=postgres;Username=...;Password=...;SSL Mode=Require;Trust Server Certificate=true' \
+printf '%s' 'Host=ep-REPLACE.REGION.aws.neon.tech;Database=neondb;Username=neondb_owner;Password=REPLACE;SSL Mode=Require' \
   | gcloud secrets create financialapp-db --data-file=-
 ```
 
-> Supabase note: on Cloud Run, prefer the **pooler** host (`...pooler.supabase.com`,
-> IPv4) over the direct `db.<ref>.supabase.co` host (IPv6-only without the paid
-> add-on — Cloud Run can't reach it without a VPC connector). The transaction
-> pooler (port `6543`) is the serverless-friendly choice.
+Store the **direct** endpoint, not the `-pooler` host. At `--max-instances=2` and
+`Database:MaxPoolSize=8` the service tops out at 16 connections, comfortably
+inside a direct endpoint's budget, and a direct connection is what keeps the
+session-scoped advisory locks in `PostgresAdvisoryLock` honest — a transaction
+pooler may serve consecutive statements from different backends. `AddPersistence`
+strips a `-pooler` label under `--migrate` regardless, so schema maintenance can
+never silently run through PgBouncer.
+
+Neon's own `postgresql://…` URI is accepted verbatim, including the libpq-spelled
+`channel_binding=require` it ships with. Parameters Npgsql has no equivalent for
+are dropped rather than failing startup — see `ConnectionStringNormalizationTests`.
+
+Neon free-tier compute auto-suspends after roughly five minutes idle, so with
+`--min-instances=0` a cold request pays both that resume and the Cloud Run cold
+start. `Database:Timeout` is therefore set to 15 s in `appsettings.json`,
+overriding the 5 s code default that suited an always-on pooler.
 
 ## Configure private receipt-image storage
 
-OCR images are stored temporarily in a private Supabase Storage bucket instead
-of in Postgres. Copy the project URL from Supabase's Connect dialog and create a
-dedicated backend **secret API key** (`sb_secret_...`) under Settings > API Keys.
-Do not use a publishable/anon key, and never expose this secret to the frontend.
+OCR images are held briefly in a private Google Cloud Storage bucket instead of in
+Postgres, and are deleted as soon as a scan reaches a terminal state. There is no
+storage secret to manage: `GcsReceiptImageStore` authenticates with Application
+Default Credentials, so on Cloud Run the runtime service account is the only
+identity that can reach the bucket.
+
+This must be a **different bucket from the document vault**. It carries a
+one-day lifecycle rule as a safety net for scans abandoned mid-flight; the vault
+holds user-retained documents that such a rule would destroy.
 
 ```bash
-printf '%s' 'sb_secret_REPLACE_ME' \
-  | gcloud secrets create financialapp-supabase-api-key --data-file=-
+gcloud storage buckets create gs://financialapp-receipts-PROJECT_NUMBER --location=asia-southeast1 --uniform-bucket-level-access --public-access-prevention
 ```
 
-The Supabase project URL is not secret. Set it as the Cloud Build substitution
-`_SUPABASE_PROJECT_URL` (or the normal Cloud Run environment variable
-`SupabaseStorage__ProjectUrl`) instead of consuming a Secret Manager version.
+Grant the Cloud Run runtime service account object admin on that bucket alone —
+it needs delete, not just write, because cleanup is part of the scan lifecycle:
 
-The API creates the private `receipt-scans` bucket on the first upload with a
-10 MiB file limit and image-only MIME restrictions. If a bucket with that name
-already exists, it must be private or uploads fail closed.
+```bash
+gcloud storage buckets add-iam-policy-binding gs://financialapp-receipts-PROJECT_NUMBER --member=serviceAccount:RUNTIME_SERVICE_ACCOUNT --role=roles/storage.objectAdmin
+```
+
+```bash
+printf '%s' '{"rule":[{"action":{"type":"Delete"},"condition":{"age":1}}]}' > receipt-lifecycle.json && gcloud storage buckets update gs://financialapp-receipts-PROJECT_NUMBER --lifecycle-file=receipt-lifecycle.json
+```
+
+The bucket name is not secret: set it as the Cloud Build substitution
+`_RECEIPT_SCAN_BUCKET`, or as the Cloud Run environment variable
+`ReceiptScanStorage__Bucket`. Uploads keep the 10 MiB limit and image-only MIME
+allowlist, and use `ifGenerationMatch=0` so one job id owns one object path.
+Lifecycle deletions are free and objects this short-lived cost a fraction of a
+cent per month, but note the GCS always-free allowance is US-regions-only — an
+`asia-southeast1` bucket bills from the first byte.
 
 The object-storage migrations add `StorageObjectPath` and remove the old
 `ReceiptScanJobs.ImageData` database blob. Any legacy queued scan that still has
@@ -71,8 +97,8 @@ gcloud run deploy financialapp-api \
   --min-instances 0 \
   --max-instances 2 \
   --memory 512Mi \
-  --set-env-vars "SupabaseStorage__ProjectUrl=https://YOUR_PROJECT_REF.supabase.co" \
-  --set-secrets "ConnectionStrings__DefaultConnection=financialapp-db:latest,SupabaseStorage__ApiKey=financialapp-supabase-api-key:latest,MarketData__Providers__TwelveData__ApiKey=financialapp-twelvedata-api-key:latest,OpenAiApiKey=financialapp-openai-api-key:latest"
+  --set-env-vars "ReceiptScanStorage__Bucket=financialapp-receipts-PROJECT_NUMBER" \
+  --set-secrets "ConnectionStrings__DefaultConnection=financialapp-db:latest,MarketData__Providers__TwelveData__ApiKey=financialapp-twelvedata-api-key:latest,OpenAiApiKey=financialapp-openai-api-key:latest"
 ```
 
 - `--source .` builds the image from the `Dockerfile` via Cloud Build and deploys it.
@@ -81,12 +107,12 @@ gcloud run deploy financialapp-api \
 - `--allow-unauthenticated` is required — this is a public API guarded by its own
   bearer-token auth, not Google IAM.
 
-For the checked-in Cloud Build pipeline, provide the non-secret URL explicitly:
+For the checked-in Cloud Build pipeline, provide the non-secret bucket explicitly:
 
 ```bash
 gcloud builds submit .. \
   --config cloudbuild.yaml \
-  --substitutions "_SUPABASE_PROJECT_URL=https://YOUR_PROJECT_REF.supabase.co"
+  --substitutions "_RECEIPT_SCAN_BUCKET=financialapp-receipts-PROJECT_NUMBER"
 ```
 
 ## Configure OpenAI
@@ -133,15 +159,24 @@ URL, 15-minute freshness, six refresh calls per minute (leaving two discovery
 calls available), a 750-call daily ceiling, and feature enablement. With no key,
 manual accounts, instruments, transactions, and prices continue to work.
 
-To migrate an existing deployment that stored the Supabase URL as a secret:
+## Retiring Supabase
 
-1. Read the current project URL and set it as `SupabaseStorage__ProjectUrl`.
-2. Remove the `SupabaseStorage__ProjectUrl` secret mapping.
-3. Verify a receipt can be uploaded, retrieved, and cleaned up.
-4. Destroy the active `financialapp-supabase-project-url` secret version, then
-   delete the obsolete secret container if it has no retained versions.
+Supabase previously provided both the Postgres database and the receipt-image
+bucket. The deploy config removes the retired keys explicitly
+(`--remove-env-vars=SupabaseStorage__ProjectUrl`,
+`--remove-secrets=…,SupabaseStorage__ApiKey`), because `--update-env-vars` and
+`--update-secrets` only add or overwrite: without that, a stale URL and API key
+stay bound to the revision long after the code stops reading them.
 
-Destroy the old version only after the receipt lifecycle check succeeds.
+Tear the account down only after the new stack is proven, in this order:
+
+1. Confirm the Neon cutover: the app serves reads and writes, and
+   `dotnet ef database update` against Neon reports nothing pending.
+2. Confirm a receipt can be uploaded, retrieved, and cleaned up on GCS.
+3. Destroy the `financialapp-supabase-api-key` secret versions, then the
+   container.
+4. Delete the Supabase project last — it is the rollback target until both
+   checks above have passed.
 
 ## Baseline an existing database before first deploy
 This app now uses EF Core migrations instead of the old startup `DbInitializer`.

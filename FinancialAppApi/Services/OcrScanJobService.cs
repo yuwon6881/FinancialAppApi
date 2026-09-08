@@ -62,7 +62,7 @@ public class OcrScanJobService
             return new CreateScanJobResult(CreateScanJobStatus.NoImage, Message: "No image file provided.");
         }
 
-        if (image.Length > SupabaseReceiptImageStore.MaxImageBytes)
+        if (image.Length > GcsReceiptImageStore.MaxImageBytes)
         {
             return new CreateScanJobResult(CreateScanJobStatus.ImageTooLarge, Message: "Receipt image is too large. Please use an image under 10 MB.");
         }

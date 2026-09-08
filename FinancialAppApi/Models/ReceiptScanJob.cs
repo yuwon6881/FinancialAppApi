@@ -22,7 +22,7 @@ public class ReceiptScanJob : IUserOwnedEntity
     [Required]
     public string ScanType { get; set; } = "receipt";
 
-    // Jobs keep only this private Supabase Storage object path in Postgres. The
+    // Jobs keep only this private Cloud Storage object path in Postgres. The
     // object itself is deleted as soon as OCR reaches a terminal state.
     [StringLength(512)]
     public string? StorageObjectPath { get; set; }
