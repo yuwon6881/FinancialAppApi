@@ -17,7 +17,11 @@ public sealed record InvestmentSummaryDto(
     decimal? DailyChange,
     decimal? AnnualReturn,
     decimal? CashValue,
-    decimal? TotalValue);
+    decimal? TotalValue,
+    // The share of DailyChange the prices moved, carried at the latest rate.
+    decimal? DailyPriceChange = null,
+    // The share of DailyChange the exchange rate moved. Zero for a single-currency portfolio.
+    decimal? DailyCurrencyChange = null);
 
 public sealed record InvestmentCashBalanceDto(
     Guid AccountId,
@@ -66,7 +70,11 @@ public sealed record InvestmentHoldingDto(
     DateTime? FxFetchedAt,
     string? FxSource,
     string? PriceSource,
-    DateOnly? ValuationAsOf);
+    DateOnly? ValuationAsOf,
+    // The share of DailyChangeApp this fund price itself moved, carried at the latest rate.
+    decimal? DailyPriceChangeApp = null,
+    // The share of DailyChangeApp the exchange rate moved.
+    decimal? DailyCurrencyChangeApp = null);
 
 public sealed record InvestmentChartPointDto(
     DateOnly Date,
@@ -266,14 +274,35 @@ public sealed partial class InvestmentPortfolioService(
             var previousFx = previous is null
                 ? null
                 : seriesResolver.ResolveFx(instrument.Currency, appCurrency, previous.Date, fxBars);
+            // The move between two price bars has to value both bars at their own date's rate.
+            // Today's rate belongs to `valueApp` — what the holding is worth if converted now —
+            // but pairing it with the older of two closes measured the price over one bar interval
+            // and the currency over however many days separate that close from today. A market
+            // holiday, a provider a day behind, or this app's quota-limited refresh was enough to
+            // put several days of currency drift into a figure labelled as the latest move, and to
+            // make that figure change on a day no new price arrived.
+            var latestFx = latest is null
+                ? null
+                : seriesResolver.ResolveFx(instrument.Currency, appCurrency, latest.Date, fxBars);
             decimal? valueNative = latest is null ? null : latest.Price * position.Units;
             decimal? valueApp = valueNative is not null && fx is not null ? valueNative * fx.Rate : null;
             decimal? unrealised = valueApp is not null && position.CostBasisApp is not null
                 ? valueApp - position.CostBasisApp
                 : null;
-            decimal? daily = latest is not null && previous is not null && fx is not null && previousFx is not null
-                ? (latest.Price * fx.Rate - previous.Price * previousFx.Rate) * position.Units
+            var canPriceMove = latest is not null && previous is not null
+                && latestFx is not null && previousFx is not null;
+            // Split exactly, so the two parts always add back to the move: the price leg is the
+            // change in price carried at the new rate, the currency leg is the change in rate
+            // applied to what the position was already worth. Without it the card states a figure
+            // in the app's currency and leaves no way to tell a fall in the shares from a rise in
+            // the ringgit — the two can, and regularly do, point in opposite directions.
+            decimal? dailyPrice = canPriceMove
+                ? (latest!.Price - previous!.Price) * latestFx!.Rate * position.Units
                 : null;
+            decimal? dailyCurrency = canPriceMove
+                ? previous!.Price * (latestFx!.Rate - previousFx!.Rate) * position.Units
+                : null;
+            decimal? daily = canPriceMove ? dailyPrice + dailyCurrency : null;
             var incomplete = !instrument.Currency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase) && fx is null;
             if (incomplete)
             {
@@ -312,7 +341,9 @@ public sealed partial class InvestmentPortfolioService(
                 fx?.FetchedAt,
                 fx?.Source,
                 latest is null ? null : $"{provider.Descriptor.DisplayName} daily close",
-                latest is null || fx is null ? null : latest.Date < fx.Date ? latest.Date : fx.Date));
+                latest is null || fx is null ? null : latest.Date < fx.Date ? latest.Date : fx.Date,
+                dailyPrice,
+                dailyCurrency));
         }
 
         // Each summary answers a different question. Missing historical trade FX
@@ -433,7 +464,9 @@ public sealed partial class InvestmentPortfolioService(
             dailyComplete ? holdings.Sum(value => value.DailyChangeApp ?? 0) : null,
             annualReturn,
             cashValue,
-            totalValue);
+            totalValue,
+            dailyComplete ? holdings.Sum(value => value.DailyPriceChangeApp ?? 0) : null,
+            dailyComplete ? holdings.Sum(value => value.DailyCurrencyChangeApp ?? 0) : null);
 
         var openKeys = calculation.Positions.Where(value => value.Units != 0)
             .Select(value => (value.AccountId, value.InstrumentId)).ToHashSet();

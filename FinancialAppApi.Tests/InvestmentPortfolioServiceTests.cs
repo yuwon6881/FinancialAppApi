@@ -195,6 +195,94 @@ public sealed class InvestmentPortfolioServiceTests
         Assert.Equal(40m, portfolio.Summary.DailyChange);
         Assert.Equal(120m, portfolio.Summary.MarketValue);
         Assert.Null(portfolio.Summary.CostBasis);
+
+        // The move splits exactly: the price rose 2 at the new rate of 5 over two units, and the
+        // rate rose 1 on the 10 those two units were already worth apiece.
+        Assert.Equal(20m, holding.DailyPriceChangeApp);
+        Assert.Equal(20m, holding.DailyCurrencyChangeApp);
+        Assert.Equal(20m, portfolio.Summary.DailyPriceChange);
+        Assert.Equal(20m, portfolio.Summary.DailyCurrencyChange);
+    }
+
+    [Fact]
+    public async Task ChangeToday_PairsEachPriceWithItsOwnDatesRateWhenPricesAreBehind()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var instrument = new InvestmentInstrument
+        {
+            Symbol = "TEST", Name = "Test", Type = "Stock", Currency = "USD", ProviderSymbol = "TEST"
+        };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+            Type = "Buy", TradeDate = new DateOnly(2026, 7, 1), Units = 2, UnitPrice = 10, CashAmount = 20
+        });
+        // The two closes are both old — a market holiday, a provider a day behind, or a refresh the
+        // daily quota skipped. The rate has kept moving since, and that drift belongs to neither
+        // close: the latest move covers 07-20 to 07-23 and nothing after it.
+        context.MarketPriceBars.AddRange(
+            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 20), Close = 10 },
+            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 23), Close = 12 });
+        context.FxRateBars.AddRange(
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 20), Rate = 4 },
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 23), Rate = 5 },
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 30), Rate = 3 });
+        await context.SaveChangesAsync();
+
+        var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
+        var holding = Assert.Single(portfolio.Holdings);
+
+        // Still (12*5 - 10*4) * 2, not (12*3 - 10*4) * 2 = -8.
+        Assert.Equal(40m, holding.DailyChangeApp);
+        Assert.Equal(40m, portfolio.Summary.DailyChange);
+        // Today's rate is still what the holding is worth if converted now.
+        Assert.Equal(3m, holding.FxRate);
+        Assert.Equal(72m, portfolio.Summary.MarketValue);
+    }
+
+    [Fact]
+    public async Task ChangeToday_SplitsIntoPriceAndCurrencyThatAddBackToTheMove()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var instrument = new InvestmentInstrument
+        {
+            Symbol = "TEST", Name = "Test", Type = "Stock", Currency = "USD", ProviderSymbol = "TEST"
+        };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        await context.SaveChangesAsync();
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+            Type = "Buy", TradeDate = new DateOnly(2026, 7, 1), Units = 2, UnitPrice = 10, CashAmount = 20
+        });
+        // The shares gained and the ringgit strengthened harder, which is the case the summary card
+        // could not explain: a rising position reporting a falling day.
+        context.MarketPriceBars.AddRange(
+            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 20), Close = 10 },
+            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 23), Close = 11 });
+        context.FxRateBars.AddRange(
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 20), Rate = 5 },
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 23), Rate = 4 });
+        await context.SaveChangesAsync();
+
+        var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
+        var holding = Assert.Single(portfolio.Holdings);
+
+        // Shares up 1 at the new rate over two units; the rate down 1 on 10 apiece.
+        Assert.Equal(8m, holding.DailyPriceChangeApp);
+        Assert.Equal(-20m, holding.DailyCurrencyChangeApp);
+        Assert.Equal(-12m, holding.DailyChangeApp);
+        Assert.Equal(
+            portfolio.Summary.DailyChange,
+            portfolio.Summary.DailyPriceChange + portfolio.Summary.DailyCurrencyChange);
     }
 
     [Fact]
