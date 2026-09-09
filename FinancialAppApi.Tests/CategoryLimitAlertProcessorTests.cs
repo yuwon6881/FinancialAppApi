@@ -416,6 +416,70 @@ public class CategoryLimitAlertProcessorTests
         Assert.Equal(new DateTime(2026, 8, 10, 0, 0, 0, DateTimeKind.Utc), alertEvent.ExpiresAt);
     }
 
+    // The alert arithmetic and the Reports screen have to count the same rows, or the guidance
+    // contradicts the figure the user is looking at. A discarded recurring-payment marker is not
+    // spending -- reporting excludes it -- so it must not inflate the category total either. It
+    // did, and the effect was worse than a wrong number: with the marker counted, "before" was
+    // already at the limit, so the crossing test (before < limit && after >= limit) never fired
+    // and the category that visibly reached its guide raised nothing at all.
+    [Fact]
+    public async Task ProcessPendingAsync_IgnoresDiscardedMarkersWhenTotallingCategorySpend()
+    {
+        var dbName = NewDbName();
+        await SeedAsync(dbName, ("Dining", 100m, 40m));
+        await using var context = NewContext(dbName, authenticated: true);
+        var sender = new FakeSender();
+
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-discarded",
+            Date = CurrentDate,
+            Description = "Discarded bill marker",
+            Category = "Dining",
+            LedgerCategory = "Discarded",
+            Amount = -60m
+        });
+        await context.SaveChangesAsync();
+        await NewProcessor(context, sender).ProcessPendingAsync();
+
+        // 40 + 60 would have passed the 100 limit on the marker alone.
+        Assert.Empty(sender.Sent);
+        Assert.Empty(await context.CategoryLimitAlertMilestones.ToListAsync());
+
+        await AddExpenseAsync(context, "tx-real", "Dining", 61m);
+        await NewProcessor(context, sender).ProcessPendingAsync();
+
+        // Real spend of 40 + 61 crosses 100, and the marker must not have consumed the milestone.
+        var content = Assert.Single(sender.Sent).Content;
+        Assert.Equal("Dining has gone past what you planned to spend on it this cycle.", content.Body);
+    }
+
+    // AccountMove is an internal move between accounts inside one bucket and has no bucket effect,
+    // so its negative leg is not spending on the category it carries.
+    [Fact]
+    public async Task ProcessPendingAsync_IgnoresAccountMoveLegsWhenTotallingCategorySpend()
+    {
+        var dbName = NewDbName();
+        await SeedAsync(dbName, ("Dining", 100m, 40m));
+        await using var context = NewContext(dbName, authenticated: true);
+        var sender = new FakeSender();
+
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-move",
+            Date = CurrentDate,
+            Description = "Internal move",
+            Category = "Dining",
+            LedgerCategory = "AccountMove",
+            Amount = -70m
+        });
+        await context.SaveChangesAsync();
+        await NewProcessor(context, sender).ProcessPendingAsync();
+
+        Assert.Empty(sender.Sent);
+        Assert.Empty(await context.CategoryLimitAlertMilestones.ToListAsync());
+    }
+
     private static readonly DateTime CurrentDate = new(2026, 8, 9, 0, 0, 0, DateTimeKind.Utc);
 
     private static string NewDbName() => $"category-limit-alert-{Guid.NewGuid():N}";

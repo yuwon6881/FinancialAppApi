@@ -120,8 +120,13 @@ public sealed class CategoryLimitAlertProcessor
             .AsNoTracking()
             .Where(transaction => transaction.Date >= rangeStart && transaction.Date < rangeEnd && transaction.Amount < 0)
             .ToListAsync(cancellationToken);
+        // The same filter the Reports screen totals with. A private near-copy here counted
+        // discarded bill markers and AccountMove legs as spending, so the alert arithmetic
+        // disagreed with the figure on screen -- and because the inflated total also inflated
+        // "before", a category that visibly reached its guide could fail the crossing test and
+        // raise nothing at all.
         var currentSpent = currentRows
-            .Where(IsCountedExpense)
+            .Where(TransactionReportSemantics.IsReportableOutflow)
             .Where(transaction => categoryNames.Contains(transaction.Category, StringComparer.OrdinalIgnoreCase))
             .GroupBy(transaction => transaction.Category, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
@@ -436,7 +441,7 @@ public sealed class CategoryLimitAlertProcessor
         int cycleDay)
     {
         if (string.IsNullOrWhiteSpace(category) || date == null || amount is not < 0 ||
-            !IsCountedExpense(category, ledgerCategory)) return;
+            !TransactionReportSemantics.IsReportableCashMovement(amount.Value, category, ledgerCategory)) return;
 
         var attributed = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
             TransactionDate.ToDateOnly(date.Value),
@@ -445,14 +450,6 @@ public sealed class CategoryLimitAlertProcessor
 
         deltas[category] = deltas.GetValueOrDefault(category) + Math.Abs(amount.Value) * direction;
     }
-
-    private static bool IsCountedExpense(Transaction transaction) =>
-        IsCountedExpense(transaction.Category, transaction.LedgerCategory);
-
-    private static bool IsCountedExpense(string category, string? ledgerCategory) =>
-        !string.Equals(category, "Transfer", StringComparison.OrdinalIgnoreCase) &&
-        !string.Equals(category, "Adjustment", StringComparison.OrdinalIgnoreCase) &&
-        !(ledgerCategory?.StartsWith("Transfer:", StringComparison.OrdinalIgnoreCase) ?? false);
 
     private static string MilestoneKey(string category, string milestone) => $"{category}\u001f{milestone}";
 
