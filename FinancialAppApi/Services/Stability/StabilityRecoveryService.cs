@@ -18,7 +18,11 @@ public sealed record StabilityReloadObligationDto(
     string RemainingAmount,
     string? Date);
 
-/// <summary>One origin cycle's independent three-cycle recovery schedule.</summary>
+/// <summary>
+/// One origin cycle's independent three-cycle recovery schedule. <c>IsDeferred</c> marks the
+/// spending cycle itself, where the plan is already known but has not opened yet, so
+/// <c>RequiredThisCycle</c> is zero for a reason the client has to be able to say out loud.
+/// </summary>
 public sealed record StabilityRecoveryCohortDto(
     string OriginCycleKey,
     string FromDate,
@@ -26,7 +30,8 @@ public sealed record StabilityRecoveryCohortDto(
     string RemainingShortfall,
     int CyclesRemaining,
     string RequiredThisCycle,
-    bool IsOverdue);
+    bool IsOverdue,
+    bool IsDeferred);
 
 /// <summary>
 /// The emergency-fund recovery state the dashboard carries. Money fields are obfuscated strings,
@@ -52,6 +57,9 @@ public sealed record StabilityRecoveryDto(
     string ToppedUpThisCycle,
     string OutstandingThisCycle,
     bool IsOverdue,
+    // Every plan that still owes money opens in a later cycle, so nothing is due now. Distinct from
+    // being ahead of the plan, which the amounts on their own cannot tell it apart from.
+    bool IsDeferred,
     string? LastDrawdownCycleKey,
     string RepaidTotal,
     string EssentialsCommitted,
@@ -334,13 +342,15 @@ public partial class StabilityRecoveryService
                     ObfuscationHelper.Obfuscate(cohort.RemainingShortfall),
                     cohort.CyclesRemaining,
                     ObfuscationHelper.Obfuscate(cohort.RequiredThisCycle),
-                    cohort.IsOverdue))
+                    cohort.IsOverdue,
+                    cohort.IsDeferred))
                 .ToList(),
             pace.CyclesRemaining,
             ObfuscationHelper.Obfuscate(pace.RequiredThisCycle),
             ObfuscationHelper.Obfuscate(pace.ToppedUpThisCycle),
             ObfuscationHelper.Obfuscate(pace.OutstandingThisCycle),
             pace.IsOverdue,
+            pace.IsDeferred,
             lastDrawdownCycleKey,
             ObfuscationHelper.Obfuscate(replay.OpenRepaidTotal),
             ObfuscationHelper.Obfuscate(committedEssentials),

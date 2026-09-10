@@ -1,10 +1,81 @@
 {
   "domain": "stability-recovery-pacing",
-  "version": 1,
+  "version": 2,
   "cases": [
     {
+      "id": "spending-cycle-asks-for-nothing",
+      "why": "The cycle the money left in only carries the reminder: its plan opens next cycle, so nothing is due yet and the state says so rather than looking like a funded cycle.",
+      "input": {
+        "currentCycleKey": "2026-07",
+        "horizon": 3,
+        "outstandingShortfall": 100,
+        "toppedUpThisCycle": 0,
+        "cohorts": [
+          { "originCycleKey": "2026-07", "fromDate": "2026-07-03", "transactionCount": 1, "remainingShortfall": 40, "repaidThisCycle": 0 },
+          { "originCycleKey": "2026-07", "fromDate": "2026-07-09", "transactionCount": 1, "remainingShortfall": 60, "repaidThisCycle": 0 }
+        ]
+      },
+      "expected": {
+        "cyclesRemaining": 3,
+        "requiredThisCycle": 0,
+        "outstandingThisCycle": 0,
+        "isOverdue": false,
+        "isDeferred": true,
+        "cohorts": [
+          { "originCycleKey": "2026-07", "transactionCount": 2, "cyclesRemaining": 3, "requiredThisCycle": 0, "isOverdue": false, "isDeferred": true }
+        ]
+      }
+    },
+    {
+      "id": "repayment-starts-the-cycle-after-spending",
+      "why": "Several withdrawals in one financial cycle are one paced cohort, and that cohort's first instalment falls in the following cycle.",
+      "input": {
+        "currentCycleKey": "2026-08",
+        "horizon": 3,
+        "outstandingShortfall": 100,
+        "toppedUpThisCycle": 0,
+        "cohorts": [
+          { "originCycleKey": "2026-07", "fromDate": "2026-07-03", "transactionCount": 1, "remainingShortfall": 40, "repaidThisCycle": 0 },
+          { "originCycleKey": "2026-07", "fromDate": "2026-07-09", "transactionCount": 1, "remainingShortfall": 60, "repaidThisCycle": 0 }
+        ]
+      },
+      "expected": {
+        "cyclesRemaining": 3,
+        "requiredThisCycle": 33.34,
+        "outstandingThisCycle": 33.34,
+        "isOverdue": false,
+        "isDeferred": false,
+        "cohorts": [
+          { "originCycleKey": "2026-07", "transactionCount": 2, "cyclesRemaining": 3, "requiredThisCycle": 33.34, "isOverdue": false, "isDeferred": false }
+        ]
+      }
+    },
+    {
+      "id": "early-put-back-in-the-spending-cycle-still-counts",
+      "why": "Nothing is asked for during the spending cycle, but money put back anyway is credited and shrinks what the first real instalment will divide.",
+      "input": {
+        "currentCycleKey": "2026-07",
+        "horizon": 3,
+        "outstandingShortfall": 60,
+        "toppedUpThisCycle": 40,
+        "cohorts": [
+          { "originCycleKey": "2026-07", "fromDate": "2026-07-03", "transactionCount": 1, "remainingShortfall": 60, "repaidThisCycle": 40 }
+        ]
+      },
+      "expected": {
+        "cyclesRemaining": 3,
+        "requiredThisCycle": 0,
+        "outstandingThisCycle": 0,
+        "isOverdue": false,
+        "isDeferred": true,
+        "cohorts": [
+          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 0, "isOverdue": false, "isDeferred": true }
+        ]
+      }
+    },
+    {
       "id": "new-drawdown-keeps-three-cycles",
-      "why": "A drawdown in the second cycle starts a new three-cycle cohort instead of inheriting the older cohort's two remaining cycles.",
+      "why": "A drawdown in the second cycle starts its own deferred three-cycle cohort instead of joining the older cohort's live instalment.",
       "input": {
         "currentCycleKey": "2026-07",
         "horizon": 3,
@@ -16,13 +87,14 @@
         ]
       },
       "expected": {
-        "cyclesRemaining": 2,
-        "requiredThisCycle": 400,
-        "outstandingThisCycle": 400,
+        "cyclesRemaining": 3,
+        "requiredThisCycle": 200,
+        "outstandingThisCycle": 200,
         "isOverdue": false,
+        "isDeferred": false,
         "cohorts": [
-          { "originCycleKey": "2026-06", "transactionCount": 1, "cyclesRemaining": 2, "requiredThisCycle": 300, "isOverdue": false },
-          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 100, "isOverdue": false }
+          { "originCycleKey": "2026-06", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 200, "isOverdue": false, "isDeferred": false },
+          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 0, "isOverdue": false, "isDeferred": true }
         ]
       }
     },
@@ -40,44 +112,22 @@
         ]
       },
       "expected": {
-        "cyclesRemaining": 2,
-        "requiredThisCycle": 400,
-        "outstandingThisCycle": 300,
-        "isOverdue": false,
-        "cohorts": [
-          { "originCycleKey": "2026-06", "transactionCount": 1, "cyclesRemaining": 2, "requiredThisCycle": 300, "isOverdue": false },
-          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 100, "isOverdue": false }
-        ]
-      }
-    },
-    {
-      "id": "same-cycle-withdrawals-share-one-cohort",
-      "why": "Several withdrawals in one financial cycle are one paced cohort but retain their transaction count.",
-      "input": {
-        "currentCycleKey": "2026-07",
-        "horizon": 3,
-        "outstandingShortfall": 100,
-        "toppedUpThisCycle": 0,
-        "cohorts": [
-          { "originCycleKey": "2026-07", "fromDate": "2026-07-03", "transactionCount": 1, "remainingShortfall": 40, "repaidThisCycle": 0 },
-          { "originCycleKey": "2026-07", "fromDate": "2026-07-09", "transactionCount": 1, "remainingShortfall": 60, "repaidThisCycle": 0 }
-        ]
-      },
-      "expected": {
         "cyclesRemaining": 3,
-        "requiredThisCycle": 33.34,
-        "outstandingThisCycle": 33.34,
+        "requiredThisCycle": 200,
+        "outstandingThisCycle": 100,
         "isOverdue": false,
+        "isDeferred": false,
         "cohorts": [
-          { "originCycleKey": "2026-07", "transactionCount": 2, "cyclesRemaining": 3, "requiredThisCycle": 33.34, "isOverdue": false }
+          { "originCycleKey": "2026-06", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 200, "isOverdue": false, "isDeferred": false },
+          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 0, "isOverdue": false, "isDeferred": true }
         ]
       }
     },
     {
       "id": "missed-share-catches-up-in-final-cycle",
-      "why": "An unpaid cohort is divided over the cycles still available, with its whole remainder due in the final cycle.",
+      "why": "An unpaid cohort is divided over the cycles still available, with its whole remainder due in the third and final repayment cycle.",
       "input": {
-        "currentCycleKey": "2026-08",
+        "currentCycleKey": "2026-09",
         "horizon": 3,
         "outstandingShortfall": 900,
         "toppedUpThisCycle": 0,
@@ -90,16 +140,17 @@
         "requiredThisCycle": 900,
         "outstandingThisCycle": 900,
         "isOverdue": false,
+        "isDeferred": false,
         "cohorts": [
-          { "originCycleKey": "2026-06", "transactionCount": 1, "cyclesRemaining": 1, "requiredThisCycle": 900, "isOverdue": false }
+          { "originCycleKey": "2026-06", "transactionCount": 1, "cyclesRemaining": 1, "requiredThisCycle": 900, "isOverdue": false, "isDeferred": false }
         ]
       }
     },
     {
       "id": "overdue-and-new-cohorts-coexist",
-      "why": "An overdue cohort owes its whole remainder while a newer cohort retains its own three-cycle share.",
+      "why": "A cohort past its three repayment cycles owes its whole remainder while a newer cohort retains its own share; the combined plan is not deferred by the newer one.",
       "input": {
-        "currentCycleKey": "2026-07",
+        "currentCycleKey": "2026-08",
         "horizon": 3,
         "outstandingShortfall": 120,
         "toppedUpThisCycle": 0,
@@ -113,9 +164,10 @@
         "requiredThisCycle": 53.34,
         "outstandingThisCycle": 53.34,
         "isOverdue": true,
+        "isDeferred": false,
         "cohorts": [
-          { "originCycleKey": "2026-04", "transactionCount": 1, "cyclesRemaining": 1, "requiredThisCycle": 20, "isOverdue": true },
-          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 33.34, "isOverdue": false }
+          { "originCycleKey": "2026-04", "transactionCount": 1, "cyclesRemaining": 1, "requiredThisCycle": 20, "isOverdue": true, "isDeferred": false },
+          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 33.34, "isOverdue": false, "isDeferred": false }
         ]
       }
     },
@@ -123,7 +175,7 @@
       "id": "combined-credit-clamps-at-live-shortfall",
       "why": "Paying ahead can cover the current combined plan without hiding the remaining future shortfall or producing a negative ask.",
       "input": {
-        "currentCycleKey": "2026-07",
+        "currentCycleKey": "2026-08",
         "horizon": 3,
         "outstandingShortfall": 35,
         "toppedUpThisCycle": 80,
@@ -136,8 +188,9 @@
         "requiredThisCycle": 38.34,
         "outstandingThisCycle": 0,
         "isOverdue": false,
+        "isDeferred": false,
         "cohorts": [
-          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 38.34, "isOverdue": false }
+          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 38.34, "isOverdue": false, "isDeferred": false }
         ]
       }
     }

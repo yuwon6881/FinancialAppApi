@@ -10,6 +10,12 @@ namespace FinancialAppApi.Services.Stability;
 /// Extra Stability reimbursement received this cycle. New salaries persist it explicitly; only
 /// current-cycle legacy null rows use the narrow generated-split inference fallback.
 /// </para>
+/// <para>
+/// <c>IsDeferred</c> means every plan that still owes money opens in a later cycle, so this cycle
+/// asks for nothing. It is not the same as being ahead of the plan: nothing was funded, nothing was
+/// due. A funded cycle also reaches <c>OutstandingThisCycle == 0</c>, which is why this is its own
+/// flag rather than an inference from the amounts.
+/// </para>
 /// </summary>
 public sealed record RecoveryPace(
     decimal Shortfall,
@@ -17,7 +23,8 @@ public sealed record RecoveryPace(
     decimal RequiredThisCycle,
     decimal ToppedUpThisCycle,
     decimal OutstandingThisCycle,
-    bool IsOverdue);
+    bool IsOverdue,
+    bool IsDeferred = false);
 
 public sealed record RecoveryCohortInput(
     string OriginCycleKey,
@@ -33,7 +40,8 @@ public sealed record RecoveryCohortPace(
     decimal RemainingShortfall,
     int CyclesRemaining,
     decimal RequiredThisCycle,
-    bool IsOverdue);
+    bool IsOverdue,
+    bool IsDeferred = false);
 
 public sealed record RecoveryCohortPlan(
     RecoveryPace Aggregate,
@@ -48,29 +56,61 @@ public sealed record RecoveryCohortPlan(
 public static class StabilityRecoveryPlanner
 {
     /// <summary>
+    /// How long the spending cycle itself waits before its repayment plan opens. One cycle: the
+    /// money leaves the fund partway through a cycle whose income has already been split and largely
+    /// spent, so asking for a share of it back in that same cycle asks for money the buckets no
+    /// longer hold — right after the app has said the fund exists for exactly this. The plan runs
+    /// over the <c>StabilityRecoveryCycles</c> cycles that follow; the spending cycle carries only
+    /// the reminder.
+    /// </summary>
+    public const int GraceCycles = 1;
+
+    /// <summary>
     /// Cycles left in the recovery window, counting the current one. Goes to zero or below once the
     /// window has elapsed — like <c>SavingsGoalPacing.CyclesRemaining</c>, and for the same reason:
     /// clamping here would make an overdue plan indistinguishable from its final cycle, and the card
     /// would announce "the last cycle of the plan" every cycle from then on. <c>ComputePace</c> does
     /// the clamping it needs internally.
+    /// <para>
+    /// The spending cycle is not one of them: the full horizon stands through both the spending cycle
+    /// and the first repayment cycle, and only then counts down. See <see cref="GraceCycles"/>.
+    /// </para>
     /// </summary>
-    public static int CyclesRemaining(string? lastDrawdownCycleKey, string currentCycleKey, int horizon)
+    public static int CyclesRemaining(string? originCycleKey, string currentCycleKey, int horizon)
     {
         if (horizon < 1) horizon = 1;
-        if (!TryParseCycleKey(lastDrawdownCycleKey, out var fromYear, out var fromMonth) ||
+        if (!TryElapsedCycles(originCycleKey, currentCycleKey, out var elapsed)) return horizon;
+
+        return horizon - Math.Max(0, elapsed - GraceCycles);
+    }
+
+    /// <summary>
+    /// Whether the plan for <paramref name="originCycleKey"/> has not opened yet, so nothing is due
+    /// against it this cycle. True in the spending cycle itself, and ahead of it for a forward-dated
+    /// withdrawal. An unknown origin cycle is never deferred: the fallback path has no cycle to defer
+    /// to, and answering "nothing is due" there would quietly drop a real obligation.
+    /// </summary>
+    public static bool IsDeferred(string? originCycleKey, string currentCycleKey)
+        => TryElapsedCycles(originCycleKey, currentCycleKey, out var elapsed) && elapsed < GraceCycles;
+
+    private static bool TryElapsedCycles(string? originCycleKey, string currentCycleKey, out int elapsed)
+    {
+        elapsed = 0;
+        if (!TryParseCycleKey(originCycleKey, out var fromYear, out var fromMonth) ||
             !TryParseCycleKey(currentCycleKey, out var toYear, out var toMonth))
         {
-            return horizon;
+            return false;
         }
 
-        var elapsed = (toYear - fromYear) * 12 + (toMonth - fromMonth);
-        return horizon - Math.Max(0, elapsed);
+        elapsed = (toYear - fromYear) * 12 + (toMonth - fromMonth);
+        return true;
     }
 
     public static RecoveryPace ComputePace(
         decimal outstandingShortfall,
         int cyclesRemaining,
-        decimal toppedUpThisCycle)
+        decimal toppedUpThisCycle,
+        bool isDeferred = false)
     {
         var funded = Math.Max(0m, toppedUpThisCycle);
         var cycles = Math.Max(1, cyclesRemaining);
@@ -87,13 +127,18 @@ public static class StabilityRecoveryPlanner
         // amount, so the requirement does not shrink as it is met.
         var shortfall = Math.Max(0m, outstandingShortfall);
         var anchor = shortfall + funded;
-        var required = cycles <= 1 ? anchor : RoundUpToCent(anchor / cycles);
+        // A deferred plan asks for nothing at all rather than a share of it. The horizon it will be
+        // spread over is unchanged; it simply has not opened. Money put back anyway still counts --
+        // it lands in ToppedUpThisCycle and shrinks the shortfall the first real cycle divides.
+        var required = isDeferred
+            ? 0m
+            : cycles <= 1 ? anchor : RoundUpToCent(anchor / cycles);
 
         // Capped by the live shortfall too, so the last stretch only asks for what is actually left.
         var outstanding = Math.Clamp(required - funded, 0m, shortfall);
 
         return new RecoveryPace(
-            shortfall, cycles, required, funded, outstanding, cyclesRemaining <= 0);
+            shortfall, cycles, required, funded, outstanding, cyclesRemaining <= 0, isDeferred);
     }
 
     /// <summary>
@@ -124,11 +169,14 @@ public static class StabilityRecoveryPlanner
                     currentCycleKey,
                     horizon);
                 var cyclesRemaining = Math.Max(1, rawCyclesRemaining);
+                var isDeferred = IsDeferred(cohort.OriginCycleKey, currentCycleKey);
                 var anchor = Math.Max(0m, cohort.RemainingShortfall)
                     + Math.Max(0m, cohort.RepaidThisCycle);
-                var required = cyclesRemaining <= 1
-                    ? anchor
-                    : RoundUpToCent(anchor / cyclesRemaining);
+                var required = isDeferred
+                    ? 0m
+                    : cyclesRemaining <= 1
+                        ? anchor
+                        : RoundUpToCent(anchor / cyclesRemaining);
                 return new RecoveryCohortPace(
                     cohort.OriginCycleKey,
                     cohort.FromDate,
@@ -136,7 +184,8 @@ public static class StabilityRecoveryPlanner
                     Math.Max(0m, cohort.RemainingShortfall),
                     cyclesRemaining,
                     required,
-                    rawCyclesRemaining <= 0 && cohort.RemainingShortfall > 0m);
+                    rawCyclesRemaining <= 0 && cohort.RemainingShortfall > 0m,
+                    isDeferred);
             })
             .OrderBy(cohort => cohort.OriginCycleKey, StringComparer.Ordinal)
             .ThenBy(cohort => cohort.FromDate)
@@ -151,6 +200,10 @@ public static class StabilityRecoveryPlanner
             ? Math.Max(1, horizon)
             : open.Min(cohort => cohort.CyclesRemaining);
         var isOverdue = open.Any(cohort => cohort.IsOverdue);
+        // Only when *every* plan that still owes money starts later. One older cohort still due keeps
+        // a combined ask, and the card should talk about that ask rather than about the newest
+        // withdrawal's grace cycle.
+        var isDeferred = open.Count > 0 && open.All(cohort => cohort.IsDeferred);
 
         return new RecoveryCohortPlan(
             new RecoveryPace(
@@ -159,7 +212,8 @@ public static class StabilityRecoveryPlanner
                 requiredThisCycle,
                 funded,
                 outstandingThisCycle,
-                isOverdue),
+                isOverdue,
+                isDeferred),
             paces);
     }
 

@@ -39,14 +39,18 @@ public class StabilityRecoveryServiceTests
             currentRepayment);
 
         Assert.Equal(800m, Money(recovery.OutstandingShortfall));
-        Assert.Equal(400m, Money(recovery.RequiredThisCycle));
+        // June's plan is on its first instalment: a third of the 600 it still owed before this
+        // cycle's 100 went back. July's own plan opens next cycle and asks for nothing yet.
+        Assert.Equal(200m, Money(recovery.RequiredThisCycle));
         Assert.Equal(100m, Money(recovery.ToppedUpThisCycle));
-        Assert.Equal(300m, Money(recovery.OutstandingThisCycle));
+        Assert.Equal(100m, Money(recovery.OutstandingThisCycle));
         Assert.Equal(["2026-06", "2026-07"], recovery.RecoveryCohorts.Select(cohort => cohort.OriginCycleKey));
-        Assert.Equal([2, 3], recovery.RecoveryCohorts.Select(cohort => cohort.CyclesRemaining));
+        Assert.Equal([3, 3], recovery.RecoveryCohorts.Select(cohort => cohort.CyclesRemaining));
+        Assert.Equal([false, true], recovery.RecoveryCohorts.Select(cohort => cohort.IsDeferred));
         Assert.Equal(
-            [300m, 100m],
+            [200m, 0m],
             recovery.RecoveryCohorts.Select(cohort => Money(cohort.RequiredThisCycle)));
+        Assert.False(recovery.IsDeferred);
     }
 
     [Fact]
@@ -79,9 +83,11 @@ public class StabilityRecoveryServiceTests
         Assert.Equal(900m, Money(recovery.OutstandingShortfall));
         Assert.Equal("2026-06", recovery.LastDrawdownCycleKey);
         Assert.Equal(900m, Money(recovery.MarkedTotal));
-        // One cycle of the three-cycle window has already elapsed.
-        Assert.Equal(2, recovery.CyclesRemaining);
-        Assert.Equal(450m, Money(recovery.RequiredThisCycle));
+        // The cycle after the spending cycle is the plan's first instalment, so all three are still
+        // ahead and this one asks for a third.
+        Assert.Equal(3, recovery.CyclesRemaining);
+        Assert.Equal(300m, Money(recovery.RequiredThisCycle));
+        Assert.False(recovery.IsDeferred);
     }
 
     /// <summary>
@@ -143,8 +149,13 @@ public class StabilityRecoveryServiceTests
         Assert.NotNull(opening);
     }
 
+    /// <summary>
+    /// The cycle the money left in reports the obligation without asking for any of it back: the
+    /// income for that cycle has already been split and largely spent. The card must still appear,
+    /// which is why it gates on the shortfall and not on this cycle's ask.
+    /// </summary>
     [Fact]
-    public async Task BuildAsync_SeesADrawdownMadeInTheCycleOnScreen()
+    public async Task BuildAsync_ReportsADrawdownMadeInTheCycleWithoutAskingForItYet()
     {
         await using var context = NewContext();
         var setting = SeedSetting(context, target: 10000m);
@@ -157,11 +168,9 @@ public class StabilityRecoveryServiceTests
         Assert.Equal("2026-07", recovery.LastDrawdownCycleKey);
         Assert.Equal(3, recovery.CyclesRemaining);
         Assert.Equal(500m, Money(recovery.OutstandingShortfall));
-        // Asserting only the shortfall is what let the pace bug through: the card also gates on
-        // this cycle's share, and anchoring that on the opening balance made it zero for a
-        // drawdown made during the cycle -- so the card stayed hidden with a real shortfall on
-        // screen behind it.
-        Assert.True(Money(recovery.OutstandingThisCycle) > 0m);
+        Assert.True(recovery.IsDeferred);
+        Assert.Equal(0m, Money(recovery.RequiredThisCycle));
+        Assert.Equal(0m, Money(recovery.OutstandingThisCycle));
         Assert.True(recovery.IsActive);
     }
 
@@ -484,8 +493,8 @@ public class StabilityRecoveryServiceTests
 
         var cohort = Assert.Single(recovery.RecoveryCohorts);
         Assert.Equal("2026-06", cohort.OriginCycleKey);
-        Assert.Equal(2, cohort.CyclesRemaining);
-        Assert.Equal(150m, Money(cohort.RequiredThisCycle));
+        Assert.Equal(3, cohort.CyclesRemaining);
+        Assert.Equal(100m, Money(cohort.RequiredThisCycle));
         var rebuiltJune = await context.CycleBalances.SingleAsync(
             balance => balance.Year == 2026 && balance.MonthIndex == 6);
         Assert.False(string.IsNullOrWhiteSpace(rebuiltJune.StabilityReloadObligations));

@@ -40,6 +40,7 @@ public sealed class StabilityRecoveryPacingParityTests
         Assert.Equal(expected.GetProperty("requiredThisCycle").GetDecimal(), actual.Aggregate.RequiredThisCycle);
         Assert.Equal(expected.GetProperty("outstandingThisCycle").GetDecimal(), actual.Aggregate.OutstandingThisCycle);
         Assert.Equal(expected.GetProperty("isOverdue").GetBoolean(), actual.Aggregate.IsOverdue);
+        Assert.Equal(expected.GetProperty("isDeferred").GetBoolean(), actual.Aggregate.IsDeferred);
 
         var expectedCohorts = expected.GetProperty("cohorts").EnumerateArray().ToList();
         Assert.Equal(expectedCohorts.Count, actual.Cohorts.Count);
@@ -50,6 +51,7 @@ public sealed class StabilityRecoveryPacingParityTests
             Assert.Equal(expectedCohort.GetProperty("cyclesRemaining").GetInt32(), actualCohort.CyclesRemaining);
             Assert.Equal(expectedCohort.GetProperty("requiredThisCycle").GetDecimal(), actualCohort.RequiredThisCycle);
             Assert.Equal(expectedCohort.GetProperty("isOverdue").GetBoolean(), actualCohort.IsOverdue);
+            Assert.Equal(expectedCohort.GetProperty("isDeferred").GetBoolean(), actualCohort.IsDeferred);
         }
 
         Assert.False(string.IsNullOrWhiteSpace(item.GetProperty("id").GetString()));

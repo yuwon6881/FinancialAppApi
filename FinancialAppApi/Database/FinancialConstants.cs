@@ -19,6 +19,10 @@ public static class FinancialConstants
     /// because a single large withdrawal repaid in full next cycle can exceed what the other
     /// buckets have spare, and an offer that never fits is an offer nobody takes.
     /// <para>
+    /// These three are the cycles *after* the one the money left in — see
+    /// <c>StabilityRecoveryPlanner.GraceCycles</c>. The spending cycle asks for nothing.
+    /// </para>
+    /// <para>
     /// Deliberately a constant and not a <see cref="Models.FinancialSetting"/> column: a setting
     /// with no UI is an orphaned feature, and this one has no screen to live on.
     /// </para>
