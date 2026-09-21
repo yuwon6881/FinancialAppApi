@@ -177,6 +177,9 @@ public partial class AppDbContext
             // One live subscription per (user, device): re-registering a device upserts the
             // stored FCM token in place instead of accumulating stale duplicate rows.
             entity.HasIndex(e => new { e.UserId, e.DeviceId }).IsUnique();
+            // The age cutoff retention sweeps disabled rows by. Global (no user in scope), so it
+            // cannot ride on the composite index above.
+            entity.HasIndex(e => e.UpdatedAt);
             // Defaults match the historical single-switch behaviour for any writer that does not
             // name the channels: a registered device received bill reminders, and spending alerts
             // were a separate deliberate opt-in.

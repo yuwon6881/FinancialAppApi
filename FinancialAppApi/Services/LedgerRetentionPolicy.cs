@@ -20,6 +20,8 @@ public sealed class LedgerRetentionPolicy
             configuration.GetValue("Retention:PriceBarRetentionDays", 366 * 6), 366, 366 * 25);
         NotificationRetentionDays = Math.Clamp(
             configuration.GetValue("Retention:NotificationRetentionDays", 180), 30, 3650);
+        PushSubscriptionRetentionDays = Math.Clamp(
+            configuration.GetValue("Retention:PushSubscriptionRetentionDays", 365), 30, 3650);
         CleanupInterval = TimeSpan.FromHours(Math.Clamp(
             configuration.GetValue("Retention:CleanupIntervalHours", 24), 1, 168));
     }
@@ -32,6 +34,21 @@ public sealed class LedgerRetentionPolicy
 
     /// <summary>Applies to delivery receipts and spending-alert bookkeeping, not to any ledger row.</summary>
     public int NotificationRetentionDays { get; }
+
+    /// <summary>
+    /// How long a *disabled* push subscription row is kept after it was last touched. A year by
+    /// default, comfortably past <see cref="NotificationRetentionDays"/>.
+    /// <para>
+    /// Disabled rows are kept at all because both delivery ledgers claim "already sent" against
+    /// <c>PushSubscription.Id</c>, so deleting a row whose claims still exist would let an old
+    /// reminder send twice. Once those claims have themselves aged out the id is unreferenced,
+    /// and without this the table gained a permanent row every time a browser lost its stored
+    /// device id -- clearing site data mints a new one, so the old row could never be reused.
+    /// The prune is still guarded row by row rather than relying on this ordering, because both
+    /// horizons are configurable independently.
+    /// </para>
+    /// </summary>
+    public int PushSubscriptionRetentionDays { get; }
 
     public TimeSpan CleanupInterval { get; }
 }

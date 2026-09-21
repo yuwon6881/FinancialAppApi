@@ -9,14 +9,16 @@ public sealed record LedgerRetentionResult(
     int AlertEvents,
     int AlertDeliveries,
     int AlertEvaluations,
-    int OrphanedMilestones)
+    int OrphanedMilestones,
+    int PushSubscriptions)
 {
     public int Total => PriceBars
         + ReminderDeliveries
         + AlertEvents
         + AlertDeliveries
         + AlertEvaluations
-        + OrphanedMilestones;
+        + OrphanedMilestones
+        + PushSubscriptions;
 }
 
 /// <summary>
@@ -47,12 +49,13 @@ public sealed class LedgerRetentionService
     {
         if (!_policy.Enabled || !_context.Database.IsRelational())
         {
-            return new LedgerRetentionResult(0, 0, 0, 0, 0, 0);
+            return new LedgerRetentionResult(0, 0, 0, 0, 0, 0, 0);
         }
 
         var today = _clock.Today;
         var priceBarCutoff = today.AddDays(-_policy.PriceBarRetentionDays);
         var notificationCutoff = DateTime.UtcNow.AddDays(-_policy.NotificationRetentionDays);
+        var subscriptionCutoff = DateTime.UtcNow.AddDays(-_policy.PushSubscriptionRetentionDays);
 
         // MarketPriceBars is a shared provider cache with no owner, so it carries no query filter.
         var priceBars = await _context.MarketPriceBars
@@ -92,12 +95,35 @@ public sealed class LedgerRetentionService
                 .Any(alertEvent => alertEvent.Id == milestone.EventId))
             .ExecuteDeleteAsync(cancellationToken);
 
+        // Runs last, after the two delivery ledgers above have dropped their aged-out claims, so a
+        // subscription freed by this same pass is collected now rather than a day later.
+        //
+        // Only rows that are already disabled: an enabled row is a live device no matter how long
+        // ago it last changed, and a device that is simply never sent to would otherwise be
+        // unsubscribed behind the user's back. Rows still named by a delivery claim are skipped
+        // outright -- reusing the id while a claim survives is exactly the double-send the
+        // soft-disable was protecting against, and the two retention horizons are configured
+        // separately, so their relative order cannot be assumed.
+        var pushSubscriptions = await _context.PushSubscriptions
+            .IgnoreQueryFilters()
+            .Where(subscription =>
+                !subscription.Enabled
+                && subscription.UpdatedAt < subscriptionCutoff
+                && !_context.PushReminderDeliveries
+                    .IgnoreQueryFilters()
+                    .Any(delivery => delivery.SubscriptionId == subscription.Id)
+                && !_context.CategoryLimitAlertDeliveries
+                    .IgnoreQueryFilters()
+                    .Any(delivery => delivery.SubscriptionId == subscription.Id))
+            .ExecuteDeleteAsync(cancellationToken);
+
         return new LedgerRetentionResult(
             priceBars,
             reminderDeliveries,
             alertEvents,
             alertDeliveries,
             alertEvaluations,
-            orphanedMilestones);
+            orphanedMilestones,
+            pushSubscriptions);
     }
 }

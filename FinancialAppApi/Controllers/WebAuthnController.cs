@@ -134,6 +134,37 @@ public class WebAuthnController : ControllerBase
             HttpContext.RequestAborted);
     }
 
+    // POST api/auth/webauthn/restore/options
+    [AuthorizeToken]
+    [HttpPost("restore/options")]
+    public async Task<IActionResult> RestoreOptions() =>
+        await _webAuthnService.RestoreOptionsAsync(
+            Username,
+            RequestOrigin,
+            FallbackOrigin,
+            HttpContext.RequestAborted);
+
+    public class RestoreVerifyRequest
+    {
+        public string ChallengeId { get; set; } = string.Empty;
+        public AuthenticatorAssertionRawResponse Credential { get; set; } = null!;
+        /// <summary>"platform" or "cross-platform", as reported by the browser.</summary>
+        public string? AuthenticatorAttachment { get; set; }
+    }
+
+    // POST api/auth/webauthn/restore/verify
+    [AuthorizeToken]
+    [HttpPost("restore/verify")]
+    public async Task<IActionResult> RestoreVerify([FromBody] RestoreVerifyRequest request) =>
+        await _webAuthnService.RestoreVerifyAsync(
+            Username,
+            request.ChallengeId,
+            request.Credential,
+            request.AuthenticatorAttachment,
+            RequestOrigin,
+            FallbackOrigin,
+            HttpContext.RequestAborted);
+
     // GET api/auth/webauthn/credentials
     [AuthorizeToken]
     [HttpGet("credentials")]
