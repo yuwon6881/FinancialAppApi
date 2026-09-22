@@ -690,6 +690,27 @@ public class PushDispatchServiceTests
     }
 
     [Fact]
+    public async Task DispatchAsync_DefaultPreviewPrivacy_UsesGenericTextAndOmitsSensitiveData()
+    {
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        await SeedAsync(dbName, "user-a",
+            NewPayment("rec-1", name: "Netflix", dueDate: today.Day, leadDays: 3, mode: "Daily", amount: 54.90m),
+            subscriptions: [NewSubscription("sub-1", "token-1", showNotificationDetails: false)]);
+        var sender = new FakeFcmPushSender();
+
+        await NewDispatchService(dbName, Clock(today), sender).DispatchAsync();
+
+        var content = sender.Sent.Single().Content;
+        Assert.Equal("FinancialApp reminder", content.Title);
+        Assert.Equal("Open FinancialApp to review.", content.Body);
+        Assert.DoesNotContain("Netflix", content.Title);
+        Assert.DoesNotContain("54.90", content.Body);
+        Assert.False(content.Data.ContainsKey("accountName"));
+        Assert.False(content.Data.ContainsKey("shortfall"));
+    }
+
+    [Fact]
     public async Task DispatchAsync_Content_TimeToLive_EndsBeforeTheEndOfTheCurrentLocalDay()
     {
         var dbName = NewDbName();
@@ -973,7 +994,11 @@ public class PushDispatchServiceTests
         };
     }
 
-    private static PushSubscription NewSubscription(string id, string token, bool enabled = true)
+    private static PushSubscription NewSubscription(
+        string id,
+        string token,
+        bool enabled = true,
+        bool showNotificationDetails = true)
     {
         return new PushSubscription
         {
@@ -981,6 +1006,7 @@ public class PushDispatchServiceTests
             DeviceId = id,
             FcmToken = token,
             Enabled = enabled,
+            ShowNotificationDetails = showNotificationDetails,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };

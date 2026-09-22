@@ -32,6 +32,7 @@ public static class PushChannel
 public sealed record PushStatusResult(
     bool ThisDeviceBillReminders,
     bool ThisDeviceCategoryAlerts,
+    bool ThisDeviceShowNotificationDetails,
     bool OtherDevicesBillReminders,
     bool OtherDevicesCategoryAlerts,
     bool TokenRenewalRequired)
@@ -70,12 +71,14 @@ public class PushSubscriptionService
                 s.Enabled,
                 TokenMissing = s.FcmToken == string.Empty,
                 s.BillRemindersEnabled,
-                s.CategoryAlertsEnabled
+                s.CategoryAlertsEnabled,
+                s.ShowNotificationDetails
             })
             .ToListAsync(cancellationToken);
 
         var thisDeviceBills = false;
         var thisDeviceAlerts = false;
+        var thisDeviceShowDetails = false;
         var otherBills = false;
         var otherAlerts = false;
         var tokenRenewalRequired = false;
@@ -85,6 +88,10 @@ public class PushSubscriptionService
             if (isThisDevice && !row.Enabled && row.TokenMissing)
             {
                 tokenRenewalRequired = true;
+            }
+            if (isThisDevice)
+            {
+                thisDeviceShowDetails |= row.ShowNotificationDetails;
             }
             if (!row.Enabled) continue;
             if (isThisDevice)
@@ -99,7 +106,28 @@ public class PushSubscriptionService
             }
         }
 
-        return new PushStatusResult(thisDeviceBills, thisDeviceAlerts, otherBills, otherAlerts, tokenRenewalRequired);
+        return new PushStatusResult(
+            thisDeviceBills,
+            thisDeviceAlerts,
+            thisDeviceShowDetails,
+            otherBills,
+            otherAlerts,
+            tokenRenewalRequired);
+    }
+
+    public async Task<bool> SetShowNotificationDetailsAsync(
+        string deviceId,
+        bool showDetails,
+        CancellationToken cancellationToken = default)
+    {
+        var existing = await _context.PushSubscriptions
+            .FirstOrDefaultAsync(s => s.DeviceId == deviceId, cancellationToken);
+        if (existing == null) return false;
+
+        existing.ShowNotificationDetails = showDetails;
+        existing.UpdatedAt = _timeProvider.GetUtcNow().UtcDateTime;
+        await _context.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     // The account's opted-in devices, so the user can see and revoke an enrolment made on a

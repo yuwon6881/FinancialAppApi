@@ -14,6 +14,26 @@ namespace FinancialAppApi.Tests;
 public class PushControllerTests
 {
     [Fact]
+    public async Task PutPreviewDetails_UpdatesOnlyTheAuthenticatedDevicesPreference()
+    {
+        var harness = await NewHarnessAsync(deviceCategoryAlerts: false, deviceEnabled: true);
+
+        var result = await harness.Controller.PutPreviewDetails("device-1", new PushPreviewDetailsDto
+        {
+            ShowDetails = true
+        });
+
+        Assert.IsType<NoContentResult>(result);
+        Assert.True((await harness.Context.PushSubscriptions.SingleAsync()).ShowNotificationDetails);
+
+        var missing = await harness.Controller.PutPreviewDetails("other-device", new PushPreviewDetailsDto
+        {
+            ShowDetails = true
+        });
+        Assert.IsType<NotFoundResult>(missing);
+    }
+
+    [Fact]
     public async Task PutSubscription_RenewedCategoryTokenDeliversWaitingAlertImmediately()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()

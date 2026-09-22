@@ -37,9 +37,27 @@ public class PushController : ControllerBase
             TokenRenewalRequired = status.TokenRenewalRequired,
             BillRemindersEnabled = status.ThisDeviceBillReminders,
             CategoryAlertsEnabled = status.ThisDeviceCategoryAlerts,
+            ShowNotificationDetails = status.ThisDeviceShowNotificationDetails,
             OtherDevicesBillReminders = status.OtherDevicesBillReminders,
             OtherDevicesCategoryAlerts = status.OtherDevicesCategoryAlerts
         });
+    }
+
+    // PUT: api/push/subscriptions/{deviceId}/preview-details
+    [HttpPut("subscriptions/{deviceId}/preview-details")]
+    [AuthorizeToken]
+    public async Task<IActionResult> PutPreviewDetails(string deviceId, PushPreviewDetailsDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId) || deviceId.Trim().Length > 200)
+        {
+            return BadRequest(new { message = "A valid deviceId is required." });
+        }
+
+        var updated = await _subscriptionService.SetShowNotificationDetailsAsync(
+            deviceId.Trim(),
+            dto.ShowDetails,
+            HttpContext.RequestAborted);
+        return updated ? NoContent() : NotFound();
     }
 
     // GET: api/push/devices?deviceId=...
@@ -174,6 +192,8 @@ public class PushStatusDto
     /// <summary>What THIS device receives. Both switches render from these two.</summary>
     public bool BillRemindersEnabled { get; set; }
     public bool CategoryAlertsEnabled { get; set; }
+    /// <summary>Whether this device explicitly allows sensitive notification text on its lock screen.</summary>
+    public bool ShowNotificationDetails { get; set; }
     /// <summary>Whether some other device receives it — informational only, never a switch state.</summary>
     public bool OtherDevicesBillReminders { get; set; }
     public bool OtherDevicesCategoryAlerts { get; set; }
@@ -195,4 +215,9 @@ public class PushSubscribeDto
     public string FcmToken { get; set; } = string.Empty;
     public bool? BillReminders { get; set; }
     public bool? CategoryAlerts { get; set; }
+}
+
+public class PushPreviewDetailsDto
+{
+    public bool ShowDetails { get; set; }
 }

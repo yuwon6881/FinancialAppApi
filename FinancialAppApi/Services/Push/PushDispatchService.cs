@@ -337,7 +337,16 @@ public sealed partial class PushDispatchService
         }
 
         var isPartiallyPaid = due.Status == RecurringOccurrenceStatus.PartiallyPaid;
-        var content = BuildContent(payment, occurrenceDate, offsetDays, today, localNow, shortfallAmount, accountName, isPartiallyPaid);
+        var content = BuildContent(
+            payment,
+            occurrenceDate,
+            offsetDays,
+            today,
+            localNow,
+            shortfallAmount,
+            accountName,
+            isPartiallyPaid,
+            subscription.ShowNotificationDetails);
         var result = await fcmSender.SendAsync(subscription.FcmToken, content, cancellationToken);
 
         switch (result.Status)
@@ -371,16 +380,17 @@ public sealed partial class PushDispatchService
         DateTime localNow,
         decimal? shortfall = null,
         string? accountName = null,
-        bool isPartiallyPaid = false)
+        bool isPartiallyPaid = false,
+        bool showDetails = false)
     {
-        string body;
+        string body = "Open FinancialApp to review.";
         var data = new Dictionary<string, string>
         {
             ["recurringPaymentId"] = payment.Id,
             ["occurrenceDate"] = occurrenceDate.ToString("yyyy-MM-dd")
         };
 
-        if (shortfall.HasValue && shortfall.Value > 0)
+        if (showDetails && shortfall.HasValue && shortfall.Value > 0)
         {
             // One arm, deliberately: a shortfall alert is only ever raised at offsetDays == 1 (see
             // isShortfallOneDayPrior), so same-day and multi-day wordings were unreachable copy.
@@ -391,7 +401,7 @@ public sealed partial class PushDispatchService
                 data["accountName"] = accountName;
             }
         }
-        else
+        else if (showDetails)
         {
             body = offsetDays switch
             {
@@ -417,7 +427,7 @@ public sealed partial class PushDispatchService
 
         return new PushNotificationContent(
             Kind: "recurring-payment",
-            Title: payment.Name,
+            Title: showDetails ? payment.Name : "FinancialApp reminder",
             Body: body,
             // Stable across resends for the same occurrence so the OS collapses/replaces the
             // notification instead of stacking a new one for every countdown day.

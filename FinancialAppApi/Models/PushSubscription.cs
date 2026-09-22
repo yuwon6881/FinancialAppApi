@@ -39,6 +39,11 @@ public class PushSubscription : IUserOwnedEntity
     [Required]
     public bool CategoryAlertsEnabled { get; set; }
 
+    // Detailed titles and bodies can reveal payees, spending categories, and account figures on
+    // a lock screen. Every existing and new device starts with those details hidden.
+    [Required]
+    public bool ShowNotificationDetails { get; set; }
+
     [Required]
     public DateTime CreatedAt { get; set; }
 

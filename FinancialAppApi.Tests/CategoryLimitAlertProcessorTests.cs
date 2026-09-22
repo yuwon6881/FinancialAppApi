@@ -11,6 +11,26 @@ namespace FinancialAppApi.Tests;
 public class CategoryLimitAlertProcessorTests
 {
     [Fact]
+    public async Task ProcessPendingAsync_DefaultPreviewPrivacy_HidesCategoryNamesAndDetails()
+    {
+        var dbName = NewDbName();
+        await SeedAsync(dbName, ("Dining", 100m, 79m));
+        await using var context = NewContext(dbName, authenticated: true);
+        var subscription = await context.PushSubscriptions.SingleAsync();
+        subscription.ShowNotificationDetails = false;
+        await context.SaveChangesAsync();
+        var sender = new FakeSender();
+
+        await AddExpenseAsync(context, "tx-near-private", "Dining", 1m);
+        await NewProcessor(context, sender).ProcessPendingAsync();
+
+        var content = Assert.Single(sender.Sent).Content;
+        Assert.Equal("FinancialApp reminder", content.Title);
+        Assert.Equal("Open FinancialApp to review.", content.Body);
+        Assert.DoesNotContain("Dining", content.Body);
+    }
+
+    [Fact]
     public async Task ProcessPendingAsync_SendsNearAndTerminalOnce_WithoutRepeatingWhileOver()
     {
         var dbName = NewDbName();
@@ -524,6 +544,7 @@ public class CategoryLimitAlertProcessorTests
             // Spending alerts are opted into per device now, so the device flag has to agree with
             // the account mirror or nothing is deliverable.
             CategoryAlertsEnabled = categoryAlertsEnabled,
+            ShowNotificationDetails = true,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         });
