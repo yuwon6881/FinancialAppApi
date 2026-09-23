@@ -185,7 +185,6 @@ public partial class AppDbContext
             // were a separate deliberate opt-in.
             entity.Property(e => e.BillRemindersEnabled).HasDefaultValue(true);
             entity.Property(e => e.CategoryAlertsEnabled).HasDefaultValue(false);
-            entity.Property(e => e.ShowNotificationDetails).HasDefaultValue(false);
             entity.Property(e => e.Platform).HasDefaultValue(PushPlatform.Web);
             entity.ToTable(t => t.HasCheckConstraint(
                 "ck_pushsubscriptions_platform",

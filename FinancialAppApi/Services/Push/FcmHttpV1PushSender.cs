@@ -115,11 +115,11 @@ public sealed class FcmHttpV1PushSender : IFcmPushSender
                     {
                         title = content.Title,
                         body = content.Body,
-                        channelId = "financialapp-alerts",
+                        channelId = "financialapp-alerts-v2",
                         tag = content.Tag,
-                        // The server only supplies detailed content after this device opted in.
-                        // PUBLIC lets Android honor that choice; PRIVATE would redact even the
-                        // generic default text when the user explicitly allows details.
+                        // Full notification previews are the product default. PUBLIC tells Android
+                        // to show the supplied title and body on the lock screen when OS settings
+                        // permit notification content there.
                         visibility = "PUBLIC"
                     }
                 },

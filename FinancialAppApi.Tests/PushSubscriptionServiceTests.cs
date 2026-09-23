@@ -18,7 +18,6 @@ public class PushSubscriptionServiceTests
         Assert.False(status.DeviceSubscribed);
         Assert.False(status.ThisDeviceBillReminders);
         Assert.False(status.ThisDeviceCategoryAlerts);
-        Assert.False(status.ThisDeviceShowNotificationDetails);
         Assert.False(status.TokenRenewalRequired);
     }
 
@@ -60,23 +59,6 @@ public class PushSubscriptionServiceTests
         Assert.True(status.OtherDevicesBillReminders);
         Assert.True(status.OtherDevicesCategoryAlerts);
         Assert.True(status.AccountEnabled);
-    }
-
-    [Fact]
-    public async Task GetStatusAsync_ReportsDetailedPreviewsOnlyForTheRequestedDevice()
-    {
-        await using var context = TestHelpers.NewInMemoryContext();
-        var phoneSubscription = NewSubscription("phone");
-        phoneSubscription.ShowNotificationDetails = true;
-        context.PushSubscriptions.AddRange(phoneSubscription, NewSubscription("desktop"));
-        await context.SaveChangesAsync();
-        var service = new PushSubscriptionService(context);
-
-        var phone = await service.GetStatusAsync("phone");
-        var desktop = await service.GetStatusAsync("desktop");
-
-        Assert.True(phone.ThisDeviceShowNotificationDetails);
-        Assert.False(desktop.ThisDeviceShowNotificationDetails);
     }
 
     [Fact]
@@ -133,7 +115,6 @@ public class PushSubscriptionServiceTests
         Assert.True(subscription.Enabled);
         Assert.True(subscription.BillRemindersEnabled);
         Assert.False(subscription.CategoryAlertsEnabled);
-        Assert.False(subscription.ShowNotificationDetails);
         Assert.Equal(PushPlatform.Web, subscription.Platform);
         Assert.Equal(1, await context.PushSubscriptions.CountAsync());
     }
@@ -152,24 +133,6 @@ public class PushSubscriptionServiceTests
         Assert.Equal(PushPlatform.Android, updated!.Platform);
         Assert.Equal("token-rotated", updated.FcmToken);
         Assert.Single(context.PushSubscriptions);
-    }
-
-    [Fact]
-    public async Task SetShowNotificationDetailsAsync_UpdatesOnlyTheCurrentUsersDeviceRow()
-    {
-        await using var context = TestHelpers.NewInMemoryContext(currentUserId: "user-a");
-        context.PushSubscriptions.Add(NewSubscription("device-1"));
-        await context.SaveChangesAsync();
-        var service = new PushSubscriptionService(context);
-
-        Assert.True(await service.SetShowNotificationDetailsAsync("device-1", true));
-        Assert.True((await context.PushSubscriptions.SingleAsync()).ShowNotificationDetails);
-        Assert.False(await service.SetShowNotificationDetailsAsync("missing-device", true));
-
-        context.ChangeTracker.Clear();
-        context.SetCurrentUser("user-b");
-        var otherUserService = new PushSubscriptionService(context);
-        Assert.False(await otherUserService.SetShowNotificationDetailsAsync("device-1", true));
     }
 
     [Fact]

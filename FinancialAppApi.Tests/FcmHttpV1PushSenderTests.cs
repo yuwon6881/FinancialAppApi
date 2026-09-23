@@ -15,7 +15,7 @@ public class FcmHttpV1PushSenderTests
 
         Assert.Equal("FinancialApp", notification.GetProperty("title").GetString());
         Assert.Equal("A bill reminder is ready.", notification.GetProperty("body").GetString());
-        Assert.Equal("financialapp-alerts", notification.GetProperty("channelId").GetString());
+        Assert.Equal("financialapp-alerts-v2", notification.GetProperty("channelId").GetString());
         Assert.Equal("PUBLIC", notification.GetProperty("visibility").GetString());
         Assert.Equal("HIGH", message.GetProperty("android").GetProperty("priority").GetString());
         Assert.Equal("3600s", message.GetProperty("android").GetProperty("ttl").GetString());

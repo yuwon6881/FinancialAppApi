@@ -327,7 +327,7 @@ public sealed class CategoryLimitAlertProcessor
                 {
                     ["cycleKey"] = alertEvent.CycleKey
                 };
-                if (subscription.ShowNotificationDetails && !string.IsNullOrWhiteSpace(alertEvent.CategoryName))
+                if (!string.IsNullOrWhiteSpace(alertEvent.CategoryName))
                 {
                     data["categoryName"] = alertEvent.CategoryName;
                 }
@@ -335,8 +335,8 @@ public sealed class CategoryLimitAlertProcessor
                     subscription.FcmToken,
                     new PushNotificationContent(
                         Kind: "category-limit",
-                        Title: subscription.ShowNotificationDetails ? alertEvent.Title : "FinancialApp reminder",
-                        Body: subscription.ShowNotificationDetails ? alertEvent.Body : "Open FinancialApp to review.",
+                        Title: alertEvent.Title,
+                        Body: alertEvent.Body,
                         Tag: alertEvent.Tag,
                         Route: "/reports?focus=category-limits",
                         TimeToLive: ttl < TimeSpan.FromMinutes(1) ? TimeSpan.FromMinutes(1) : ttl,
