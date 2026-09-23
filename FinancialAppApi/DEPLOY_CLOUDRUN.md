@@ -214,20 +214,26 @@ The Capacitor Android WebView runs at `https://localhost`; the iOS WebView runs 
 for authenticated API calls. `WebAuthn:AllowedOrigins` continues to contain the
 production website origin. Android Credential Manager supplies an additional
 origin derived from the app signing certificate, which the API adds only when its
-exact SHA-256 fingerprint is configured:
+exact SHA-256 fingerprint is configured. Keep separate values for the Play app
+signing certificate and the dedicated GitHub Actions device-test certificate:
 
 ```bash
 gcloud run services update financialapp-api \
   --region=asia-southeast1 \
-  --update-env-vars="WebAuthn__AndroidSigningCertificateSha256=PLAY_APP_SIGNING_CERT_SHA256"
+  --update-env-vars="WebAuthn__AndroidSigningCertificateSha256=PLAY_APP_SIGNING_CERT_SHA256,WebAuthn__AndroidDebugSigningCertificateSha256=DEVICE_TEST_SIGNING_CERT_SHA256"
 ```
 
-Use the **Play App Signing** certificate SHA-256 fingerprint, not the local debug
-or upload key. Use the same fingerprint as the Vercel build environment variable
-`ANDROID_APP_SIGNING_CERT_SHA256`; the frontend build publishes
-`/.well-known/assetlinks.json` for package `com.financialapp.app` from that value.
-Verify the file is publicly readable on `financialapp-ecru.vercel.app` before
-enabling native passkey enrollment. Do not add wildcard Android origins to
+Use the **Play App Signing** fingerprint for the release APK and the dedicated
+GitHub Actions debug signing certificate fingerprint for device-test APKs. Set
+the corresponding `ANDROID_APP_SIGNING_CERT_SHA256` and
+`ANDROID_DEBUG_SIGNING_CERT_SHA256` Vercel build variables; both are published in
+`/.well-known/assetlinks.json` for `com.financialapp.app`. Keep the four debug
+keystore values (`ANDROID_DEBUG_KEYSTORE_BASE64`, `ANDROID_DEBUG_KEY_ALIAS`,
+`ANDROID_DEBUG_KEYSTORE_PASSWORD`, and `ANDROID_DEBUG_KEY_PASSWORD`) in GitHub
+Actions secrets. Set the same device-test fingerprint as the GitHub Actions
+repository variable `ANDROID_DEBUG_SIGNING_CERT_SHA256`. Verify the file returns
+HTTP 200 with `Content-Type: application/json` and no redirect before enabling
+native passkey enrollment. Do not add wildcard Android origins to
 `WebAuthn:AllowedOrigins`.
 
 For Android push, register package `com.financialapp.app` in the Firebase project
