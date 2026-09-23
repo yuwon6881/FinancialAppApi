@@ -174,6 +174,17 @@ public class DatabaseInvariantTests
     }
 
     [Fact]
+    public void Model_RestrictsPushPlatformAndDefaultsHistoricalRowsToWeb()
+    {
+        using var context = TestHelpers.NewInMemoryContext();
+        var entity = context.GetService<IDesignTimeModel>().Model.FindEntityType(typeof(PushSubscription))!;
+        var constraint = Assert.Single(entity.GetCheckConstraints(), item => item.Name == "ck_pushsubscriptions_platform");
+
+        Assert.Equal("\"Platform\" IN ('web', 'android', 'ios')", constraint.Sql);
+        Assert.Equal(PushPlatform.Web, entity.FindProperty(nameof(PushSubscription.Platform))!.GetDefaultValue());
+    }
+
+    [Fact]
     public void Model_IndexesEveryGlobalRetentionCutoff()
     {
         using var context = TestHelpers.NewInMemoryContext();

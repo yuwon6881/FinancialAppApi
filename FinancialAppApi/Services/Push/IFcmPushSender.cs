@@ -1,3 +1,5 @@
+using FinancialAppApi.Models;
+
 namespace FinancialAppApi.Services.Push;
 
 public enum FcmSendStatus
@@ -19,7 +21,8 @@ public sealed record PushNotificationContent(
     string Tag,
     string Route,
     TimeSpan TimeToLive,
-    IReadOnlyDictionary<string, string> Data);
+    IReadOnlyDictionary<string, string> Data,
+    string Platform = PushPlatform.Web);
 
 public interface IFcmPushSender
 {

@@ -134,7 +134,24 @@ public class PushSubscriptionServiceTests
         Assert.True(subscription.BillRemindersEnabled);
         Assert.False(subscription.CategoryAlertsEnabled);
         Assert.False(subscription.ShowNotificationDetails);
+        Assert.Equal(PushPlatform.Web, subscription.Platform);
         Assert.Equal(1, await context.PushSubscriptions.CountAsync());
+    }
+
+    [Fact]
+    public async Task SubscribeAsync_StoresNativePlatformAcrossTokenRotation()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = new PushSubscriptionService(context);
+        var created = await service.SubscribeAsync("device-1", "token-android", platform: PushPlatform.Android);
+
+        var updated = await service.SubscribeAsync("device-1", "token-rotated", platform: PushPlatform.Android);
+
+        Assert.NotNull(created);
+        Assert.NotNull(updated);
+        Assert.Equal(PushPlatform.Android, updated!.Platform);
+        Assert.Equal("token-rotated", updated.FcmToken);
+        Assert.Single(context.PushSubscriptions);
     }
 
     [Fact]

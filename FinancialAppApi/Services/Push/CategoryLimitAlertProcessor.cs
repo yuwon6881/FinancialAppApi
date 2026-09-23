@@ -340,7 +340,8 @@ public sealed class CategoryLimitAlertProcessor
                         Tag: alertEvent.Tag,
                         Route: "/reports?focus=category-limits",
                         TimeToLive: ttl < TimeSpan.FromMinutes(1) ? TimeSpan.FromMinutes(1) : ttl,
-                        Data: data),
+                        Data: data,
+                        Platform: PushPlatform.Normalize(subscription.Platform)),
                     cancellationToken);
 
                 if (result.Status == FcmSendStatus.Sent)

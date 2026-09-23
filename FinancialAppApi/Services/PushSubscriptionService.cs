@@ -171,9 +171,11 @@ public class PushSubscriptionService
         string fcmToken,
         bool? billReminders = null,
         bool? categoryAlerts = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string platform = PushPlatform.Web)
     {
         var now = _timeProvider.GetUtcNow().UtcDateTime;
+        var normalizedPlatform = PushPlatform.Normalize(platform);
 
         // Re-registering an existing device replaces its token/enabled state in place rather
         // than accumulating a duplicate row (also enforced by the unique user+device index).
@@ -189,6 +191,7 @@ public class PushSubscriptionService
             }
 
             existing.FcmToken = fcmToken;
+            existing.Platform = normalizedPlatform;
             existing.Enabled = true;
             existing.BillRemindersEnabled = wantsBills;
             existing.CategoryAlertsEnabled = wantsAlerts;
@@ -210,6 +213,7 @@ public class PushSubscriptionService
             Id = $"push-{Guid.NewGuid():N}",
             DeviceId = deviceId,
             FcmToken = fcmToken,
+            Platform = normalizedPlatform,
             Enabled = true,
             BillRemindersEnabled = newBills,
             CategoryAlertsEnabled = newAlerts,
@@ -233,6 +237,7 @@ public class PushSubscriptionService
             var winner = await _context.PushSubscriptions
                 .FirstAsync(s => s.DeviceId == deviceId, cancellationToken);
             winner.FcmToken = fcmToken;
+            winner.Platform = normalizedPlatform;
             winner.Enabled = true;
             winner.BillRemindersEnabled = newBills || winner.BillRemindersEnabled;
             winner.CategoryAlertsEnabled = newAlerts || winner.CategoryAlertsEnabled;

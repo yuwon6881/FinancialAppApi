@@ -20,6 +20,13 @@ public class PushSubscription : IUserOwnedEntity
     [StringLength(4096)]
     public string FcmToken { get; set; } = string.Empty;
 
+    // The sender selects the provider payload from the registered client transport. Historical
+    // rows and older clients remain web subscriptions unless a native client explicitly updates
+    // the row.
+    [Required]
+    [StringLength(16)]
+    public string Platform { get; set; } = PushPlatform.Web;
+
     // "This device holds a live send credential and wants at least one kind of notification."
     // Invariant, maintained by PushSubscriptionService: Enabled == (BillRemindersEnabled ||
     // CategoryAlertsEnabled). Kept as its own column rather than derived in every query because
@@ -49,4 +56,24 @@ public class PushSubscription : IUserOwnedEntity
 
     [Required]
     public DateTime UpdatedAt { get; set; }
+}
+
+public static class PushPlatform
+{
+    public const string Web = "web";
+    public const string Android = "android";
+    public const string Ios = "ios";
+
+    public static bool IsKnown(string? platform) =>
+        string.Equals(platform, Web, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(platform, Android, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(platform, Ios, StringComparison.OrdinalIgnoreCase);
+
+    public static string Normalize(string? platform) =>
+        platform?.Trim().ToLowerInvariant() switch
+        {
+            Android => Android,
+            Ios => Ios,
+            _ => Web
+        };
 }

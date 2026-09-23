@@ -346,7 +346,7 @@ public sealed partial class PushDispatchService
             shortfallAmount,
             accountName,
             isPartiallyPaid,
-            subscription.ShowNotificationDetails);
+            subscription.ShowNotificationDetails) with { Platform = PushPlatform.Normalize(subscription.Platform) };
         var result = await fcmSender.SendAsync(subscription.FcmToken, content, cancellationToken);
 
         switch (result.Status)

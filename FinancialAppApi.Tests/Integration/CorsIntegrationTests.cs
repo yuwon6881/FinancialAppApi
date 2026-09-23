@@ -25,6 +25,32 @@ public class CorsIntegrationTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task NativeWebViewOrigin_IsAllowedForTheBundledCapacitorApp()
+    {
+        var client = CreateClient();
+        var request = new HttpRequestMessage(HttpMethod.Get, "/api/auth/status");
+        request.Headers.TryAddWithoutValidation("Origin", "https://localhost");
+
+        var response = await client.SendAsync(request);
+
+        Assert.True(response.Headers.TryGetValues("Access-Control-Allow-Origin", out var origin));
+        Assert.Equal("https://localhost", origin!.Single());
+    }
+
+    [Fact]
+    public async Task IosWebViewOrigin_IsAllowedForTheBundledCapacitorApp()
+    {
+        var client = CreateClient();
+        var request = new HttpRequestMessage(HttpMethod.Get, "/api/auth/status");
+        request.Headers.TryAddWithoutValidation("Origin", "capacitor://localhost");
+
+        var response = await client.SendAsync(request);
+
+        Assert.True(response.Headers.TryGetValues("Access-Control-Allow-Origin", out var origin));
+        Assert.Equal("capacitor://localhost", origin!.Single());
+    }
+
+    [Fact]
     public async Task UnknownOrigin_IsNotAllowed()
     {
         var client = CreateClient();

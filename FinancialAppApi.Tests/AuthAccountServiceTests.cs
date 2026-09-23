@@ -122,9 +122,11 @@ public class AuthAccountServiceTests
 
         var aliceDeviceStatus = ResultBody(await service.GetStatusAsync("alice", "010203"));
         var wrongDeviceStatus = ResultBody(await service.GetStatusAsync("alice", "040506"));
+        var unknownDeviceStatus = ResultBody(await service.GetStatusAsync("alice", "already_enrolled"));
 
         Assert.True(aliceDeviceStatus.GetProperty("hasFingerprintOnDevice").GetBoolean());
         Assert.False(wrongDeviceStatus.GetProperty("hasFingerprintOnDevice").GetBoolean());
+        Assert.False(unknownDeviceStatus.GetProperty("hasFingerprintOnDevice").GetBoolean());
     }
 
     [Fact]

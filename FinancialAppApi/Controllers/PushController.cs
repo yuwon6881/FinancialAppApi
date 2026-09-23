@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Filters;
+using FinancialAppApi.Models;
 using FinancialAppApi.Services;
 using FinancialAppApi.Services.Push;
 
@@ -118,6 +119,10 @@ public class PushController : ControllerBase
         {
             return BadRequest(new { message = "deviceId or fcmToken is too long." });
         }
+        if (!PushPlatform.IsKnown(dto.Platform))
+        {
+            return BadRequest(new { message = "platform must be web, android, or ios." });
+        }
 
         // Omitted flags mean "leave this device's other choice alone", so enabling one kind can
         // never switch on the other as a side effect.
@@ -126,7 +131,8 @@ public class PushController : ControllerBase
             dto.FcmToken.Trim(),
             dto.BillReminders,
             dto.CategoryAlerts,
-            HttpContext.RequestAborted);
+            HttpContext.RequestAborted,
+            PushPlatform.Normalize(dto.Platform));
 
         // Keyed on what this device now RECEIVES, not on whether this particular request asked to
         // turn the channel on. The client re-registers its rotated token on every launch and omits
@@ -213,6 +219,7 @@ public class PushSubscribeDto
 {
     public string DeviceId { get; set; } = string.Empty;
     public string FcmToken { get; set; } = string.Empty;
+    public string Platform { get; set; } = PushPlatform.Web;
     public bool? BillReminders { get; set; }
     public bool? CategoryAlerts { get; set; }
 }

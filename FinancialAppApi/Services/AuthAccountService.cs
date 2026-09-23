@@ -92,30 +92,20 @@ public partial class AuthAccountService
         var hasFingerprintOnDevice = false;
         if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrWhiteSpace(deviceCredentialId))
         {
-            if (string.Equals(deviceCredentialId, "already_enrolled", StringComparison.Ordinal))
+            try
             {
-                // The browser records this account-scoped marker only after the platform
-                // authenticator rejects registration because an excluded account credential
-                // already exists on this device.
-                hasFingerprintOnDevice = hasFingerprint;
+                var credentialId = Convert.FromHexString(deviceCredentialId);
+                var normalizedUsername = username.Trim().ToUpperInvariant();
+                hasFingerprintOnDevice = await _context.AppUsers
+                    .Where(user => user.NormalizedUsername == normalizedUsername)
+                    .AnyAsync(
+                        user => _context.WebAuthnCredentials.Any(credential =>
+                            credential.UserId == user.Id && credential.CredentialId == credentialId),
+                        cancellationToken);
             }
-            else
+            catch (FormatException)
             {
-                try
-                {
-                    var credentialId = Convert.FromHexString(deviceCredentialId);
-                    var normalizedUsername = username.Trim().ToUpperInvariant();
-                    hasFingerprintOnDevice = await _context.AppUsers
-                        .Where(user => user.NormalizedUsername == normalizedUsername)
-                        .AnyAsync(
-                            user => _context.WebAuthnCredentials.Any(credential =>
-                                credential.UserId == user.Id && credential.CredentialId == credentialId),
-                            cancellationToken);
-                }
-                catch (FormatException)
-                {
-                    // A malformed local browser marker is simply not a registered device.
-                }
+                // A local marker without an exact credential is not proof of enrollment here.
             }
         }
         // registrationOpen lets the login screen offer a signup form to additional invitees

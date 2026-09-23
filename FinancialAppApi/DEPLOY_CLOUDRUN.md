@@ -207,6 +207,36 @@ schema on startup.
    origin. Fingerprint auth requires the origin to match exactly.
 4. Health check: `curl https://<service-url>/api/ping`.
 
+## Capacitor app origins and Android passkeys
+
+The Capacitor Android WebView runs at `https://localhost`; the iOS WebView runs at
+`capacitor://localhost`. Both exact origins are included in `Cors:AllowedOrigins`
+for authenticated API calls. `WebAuthn:AllowedOrigins` continues to contain the
+production website origin. Android Credential Manager supplies an additional
+origin derived from the app signing certificate, which the API adds only when its
+exact SHA-256 fingerprint is configured:
+
+```bash
+gcloud run services update financialapp-api \
+  --region=asia-southeast1 \
+  --update-env-vars="WebAuthn__AndroidSigningCertificateSha256=PLAY_APP_SIGNING_CERT_SHA256"
+```
+
+Use the **Play App Signing** certificate SHA-256 fingerprint, not the local debug
+or upload key. Use the same fingerprint as the Vercel build environment variable
+`ANDROID_APP_SIGNING_CERT_SHA256`; the frontend build publishes
+`/.well-known/assetlinks.json` for package `com.financialapp.app` from that value.
+Verify the file is publicly readable on `financialapp-ecru.vercel.app` before
+enabling native passkey enrollment. Do not add wildcard Android origins to
+`WebAuthn:AllowedOrigins`.
+
+For Android push, register package `com.financialapp.app` in the Firebase project
+configured by `Fcm:ProjectId`, ship its matching `google-services.json`, and keep
+the Cloud Run runtime service identity's FCM send role from the dispatcher setup
+below. The Android app registers its FCM token with the device subscription API;
+do not send an APNs token to that endpoint. iOS obtains an FCM registration token
+through the Capacitor FCM plugin after APNs and Firebase are configured.
+
 ## Notes carried over from the migration
 - The background session sweeper was removed; expired rows are pruned lazily on
   auth activity and live sessions are bounded per device, so scale-to-zero is safe.

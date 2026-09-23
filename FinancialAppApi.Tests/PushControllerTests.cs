@@ -154,6 +154,22 @@ public class PushControllerTests
         Assert.Empty(harness.Sender.SentTokens);
     }
 
+    [Fact]
+    public async Task PutSubscription_RejectsAnUnknownPlatform()
+    {
+        var harness = await NewHarnessAsync(deviceCategoryAlerts: false, deviceEnabled: true);
+
+        var result = await harness.Controller.PutSubscription(new PushSubscribeDto
+        {
+            DeviceId = "device-1",
+            FcmToken = "token-new",
+            Platform = "android-unknown"
+        });
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Equal("token-old", (await harness.Context.PushSubscriptions.SingleAsync()).FcmToken);
+    }
+
     private sealed record Harness(AppDbContext Context, PushController Controller, FakeSender Sender);
 
     private static async Task<Harness> NewHarnessAsync(bool deviceCategoryAlerts, bool deviceEnabled)

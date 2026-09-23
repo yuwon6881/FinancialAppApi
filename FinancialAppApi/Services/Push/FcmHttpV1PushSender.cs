@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 using Google.Apis.Auth.OAuth2;
+using FinancialAppApi.Models;
 
 namespace FinancialAppApi.Services.Push;
 
@@ -42,30 +43,8 @@ public sealed class FcmHttpV1PushSender : IFcmPushSender
             return new FcmSendResult(FcmSendStatus.TransientFailure, "ADC token acquisition failed.");
         }
 
-        var data = new Dictionary<string, string>(content.Data)
-        {
-            ["kind"] = content.Kind,
-            ["title"] = content.Title,
-            ["body"] = content.Body,
-            ["tag"] = content.Tag,
-            ["route"] = content.Route
-        };
-
-        var payload = new
-        {
-            message = new
-            {
-                token = fcmToken,
-                webpush = new
-                {
-                    headers = new Dictionary<string, string>
-                    {
-                        ["TTL"] = Math.Max(1, (long)content.TimeToLive.TotalSeconds).ToString()
-                    }
-                },
-                data
-            }
-        };
+        var message = BuildMessage(fcmToken, content, DateTimeOffset.UtcNow);
+        var payload = new { message };
 
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
@@ -105,6 +84,82 @@ public sealed class FcmHttpV1PushSender : IFcmPushSender
             _logger.LogWarning("FCM send failed with status {StatusCode}.", response.StatusCode);
             return new FcmSendResult(FcmSendStatus.TransientFailure, $"FCM responded {(int)response.StatusCode}.");
         }
+    }
+
+    internal static Dictionary<string, object?> BuildMessage(
+        string fcmToken,
+        PushNotificationContent content,
+        DateTimeOffset now)
+    {
+        var data = new Dictionary<string, string>(content.Data)
+        {
+            ["kind"] = content.Kind,
+            ["title"] = content.Title,
+            ["body"] = content.Body,
+            ["tag"] = content.Tag,
+            ["route"] = content.Route
+        };
+        var ttlSeconds = Math.Max(1, (long)content.TimeToLive.TotalSeconds);
+
+        return PushPlatform.Normalize(content.Platform) switch
+        {
+            PushPlatform.Android => new Dictionary<string, object?>
+            {
+                ["token"] = fcmToken,
+                ["data"] = data,
+                ["android"] = new
+                {
+                    priority = "HIGH",
+                    ttl = $"{ttlSeconds}s",
+                    notification = new
+                    {
+                        title = content.Title,
+                        body = content.Body,
+                        channelId = "financialapp-alerts",
+                        tag = content.Tag,
+                        // The server only supplies detailed content after this device opted in.
+                        // PUBLIC lets Android honor that choice; PRIVATE would redact even the
+                        // generic default text when the user explicitly allows details.
+                        visibility = "PUBLIC"
+                    }
+                },
+            },
+            PushPlatform.Ios => new Dictionary<string, object?>
+            {
+                ["token"] = fcmToken,
+                ["data"] = data,
+                ["apns"] = new
+                {
+                    headers = new Dictionary<string, string>
+                    {
+                        ["apns-expiration"] = now.AddSeconds(ttlSeconds).ToUnixTimeSeconds().ToString(),
+                        ["apns-priority"] = "10",
+                        ["apns-push-type"] = "alert"
+                    },
+                    payload = new Dictionary<string, object?>
+                    {
+                        ["aps"] = new Dictionary<string, object?>
+                        {
+                            ["alert"] = new { title = content.Title, body = content.Body },
+                            ["sound"] = "default",
+                            ["thread-id"] = content.Tag
+                        }
+                    }
+                }
+            },
+            _ => new Dictionary<string, object?>
+            {
+                ["token"] = fcmToken,
+                ["webpush"] = new
+                {
+                    headers = new Dictionary<string, string>
+                    {
+                        ["TTL"] = ttlSeconds.ToString()
+                    }
+                },
+                ["data"] = data
+            }
+        };
     }
 
     // FCM can return the same HTTP status for a bad registration token and for a bad project or
