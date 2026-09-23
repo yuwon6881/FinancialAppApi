@@ -29,6 +29,29 @@ public class WebAuthnServiceTests
     }
 
     [Fact]
+    public void BuildAllowedWebAuthnOrigins_UsesOnlyConfiguredWebAndAndroidOrigins()
+    {
+        var playFingerprint = string.Join(":", Enumerable.Repeat("00", 32));
+        var debugFingerprint = string.Join(":", Enumerable.Repeat("11", 32));
+        var unconfiguredFingerprint = string.Join(":", Enumerable.Repeat("22", 32));
+        const string webOrigin = "https://financialapp-ecru.vercel.app";
+
+        var origins = WebAuthnService.BuildAllowedWebAuthnOrigins(
+            [webOrigin],
+            "https://attacker.example",
+            "https://fallback.example",
+            [playFingerprint, debugFingerprint, "malformed"]);
+
+        Assert.Equal(3, origins.Count);
+        Assert.Contains(webOrigin, origins);
+        Assert.Contains(WebAuthnService.ToAndroidWebAuthnOrigin(playFingerprint)!, origins);
+        Assert.Contains(WebAuthnService.ToAndroidWebAuthnOrigin(debugFingerprint)!, origins);
+        Assert.DoesNotContain(WebAuthnService.ToAndroidWebAuthnOrigin(unconfiguredFingerprint)!, origins);
+        Assert.DoesNotContain("https://attacker.example", origins);
+        Assert.DoesNotContain("https://fallback.example", origins);
+    }
+
+    [Fact]
     public async Task LoginOptionsAsync_ReturnsBadRequestWhenNoUserExists()
     {
         await using var context = TestHelpers.NewInMemoryContext();

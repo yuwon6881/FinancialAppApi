@@ -205,31 +205,17 @@ public partial class WebAuthnService
     {
         var configuredOrigins = _config.GetSection("WebAuthn:AllowedOrigins").Get<string[]>() ?? Array.Empty<string>();
 
-        // Android Credential Manager reports an app origin derived from the signing certificate,
-        // rather than the WebView's https://localhost HTTP Origin. The exact Play app-signing
-        // certificate fingerprint is supplied as configuration and converted to the WebAuthn
-        // origin form here. Never infer or wildcard this value from an incoming request.
-        var androidCertificateSha256 = _config["WebAuthn:AndroidSigningCertificateSha256"];
-        var androidOrigin = ToAndroidWebAuthnOrigin(androidCertificateSha256);
-
-        HashSet<string> origins;
-        if (configuredOrigins.Length > 0)
-        {
-            origins = configuredOrigins.ToHashSet(StringComparer.Ordinal);
-        }
-        else if (!string.IsNullOrEmpty(requestOrigin))
-        {
-            origins = new HashSet<string>(StringComparer.Ordinal) { requestOrigin };
-        }
-        else
-        {
-            origins = new HashSet<string>(StringComparer.Ordinal) { fallbackOrigin };
-        }
-
-        if (androidOrigin != null)
-        {
-            origins.Add(androidOrigin);
-        }
+        // Android Credential Manager reports an app origin derived from its signing certificate,
+        // rather than the WebView's https://localhost HTTP Origin. Add only configured Play and
+        // device-test fingerprints; never infer or wildcard an Android origin from a request.
+        var origins = BuildAllowedWebAuthnOrigins(
+            configuredOrigins,
+            requestOrigin,
+            fallbackOrigin,
+            [
+                _config["WebAuthn:AndroidSigningCertificateSha256"],
+                _config["WebAuthn:AndroidDebugSigningCertificateSha256"]
+            ]);
 
         var configuredRpId = _config["WebAuthn:RpId"];
         var rpId = !string.IsNullOrWhiteSpace(configuredRpId)
@@ -244,6 +230,27 @@ public partial class WebAuthnService
             ServerName = "FinancialApp Ledger",
             Origins = origins
         });
+    }
+
+    internal static HashSet<string> BuildAllowedWebAuthnOrigins(
+        string[] configuredOrigins,
+        string? requestOrigin,
+        string fallbackOrigin,
+        IEnumerable<string?> androidCertificateFingerprints)
+    {
+        var origins = configuredOrigins.Length > 0
+            ? configuredOrigins.ToHashSet(StringComparer.Ordinal)
+            : !string.IsNullOrEmpty(requestOrigin)
+                ? new HashSet<string>(StringComparer.Ordinal) { requestOrigin }
+                : new HashSet<string>(StringComparer.Ordinal) { fallbackOrigin };
+
+        foreach (var fingerprint in androidCertificateFingerprints)
+        {
+            var androidOrigin = ToAndroidWebAuthnOrigin(fingerprint);
+            if (androidOrigin != null) origins.Add(androidOrigin);
+        }
+
+        return origins;
     }
 
     internal static string? ToAndroidWebAuthnOrigin(string? fingerprint)
