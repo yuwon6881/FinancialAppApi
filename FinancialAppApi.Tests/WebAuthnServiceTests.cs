@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -61,6 +62,25 @@ public class WebAuthnServiceTests
 
         var badRequest = Assert.IsType<BadRequestObjectResult>(result);
         Assert.Contains("No account registered", System.Text.Json.JsonSerializer.Serialize(badRequest.Value));
+    }
+
+    [Fact]
+    public async Task RegisterOptionsAsync_RequiresAResidentPasskeyForAndroidCredentialManager()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = NewService(context);
+
+        var result = await service.RegisterOptionsAsync(
+            "alice",
+            "https://financialapp-ecru.vercel.app",
+            "https://financialapp-ecru.vercel.app");
+
+        Assert.IsType<OkObjectResult>(result);
+        using var savedOptions = JsonDocument.Parse(Assert.Single(context.WebAuthnChallenges).OptionsJson);
+        var selection = savedOptions.RootElement.GetProperty("authenticatorSelection");
+        Assert.Equal("required", selection.GetProperty("residentKey").GetString());
+        Assert.True(selection.GetProperty("requireResidentKey").GetBoolean());
+        Assert.Equal("required", selection.GetProperty("userVerification").GetString());
     }
 
     [Fact]

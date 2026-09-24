@@ -61,7 +61,7 @@ public partial class WebAuthnService
             AuthenticatorSelection = new AuthenticatorSelection
             {
                 AuthenticatorAttachment = AuthenticatorAttachment.Platform,
-                ResidentKey = ResidentKeyRequirement.Discouraged,
+                ResidentKey = ResidentKeyRequirement.Required,
                 UserVerification = UserVerificationRequirement.Required
             },
             AttestationPreference = AttestationConveyancePreference.None
