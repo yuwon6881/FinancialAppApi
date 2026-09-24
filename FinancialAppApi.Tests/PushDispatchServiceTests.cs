@@ -646,6 +646,48 @@ public class PushDispatchServiceTests
     }
 
     [Fact]
+    public async Task DispatchAsync_PartialFailure_RetriesOnlyTheDeviceThatDidNotReceiveTheReminder()
+    {
+        var dbName = NewDbName();
+        var today = new DateOnly(2026, 7, 10);
+        await SeedAsync(dbName, "user-a",
+            NewPayment("rec-1", dueDate: today.Day, leadDays: 3, mode: "Daily"),
+            subscriptions:
+            [
+                NewSubscription("sub-good", "token-good"),
+                NewSubscription("sub-retry", "token-retry")
+            ]);
+        var sender = new FakeFcmPushSender
+        {
+            ResultForToken = token => token == "token-retry"
+                ? new FcmSendResult(FcmSendStatus.TransientFailure)
+                : new FcmSendResult(FcmSendStatus.Sent)
+        };
+        var service = NewDispatchService(dbName, Clock(today), sender);
+
+        var partial = await service.DispatchAsync();
+
+        Assert.Equal(1, partial.Sent);
+        Assert.Equal(1, partial.Failed);
+        Assert.True(partial.RequiresRetry);
+        Assert.Equal(2, sender.Sent.Count);
+
+        sender.ResultForToken = _ => new FcmSendResult(FcmSendStatus.Sent);
+        var retry = await service.DispatchAsync();
+
+        Assert.Equal(1, retry.Sent);
+        Assert.Equal(0, retry.Failed);
+        Assert.False(retry.RequiresRetry);
+        Assert.Equal("token-retry", Assert.Single(sender.Sent.Skip(2)).Token);
+
+        await using var check = NewSeedContext(dbName);
+        var deliveries = await check.PushReminderDeliveries.IgnoreQueryFilters().ToListAsync();
+        Assert.Equal(2, deliveries.Count);
+        Assert.Contains(deliveries, delivery => delivery.SubscriptionId == "sub-good");
+        Assert.Contains(deliveries, delivery => delivery.SubscriptionId == "sub-retry");
+    }
+
+    [Fact]
     public async Task DispatchAsync_IsolatesAnUnexpectedSenderException_WithoutAffectingOtherDevices()
     {
         var dbName = NewDbName();

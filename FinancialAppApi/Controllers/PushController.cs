@@ -146,8 +146,7 @@ public class PushController : ControllerBase
     // chance inside the day its TTL allows. So a run that could not deliver answers 503 rather
     // than 200: a wholly dead pipeline (missing Fcm:ProjectId, no send credential, FCM
     // unreachable) used to look identical in Scheduler history to a day with nothing due.
-    // Anything already sent still reports 200 — retrying a partially successful run would only
-    // re-walk claims that are already committed.
+    // Successful delivery claims remain committed, so a retry visits only unfinished sends.
     [HttpPost("dispatch")]
     [AuthorizeGoogleOidc]
     public async Task<IActionResult> Dispatch()
@@ -162,7 +161,7 @@ public class PushController : ControllerBase
             configured = summary.Configured
         };
 
-        if (!summary.Configured || (summary.Failed > 0 && summary.Sent == 0))
+        if (summary.RequiresRetry)
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, body);
         }

@@ -8,11 +8,13 @@ namespace FinancialAppApi.Services.Push;
 
 // Failed counts sends a retry could still rescue (network, 5xx, credential trouble) and is
 // deliberately separate from Skipped, which is dominated by the benign "already claimed today"
-// case. Configured is false only when the run could not begin at all. Both exist so the HTTP
-// endpoint can answer non-2xx: Cloud Scheduler's retry policy is the only thing that gets a
-// transiently lost reminder a second chance inside the same day, and it can only see the status
-// code. Answering 200 with a zeroed body made a wholly broken pipeline look like a quiet day.
-public sealed record PushDispatchSummary(int Sent, int Skipped, int Disabled, int Failed = 0, bool Configured = true);
+// case. Configured is false only when the run could not begin at all. Cloud Scheduler can only see
+// the status code, so any retryable failure must make the endpoint non-2xx even when other devices
+// succeeded. Successful devices keep their claims; only unfinished sends are attempted again.
+public sealed record PushDispatchSummary(int Sent, int Skipped, int Disabled, int Failed = 0, bool Configured = true)
+{
+    public bool RequiresRetry => !Configured || Failed > 0;
+}
 
 // The daily fan-out job: for every user with push reminders enabled who has at least one enabled
 // device subscription, finds each of their recurring payments' next due (unpaid) occurrence and, if
