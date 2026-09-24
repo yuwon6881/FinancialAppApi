@@ -107,12 +107,15 @@ gcloud run deploy financialapp-api \
 - `--allow-unauthenticated` is required — this is a public API guarded by its own
   bearer-token auth, not Google IAM.
 
-For the checked-in Cloud Build pipeline, provide the non-secret bucket explicitly:
+Run the checked-in Cloud Build pipeline from the repository root. Manual submissions
+do not receive `COMMIT_SHA` from a repository trigger, so pass the current commit
+explicitly along with the non-secret bucket:
 
 ```bash
-gcloud builds submit .. \
+commit_sha="$(git rev-parse HEAD)"
+gcloud builds submit . \
   --config cloudbuild.yaml \
-  --substitutions "_RECEIPT_SCAN_BUCKET=financialapp-receipts-PROJECT_NUMBER"
+  --substitutions "_RECEIPT_SCAN_BUCKET=financialapp-receipts-PROJECT_NUMBER,COMMIT_SHA=${commit_sha}"
 ```
 
 ## Configure OpenAI
