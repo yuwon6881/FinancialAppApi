@@ -281,8 +281,8 @@ public sealed partial class LedgerAccountService
             return $"Account bucket must be one of: {string.Join(", ", FinancialConstants.BudgetCategories)}.";
         if (!LedgerAccountKind.IsValid(mutation.Kind))
             return $"Account type must be one of: {string.Join(", ", LedgerAccountKind.Values)}.";
-        if (mutation.OpeningAmount is < -9999999999.99m or > 9999999999.99m)
-            return "Opening amount is outside the supported money range.";
+        if (mutation.OpeningAmount is < 0m or > 9999999999.99m)
+            return "Opening amount cannot be negative.";
         return null;
     }
 

@@ -39,6 +39,8 @@ public sealed partial class LedgerAccountService
             return new(LedgerAccountMutationStatus.Invalid, "Every account row needs a name.");
         if (targets.Select(target => target.Name.ToLowerInvariant()).Distinct().Count() != targets.Count)
             return new(LedgerAccountMutationStatus.Invalid, "Account names must be unique.");
+        if (targets.Any(target => target.Target < 0m))
+            return new(LedgerAccountMutationStatus.Invalid, "Account balance cannot be negative.");
         if (targets.Where(target => target.Id is not null)
             .GroupBy(target => target.Id!, StringComparer.Ordinal)
             .Any(group => group.Count() > 1))

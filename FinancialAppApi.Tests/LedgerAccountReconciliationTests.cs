@@ -287,4 +287,70 @@ public sealed class LedgerAccountReconciliationTests
         Assert.Contains("account changed", result.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal("Renamed elsewhere", context.LedgerAccounts.Single().Name);
     }
+
+    [Fact]
+    public async Task ReconcileAsync_DisallowsNegativeTarget()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+        var account = new LedgerAccount
+        {
+            Id = "acct-negative",
+            Name = "Main",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+            UserId = TestHelpers.DefaultUserId,
+        };
+        context.LedgerAccounts.Add(account);
+        await context.SaveChangesAsync();
+
+        var result = await service.ReconcileAsync(new LedgerAccountReconcileRequest(
+            "op-neg",
+            "Essentials",
+            0m,
+            [new("acct-negative", "Main", LedgerAccountKind.Bank, false, 0m, -10m)]));
+
+        Assert.Equal(LedgerAccountMutationStatus.Invalid, result.Status);
+        Assert.Contains("negative", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ReconcileAsync_AllowsZeroTarget()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+        var account = new LedgerAccount
+        {
+            Id = "acct-zero",
+            Name = "Main",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.Bank,
+            UserId = TestHelpers.DefaultUserId,
+        };
+        context.LedgerAccounts.Add(account);
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-init",
+            UserId = TestHelpers.DefaultUserId,
+            Date = DateTime.UtcNow,
+            PostedAt = DateTime.UtcNow,
+            Description = "Initial balance",
+            Category = "Adjustment",
+            LedgerCategory = "Essentials",
+            Amount = 100m,
+            AccountId = "acct-zero",
+        });
+        await context.SaveChangesAsync();
+
+        var result = await service.ReconcileAsync(new LedgerAccountReconcileRequest(
+            "op-zero",
+            "Essentials",
+            100m,
+            [new("acct-zero", "Main", LedgerAccountKind.Bank, false, 100m, 0m)]));
+
+        Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
+        Assert.NotNull(result.Transactions);
+        var tx = Assert.Single(result.Transactions);
+        Assert.Equal(-100m, tx.Amount);
+    }
 }
