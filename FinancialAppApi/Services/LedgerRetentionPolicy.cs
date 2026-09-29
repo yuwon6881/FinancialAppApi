@@ -24,7 +24,20 @@ public sealed class LedgerRetentionPolicy
             configuration.GetValue("Retention:PushSubscriptionRetentionDays", 365), 30, 3650);
         CleanupInterval = TimeSpan.FromHours(Math.Clamp(
             configuration.GetValue("Retention:CleanupIntervalHours", 24), 1, 168));
+        AiTurnRetentionDays = Math.Clamp(
+            configuration.GetValue("Retention:AiTurnRetentionDays", 90), 7, 3650);
+        AiUsageRetentionDays = Math.Clamp(
+            configuration.GetValue("Retention:AiUsageRetentionDays", 60), 14, 3650);
     }
+
+    /// <summary>
+    /// How long an Ask AI exchange is kept. Conversation memory only ever reads recent turns, so
+    /// older ones are dead weight; an unanswered prepared review ages out with its turn.
+    /// </summary>
+    public int AiTurnRetentionDays { get; }
+
+    /// <summary>Daily Ask AI token totals; only today's row is read for the budget.</summary>
+    public int AiUsageRetentionDays { get; }
 
     /// <summary>Configuration-gated so a deployment can turn pruning off without a code change.</summary>
     public bool Enabled { get; }

@@ -32,7 +32,7 @@ public sealed record AiGenerationOptions(
 
 // Single point of contact with the AI provider. Feature services supply a schema and a small,
 // explicit compute budget; transport, retries, usage telemetry and provider parsing stay here.
-public class AiClient
+public partial class AiClient
 {
     private const string DefaultPrimaryModel = "gpt-5.4-mini";
     private const string ResponsesEndpoint = "https://api.openai.com/v1/responses";
@@ -58,19 +58,15 @@ public class AiClient
     {
         using var activity = Telemetry.ActivitySource.StartActivity("AiClient.GenerateText");
         activity?.SetTag("ai.feature", options.Feature);
-        activity?.SetTag("ai.model", options.ModelConfigurationKey);
 
         Telemetry.AiActionsCounter.Add(1, new KeyValuePair<string, object?>("feature", options.Feature));
 
-        var apiKey = _configuration["OpenAiApiKey"]?.Trim();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            throw new AiClientException("AI service is not configured on the server.");
-        }
-
-        var primaryModel = _configuration[options.ModelConfigurationKey];
-        if (string.IsNullOrWhiteSpace(primaryModel)) primaryModel = _configuration["OpenAiModel"];
-        if (string.IsNullOrWhiteSpace(primaryModel)) primaryModel = DefaultPrimaryModel;
+        var apiKey = RequireApiKey();
+        var primaryModel = ResolveModel(options.ModelConfigurationKey);
+        // The resolved model, not its configuration key: several keys can share one model, and a
+        // key alone cannot tell a dashboard which model actually served the request.
+        activity?.SetTag("ai.model", primaryModel);
+        activity?.SetTag("ai.model_key", options.ModelConfigurationKey);
         var requestBody = BuildRequestBody(parts, options, primaryModel);
 
         try
@@ -81,6 +77,21 @@ public class AiClient
         {
             throw new AiClientException("AI service is temporarily unavailable. Please try again.");
         }
+    }
+
+    private string RequireApiKey()
+    {
+        var apiKey = _configuration["OpenAiApiKey"]?.Trim();
+        return string.IsNullOrWhiteSpace(apiKey)
+            ? throw new AiClientException("AI service is not configured on the server.")
+            : apiKey;
+    }
+
+    private string ResolveModel(string modelConfigurationKey)
+    {
+        var model = _configuration[modelConfigurationKey];
+        if (string.IsNullOrWhiteSpace(model)) model = _configuration["OpenAiModel"];
+        return string.IsNullOrWhiteSpace(model) ? DefaultPrimaryModel : model;
     }
 
     internal static object BuildRequestBody(
@@ -185,9 +196,32 @@ public class AiClient
         CancellationToken cancellationToken)
     {
         var startedAt = Stopwatch.GetTimestamp();
+        using var response = await SendToProviderAsync(
+            model, JsonSerializer.SerializeToUtf8Bytes(requestBody), apiKey, feature, cancellationToken);
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var responseDoc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var text = ParseResponse(responseDoc.RootElement, model, feature);
+        _logger.LogInformation(
+            "AI request {Feature}/{Model} completed in {ElapsedMs:F0} ms.",
+            feature,
+            model,
+            Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
+        return text;
+    }
+
+    // Posts one request and returns only a successful response; every failure status is logged
+    // with the provider's body and mapped to a friendly AiClientException, or to
+    // AiProviderUnavailableException when a single retry is worth attempting.
+    private async Task<HttpResponseMessage> SendToProviderAsync(
+        string model,
+        byte[] requestBody,
+        string apiKey,
+        string feature,
+        CancellationToken cancellationToken)
+    {
         using var httpRequest = new HttpRequestMessage(HttpMethod.Post, ResponsesEndpoint);
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-        httpRequest.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(requestBody));
+        httpRequest.Content = new ByteArrayContent(requestBody);
         httpRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
         HttpResponseMessage response;
@@ -201,54 +235,43 @@ public class AiClient
             throw new AiClientException("AI service is unreachable. Please try again.");
         }
 
+        if (response.IsSuccessStatusCode) return response;
+
         using (response)
         {
-            if (!response.IsSuccessStatusCode)
+            // Read the provider's error body: for a 400 it carries the actual reason
+            // (e.g. an INVALID_ARGUMENT naming the rejected field or an over-complex
+            // response schema). Without it a 400 is undiagnosable from logs alone.
+            var errorBody = await SafeReadErrorBodyAsync(response, cancellationToken);
+
+            if (IsTransientProviderFailure(response.StatusCode))
             {
-                // Read the provider's error body: for a 400 it carries the actual reason
-                // (e.g. an INVALID_ARGUMENT naming the rejected field or an over-complex
-                // response schema). Without it a 400 is undiagnosable from logs alone.
-                var errorBody = await SafeReadErrorBodyAsync(response, cancellationToken);
-
-                if (IsTransientProviderFailure(response.StatusCode))
-                {
-                    _logger.LogWarning(
-                        "AI provider returned transient status {Status} for {Feature} using {Model}. Body: {Body}",
-                        (int)response.StatusCode,
-                        feature,
-                        model,
-                        errorBody);
-                    throw new AiProviderUnavailableException();
-                }
-
-                if (response.StatusCode == HttpStatusCode.TooManyRequests)
-                {
-                    _logger.LogWarning(
-                        "AI provider rate limit reached for {Feature} using {Model}. Body: {Body}",
-                        feature,
-                        model,
-                        errorBody);
-                    throw new AiClientException("AI service rate limit reached. Please wait a moment and try again.");
-                }
-
                 _logger.LogWarning(
-                    "AI provider returned status {Status} for {Feature} using {Model}. Body: {Body}",
+                    "AI provider returned transient status {Status} for {Feature} using {Model}. Body: {Body}",
                     (int)response.StatusCode,
                     feature,
                     model,
                     errorBody);
-                throw new AiClientException("AI service returned an error. Please try again.");
+                throw new AiProviderUnavailableException();
             }
 
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var responseDoc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            var text = ParseResponse(responseDoc.RootElement, model, feature);
-            _logger.LogInformation(
-                "AI request {Feature}/{Model} completed in {ElapsedMs:F0} ms.",
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                _logger.LogWarning(
+                    "AI provider rate limit reached for {Feature} using {Model}. Body: {Body}",
+                    feature,
+                    model,
+                    errorBody);
+                throw new AiClientException("AI service rate limit reached. Please wait a moment and try again.");
+            }
+
+            _logger.LogWarning(
+                "AI provider returned status {Status} for {Feature} using {Model}. Body: {Body}",
+                (int)response.StatusCode,
                 feature,
                 model,
-                Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
-            return text;
+                errorBody);
+            throw new AiClientException("AI service returned an error. Please try again.");
         }
     }
 
@@ -312,9 +335,9 @@ public class AiClient
         return StripMarkdownFence(text.Trim());
     }
 
-    private void LogUsage(JsonElement root, string model, string feature)
+    private AiTokenUsage LogUsage(JsonElement root, string model, string feature)
     {
-        if (!root.TryGetProperty("usage", out var usage)) return;
+        if (!root.TryGetProperty("usage", out var usage)) return AiTokenUsage.None;
         var reasoningTokens = usage.TryGetProperty("output_tokens_details", out var outputDetails)
             ? ReadTokenCount(outputDetails, "reasoning_tokens")
             : 0;
@@ -329,6 +352,11 @@ public class AiClient
             ReadTokenCount(usage, "output_tokens"),
             reasoningTokens,
             cachedTokens);
+        return new AiTokenUsage(
+            ReadTokenCount(usage, "input_tokens"),
+            cachedTokens,
+            ReadTokenCount(usage, "output_tokens"),
+            reasoningTokens);
     }
 
     private static int ReadTokenCount(JsonElement usage, string propertyName) =>

@@ -102,11 +102,11 @@ public class AiComposerContinuityTests
     public void SanitizeConversationState_KeepsThePendingRequestWholeRatherThanAsAReference()
     {
         var request = new string('a', 300);
-        var state = new AiConversationState(null, null, null, null) with { PendingLedgerRequest = request };
+        var state = new AiConversationState(PendingLedgerRequest: request);
 
         var sanitized = AiAssistantService.SanitizeConversationState(state);
 
-        // Reference fields are clamped to 80 characters; a whole request must survive intact or
+        // Reference fields are clamped to 100 characters; a whole request must survive intact or
         // the next turn would carry out half an instruction.
         Assert.Equal(request, sanitized!.PendingLedgerRequest);
     }

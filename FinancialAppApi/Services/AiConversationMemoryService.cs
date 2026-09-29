@@ -136,6 +136,20 @@ public sealed partial class AiConversationMemoryService
             .SingleOrDefaultAsync(
                 turn => turn.ConversationId == conversation.Id && turn.ClientTurnId == clientTurnId,
                 cancellationToken);
+        // A turn still Pending long after any real turn could run was orphaned by a crash or a
+        // restart between reserving and finishing it. Left alone it would answer "still being
+        // processed" to every retry forever, so it is released and the retry runs afresh.
+        if (duplicate != null && IsAbandonedPending(duplicate))
+        {
+            // Find returns the instance the context may already track, so removal never collides
+            // with a second copy of the same row.
+            var abandoned = await _context.AiConversationTurns.FindAsync([duplicate.Id], cancellationToken);
+            if (abandoned != null) _context.AiConversationTurns.Remove(abandoned);
+            await _context.SaveChangesAsync(cancellationToken);
+            _context.ChangeTracker.Clear();
+            conversation = await _context.AiConversations.SingleAsync(cancellationToken);
+            duplicate = null;
+        }
         if (duplicate != null)
         {
             var replaySensitiveMode = await ResolveEffectiveSensitiveModeAsync(request.ForceSensitiveMode, cancellationToken);
@@ -243,7 +257,8 @@ public sealed partial class AiConversationMemoryService
         PreparedConversation prepared,
         string message,
         AiChatResponse response,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<AI.Agent.AiToolTrace>? toolTrace = null)
     {
         var conversation = prepared.Conversation!;
         var nextVersion = checked(conversation.Version + 1);
@@ -252,7 +267,7 @@ public sealed partial class AiConversationMemoryService
         conversation.Version = nextVersion;
         conversation.UpdatedAt = DateTime.UtcNow;
 
-        var metadata = BuildMetadata(message, state);
+        var metadata = BuildMetadata(message);
         var actions = response.Actions
             .Select(action => action.ActionId == null ? action with { ActionId = Guid.NewGuid() } : action)
             .ToList();
@@ -265,6 +280,12 @@ public sealed partial class AiConversationMemoryService
         turn.Topic = metadata.Topic;
         turn.FacetsJson = JsonSerializer.Serialize(metadata.Facets, JsonOptions);
         turn.KeywordsJson = JsonSerializer.Serialize(metadata.Keywords, JsonOptions);
+        turn.ToolTraceJson = prepared.SensitiveMode || toolTrace is not { Count: > 0 }
+            ? null
+            : JsonSerializer.Serialize(
+                toolTrace.Take(MaxTracedLookups).Select(entry =>
+                    $"{entry.Tool} {(entry.Arguments.Length <= MaxTracedArgumentLength ? entry.Arguments : entry.Arguments[..MaxTracedArgumentLength] + "…")}"),
+                JsonOptions);
         turn.SensitiveMode = prepared.SensitiveMode;
         turn.ConversationVersion = nextVersion;
         turn.Status = "Completed";
@@ -339,7 +360,7 @@ public sealed partial class AiConversationMemoryService
             .Take(200)
             .ToListAsync(cancellationToken);
         var latest = turns.Take(3).ToList();
-        var current = BuildMetadata(currentMessage, null);
+        var current = BuildMetadata(currentMessage);
         var older = turns.Skip(3)
             .Select(turn => new { Turn = turn, Score = Score(turn, current) })
             .OrderByDescending(candidate => candidate.Score)
@@ -357,14 +378,34 @@ public sealed partial class AiConversationMemoryService
         // Prefer recent dialogue if the combined selection reaches the hard prompt budget.
         foreach (var turn in selected.AsEnumerable().Reverse())
         {
-            var turnCharacters = turn.UserMessage.Length + turn.AssistantReply.Length;
+            var assistant = turn.AssistantReply + DescribeLookups(turn.ToolTraceJson);
+            var turnCharacters = turn.UserMessage.Length + assistant.Length;
             if (characters + turnCharacters > MaxPromptHistoryCharacters) continue;
             characters += turnCharacters;
-            messages.Add(new AiChatMessage("assistant", turn.AssistantReply));
+            messages.Add(new AiChatMessage("assistant", assistant));
             messages.Add(new AiChatMessage("user", turn.UserMessage));
         }
         messages.Reverse();
         return messages;
+    }
+
+    private const int MaxTracedLookups = 8;
+    private const int MaxTracedArgumentLength = 160;
+
+    // "[Looked up: search_transactions {"query":"haircut"}]" appended to a past reply in the
+    // prompt only; the transcript the user sees never shows it.
+    private static string DescribeLookups(string? toolTraceJson)
+    {
+        if (string.IsNullOrWhiteSpace(toolTraceJson)) return string.Empty;
+        try
+        {
+            var lookups = JsonSerializer.Deserialize<List<string>>(toolTraceJson, JsonOptions);
+            return lookups is { Count: > 0 } ? $"\n[Looked up: {string.Join("; ", lookups)}]" : string.Empty;
+        }
+        catch (JsonException)
+        {
+            return string.Empty;
+        }
     }
 
     private async Task<bool> IsSensitiveModeAsync(CancellationToken cancellationToken) =>
@@ -392,6 +433,14 @@ public sealed partial class AiConversationMemoryService
         }
     }
 
+    // Far beyond the longest real turn (a few model rounds under a per-round deadline), so a
+    // turn that is merely slow is never mistaken for an abandoned one.
+    internal static readonly TimeSpan AbandonedPendingTurnAge = TimeSpan.FromMinutes(10);
+
+    private static bool IsAbandonedPending(AiConversationTurn turn) =>
+        !turn.Status.Equals("Completed", StringComparison.Ordinal) &&
+        turn.CreatedAt < DateTime.UtcNow - AbandonedPendingTurnAge;
+
     private static string? NormalizeClientTurnId(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
@@ -405,7 +454,10 @@ public sealed partial class AiConversationMemoryService
         IReadOnlyList<string> Facets,
         IReadOnlyList<string> Keywords);
 
-    private static TurnMetadata BuildMetadata(string message, AiConversationState? state)
+    // Relevance hints for choosing which older turns to replay: a coarse topic and the message's
+    // keywords. Intent and facets are no longer produced, so older rows that carry them simply
+    // score on topic and keywords like every new one.
+    private static TurnMetadata BuildMetadata(string message)
     {
         var keywords = KeywordPattern.Matches(message.ToLowerInvariant())
             .Select(match => match.Value)
@@ -413,19 +465,14 @@ public sealed partial class AiConversationMemoryService
             .Distinct(StringComparer.Ordinal)
             .Take(20)
             .ToList();
-        var topic = state?.LastTopic
-            ?? (Regex.IsMatch(message, @"\b(wishlist|wish list|saving for|afford)\b", RegexOptions.IgnoreCase)
-                ? "wishlist"
-                : Regex.IsMatch(message, @"\b(recurring|subscription|bill|renewal)\b", RegexOptions.IgnoreCase)
-                    ? "recurring"
-                    : Regex.IsMatch(message, @"\b(ledger|transaction|spend|income|cycle|category)\b", RegexOptions.IgnoreCase)
-                        ? "transactional"
-                        : null);
-        return new TurnMetadata(
-            state?.LastIntent,
-            topic,
-            state?.LastQueryFacets ?? [],
-            keywords);
+        var topic = Regex.IsMatch(message, @"\b(wishlist|wish list|saving for|afford)\b", RegexOptions.IgnoreCase)
+            ? "wishlist"
+            : Regex.IsMatch(message, @"\b(recurring|subscription|bill|renewal)\b", RegexOptions.IgnoreCase)
+                ? "recurring"
+                : Regex.IsMatch(message, @"\b(ledger|transaction|spend|income|cycle|category)\b", RegexOptions.IgnoreCase)
+                    ? "transactional"
+                    : null;
+        return new TurnMetadata(null, topic, [], keywords);
     }
 
     private static int Score(AiConversationTurn turn, TurnMetadata current)

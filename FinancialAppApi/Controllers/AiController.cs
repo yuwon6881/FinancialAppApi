@@ -61,6 +61,34 @@ public class AiController : ControllerBase
         }
     }
 
+    // The same turn as POST chat, streamed as server-sent events (see AiServerSentEvents). Once
+    // the stream starts the HTTP status is 200, so failures arrive as an error event carrying
+    // the status the JSON endpoint would have used.
+    [HttpPost("chat/stream")]
+    public async Task ChatStream([FromBody] AiChatRequest request, CancellationToken cancellationToken)
+    {
+        await using var events = await AiServerSentEvents.StartAsync(Response, cancellationToken);
+        try
+        {
+            var outcome = await _aiAssistantService.ChatAsync(request, events, cancellationToken);
+            if (outcome.IsConflict) await events.ErrorAsync(StatusCodes.Status409Conflict, outcome.Response, cancellationToken);
+            else if (outcome.IsProviderError) await events.ErrorAsync(StatusCodes.Status503ServiceUnavailable, outcome.Response, cancellationToken);
+            else await events.DoneAsync(outcome.Response, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The client stopped the turn or went away; there is no one left to tell.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error while streaming an AI chat turn.");
+            await events.ErrorAsync(
+                StatusCodes.Status503ServiceUnavailable,
+                new { reply = "AI is unavailable. Please try again.", actions = Array.Empty<object>() },
+                CancellationToken.None);
+        }
+    }
+
     [HttpGet("conversation")]
     public async Task<ActionResult<AiConversationResponse>> GetConversation(
         [FromQuery] bool forceSensitiveMode,

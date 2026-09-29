@@ -105,9 +105,9 @@ public class MultiUserIsolationIntegrationTests : IntegrationTestBase
 
         Assert.Equal(HttpStatusCode.OK, chat.StatusCode);
         var providerPayload = Assert.IsType<string>(Factory.LastAiRequestBody);
-        Assert.Contains("Alice Private Groceries", providerPayload);
+        // The always-on snapshot carries Alice's upcoming bill; everything else is fetched by tools,
+        // which run under the same tenant filter.
         Assert.Contains("Alice Private Streaming", providerPayload);
-        Assert.Contains("Alice Private Laptop", providerPayload);
         Assert.DoesNotContain("Bob Secret Groceries", providerPayload);
         Assert.DoesNotContain("Bob Secret Streaming", providerPayload);
         Assert.DoesNotContain("Bob Secret Phone", providerPayload);

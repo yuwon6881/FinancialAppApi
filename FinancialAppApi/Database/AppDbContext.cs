@@ -71,6 +71,7 @@ public partial class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<TaxReliefCategoryLimit> TaxReliefCategoryLimits => Set<TaxReliefCategoryLimit>();
     public DbSet<AiConversation> AiConversations => Set<AiConversation>();
     public DbSet<AiConversationTurn> AiConversationTurns => Set<AiConversationTurn>();
+    public DbSet<AiUsageDay> AiUsageDays => Set<AiUsageDay>();
     public DbSet<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey> DataProtectionKeys => Set<Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey>();
 
     public void SetCurrentUser(string userId)

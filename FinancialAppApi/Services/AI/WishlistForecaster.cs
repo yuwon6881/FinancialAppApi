@@ -56,36 +56,6 @@ public partial class AiAssistantService
         string Assumption,
         IReadOnlyList<string>? Candidates = null);
 
-    private static List<object>? BuildWishlistForecast(WishlistForecastPolicy policy)
-    {
-        var results = ComputeWishlistForecast(policy);
-        if (results.Count == 0) return null;
-        return results.Select(r => (object)new
-        {
-            id = r.WishlistItemId,
-            name = r.Name,
-            remaining = r.RemainingAmount,
-            availableFunds = r.AvailableFunds,
-            estimatedCycles = r.EstimatedCycles,
-            estimatedTargetDate = r.EstimatedDate,
-            savingsPerCycle = r.TypicalSavingsPerCycle,
-            cycleSavings = r.CycleSavings,
-            assumptions = r.Assumption,
-            status = ToStatusString(r.Status),
-            candidates = r.Candidates
-        }).ToList();
-    }
-
-    private static string ToStatusString(WishlistForecastStatus status) => status switch
-    {
-        WishlistForecastStatus.Estimated => "estimated-from-completed-cycles",
-        WishlistForecastStatus.AlreadyReached => "already-reached",
-        WishlistForecastStatus.NotReachable => "not-currently-reachable",
-        WishlistForecastStatus.InsufficientData => "insufficient-cycle-data",
-        WishlistForecastStatus.MultipleMatches => "multiple-matches",
-        _ => "unknown"
-    };
-
     internal static IReadOnlyList<WishlistForecastResult> ComputeWishlistForecast(WishlistForecastPolicy policy)
     {
         // Resolve which item(s) the user meant. A concrete reference wins; ambiguity is

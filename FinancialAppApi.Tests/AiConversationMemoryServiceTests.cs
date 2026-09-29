@@ -22,7 +22,7 @@ public sealed class AiConversationMemoryServiceTests
             ConversationVersion: 0);
 
         var prepared = await memory.PrepareAsync(request, CancellationToken.None);
-        var state = new AiConversationState("ledger.spending_total", null, null, null);
+        var state = new AiConversationState(LastLoanId: "loan-home");
         var completed = await memory.CompleteAsync(
             prepared,
             request.Message,

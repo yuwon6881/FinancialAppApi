@@ -67,6 +67,11 @@ public sealed class AiConversationTurn : IUserOwnedEntity
 
     public string? KeywordsJson { get; set; }
 
+    // The lookups the assistant made for this turn (tool names and arguments, never results), so a
+    // follow-up such as "and before that?" knows what was already searched. Not kept for
+    // sensitive-mode turns.
+    public string? ToolTraceJson { get; set; }
+
     public bool SensitiveMode { get; set; }
 
     public int ConversationVersion { get; set; }

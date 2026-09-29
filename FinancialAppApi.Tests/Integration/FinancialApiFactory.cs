@@ -138,7 +138,20 @@ public sealed class FinancialApiFactory : WebApplicationFactory<Program>
             var requestBody = await request.Content!.ReadAsStringAsync(cancellationToken);
             Volatile.Write(ref factory._lastAiRequestBody, requestBody);
 
-            const string responseBody = "{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"reply\\\":\\\"Context received.\\\",\\\"closeChat\\\":false,\\\"actions\\\":[]}\"}]}]}";
+            // Ask AI (the request that offers tools) answers in plain text; every other AI feature
+            // asks for a JSON document.
+            var responseBody = requestBody.Contains("\"tools\"", StringComparison.Ordinal)
+                ? "{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Context received.\"}]}]}"
+                : "{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"reply\\\":\\\"Context received.\\\",\\\"closeChat\\\":false,\\\"actions\\\":[]}\"}]}]}";
+            // A streamed request gets the same answer as the provider's terminal SSE event.
+            if (requestBody.Contains("\"stream\":true", StringComparison.Ordinal))
+            {
+                var stream = $"event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{responseBody}}}\n\n";
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(stream, Encoding.UTF8, "text/event-stream")
+                };
+            }
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(responseBody, Encoding.UTF8, "application/json")

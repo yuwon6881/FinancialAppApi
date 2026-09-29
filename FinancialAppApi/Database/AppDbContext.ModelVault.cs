@@ -56,10 +56,19 @@ public partial class AppDbContext
             entity.Property(e => e.Status).HasDefaultValue("Completed");
             entity.HasIndex(e => new { e.ConversationId, e.ClientTurnId }).IsUnique();
             entity.HasIndex(e => new { e.UserId, e.ConversationId, e.CreatedAt });
+            // The retention sweep's expiry key, across every user.
+            entity.HasIndex(e => e.CreatedAt);
             entity.HasOne(e => e.Conversation)
                 .WithMany(e => e.Turns)
                 .HasForeignKey(e => e.ConversationId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AiUsageDay>(entity =>
+        {
+            entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.UserId, e.Date }).IsUnique();
+            entity.HasIndex(e => e.Date);
         });
     }
 
@@ -105,5 +114,6 @@ public partial class AppDbContext
         ConfigureUserOwnership(modelBuilder.Entity<TaxReliefCategoryLimit>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<AiConversation>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<AiConversationTurn>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<AiUsageDay>(), applyQueryFilter: true);
     }
 }

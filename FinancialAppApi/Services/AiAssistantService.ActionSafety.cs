@@ -5,70 +5,61 @@ namespace FinancialAppApi.Services;
 
 public partial class AiAssistantService
 {
-    private async Task<AiChatResponse> ParseAndValidateResponseAsync(
-        string text,
+    // Tracks what earlier actions in the same turn already claimed.
+    internal sealed class ActionValidationState
+    {
+        public bool NonLedgerMutationClaimed { get; set; }
+    }
+
+    // One proposed action through every server rule. The rejection reason is phrased for the
+    // model, so the tool-calling engine can hand it back and let the model correct itself.
+    // Mutation intent is read only from the user's own message, never from tool output, so text
+    // planted in a transaction description cannot authorise a change.
+    private async Task<(AiUiAction? Action, string? Rejection)> ValidateActionAsync(
+        JsonElement actionEl,
         AiContext context,
         string userMessage,
         AiConstraints constraints,
+        ActionValidationState state,
         CancellationToken cancellationToken)
     {
-        using var doc = JsonDocument.Parse(text);
-        var root = doc.RootElement;
-        var reply = root.TryGetProperty("reply", out var replyProp) ? replyProp.GetString() ?? "" : "";
-        if (string.IsNullOrWhiteSpace(reply)) reply = "I'm unable to perform that action.";
-
-        var actions = new List<AiUiAction>();
-        if (root.TryGetProperty("actions", out var actionsProp) && actionsProp.ValueKind == JsonValueKind.Array)
+        if (actionEl.ValueKind != JsonValueKind.Object || !actionEl.TryGetProperty("type", out var typeProp) ||
+            typeProp.ValueKind != JsonValueKind.String)
+            return (null, "Each action needs a string type.");
+        var type = typeProp.GetString() ?? "";
+        if (!AllowedActionTypes.Contains(type)) return (null, $"'{type}' is not an available action.");
+        var payload = actionEl.TryGetProperty("payload", out var payloadProp) && payloadProp.ValueKind == JsonValueKind.Object
+            ? JsonSerializer.Deserialize<Dictionary<string, object?>>(payloadProp.GetRawText()) ?? []
+            : [];
+        if (context.SensitiveMode && (IsMutationAction(type) || type.Equals("openLedgerExport", StringComparison.OrdinalIgnoreCase)))
+            return (null, "Sensitive mode is on, so records cannot be changed or exported. Tell the user to unhide balances first.");
+        if (IsQuestionOnlyRequest(userMessage) && type.Equals("openLedger", StringComparison.OrdinalIgnoreCase))
+            return (null, "The user asked a question; answer it instead of opening the ledger.");
+        if (IsMutationAction(type) && constraints.Hypothetical)
+            return (null, "The user is asking hypothetically, not requesting a change.");
+        if (IsMutationAction(type) && LooksLikeNegatedMutation(userMessage))
+            return (null, "The user said not to make this change.");
+        if (IsMutationAction(type) && !HasExplicitMutationCommand(userMessage, type))
+            return (null, "The user's own message does not ask for this change. Only propose a change the user explicitly requested.");
+        // "Don't open the ledger" -> honor the negation deterministically; drop every
+        // navigation action regardless of what the model chose to return.
+        if (constraints.PreventNavigation && IsNavigationAction(type))
+            return (null, "The user asked not to be taken to another screen.");
+        if (context.SensitiveMode)
         {
-            // Ledger-add is the only intent allowed to return more than one action (one flat draft
-            // per record). Its ceiling is MaxChatActions, which is bounded by what the chat model's
-            // structured-output budget accepts -- see AiResponseSchemas.MaxChatActions.
-            var returnedActions = actionsProp.EnumerateArray().Take(AiResponseSchemas.MaxChatActions).ToList();
-            var nonLedgerMutationClaimed = false;
-
-            foreach (var actionEl in returnedActions)
-            {
-                if (!actionEl.TryGetProperty("type", out var typeProp)) continue;
-                var type = typeProp.GetString() ?? "";
-                if (!AllowedActionTypes.Contains(type)) continue;
-                var payload = actionEl.TryGetProperty("payload", out var payloadProp) && payloadProp.ValueKind == JsonValueKind.Object
-                    ? JsonSerializer.Deserialize<Dictionary<string, object?>>(payloadProp.GetRawText()) ?? []
-                    : [];
-                if (context.SensitiveMode && (IsMutationAction(type) || type.Equals("openLedgerExport", StringComparison.OrdinalIgnoreCase))) continue;
-                if (IsQuestionOnlyRequest(userMessage) && type.Equals("openLedger", StringComparison.OrdinalIgnoreCase)) continue;
-                if (IsMutationAction(type) &&
-                    (constraints.Hypothetical || LooksLikeNegatedMutation(userMessage) ||
-                     !HasExplicitMutationCommand(userMessage, type))) continue;
-                // "Don't open the ledger" -> honor the negation deterministically; drop every
-                // navigation action regardless of what the model chose to return.
-                if (constraints.PreventNavigation && IsNavigationAction(type)) continue;
-                if (context.SensitiveMode)
-                {
-                    RemoveSensitivePayloadFields(payload);
-                }
-                if (!IsActionSafe(type, payload, context) ||
-                    !await IsDatabaseActionSafeAsync(type, payload, cancellationToken)) continue;
-                if (IsMutationAction(type) &&
-                    !type.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (nonLedgerMutationClaimed) continue;
-                    nonLedgerMutationClaimed = true;
-                }
-                actions.Add(new AiUiAction(type, payload));
-            }
+            RemoveSensitivePayloadFields(payload);
         }
-
-        var closeChat = false;
-        if (actions.Count > 0 &&
-            root.TryGetProperty("closeChat", out var closeChatProp) &&
-            closeChatProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        if (!IsActionSafe(type, payload, context))
+            return (null, "The payload is invalid, or it names a record id, category, or account that no tool returned in this turn. Look the record up first and copy its exact id.");
+        if (!await IsDatabaseActionSafeAsync(type, payload, cancellationToken))
+            return (null, "The app would refuse this change (for example a loan-linked bill, an unaffordable or already-claimed reward, or an inactive goal).");
+        if (IsMutationAction(type) &&
+            !type.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase))
         {
-            closeChat = closeChatProp.GetBoolean() &&
-                actions.All(action => !action.Type.StartsWith("openEdit", StringComparison.OrdinalIgnoreCase)) &&
-                !LooksLikeFollowUp(reply);
+            if (state.NonLedgerMutationClaimed) return (null, "Only one change can be proposed per message.");
+            state.NonLedgerMutationClaimed = true;
         }
-
-        return new AiChatResponse(reply, actions, closeChat);
+        return (new AiUiAction(type, payload), null);
     }
 
     private static void RemoveSensitivePayloadFields(Dictionary<string, object?> payload)

@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text.RegularExpressions;
 using System.Text.Json;
 using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
@@ -233,17 +232,6 @@ public partial class AiAssistantService
         if (value is JsonElement element && element.ValueKind == JsonValueKind.Number)
             return element.TryGetDouble(out var jsonNumber) && jsonNumber > 0;
         return double.TryParse(value?.ToString(), NumberStyles.Number, CultureInfo.InvariantCulture, out var number) && number > 0;
-    }
-
-    private static bool LooksLikeProtectedMutationCommand(string message)
-    {
-        var lower = message.Trim().ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(lower)) return false;
-        if (lower.StartsWith("what should ") || lower.StartsWith("which should ") ||
-            lower.StartsWith("why should ") || lower.StartsWith("how should ")) return false;
-        return Regex.IsMatch(lower,
-            @"\b(edit|update|modify|delete|remove|erase|purchase|claim|unpurchase|undo (?:the )?purchase|mark (?:it |this |the .+ )?(?:as )?paid|confirm (?:it |this |the .+ )?(?:as )?paid|discard|skip|enable|disable|turn on|turn off|activate|deactivate|toggle)\b",
-            RegexOptions.IgnoreCase);
     }
 
     private static string? ReadPayloadString(IReadOnlyDictionary<string, object?> payload, string key)

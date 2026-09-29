@@ -48,4 +48,16 @@ public partial class AiAssistantService
             CloseChat = false
         };
     }
+
+    // A figure built from a capped or partial lookup must never read as exact. If a tool said its
+    // result was approximate and the reply does not already hedge, the reply is marked for it.
+    private static string EnforceApproximateWording(string reply, bool isApproximate)
+    {
+        if (!isApproximate || string.IsNullOrWhiteSpace(reply)) return reply;
+        var lower = reply.ToLowerInvariant();
+        var alreadyHedged = lower.Contains("approx") || lower.Contains("about ") || lower.Contains("around ")
+            || lower.Contains("roughly") || lower.Contains("at least") || lower.Contains('~')
+            || lower.Contains("partial") || lower.Contains("more than");
+        return alreadyHedged ? reply : $"Approximately: {reply}";
+    }
 }

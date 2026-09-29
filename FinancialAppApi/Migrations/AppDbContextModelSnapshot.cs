@@ -113,6 +113,9 @@ namespace FinancialAppApi.Migrations
                         .HasColumnType("character varying(16)")
                         .HasDefaultValue("Completed");
 
+                    b.Property<string>("ToolTraceJson")
+                        .HasColumnType("text");
+
                     b.Property<string>("Topic")
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
@@ -128,12 +131,55 @@ namespace FinancialAppApi.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CreatedAt");
+
                     b.HasIndex("ConversationId", "ClientTurnId")
                         .IsUnique();
 
                     b.HasIndex("UserId", "ConversationId", "CreatedAt");
 
                     b.ToTable("AiConversationTurns");
+                });
+
+            modelBuilder.Entity("FinancialAppApi.Models.AiUsageDay", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("CachedTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("Calls")
+                        .HasColumnType("integer");
+
+                    b.Property<DateOnly>("Date")
+                        .HasColumnType("date");
+
+                    b.Property<long>("InputTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("OutputTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ReasoningTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Date");
+
+                    b.HasIndex("UserId", "Date")
+                        .IsUnique();
+
+                    b.ToTable("AiUsageDays");
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.AppUser", b =>
@@ -2401,6 +2447,15 @@ namespace FinancialAppApi.Migrations
                         .IsRequired();
 
                     b.Navigation("Conversation");
+                });
+
+            modelBuilder.Entity("FinancialAppApi.Models.AiUsageDay", b =>
+                {
+                    b.HasOne("FinancialAppApi.Models.AppUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.CategoryLimitAlertDelivery", b =>

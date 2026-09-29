@@ -10,7 +10,9 @@ public sealed record LedgerRetentionResult(
     int AlertDeliveries,
     int AlertEvaluations,
     int OrphanedMilestones,
-    int PushSubscriptions)
+    int PushSubscriptions,
+    int AiTurns = 0,
+    int AiUsageDays = 0)
 {
     public int Total => PriceBars
         + ReminderDeliveries
@@ -18,7 +20,9 @@ public sealed record LedgerRetentionResult(
         + AlertDeliveries
         + AlertEvaluations
         + OrphanedMilestones
-        + PushSubscriptions;
+        + PushSubscriptions
+        + AiTurns
+        + AiUsageDays;
 }
 
 /// <summary>
@@ -117,6 +121,21 @@ public sealed class LedgerRetentionService
                     .Any(delivery => delivery.SubscriptionId == subscription.Id))
             .ExecuteDeleteAsync(cancellationToken);
 
+        // Ask AI turns past the retention horizon, plus any turn still Pending long after a real
+        // turn could run -- one a crash left behind. A live Pending turn is never that old.
+        var turnCutoff = DateTime.UtcNow.AddDays(-_policy.AiTurnRetentionDays);
+        var abandonedCutoff = DateTime.UtcNow - AiConversationMemoryService.AbandonedPendingTurnAge;
+        var aiTurns = await _context.AiConversationTurns
+            .IgnoreQueryFilters()
+            .Where(turn => turn.CreatedAt < turnCutoff || (turn.Status != "Completed" && turn.CreatedAt < abandonedCutoff))
+            .ExecuteDeleteAsync(cancellationToken);
+
+        var usageCutoff = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-_policy.AiUsageRetentionDays);
+        var aiUsageDays = await _context.AiUsageDays
+            .IgnoreQueryFilters()
+            .Where(day => day.Date < usageCutoff)
+            .ExecuteDeleteAsync(cancellationToken);
+
         return new LedgerRetentionResult(
             priceBars,
             reminderDeliveries,
@@ -124,6 +143,8 @@ public sealed class LedgerRetentionService
             alertDeliveries,
             alertEvaluations,
             orphanedMilestones,
-            pushSubscriptions);
+            pushSubscriptions,
+            aiTurns,
+            aiUsageDays);
     }
 }

@@ -6,8 +6,8 @@ internal static class AiResponseSchemas
     // on a batched ledger-add (one flat openAddLedgerDraft action per record).
     //
     // Four actions keeps multi-record drafts reviewable and bounds the amount of UI state staged
-    // by one chat turn. When changing it, also update the matching "no more than N ledger draft
-    // actions" instruction in AiAssistantService.BuildSystemInstruction.
+    // by one chat turn. When changing it, also update the matching "at most four" instruction in
+    // AiAgentPrompt.
     internal const int MaxChatActions = 4;
 
     // Category is enum-constrained to the user's actual categories (like Receipt / CategorySuggestions)
@@ -44,131 +44,6 @@ internal static class AiResponseSchemas
                 ["type", "payload"]), maxItems: MaxChatActions)
         },
         ["reply", "closeChat", "actions"]);
-
-    // Ledger creation uses a dedicated schema instead of the large generic ActionPayload union.
-    // This keeps the structured-output contract focused while making every field needed to
-    // stage a local draft mandatory. For an unambiguous line-based list, expectedActionCount pins
-    // the response to exactly one action per input line (up to the model-supported ceiling).
-    public static object LedgerDraftChat(IReadOnlyList<string> categories, int expectedActionCount = 0)
-    {
-        var exactCount = expectedActionCount is > 0 and <= MaxChatActions ? expectedActionCount : (int?)null;
-        return Obj(
-            new Dictionary<string, object>
-            {
-                ["reply"] = Str("Concise user-facing reply confirming the drafts that will be staged."),
-                ["closeChat"] = Bool(),
-                ["actions"] = Arr(Obj(
-                    new Dictionary<string, object>
-                    {
-                        ["type"] = Str(enums: ["openAddLedgerDraft"]),
-                        ["payload"] = Obj(
-                            new Dictionary<string, object>
-                            {
-                                ["description"] = Str("Transaction description copied from the user's record."),
-                                ["amount"] = Num("Positive transaction magnitude."),
-                                ["txType"] = Str(enums: ["inflow", "outflow", "transfer"]),
-                                ["category"] = Str("Explicit or single most likely normal category.", enums: categories),
-                                ["ledgerCategory"] = Str("Income for inflows; Essentials for outflows unless explicitly requested otherwise.", enums: ["Essentials", "Growth", "Stability", "Rewards", "Income"]),
-                                ["ledgerCategorySpecified"] = Bool(),
-                                ["transferSource"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
-                                ["transferTarget"] = Str(enums: ["Essentials", "Growth", "Stability", "Rewards"]),
-                                ["accountId"] = Str("Exact active ledger account id from ledgerAccounts when explicitly named."),
-                                ["counterAccountId"] = Str("Exact active destination ledger account id for an explicitly named transfer."),
-                                ["date"] = Str("Posting date in YYYY-MM-DD when supplied by the user.")
-                            },
-                            ["description", "amount", "txType", "category", "ledgerCategory", "ledgerCategorySpecified"])
-                    },
-                    ["type", "payload"]),
-                    minItems: exactCount,
-                    maxItems: exactCount ?? MaxChatActions)
-            },
-            ["reply", "closeChat", "actions"]);
-    }
-
-    public static object ReportReviewChat() => ContextualChat(
-        ["openReports"],
-        new Dictionary<string, object>
-        {
-            ["cycleKey"] = Str("Validated selected cycle in YYYY-MM format.")
-        });
-
-    public static object InvestmentExplainChat() => ContextualChat(
-        ["openInvestments"],
-        new Dictionary<string, object>());
-
-    public static object RewardsPlanChat() => ContextualChat(
-        ["openWishlist", "openAddSavingsGoalDraft", "openEditSavingsGoalDraft"],
-        new Dictionary<string, object>
-        {
-            ["id"] = Int(),
-            ["savingsGoalId"] = Int(),
-            ["name"] = Str("Savings Goal name.") ,
-            ["targetAmount"] = Num("Positive target amount.", 0),
-            ["targetDate"] = Str("Target date in YYYY-MM-DD format."),
-            ["priority"] = Str(enums: ["low", "medium", "high"]),
-            ["isRecurring"] = Bool(),
-            ["recurrenceMonths"] = Int(),
-            ["fundingBucket"] = Str("Savings goals may use Essentials or Rewards.", enums: ["Essentials", "Rewards"]),
-            ["changes"] = Obj(new Dictionary<string, object>
-            {
-                ["name"] = Str(), ["targetAmount"] = Num(minimum: 0),
-                ["targetDate"] = Str(), ["priority"] = Str(enums: ["low", "medium", "high"]),
-                ["isRecurring"] = Bool(), ["recurrenceMonths"] = Int(),
-                ["fundingBucket"] = Str("Savings goals may use Essentials or Rewards.", enums: ["Essentials", "Rewards"])
-            })
-        });
-
-    private static object ContextualChat(
-        IReadOnlyList<string> actionTypes,
-        Dictionary<string, object> payloadProperties) => Obj(
-        new Dictionary<string, object>
-        {
-            ["reply"] = Str("Concise beginner-friendly explanation using only server-provided evidence."),
-            ["closeChat"] = Bool(),
-            ["actions"] = Arr(Obj(
-                new Dictionary<string, object>
-                {
-                    ["type"] = Str(enums: actionTypes),
-                    ["payload"] = Obj(payloadProperties)
-                },
-                ["type", "payload"]),
-                maxItems: 2)
-        },
-        ["reply", "closeChat", "actions"]);
-
-    private static readonly IReadOnlyList<string> IntentEnum = AiAssistantService.KnownIntentNames;
-
-    public static readonly object IntentClassification = Obj(
-        new Dictionary<string, object>
-        {
-            ["intents"] = Arr(Str(enums: IntentEnum), maxItems: 4),
-            ["confidence"] = Num("Confidence from 0 to 1.", 0, 1),
-            ["entities"] = Obj(
-                new Dictionary<string, object>
-                {
-                    ["searchText"] = NullableString("Activity or merchant text to match; null when not applicable."),
-                    ["cycleHint"] = NullableString("Relative or explicit cycle wording; null when not applicable."),
-                    ["wishlistReference"] = NullableString("Wishlist item name the user referenced; null otherwise."),
-                    ["transactionReference"] = NullableString("Specific transaction the user referenced; null otherwise."),
-                    ["ledgerAccountReference"] = NullableString("Named ledger account the user referenced; null otherwise."),
-                    ["category"] = NullableString("Category name the user referenced; null otherwise."),
-                    ["ledgerCategory"] = NullableString("Ledger category; null otherwise."),
-                    ["date"] = NullableString("Explicit date in YYYY-MM-DD format; null otherwise."),
-                    ["amount"] = NullableNumber("Non-negative amount mentioned by the user; null otherwise.")
-                },
-                ["searchText", "cycleHint", "date", "wishlistReference", "transactionReference", "ledgerAccountReference", "category", "ledgerCategory", "amount"]),
-            ["constraints"] = Obj(
-                new Dictionary<string, object>
-                {
-                    ["preventNavigation"] = Bool(),
-                    ["excludeTransfers"] = Bool(),
-                    ["exclusions"] = Arr(Str("Category or scope term to exclude.")),
-                    ["hypothetical"] = Bool()
-                },
-                ["preventNavigation", "excludeTransfers", "exclusions", "hypothetical"]),
-            ["ambiguities"] = Arr(Str("A brief note about anything ambiguous the classifier could not resolve."))
-        },
-        ["intents", "confidence", "entities", "constraints", "ambiguities"]);
 
     public static object CategorySuggestions(IReadOnlyList<string> categories) => Obj(
         new Dictionary<string, object>
@@ -354,6 +229,15 @@ internal static class AiResponseSchemas
         ["isActive"] = Bool(),
         ["startDate"] = Str(),
         ["endDate"] = Str(),
+        // openReports opens one cycle's report.
+        ["cycleKey"] = Str("Cycle key in YYYY-MM format."),
+        // Savings goal drafts, and openWishlist focused on one goal.
+        ["savingsGoalId"] = Int(),
+        ["targetAmount"] = Num("Positive target amount.", 0),
+        ["targetDate"] = Str("Target date in YYYY-MM-DD format."),
+        ["isRecurring"] = Bool(),
+        ["recurrenceMonths"] = Int(),
+        ["fundingBucket"] = Str("Savings goals may use Essentials or Rewards.", enums: ["Essentials", "Rewards"]),
         ["changes"] = Obj(new Dictionary<string, object>
         {
             ["description"] = Str(), ["name"] = Str(), ["amount"] = Num(), ["price"] = Num(),
@@ -361,7 +245,10 @@ internal static class AiResponseSchemas
             ["ledgerCategory"] = Str(), ["txType"] = Str(), ["date"] = Str(),
             ["frequency"] = Str(enums: ["Monthly", "Annually"]),
             ["transferSource"] = Str(), ["transferTarget"] = Str(),
-            ["priority"] = Str(), ["isActive"] = Bool(), ["startDate"] = Str(), ["endDate"] = Str()
+            ["priority"] = Str(), ["isActive"] = Bool(), ["startDate"] = Str(), ["endDate"] = Str(),
+            ["targetAmount"] = Num(minimum: 0), ["targetDate"] = Str(),
+            ["isRecurring"] = Bool(), ["recurrenceMonths"] = Int(),
+            ["fundingBucket"] = Str("Savings goals may use Essentials or Rewards.", enums: ["Essentials", "Rewards"])
         })
     };
 

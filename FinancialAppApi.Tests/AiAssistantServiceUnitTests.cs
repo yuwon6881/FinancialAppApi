@@ -30,127 +30,48 @@ public class AiAssistantServiceUnitTests
         Assert.False(Services.AiAssistantService.IsContextResetRequest(phrase));
     }
 
-    // ---------- SanitizeConversationState Tests ----------
-    private static Services.AiConversationState EmptyState() => new(null, null, null, null);
+    // ---------- SanitizeConversationState ----------
 
     [Fact]
-    public void SanitizeConversationState_PreservesValidState()
+    public void SanitizeConversationState_KeepsValidReferences()
     {
-        var state = EmptyState() with
-        {
-            LastLedgerCategory = "Essentials",
-            LastTransactionType = "outflow",
-            LastTargetAmount = 50.0m,
-            LastAmountThreshold = new Services.AiAmountThreshold("GreaterThan", 50m),
-            LastSearchText = "lunch",
-            LastExcludeTransfers = true,
-            LastExcludedCategories = new[] { "Rent" },
-            LastIncludedCategories = new[] { "Dining" }
-        };
+        var state = new Services.AiConversationState(
+            ["t1", "t2", "t1"], 7, "1Y", "2026-08", "loan-home", "transfer 50 from cimb to ryt");
 
-        var sanitized = Services.AiAssistantService.SanitizeConversationState(state);
-        Assert.NotNull(sanitized);
+        var sanitized = Services.AiAssistantService.SanitizeConversationState(state)!;
 
-        Assert.Equal("Essentials", sanitized!.LastLedgerCategory);
-        Assert.Equal("outflow", sanitized.LastTransactionType);
-        Assert.Equal(50.0m, sanitized.LastTargetAmount);
-        Assert.Equal("GreaterThan", sanitized.LastAmountThreshold?.Comparator);
-        Assert.Equal(50m, sanitized.LastAmountThreshold?.Low);
-        Assert.Equal("lunch", sanitized.LastSearchText);
-        Assert.True(sanitized.LastExcludeTransfers);
-        Assert.Equal(new[] { "Rent" }, sanitized.LastExcludedCategories);
-        Assert.Equal(new[] { "Dining" }, sanitized.LastIncludedCategories);
-    }
-
-    [Fact]
-    public void SanitizeConversationState_PreservesEverySupportedDomainFrame()
-    {
-        var instrumentId = Guid.NewGuid();
-        var state = EmptyState() with
-        {
-            LastIntent = "investment.allocation",
-            LastIntents = ["investment.allocation", "report.review", "savings_goal.pacing"],
-            LastTopic = "investment",
-            LastRewardsTopic = "plan",
-            LastSavingsGoalId = 42,
-            LastInvestmentTopic = "portfolio",
-            LastInvestmentRange = "3m",
-            LastInvestmentInstrumentId = instrumentId,
-            LastReportCycleKey = "2026-08",
-            LastLedgerAccountId = "acct-maybank"
-        };
-
-        var sanitized = Services.AiAssistantService.SanitizeConversationState(state);
-
-        Assert.NotNull(sanitized);
-        Assert.Equal("investment.allocation", sanitized!.LastIntent);
-        Assert.Equal(["investment.allocation", "report.review", "savings_goal.pacing"], sanitized.LastIntents);
-        Assert.Equal("investment", sanitized.LastTopic);
-        Assert.Equal("plan", sanitized.LastRewardsTopic);
-        Assert.Equal(42, sanitized.LastSavingsGoalId);
-        Assert.Equal("portfolio", sanitized.LastInvestmentTopic);
-        Assert.Equal("3m", sanitized.LastInvestmentRange);
-        Assert.Equal(instrumentId, sanitized.LastInvestmentInstrumentId);
+        Assert.Equal(["t1", "t2"], sanitized.LastMatchedTransactionIds!);
+        Assert.Equal(7, sanitized.LastSavingsGoalId);
+        Assert.Equal("1y", sanitized.LastInvestmentRange);
         Assert.Equal("2026-08", sanitized.LastReportCycleKey);
-        Assert.Equal("acct-maybank", sanitized.LastLedgerAccountId);
+        Assert.Equal("loan-home", sanitized.LastLoanId);
+        Assert.Equal("transfer 50 from cimb to ryt", sanitized.PendingLedgerRequest);
     }
 
     [Fact]
-    public void SanitizeConversationState_RejectsInvalidExtendedDomainFields()
+    public void SanitizeConversationState_DropsTamperedValues()
     {
-        var state = EmptyState() with
-        {
-            LastTopic = "unknown",
-            LastRewardsTopic = new string('x', 100),
-            LastSavingsGoalId = -1,
-            LastInvestmentRange = "forever",
-            LastReportCycleKey = "not-a-cycle"
-        };
+        var state = new Services.AiConversationState(
+            [new string('x', 65), " "], -3, "10y", "2026-13", new string('l', 101), new string('p', 2001));
 
-        var sanitized = Services.AiAssistantService.SanitizeConversationState(state);
+        var sanitized = Services.AiAssistantService.SanitizeConversationState(state)!;
 
-        Assert.NotNull(sanitized);
-        Assert.Null(sanitized!.LastTopic);
-        Assert.Null(sanitized.LastRewardsTopic);
+        Assert.Null(sanitized.LastMatchedTransactionIds);
         Assert.Null(sanitized.LastSavingsGoalId);
         Assert.Null(sanitized.LastInvestmentRange);
         Assert.Null(sanitized.LastReportCycleKey);
+        Assert.Null(sanitized.LastLoanId);
+        Assert.Null(sanitized.PendingLedgerRequest);
     }
 
     [Fact]
-    public void SanitizeConversationState_RejectsInvalidTransactionType()
+    public void SanitizeConversationState_CapsTheCarriedIdList()
     {
-        var state = EmptyState() with { LastTransactionType = "invalid" };
-        var sanitized = Services.AiAssistantService.SanitizeConversationState(state);
-        Assert.NotNull(sanitized);
-        Assert.Null(sanitized!.LastTransactionType);
-    }
+        var ids = Enumerable.Range(0, 80).Select(index => $"t{index}").ToList();
 
-    [Fact]
-    public void SanitizeConversationState_RejectsInvalidComparator()
-    {
-        var state = EmptyState() with { LastAmountThreshold = new Services.AiAmountThreshold("invalid", 50m) };
-        var sanitized = Services.AiAssistantService.SanitizeConversationState(state);
-        Assert.NotNull(sanitized);
-        Assert.Null(sanitized!.LastAmountThreshold);
-    }
+        var sanitized = Services.AiAssistantService.SanitizeConversationState(new Services.AiConversationState(ids))!;
 
-    [Fact]
-    public void SanitizeConversationState_CapsTargetAmount()
-    {
-        var state = EmptyState() with { LastTargetAmount = 2000000000m };
-        var sanitized = Services.AiAssistantService.SanitizeConversationState(state);
-        Assert.NotNull(sanitized);
-        Assert.Null(sanitized!.LastTargetAmount);
-    }
-
-    [Fact]
-    public void SanitizeConversationState_RejectsNegativeTargetAmount()
-    {
-        var state = EmptyState() with { LastTargetAmount = -50m };
-        var sanitized = Services.AiAssistantService.SanitizeConversationState(state);
-        Assert.NotNull(sanitized);
-        Assert.Null(sanitized!.LastTargetAmount);
+        Assert.Equal(50, sanitized.LastMatchedTransactionIds!.Count);
     }
 
     [Theory]
@@ -180,57 +101,5 @@ public class AiAssistantServiceUnitTests
             sensitiveMode: false);
 
         Assert.Equal("I prepared 2 drafts for review. Check each one before saving.", result.Reply);
-    }
-
-    [Theory]
-    [InlineData("What are my goals?")]
-    [InlineData("Can I afford badminton this month?")]
-    [InlineData("Show my bills")]
-    [InlineData("How much room do I have for Food?")]
-    [InlineData("How is my nest egg performing?")]
-    public void SemanticPlanner_ReviewsKeywordCollisions(string message)
-    {
-        var deterministic = Services.AiAssistantService.ResolveDeterministically(message);
-
-        Assert.True(Services.AiAssistantService.ShouldUseSemanticPlanner(message, deterministic, null));
-    }
-
-    [Fact]
-    public void SemanticPlanner_SkipsExactLedgerShorthand()
-    {
-        const string message = "Badminton 10";
-        var deterministic = Services.AiAssistantService.ResolveDeterministically(message);
-
-        Assert.False(Services.AiAssistantService.ShouldUseSemanticPlanner(message, deterministic, null));
-    }
-
-    [Theory]
-    [InlineData("Explain my loan payoff")]
-    [InlineData("How much interest remains on my mortgage?")]
-    public void LoanQuestions_RequestOnlyLoanGrounding(string message)
-    {
-        var plan = Services.AiAssistantService.ResolveDeterministically(message);
-
-        Assert.Contains(Services.AiAssistantService.AiIntent.LoanSummary, plan.Intents);
-        Assert.True(plan.QueryPlan.NeedsLoans);
-        Assert.False(plan.QueryPlan.NeedsTransactionDetail);
-        Assert.False(plan.QueryPlan.NeedsRecurring);
-    }
-
-    [Fact]
-    public void LoanFollowUp_PreservesSelectedLoanReference()
-    {
-        var prior = EmptyState() with
-        {
-            LastIntent = "loan.summary",
-            LastIntents = ["loan.summary"],
-            LastTopic = "loan",
-            LastLoanId = "loan-home"
-        };
-
-        var plan = Services.AiAssistantService.ResolveDeterministically("What about the next payment?", prior);
-
-        Assert.Contains(Services.AiAssistantService.AiIntent.LoanSummary, plan.Intents);
-        Assert.Equal("loan-home", plan.ConversationState.LastLoanId);
     }
 }
