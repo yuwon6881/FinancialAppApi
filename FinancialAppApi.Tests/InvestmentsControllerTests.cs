@@ -198,6 +198,54 @@ public sealed class InvestmentsControllerTests
         Assert.IsType<ConflictObjectResult>(await restoreController.RestoreTransactions(snapshot));
     }
 
+    [Fact]
+    public async Task ArchiveRequiresZeroCashInEveryCurrencyAndPreservesHistoryOnReopen()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentCashFlows.AddRange(
+            new InvestmentCashFlow { Account = account, Currency = "USD", Type = "Deposit", Amount = 100, Date = new DateOnly(2026, 1, 1) },
+            new InvestmentCashFlow { Account = account, Currency = "EUR", Type = "Withdrawal", Amount = -100, Date = new DateOnly(2026, 1, 1) });
+        await context.SaveChangesAsync();
+        var controller = NewController(context);
+
+        Assert.IsType<ConflictObjectResult>(await controller.UpdateAccount(account.Id, new AccountMutationDto(account.Name, "USD", true)));
+        Assert.False(account.IsArchived);
+        context.InvestmentCashFlows.AddRange(
+            new InvestmentCashFlow { Account = account, Currency = "USD", Type = "Withdrawal", Amount = -100, Date = new DateOnly(2026, 1, 2) },
+            new InvestmentCashFlow { Account = account, Currency = "EUR", Type = "Deposit", Amount = 100, Date = new DateOnly(2026, 1, 2) });
+        await context.SaveChangesAsync();
+
+        Assert.IsType<NoContentResult>(await controller.UpdateAccount(account.Id, new AccountMutationDto(account.Name, "USD", true)));
+        Assert.True(account.IsArchived);
+        Assert.IsType<ConflictObjectResult>((await controller.DeleteAccount(account.Id)).Result);
+        Assert.IsType<NoContentResult>(await controller.UpdateAccount(account.Id, new AccountMutationDto(account.Name, "USD", false)));
+        Assert.False(account.IsArchived);
+        Assert.Equal(4, context.InvestmentCashFlows.Count());
+    }
+
+    [Fact]
+    public async Task ArchiveRejectsOpenPositionsForAccountsAndInstruments()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var instrument = new InvestmentInstrument { Symbol = "FUND", Name = "Fund", Type = "ETF", Currency = "USD", IsCustom = true };
+        context.InvestmentAccounts.Add(account);
+        context.InvestmentInstruments.Add(instrument);
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            Account = account, Instrument = instrument, Type = "Buy", TradeDate = new DateOnly(2026, 1, 1),
+            Units = 1, UnitPrice = 100, CashAmount = 100
+        });
+        await context.SaveChangesAsync();
+        var controller = NewController(context);
+        Assert.IsType<ConflictObjectResult>(await controller.UpdateAccount(account.Id, new AccountMutationDto(account.Name, "USD", true)));
+        Assert.IsType<ConflictObjectResult>(await controller.UpdateInstrument(instrument.Id, Instrument("FUND", "Fund") with { IsArchived = true }));
+        Assert.False(account.IsArchived);
+        Assert.False(instrument.IsArchived);
+    }
+
     private static InstrumentMutationDto Instrument(string symbol, string name)
         => new(symbol, name, "ETF", "usd", null, null, null, null, null, true);
 
