@@ -71,23 +71,67 @@ public sealed class CategoryLimitAlertProcessor
             return;
         }
 
-        var (cycleYear, cycleMonth) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
-            _financialClock.Today,
-            setting.CycleDay);
+        // The inline attempt is best-effort (Response.OnCompleted, killable by instance
+        // shutdown/scale-to-zero); its documented recovery is the scheduled dispatch, which can
+        // run well after the transaction's own day. Attributing every pending evaluation to
+        // "today's" cycle -- rather than each row's own date -- meant a crossing recorded on the
+        // last day of a cycle was silently discarded the moment recovery ran after midnight and
+        // the cycle had rolled over: BuildCurrentCycleDeltas found no delta "in" the new cycle
+        // and the whole batch was dropped as a no-op. Evaluating every cycle actually touched by
+        // the pending rows (almost always exactly one -- today's) keeps that recovery honest.
+        var touchedCycles = GetTouchedCycles(evaluations, setting.CycleDay);
+        foreach (var (cycleYear, cycleMonth) in touchedCycles)
+        {
+            await EvaluateCycleAsync(evaluations, setting, cycleYear, cycleMonth, cancellationToken);
+        }
+
+        // Each cycle above may already have saved its own event/milestones (and, on a unique
+        // violation, cleared the change tracker), so the evaluation rows are only ever marked
+        // for removal here, once every cycle has had its turn.
+        _context.CategoryLimitAlertEvaluations.RemoveRange(
+            evaluations.Where(item => _context.Entry(item).State != EntityState.Detached));
+        await _context.SaveChangesAsync(cancellationToken);
+    }
+
+    private static IReadOnlyList<(int Year, int MonthIndex)> GetTouchedCycles(
+        IReadOnlyList<CategoryLimitAlertEvaluation> evaluations,
+        int cycleDay)
+    {
+        var cycles = new HashSet<(int, int)>();
+        foreach (var item in evaluations)
+        {
+            if (item.PreviousDate is { } previousDate)
+            {
+                cycles.Add(CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+                    TransactionDate.ToDateOnly(previousDate), cycleDay));
+            }
+            if (item.CurrentDate is { } currentDate)
+            {
+                cycles.Add(CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+                    TransactionDate.ToDateOnly(currentDate), cycleDay));
+            }
+        }
+        return cycles.OrderBy(item => item.Item1).ThenBy(item => item.Item2).ToList();
+    }
+
+    private async Task<bool> EvaluateCycleAsync(
+        IReadOnlyList<CategoryLimitAlertEvaluation> evaluations,
+        FinancialSetting setting,
+        int cycleYear,
+        int cycleMonth,
+        CancellationToken cancellationToken)
+    {
         var cycleKey = $"{cycleYear:D4}-{cycleMonth:D2}";
         var deltas = BuildCurrentCycleDeltas(evaluations, cycleYear, cycleMonth, setting.CycleDay);
 
         if (deltas.Count == 0)
         {
             // Every changed row was an inflow, a transfer/adjustment, or attributed to a different
-            // cycle, so nothing could move a category total.
+            // cycle, so nothing could move this cycle's category total.
             _logger.LogInformation(
-                "Discarded {Count} category limit evaluation(s): no in-cycle outflow delta for cycle {CycleKey}.",
-                evaluations.Count,
+                "No in-cycle outflow delta for cycle {CycleKey}.",
                 cycleKey);
-            _context.CategoryLimitAlertEvaluations.RemoveRange(evaluations);
-            await _context.SaveChangesAsync(cancellationToken);
-            return;
+            return false;
         }
 
         var categoryNames = deltas.Keys.ToList();
@@ -151,7 +195,6 @@ public sealed class CategoryLimitAlertProcessor
             }
         }
 
-        _context.CategoryLimitAlertEvaluations.RemoveRange(evaluations);
         if (crossings.Count == 0)
         {
             // Spend moved but no milestone was crossed. The case worth telling apart is
@@ -162,8 +205,7 @@ public sealed class CategoryLimitAlertProcessor
                 cycleKey,
                 deltas.Count,
                 limits.Count);
-            await _context.SaveChangesAsync(cancellationToken);
-            return;
+            return false;
         }
 
         var existingMilestones = (await _context.CategoryLimitAlertMilestones
@@ -178,8 +220,7 @@ public sealed class CategoryLimitAlertProcessor
             .ToList();
         if (crossings.Count == 0)
         {
-            await _context.SaveChangesAsync(cancellationToken);
-            return;
+            return false;
         }
 
         var now = _financialClock.UtcNow;
@@ -235,6 +276,8 @@ public sealed class CategoryLimitAlertProcessor
             // notification; the ledger mutation itself has already committed independently.
             _context.ChangeTracker.Clear();
         }
+
+        return true;
     }
 
     private async Task<CategoryLimitAlertDispatchSummary> DispatchPendingEventsAsync(

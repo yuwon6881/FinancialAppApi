@@ -497,6 +497,39 @@ public class CategoryLimitAlertProcessorTests
         Assert.Empty(await context.CategoryLimitAlertMilestones.ToListAsync());
     }
 
+    // The inline attempt runs from Response.OnCompleted and can be interrupted (instance
+    // shutdown, scale-to-zero). Its documented recovery path is the 09:00 scheduled dispatch,
+    // which calls the same evaluator later -- possibly after the cycle has rolled over. A
+    // crossing recorded on the last day of a cycle must still be reported for THAT cycle, not
+    // silently discarded because "today" (at recovery time) now belongs to the next one.
+    [Fact]
+    public async Task ProcessPendingAsync_RecoveredAfterCycleRolloverStillReportsTheCrossing()
+    {
+        var dbName = NewDbName();
+        var lastDayOfCycle = new DateTime(2026, 8, 31, 23, 0, 0, DateTimeKind.Utc);
+        await SeedAsync(dbName, [("Dining", 100m, 79m)], categoryAlertsEnabled: true);
+        await using var context = NewContext(dbName, authenticated: true);
+        var sender = new FakeSender();
+
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-late-cycle",
+            Date = lastDayOfCycle,
+            Description = "Expense",
+            Category = "Dining",
+            LedgerCategory = "Rewards",
+            Amount = -1m
+        });
+        await context.SaveChangesAsync();
+
+        // The inline attempt never ran; recovery runs the next morning, into the new cycle.
+        var recoveredAt = new DateTime(2026, 9, 1, 9, 0, 0, DateTimeKind.Utc);
+        await NewProcessorAt(context, sender, recoveredAt).ProcessPendingAsync();
+
+        var content = Assert.Single(sender.Sent).Content;
+        Assert.Equal("Dining is close to what you planned to spend on it this cycle.", content.Body);
+    }
+
     private static readonly DateTime CurrentDate = new(2026, 8, 9, 0, 0, 0, DateTimeKind.Utc);
 
     private static string NewDbName() => $"category-limit-alert-{Guid.NewGuid():N}";
