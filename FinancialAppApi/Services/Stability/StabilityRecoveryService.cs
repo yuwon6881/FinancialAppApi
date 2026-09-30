@@ -84,6 +84,15 @@ public sealed record StabilityState(
     int Year,
     int MonthIndex);
 
+/// <summary>The recovery plan in one cycle, in plain decimals for server-side readers.</summary>
+public sealed record StabilityRecoverySchedule(
+    string CycleKey,
+    decimal CurrentBalance,
+    decimal Target,
+    decimal Outstanding,
+    IReadOnlyList<RecoveryCohortInput> Cohorts,
+    RecoveryCohortPlan Plan);
+
 internal sealed record GoalCommitments(decimal Essentials, decimal Rewards);
 
 /// <summary>
@@ -114,11 +123,14 @@ public partial class StabilityRecoveryService
         _logger = logger;
     }
 
+    // `rebuildIncompleteDetail: false` reads the snapshot as it is: the income path needs only the
+    // outstanding total, which an anonymous aggregate still carries correctly.
     private async Task<ReloadState> LoadOpeningReloadAsync(
         int year,
         int monthIndex,
         int cycleDay,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool rebuildIncompleteDetail = true)
     {
         async Task<(decimal Outstanding, DateOnly? OldestDate, string? Obligations)?> LoadPreviousAsync()
         {
@@ -149,7 +161,7 @@ public partial class StabilityRecoveryService
                 && opening.Obligations.Sum(obligation => obligation.RemainingAmount) == opening.Outstanding;
 
         var opening = ToOpening(await LoadPreviousAsync());
-        if (HasCompleteCohortDetail(opening)) return opening;
+        if (!rebuildIncompleteDetail || HasCompleteCohortDetail(opening)) return opening;
 
         // An anonymous aggregate can preserve the amount but cannot assign independent deadlines.
         // CycleBalance is derived, so rebuild it from the authoritative transaction history once
@@ -283,27 +295,7 @@ public partial class StabilityRecoveryService
                 .GetCycleYearAndMonthIndexForDate(anchorDate.Value, setting.CycleDay);
             lastDrawdownCycleKey = StabilityRecoveryPlanner.CycleKey(anchorYear, anchorMonthIndex);
         }
-        var repaidByObligation = replay.RepaidByObligationThisRun
-            ?? new Dictionary<string, decimal>(StringComparer.Ordinal);
-        var cohortInputs = (replay.Obligations ?? [])
-            .Where(obligation => obligation.Date.HasValue
-                && (obligation.RemainingAmount > 0m
-                    || repaidByObligation.GetValueOrDefault(obligation.TransactionId) > 0m))
-            .GroupBy(obligation =>
-            {
-                var (cohortYear, cohortMonthIndex) = CategoryAttributionService
-                    .GetCycleYearAndMonthIndexForDate(obligation.Date!.Value, setting.CycleDay);
-                return StabilityRecoveryPlanner.CycleKey(cohortYear, cohortMonthIndex);
-            }, StringComparer.Ordinal)
-            .Select(group => new RecoveryCohortInput(
-                group.Key,
-                group.Min(obligation => obligation.Date!.Value),
-                group.Count(),
-                group.Sum(obligation => Math.Max(0m, obligation.RemainingAmount)),
-                group.Sum(obligation => Math.Max(
-                    0m,
-                    repaidByObligation.GetValueOrDefault(obligation.TransactionId)))))
-            .ToList();
+        var cohortInputs = BuildCohortInputs(replay, setting.CycleDay);
         var currentCycleKey = StabilityRecoveryPlanner.CycleKey(year, monthIndex);
         var cohortPlan = StabilityRecoveryPlanner.ComputeCohortPlan(
             cohortInputs,

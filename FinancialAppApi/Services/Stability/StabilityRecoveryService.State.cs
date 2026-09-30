@@ -20,8 +20,80 @@ public partial class StabilityRecoveryService
         string? excludeTransactionId = null,
         CancellationToken cancellationToken = default)
     {
+        var cycle = await ReplayCycleAsync(
+            setting, transactionDate, excludeTransactionId, requireCohortDetail: false, cancellationToken);
+        return new StabilityState(
+            cycle.CurrentBalance,
+            cycle.Target,
+            cycle.Replay.Outstanding,
+            cycle.Year,
+            cycle.MonthIndex);
+    }
+
+    /// <summary>
+    /// The recovery plan as it stands on <paramref name="date"/>: each origin cycle's remaining
+    /// shortfall and what it asks for in that date's cycle. Read-only over user records; like the
+    /// dashboard, it may rebuild the derived cycle cache when cohort detail is incomplete.
+    /// </summary>
+    public async Task<StabilityRecoverySchedule> GetRecoveryScheduleAsync(
+        FinancialSetting setting,
+        DateOnly date,
+        CancellationToken cancellationToken = default)
+    {
+        var cycle = await ReplayCycleAsync(setting, date, null, requireCohortDetail: true, cancellationToken);
+        var cycleKey = StabilityRecoveryPlanner.CycleKey(cycle.Year, cycle.MonthIndex);
+        var cohorts = BuildCohortInputs(cycle.Replay, setting.CycleDay);
+        var plan = StabilityRecoveryPlanner.ComputeCohortPlan(
+            cohorts,
+            cycleKey,
+            FinancialConstants.StabilityRecoveryCycles,
+            cycle.Replay.Outstanding,
+            cycle.Replay.RepaidThisRun);
+        return new StabilityRecoverySchedule(cycleKey, cycle.CurrentBalance, cycle.Target, cycle.Replay.Outstanding, cohorts, plan);
+    }
+
+    // Groups the replayed obligations by the cycle their money left in; each such cohort gets its
+    // own three-cycle window. Obligations fully repaid this cycle stay in so a cohort's quoted
+    // share holds still while it is being funded.
+    private static List<RecoveryCohortInput> BuildCohortInputs(ReloadState replay, int cycleDay)
+    {
+        var repaidByObligation = replay.RepaidByObligationThisRun
+            ?? new Dictionary<string, decimal>(StringComparer.Ordinal);
+        return (replay.Obligations ?? [])
+            .Where(obligation => obligation.Date.HasValue
+                && (obligation.RemainingAmount > 0m
+                    || repaidByObligation.GetValueOrDefault(obligation.TransactionId) > 0m))
+            .GroupBy(obligation =>
+            {
+                var (cohortYear, cohortMonthIndex) = CategoryAttributionService
+                    .GetCycleYearAndMonthIndexForDate(obligation.Date!.Value, cycleDay);
+                return StabilityRecoveryPlanner.CycleKey(cohortYear, cohortMonthIndex);
+            }, StringComparer.Ordinal)
+            .Select(group => new RecoveryCohortInput(
+                group.Key,
+                group.Min(obligation => obligation.Date!.Value),
+                group.Count(),
+                group.Sum(obligation => Math.Max(0m, obligation.RemainingAmount)),
+                group.Sum(obligation => Math.Max(
+                    0m,
+                    repaidByObligation.GetValueOrDefault(obligation.TransactionId)))))
+            .ToList();
+    }
+
+    private sealed record CycleReplay(int Year, int MonthIndex, decimal CurrentBalance, decimal Target, ReloadState Replay);
+
+    // The fund's balance and reload queue through the cycle containing `date`, replayed from the
+    // previous cycle's snapshot. `excludeTransactionId` drops that transaction and its generated
+    // `-split-*` children.
+    private async Task<CycleReplay> ReplayCycleAsync(
+        FinancialSetting setting,
+        DateOnly date,
+        string? excludeTransactionId,
+        bool requireCohortDetail,
+        CancellationToken cancellationToken)
+    {
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
-            transactionDate, setting.CycleDay);
+            date, setting.CycleDay);
         var planRevisions = await _planRevisionService.GetAsync(setting, cancellationToken);
 
         await _cycleBalanceService.EnsureComputedThroughAsync(
@@ -49,24 +121,8 @@ public partial class StabilityRecoveryService
         var net = cycleTxs.Sum(transaction => CategoryAttributionService.GetCategoryAmount(transaction, Stability));
 
         var currentBalance = openingStability + net;
-        var previous = await _context.CycleBalances
-            .AsNoTracking()
-            .Where(balance => balance.Year < year || (balance.Year == year && balance.MonthIndex < monthIndex))
-            .OrderByDescending(balance => balance.Year)
-            .ThenByDescending(balance => balance.MonthIndex)
-            .Select(balance => new
-            {
-                balance.StabilityReloadOutstanding,
-                balance.StabilityReloadOldestDate,
-                balance.StabilityReloadObligations
-            })
-            .FirstOrDefaultAsync(cancellationToken);
-        var openingReload = previous == null
-            ? new ReloadState(0m, null, 0m, 0m)
-            : StabilityReloadObligationCache.OpeningState(
-                previous.StabilityReloadOutstanding,
-                previous.StabilityReloadOldestDate,
-                previous.StabilityReloadObligations);
+        var openingReload = await LoadOpeningReloadAsync(
+            year, monthIndex, setting.CycleDay, cancellationToken, rebuildIncompleteDetail: requireCohortDetail);
         var cycleStartUtc = DateTime.SpecifyKind(start, DateTimeKind.Utc);
         var cycleEndExclusiveUtc = DateTime.SpecifyKind(end.Date.AddDays(1), DateTimeKind.Utc);
         var planAtStart = StabilityPlanRevisionService.At(planRevisions, cycleStartUtc);
@@ -85,14 +141,14 @@ public partial class StabilityRecoveryService
                     planRevisions,
                     transaction.PostedAt).StabilityAlloc));
 
-        return new StabilityState(
+        return new CycleReplay(
+            year,
+            monthIndex,
             currentBalance,
             StabilityPlanRevisionService.At(
                 planRevisions,
-                transactionDate.ToDateTime(TimeOnly.MaxValue, DateTimeKind.Utc)).TargetStabilityFund,
-            replay.Outstanding,
-            year,
-            monthIndex);
+                date.ToDateTime(TimeOnly.MaxValue, DateTimeKind.Utc)).TargetStabilityFund,
+            replay);
     }
 
     public Task<StabilityState> GetStabilityStateAsync(
