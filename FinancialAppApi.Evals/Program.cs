@@ -137,7 +137,7 @@ static AiAssistantService NewService(AppDbContext db, AiClient client, IConfigur
         new AiAgentEngine(client, registry, new AiToolExecutor(registry, NullLogger<AiToolExecutor>.Instance), NullLogger<AiAgentEngine>.Instance),
         new AiToolContextFactory(db, clock),
         new AiBaselineSnapshotBuilder(registry, transactions, NullLogger<AiBaselineSnapshotBuilder>.Instance),
-        new AiUsageMeter(db, configuration));
+        new AiUsageMeter(db));
     return new AiAssistantService(
         client, db, new TransactionCategoryService(db, new MemoryCache(new MemoryCacheOptions())), agent,
         new AiConversationMemoryService(db), occurrences, goals, loans, accounts, clock, NullLogger<AiAssistantService>.Instance);

@@ -202,24 +202,27 @@ public class AiAgentEngineTests
     }
 
     [Fact]
-    public async Task EachTurnRecordsItsTokenUseAndTheDailyBudgetStopsFurtherTurns()
+    public async Task EachTurnRecordsItsTokenUse()
     {
         await using var db = await SeedAsync();
         var provider = new ScriptedProvider()
             .Call("search_transactions", new { query = "haircut" }, "c1")
-            .Answer("Found it.");
-        using var harness = new AgentHarness(db, provider, dailyTokenBudget: 200);
+            .Answer("Found it.")
+            .Answer("It was in February.");
+        using var harness = new AgentHarness(db, provider);
 
-        await harness.AskAsync("when was my last haircut?");
-        var blocked = await harness.AskAsync("and before that?");
+        var first = await harness.AskAsync("when was my last haircut?");
+        var second = await harness.AskAsync("and before that?");
 
-        // Two provider rounds at 100 input + 10 output tokens each.
+        // First turn: two provider rounds (call + answer). Second turn: one provider round (answer).
         var day = await db.AiUsageDays.SingleAsync();
-        Assert.Equal(200, day.InputTokens);
-        Assert.Equal(20, day.OutputTokens);
-        Assert.Equal(2, day.Calls);
-        Assert.Contains("today's Ask AI limit", blocked.Response.Reply);
-        Assert.Equal(2, provider.Requests.Count);
+        Assert.Equal(300, day.InputTokens);
+        Assert.Equal(30, day.OutputTokens);
+        Assert.Equal(3, day.Calls);
+        Assert.Equal("Found it.", first.Response.Reply);
+        Assert.Equal("It was in February.", second.Response.Reply);
+        Assert.DoesNotContain("today's Ask AI limit", second.Response.Reply);
+        Assert.Equal(3, provider.Requests.Count);
     }
 
 

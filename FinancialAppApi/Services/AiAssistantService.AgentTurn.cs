@@ -56,13 +56,6 @@ public partial class AiAssistantService
                 [], State: priorState));
         }
 
-        if (await agent.Usage.IsOverBudgetAsync(cancellationToken))
-        {
-            return Ok(new AiChatResponse(
-                "You've reached today's Ask AI limit. It resets at midnight UTC.",
-                [], State: priorState));
-        }
-
         var constraints = ParseConstraints(effectiveMessage);
         var carriedIds = priorState?.LastMatchedTransactionIds?.Take(CarriedTransactionIdLimit).ToList() ?? [];
         var categories = (await _categoryService.GetCategoriesAsync())
@@ -120,7 +113,7 @@ public partial class AiAssistantService
                 _logger.LogWarning(ex, "Ledger draft enrichment failed; returning unenriched drafts.");
             }
         }
-        response = EnforceActionBackedDraftClaims(response, toolContext.SensitiveMode);
+        response = EnforceActionBackedDraftClaims(response, toolContext.SensitiveMode, ClassifyDraftRequest(effectiveMessage, shorthandCount, proposer.AttemptedDraftTypes));
         response = response with { Reply = EnforceApproximateWording(response.Reply, turn.AnyApproximate) };
 
         var isLedgerAdd = shorthandCount > 0 || response.Actions.Any(action => action.Type == "openAddLedgerDraft");
@@ -135,6 +128,18 @@ public partial class AiAssistantService
             PendingLedgerRequest = ResolvePendingLedgerRequest(effectiveMessage, response, isLedgerAdd)
         };
         return new AiChatOutcome(response with { State = outgoingState }, IsProviderError: false, ToolTrace: turn.Trace);
+    }
+
+    // Read from the user's own words and the model's own attempts, never from the reply: the reply
+    // is what is being checked.
+    private static DraftRequest ClassifyDraftRequest(string message, int shorthandCount, IReadOnlySet<string> attemptedDraftTypes)
+    {
+        if (shorthandCount > 0 || attemptedDraftTypes.Contains("openAddLedgerDraft") ||
+            HasExplicitMutationCommand(message, "openAddLedgerDraft"))
+            return DraftRequest.LedgerAdd;
+        return attemptedDraftTypes.Count > 0 || HasExplicitMutationCommand(message, "openEditLedgerDraft")
+            ? DraftRequest.OtherChange
+            : DraftRequest.None;
     }
 
     private static List<JsonObject> BuildAgentPriorInput(

@@ -23,7 +23,17 @@ public partial class AiAssistantService
         "openAddSavingsGoalDraft", "openEditSavingsGoalDraft"
     };
 
-    internal static AiChatResponse EnforceActionBackedDraftClaims(AiChatResponse response, bool sensitiveMode)
+    // What the user's turn asked to stage. It decides whether a draft claim can be false at all,
+    // and which recovery hint fits when one is.
+    internal enum DraftRequest { None, LedgerAdd, OtherChange }
+
+    // Only a turn that asked for a change can make a false claim about one. "I opened the ledger"
+    // after a navigation request, or "you added 4 haircuts" inside an answer, is not a draft claim;
+    // rewriting it told a user who only wanted to see their ledger that "nothing was added".
+    internal static AiChatResponse EnforceActionBackedDraftClaims(
+        AiChatResponse response,
+        bool sensitiveMode,
+        DraftRequest request = DraftRequest.LedgerAdd)
     {
         var draftCount = response.Actions.Count(action => DraftCreatingActionTypes.Contains(action.Type));
         if (draftCount > 0)
@@ -34,7 +44,7 @@ public partial class AiAssistantService
                         "Check each one before saving."
             };
         }
-        if (!DraftClaimSignal.IsMatch(response.Reply)) return response;
+        if (request == DraftRequest.None || !DraftClaimSignal.IsMatch(response.Reply)) return response;
         // "Do you want me to open a draft?" is an offer, not a claim -- the guardrail at
         // SystemInstruction already requires a clarification to carry no actions.
         if (response.Reply.Contains('?')) return response;
@@ -43,8 +53,11 @@ public partial class AiAssistantService
         {
             Reply = sensitiveMode
                 ? "Nothing was added. Unhide balances before adding a record, then send it again."
-                : "Nothing was added, so your ledger is unchanged. Send it as a description and an " +
-                  "amount on one line -- for example \"Mamak 20.30\" -- and I will prepare a draft you can check.",
+                : request == DraftRequest.LedgerAdd
+                    ? "Nothing was added, so your ledger is unchanged. Send it as a description and an " +
+                      "amount on one line -- for example \"Mamak 20.30\" -- and I will prepare a draft you can check."
+                    : "Nothing was changed, so your records are as they were. Tell me which record and what " +
+                      "to change, and I will prepare it for you to check.",
             CloseChat = false
         };
     }

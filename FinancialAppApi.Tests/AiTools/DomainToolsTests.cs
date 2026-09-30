@@ -92,6 +92,66 @@ public class DomainToolsTests
         Assert.False(hidden.TryGetProperty("stabilityFund", out _));
     }
 
+    // "If I took another RM200 from the emergency fund, how much do I repay next cycle?" was answered
+    // as "everything owed plus 200", because the tool only gave the total. The schedule and the
+    // what-if now come from the recovery planner.
+    [Fact]
+    public async Task BudgetPlan_GivesTheReloadScheduleAndAWithdrawalWhatIf()
+    {
+        await using var db = TestHelpers.NewInMemoryContext();
+        db.FinancialSettings.Add(new FinancialSetting
+        {
+            CycleDay = CycleDay, HideSensitive = false, TargetStabilityFund = 1000m,
+            EssentialsAlloc = 0.5m, GrowthAlloc = 0.2m, StabilityAlloc = 0.2m, RewardsAlloc = 0.1m
+        });
+        db.Transactions.AddRange(
+            Txn("fill", new DateOnly(2026, 8, 26), "Top up", 1000m, "Savings", "Stability"),
+            Txn("car", new DateOnly(2026, 8, 28), "Car repair", -300m, "Transport", "Stability"),
+            Txn("vet", new DateOnly(2026, 9, 27), "Vet", -100m, "Pets", "Stability"));
+        await db.SaveChangesAsync();
+        var tool = new GetBudgetPlanTool(db, new StabilityRecoveryService(db, new CycleBalanceService(db)));
+
+        var data = Parse(await RunAsync(NewExecutor(tool), NewContext(), "get_budget_plan", """{"extraWithdrawal":200}""")).GetProperty("data");
+
+        Assert.Equal(400m, data.GetProperty("stabilityFund").GetProperty("owedBackFromDrawdowns").GetDecimal());
+        var plan = data.GetProperty("reloadPlan");
+        // August's 300 is in its first repayment cycle; September's 100 has not opened yet.
+        Assert.Equal(100m, plan.GetProperty("currentCycle").GetProperty("dueThisCycle").GetDecimal());
+        var cohorts = plan.GetProperty("byWithdrawalCycle").EnumerateArray().ToList();
+        Assert.Equal(["2026-08", "2026-09"], cohorts.Select(cohort => cohort.GetProperty("tookOutInCycle").GetString()));
+        Assert.True(cohorts[1].GetProperty("startsNextCycle").GetBoolean());
+        Assert.Equal([133.34m, 116.66m, 50m], PutBacks(plan.GetProperty("upcoming")));
+        Assert.Equal("2026-10-25", plan.GetProperty("upcoming")[0].GetProperty("cycle").GetProperty("from").GetString());
+
+        var whatIf = data.GetProperty("whatIf");
+        Assert.True(whatIf.GetProperty("createsObligation").GetBoolean());
+        Assert.Equal(100m, whatIf.GetProperty("dueThisCycle").GetDecimal());
+        Assert.Equal([200m, 150m, 150m], PutBacks(whatIf.GetProperty("upcoming")));
+        Assert.Equal(66.66m, whatIf.GetProperty("upcoming")[0].GetProperty("changeFromCurrentPlan").GetDecimal());
+
+        var hidden = Parse(await RunAsync(NewExecutor(tool), NewContext(sensitive: true), "get_budget_plan", """{"extraWithdrawal":200}""")).GetProperty("data");
+        Assert.False(hidden.TryGetProperty("reloadPlan", out _));
+        Assert.False(hidden.TryGetProperty("whatIf", out _));
+
+        static List<decimal> PutBacks(System.Text.Json.JsonElement cycles) =>
+            cycles.EnumerateArray().Select(cycle => cycle.GetProperty("putBack").GetDecimal()).ToList();
+    }
+
+    [Fact]
+    public async Task BudgetPlan_AWithdrawalThatLeavesTheFundAtTargetOwesNothing()
+    {
+        await using var db = TestHelpers.NewInMemoryContext();
+        db.FinancialSettings.Add(new FinancialSetting { CycleDay = CycleDay, HideSensitive = false, TargetStabilityFund = 1000m, StabilityAlloc = 0.2m });
+        db.Transactions.Add(Txn("fill", new DateOnly(2026, 8, 26), "Top up", 1500m, "Savings", "Stability"));
+        await db.SaveChangesAsync();
+        var tool = new GetBudgetPlanTool(db, new StabilityRecoveryService(db, new CycleBalanceService(db)));
+
+        var whatIf = Parse(await RunAsync(NewExecutor(tool), NewContext(), "get_budget_plan", """{"extraWithdrawal":200}""")).GetProperty("data").GetProperty("whatIf");
+
+        Assert.False(whatIf.GetProperty("createsObligation").GetBoolean());
+        Assert.Empty(whatIf.GetProperty("upcoming").EnumerateArray());
+    }
+
     [Fact]
     public async Task LedgerForecast_ProjectsFromTheBucketBalanceAndActiveCycleAverage()
     {

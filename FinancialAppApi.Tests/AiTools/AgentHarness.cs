@@ -24,15 +24,14 @@ internal sealed class AgentHarness : IDisposable
     public AgentHarness(
         AppDbContext db,
         ScriptedProvider provider,
-        long dailyTokenBudget = AiUsageMeter.DefaultDailyTokenBudget,
         bool configured = true)
     {
         Db = db;
         Provider = provider;
         var configuration = TestHelpers.NewConfiguration(
-            ("OpenAiApiKey", configured ? "key" : ""), ("OpenAiModel", "test-model"), ("Financial:TimeZoneId", "UTC"),
-            ("Ai:DailyTokenBudgetPerUser", dailyTokenBudget.ToString(System.Globalization.CultureInfo.InvariantCulture)));
-        var clock = new FinancialClock(configuration, new FixedTimeProvider(new DateTimeOffset(2026, 9, 29, 12, 0, 0, TimeSpan.Zero)));
+            ("OpenAiApiKey", configured ? "key" : ""), ("OpenAiModel", "test-model"), ("Financial:TimeZoneId", "UTC"));
+        var timeProvider = new FixedTimeProvider(new DateTimeOffset(2026, 9, 29, 12, 0, 0, TimeSpan.Zero));
+        var clock = new FinancialClock(configuration, timeProvider);
         var client = new AiClient(new HttpClient(provider), configuration, NullLogger<AiClient>.Instance);
         var occurrenceService = new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
         var occurrences = new RecurringOccurrenceLedgerService(db, occurrenceService, clock);
@@ -61,7 +60,7 @@ internal sealed class AgentHarness : IDisposable
             new AiAgentEngine(client, registry, new AiToolExecutor(registry, NullLogger<AiToolExecutor>.Instance), NullLogger<AiAgentEngine>.Instance),
             new AiToolContextFactory(db, clock),
             new AiBaselineSnapshotBuilder(registry, transactions, NullLogger<AiBaselineSnapshotBuilder>.Instance),
-            new AiUsageMeter(db, configuration));
+            new AiUsageMeter(db, timeProvider));
         Service = new AiAssistantService(
             client, db, new TransactionCategoryService(db, _cache), agent, new AiConversationMemoryService(db),
             occurrences, goals, loans, accounts, clock, NullLogger<AiAssistantService>.Instance);

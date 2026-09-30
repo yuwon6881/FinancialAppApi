@@ -87,13 +87,12 @@ public class AiRetentionAndUsageTests
     }
 
     [Fact]
-    public async Task UsageMeter_AccumulatesTodayAndReportsTheBudget()
+    public async Task UsageMeter_AccumulatesToday()
     {
         await using var context = TestHelpers.NewInMemoryContext();
-        var meter = new AiUsageMeter(context, TestHelpers.NewConfiguration(("Ai:DailyTokenBudgetPerUser", "1000")));
+        var meter = new AiUsageMeter(context);
 
         await meter.RecordAsync(new AiTokenUsage(400, 300, 100, 20), calls: 2, CancellationToken.None);
-        Assert.False(await meter.IsOverBudgetAsync(CancellationToken.None));
         await meter.RecordAsync(new AiTokenUsage(450, 0, 60, 0), calls: 1, CancellationToken.None);
 
         var day = await context.AiUsageDays.SingleAsync();
@@ -101,17 +100,6 @@ public class AiRetentionAndUsageTests
         Assert.Equal(300, day.CachedTokens);
         Assert.Equal(160, day.OutputTokens);
         Assert.Equal(3, day.Calls);
-        Assert.True(await meter.IsOverBudgetAsync(CancellationToken.None));
-    }
-
-    [Fact]
-    public async Task UsageMeter_WithAZeroBudgetNeverBlocks()
-    {
-        await using var context = TestHelpers.NewInMemoryContext();
-        var meter = new AiUsageMeter(context, TestHelpers.NewConfiguration(("Ai:DailyTokenBudgetPerUser", "0")));
-        await meter.RecordAsync(new AiTokenUsage(9_999_999, 0, 9_999_999, 0), calls: 1, CancellationToken.None);
-
-        Assert.False(await meter.IsOverBudgetAsync(CancellationToken.None));
     }
 
     private static AiConversationTurn Turn(AiConversation conversation, string clientTurnId, string status, DateTime createdAt) => new()

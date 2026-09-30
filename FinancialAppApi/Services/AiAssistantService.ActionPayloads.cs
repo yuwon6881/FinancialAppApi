@@ -78,6 +78,9 @@ public partial class AiAssistantService
                 cycleKey.ToString() is { } key && Regex.IsMatch(key, @"^(?:19|20)\d{2}-(?:0[1-9]|1[0-2])$"));
         }
         if (type.Equals("openInvestments", StringComparison.OrdinalIgnoreCase)) return payload.Count == 0;
+        // An id makes the Recurring tab scroll to that bill, so it must be one a tool surfaced.
+        if (type.Equals("openRecurring", StringComparison.OrdinalIgnoreCase))
+            return ReadPayloadString(payload, "id") is not { Length: > 0 } || HasKnownId(payload, "id", context.RecurringPayments);
         if (type.Equals("openWishlist", StringComparison.OrdinalIgnoreCase))
         {
             return HasOnlyKeys(payload, ["savingsGoalId"]) && (!payload.ContainsKey("savingsGoalId") || HasPositiveInteger(payload, "savingsGoalId"));

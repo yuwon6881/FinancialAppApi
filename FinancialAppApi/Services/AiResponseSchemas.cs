@@ -204,10 +204,12 @@ internal static class AiResponseSchemas
 
     private static Dictionary<string, object> BaseActionPayloadProperties(IReadOnlyList<string> categories) => new()
     {
-        ["id"] = Str(),
-        ["month"] = Str(),
+        // The ledger fields say how the server resolves the period, because the model otherwise
+        // guesses the app's view state and a filter lands on the wrong cycle.
+        ["id"] = Str("Exact record id from a tool result. On openLedger, opens that transaction in its own cycle and highlights it; on openRecurring, highlights that bill."),
+        ["month"] = Str("Prefer cycleKey. Three-letter cycle month, only together with year."),
         ["year"] = Int(),
-        ["allCycles"] = Bool(),
+        ["allCycles"] = Bool("openLedger: search every cycle. A filter without id or cycleKey already searches all history."),
         ["range"] = Str(enums: ["monthly", "3month", "6month", "yearly"]),
         ["category"] = Str("Single most fitting category; copy exactly from the App context categories.", enums: categories),
         ["ledgerCategory"] = Str(),
@@ -219,7 +221,7 @@ internal static class AiResponseSchemas
         ["counterAccountId"] = Str("Exact active destination ledger account id for an explicitly named transfer."),
         ["active"] = Bool(),
         ["frequency"] = Str(enums: ["Monthly", "Annually"]),
-        ["search"] = Str(),
+        ["search"] = Str("openLedger: words to match in transaction descriptions, as the user would search them."),
         ["date"] = Str(),
         ["description"] = Str(),
         ["name"] = Str(),
@@ -229,8 +231,8 @@ internal static class AiResponseSchemas
         ["isActive"] = Bool(),
         ["startDate"] = Str(),
         ["endDate"] = Str(),
-        // openReports opens one cycle's report.
-        ["cycleKey"] = Str("Cycle key in YYYY-MM format."),
+        // openReports opens one cycle's report; openLedger shows one cycle.
+        ["cycleKey"] = Str("Cycle key in YYYY-MM format. openReports: the report to open. openLedger: show only that cycle."),
         // Savings goal drafts, and openWishlist focused on one goal.
         ["savingsGoalId"] = Int(),
         ["targetAmount"] = Num("Positive target amount.", 0),
@@ -295,5 +297,10 @@ internal static class AiResponseSchemas
     };
 
     private static Dictionary<string, object> Int() => new() { ["type"] = "integer" };
-    private static Dictionary<string, object> Bool() => new() { ["type"] = "boolean" };
+    private static Dictionary<string, object> Bool(string? description = null)
+    {
+        var schema = new Dictionary<string, object> { ["type"] = "boolean" };
+        if (description != null) schema["description"] = description;
+        return schema;
+    }
 }

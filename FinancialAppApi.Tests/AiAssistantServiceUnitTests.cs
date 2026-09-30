@@ -88,6 +88,29 @@ public class AiAssistantServiceUnitTests
     }
 
     [Fact]
+    public void EnforceActionBackedDraftClaims_LeavesANavigationReplyAloneWhenNoChangeWasAsked()
+    {
+        var result = Services.AiAssistantService.EnforceActionBackedDraftClaims(
+            new Services.AiChatResponse("I opened the ledger filtered to haircut.", [new Services.AiUiAction("openLedger", [])]),
+            sensitiveMode: false,
+            Services.AiAssistantService.DraftRequest.None);
+
+        Assert.Equal("I opened the ledger filtered to haircut.", result.Reply);
+    }
+
+    [Fact]
+    public void EnforceActionBackedDraftClaims_AFailedEditIsNotAnsweredWithTheLedgerAddHint()
+    {
+        var result = Services.AiAssistantService.EnforceActionBackedDraftClaims(
+            new Services.AiChatResponse("I prepared the edit.", []),
+            sensitiveMode: false,
+            Services.AiAssistantService.DraftRequest.OtherChange);
+
+        Assert.StartsWith("Nothing was changed", result.Reply);
+        Assert.DoesNotContain("Mamak", result.Reply);
+    }
+
+    [Fact]
     public void EnforceActionBackedDraftClaims_ReportsTheCommittedActionCount()
     {
         var actions = new[]

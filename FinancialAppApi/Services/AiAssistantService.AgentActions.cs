@@ -105,6 +105,10 @@ public partial class AiAssistantService
 
         public IReadOnlyList<AiUiAction> Accepted => _accepted;
 
+        // Draft types the model tried to stage, accepted or not: a turn that tried is one whose
+        // reply can falsely claim a draft.
+        public HashSet<string> AttemptedDraftTypes { get; } = new(StringComparer.OrdinalIgnoreCase);
+
         // Last validation context, kept so enrichment after the loop sees the same records.
         public AiContext? ValidationContext { get; private set; }
 
@@ -143,10 +147,13 @@ public partial class AiAssistantService
                 }
                 else
                 {
+                    if (DraftCreatingActionTypes.Contains(type)) AttemptedDraftTypes.Add(type);
                     var (action, reason) = await _owner.ValidateActionAsync(
                         item, ValidationContext, _userMessage, _constraints, _state, cancellationToken);
+                    if (action != null && IsLedgerNavigation(action.Type))
+                        reason = NormalizeLedgerNavigation(action.Payload, ValidationContext.RecentTransactions, _toolContext.CycleDay);
                     rejection = reason;
-                    if (action != null) _accepted.Add(action);
+                    if (action != null && reason == null) _accepted.Add(action);
                 }
                 var result = new JsonObject { ["index"] = index, ["type"] = type, ["status"] = rejection == null ? "accepted" : "rejected" };
                 if (rejection != null) result["reason"] = rejection;

@@ -153,14 +153,14 @@ public partial class AiAssistantService
             lower.StartsWith("compare");
         if (!asksQuestion) return false;
 
-        return !(lower.Contains("open ") ||
-            lower.Contains("show me ") ||
-            lower.Contains("go to ") ||
-            lower.Contains("navigate") ||
-            lower.Contains("filter") ||
-            lower.Contains("apply filter") ||
-            lower.Contains("take me"));
+        return !NavigationRequestSignal.IsMatch(lower);
     }
+
+    // Word-bounded, so a request that ends the sentence ("can you show me?", "open it?") still
+    // counts; the old substring checks needed a trailing space and turned those into questions.
+    private static readonly Regex NavigationRequestSignal = new(
+        @"\b(?:open|show|display|view|go to|navigate|filter|filtered|take me|bring me|redirect|pull (?:it |them )?up|jump to)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static bool LooksLikeFollowUp(string reply)
     {

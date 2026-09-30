@@ -40,14 +40,13 @@ Each tool is one file under `Services/AI/Tools`, wraps existing services or pure
 
 ## Memory, retention, and cost
 
-Conversation memory is server-owned once a client sends a `clientTurnId`. Prior turns are replayed as real dialogue together with a compact note of the lookups each turn made (`ToolTraceJson`, never kept for sensitive turns). Completed turns and daily usage rows are pruned by `LedgerRetentionService` on indexed keys. A turn left Pending by a crash is released after ten minutes. `AiUsageMeter` records tokens per user per UTC day and enforces `Ai:DailyTokenBudgetPerUser` (0 disables it).
+Conversation memory is server-owned once a client sends a `clientTurnId`. Prior turns are replayed as real dialogue together with a compact note of the lookups each turn made (`ToolTraceJson`, never kept for sensitive turns). Completed turns and daily usage rows are pruned by `LedgerRetentionService` on indexed keys. A turn left Pending by a crash is released after ten minutes. `AiUsageMeter` records tokens per user per UTC day.
 
 ## Configuration
 
 | Key | Default | Meaning |
 |---|---|---|
 | `OpenAiModels:Chat` | `OpenAiModel` | Model for Ask AI turns. |
-| `Ai:DailyTokenBudgetPerUser` | 1,500,000 | Input plus output tokens per user per UTC day. |
 | `Ai:RequestsPerMinute` | 20 | Rate limit for `/api/ai/*`. |
 | `Retention:AiTurnRetentionDays` | 90 | Age at which conversation turns are pruned. |
 | `Retention:AiUsageRetentionDays` | 60 | Age at which daily usage rows are pruned. |
@@ -57,6 +56,6 @@ Conversation memory is server-owned once a client sends a `clientTurnId`. Prior 
 - tool defaults widen scope (all history), and "no match" stays distinct from "no data";
 - every tool leaks no seeded amount in sensitive mode;
 - an id the model never looked up, or a change the user never asked for, is rejected;
-- the round limit and daily budget stop a turn;
+- the round limit stops a turn;
 - the stream's `done` event is authoritative and the fallback path works;
 - retention prunes aged and abandoned turns.
