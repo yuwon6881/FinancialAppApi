@@ -106,6 +106,16 @@ public sealed class LedgerAccountCreditCardTests
     }
 
     [Fact]
+    public async Task ASubCentLimitIsRejectedBeforeItRoundsToZero()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+        var result = await service.CreateAsync(Card(creditLimit: 0.001m, hasCreditLimit: true));
+        Assert.Equal(LedgerAccountMutationStatus.Invalid, result.Status);
+        Assert.Empty(context.LedgerAccounts);
+    }
+
+    [Fact]
     public async Task ANullLimitClearsItAndLeavingTheCardKindDropsIt()
     {
         await using var context = TestHelpers.NewInMemoryContext();

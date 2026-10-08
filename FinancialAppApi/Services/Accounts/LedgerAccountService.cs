@@ -322,7 +322,7 @@ public sealed partial class LedgerAccountService
         if (!hasCreditLimit || creditLimit is null) return null;
         if (!LedgerAccountKind.IsCreditCard(kind))
             return "Only a credit card can have a credit limit.";
-        if (creditLimit is <= 0m or > LedgerAccountKind.MaxCreditLimit)
+        if (MoneyRounding.RoundMoney(creditLimit.Value) <= 0m || creditLimit > LedgerAccountKind.MaxCreditLimit)
             return "Enter a credit limit above zero.";
         return null;
     }
