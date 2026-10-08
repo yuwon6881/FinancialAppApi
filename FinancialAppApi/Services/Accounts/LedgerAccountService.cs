@@ -18,7 +18,10 @@ public sealed record LedgerAccountMutation(
     string Bucket,
     string Kind,
     bool IsArchived,
-    decimal OpeningAmount = 0m);
+    decimal OpeningAmount = 0m,
+    decimal? CreditLimit = null,
+    // An absent limit keeps the stored one; a client that predates credit cards must not erase it.
+    bool HasCreditLimit = false);
 
 public sealed record LedgerAccountMutationResult(
     LedgerAccountMutationStatus Status,
@@ -35,7 +38,9 @@ public sealed record LedgerAccountReconcileTarget(
     decimal Target,
     string? ExpectedName = null,
     string? ExpectedKind = null,
-    bool? ExpectedIsArchived = null);
+    bool? ExpectedIsArchived = null,
+    decimal? CreditLimit = null,
+    bool HasCreditLimit = false);
 
 public sealed record LedgerAccountReconcileRequest(
     string OperationId,
@@ -135,6 +140,9 @@ public sealed partial class LedgerAccountService
             Bucket = NormalizeBucket(mutation.Bucket),
             Kind = LedgerAccountKind.Normalize(mutation.Kind),
             IsArchived = false,
+            CreditLimit = LedgerAccountKind.IsCreditCard(mutation.Kind) && mutation.HasCreditLimit
+                ? RoundLimit(mutation.CreditLimit)
+                : null,
             CreatedAt = now,
             UpdatedAt = now,
         };
@@ -226,11 +234,19 @@ public sealed partial class LedgerAccountService
                 cancellationToken);
             if (!hasOtherLiveAccount)
                 return Conflict("Every bucket needs one open account. Add another before closing this one.");
+            if (LedgerAccountKind.IsCreditCard(account.Kind))
+            {
+                var balances = await _balanceService.GetBalancesAsync([account], cancellationToken);
+                if (balances.GetValueOrDefault(account.Id) <= -0.005m)
+                    return Conflict("Pay off this card before closing it.");
+            }
         }
         account.Name = mutation.Name.Trim();
         account.Bucket = nextBucket;
         account.Kind = LedgerAccountKind.Normalize(mutation.Kind);
         account.IsArchived = mutation.IsArchived;
+        if (!LedgerAccountKind.IsCreditCard(account.Kind)) account.CreditLimit = null;
+        else if (mutation.HasCreditLimit) account.CreditLimit = RoundLimit(mutation.CreditLimit);
         account.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync(cancellationToken);
@@ -281,10 +297,31 @@ public sealed partial class LedgerAccountService
             return $"Account bucket must be one of: {string.Join(", ", FinancialConstants.BudgetCategories)}.";
         if (!LedgerAccountKind.IsValid(mutation.Kind))
             return $"Account type must be one of: {string.Join(", ", LedgerAccountKind.Values)}.";
-        if (mutation.OpeningAmount is < 0m or > 9999999999.99m)
+        if (!LedgerAccountKind.IsAllowedInBucket(mutation.Kind, mutation.Bucket))
+            return CreditCardBucketMessage;
+        // A card opens with what is already owed on it, which is a negative balance.
+        var isCard = LedgerAccountKind.IsCreditCard(mutation.Kind);
+        if (mutation.OpeningAmount > 9999999999.99m
+            || mutation.OpeningAmount < (isCard ? -9999999999.99m : 0m))
             return "Opening amount cannot be negative.";
+        return ValidateCreditLimit(mutation.Kind, mutation.CreditLimit, mutation.HasCreditLimit);
+    }
+
+    internal const string CreditCardBucketMessage =
+        "Credit cards can only be added to Essentials or Rewards.";
+
+    internal static string? ValidateCreditLimit(string? kind, decimal? creditLimit, bool hasCreditLimit)
+    {
+        if (!hasCreditLimit || creditLimit is null) return null;
+        if (!LedgerAccountKind.IsCreditCard(kind))
+            return "Only a credit card can have a credit limit.";
+        if (creditLimit is <= 0m or > LedgerAccountKind.MaxCreditLimit)
+            return "Enter a credit limit above zero.";
         return null;
     }
+
+    private static decimal? RoundLimit(decimal? value) =>
+        value is null ? null : MoneyRounding.RoundMoney(value.Value);
 
     private static string NormalizeBucket(string value) =>
         FinancialConstants.BudgetCategories.First(bucket => bucket.Equals(value, StringComparison.OrdinalIgnoreCase));

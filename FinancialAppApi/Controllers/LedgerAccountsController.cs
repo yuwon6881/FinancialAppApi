@@ -82,16 +82,22 @@ public sealed class LedgerAccountsController : ControllerBase
             dto.OperationId ?? string.Empty,
             dto.Bucket ?? string.Empty,
             ReadAmount(dto.ExpectedBucketTotal),
-            dto.Targets.Select(target => new LedgerAccountReconcileTarget(
-                target.Id,
-                target.Name ?? string.Empty,
-                target.Kind,
-                target.IsArchived,
-                ReadAmount(target.ExpectedCurrent),
-                ReadAmount(target.Target),
-                target.ExpectedName,
-                target.ExpectedKind,
-                target.ExpectedIsArchived)).ToList(),
+            dto.Targets.Select(target =>
+            {
+                var (creditLimit, hasCreditLimit) = ReadOptionalAmount(target.CreditLimit);
+                return new LedgerAccountReconcileTarget(
+                    target.Id,
+                    target.Name ?? string.Empty,
+                    target.Kind,
+                    target.IsArchived,
+                    ReadAmount(target.ExpectedCurrent),
+                    ReadAmount(target.Target),
+                    target.ExpectedName,
+                    target.ExpectedKind,
+                    target.ExpectedIsArchived,
+                    creditLimit,
+                    hasCreditLimit);
+            }).ToList(),
             dto.Description);
         var result = await _accountService.ReconcileAsync(request, HttpContext.RequestAborted);
         if (result.Status == LedgerAccountMutationStatus.Conflict)
@@ -131,18 +137,33 @@ public sealed class LedgerAccountsController : ControllerBase
         IsArchived = account.IsArchived,
         Remaining = ObfuscationHelper.Obfuscate(
             balances.TryGetValue(account.Id, out var balance) ? balance : 0m),
+        CreditLimit = account.CreditLimit is { } limit ? ObfuscationHelper.Obfuscate(limit) : null,
         CreatedAt = account.CreatedAt.ToUniversalTime().ToString("O"),
         UpdatedAt = account.UpdatedAt.ToUniversalTime().ToString("O"),
     };
 
-    private static LedgerAccountMutation ToMutation(LedgerAccountMutationDto dto, string? id = null) =>
-        new(
+    private static LedgerAccountMutation ToMutation(LedgerAccountMutationDto dto, string? id = null)
+    {
+        var (creditLimit, hasCreditLimit) = ReadOptionalAmount(dto.CreditLimit);
+        return new(
             id ?? dto.Id ?? string.Empty,
             dto.Name ?? string.Empty,
             dto.Bucket ?? string.Empty,
             dto.Kind ?? LedgerAccountKind.Bank,
             dto.IsArchived,
-            ReadAmount(dto.OpeningAmount));
+            ReadAmount(dto.OpeningAmount),
+            creditLimit,
+            hasCreditLimit);
+    }
+
+    // Absent keeps the stored value, null clears it, and a number sets it.
+    private static (decimal? Value, bool IsPresent) ReadOptionalAmount(JsonElement value) =>
+        value.ValueKind switch
+        {
+            JsonValueKind.Undefined => (null, false),
+            JsonValueKind.Null => (null, true),
+            _ => (ReadAmount(value), true),
+        };
 
     private static decimal ReadAmount(JsonElement value)
     {
@@ -165,6 +186,7 @@ public sealed class LedgerAccountMutationDto
     public string? Kind { get; set; }
     public bool IsArchived { get; set; }
     public JsonElement OpeningAmount { get; set; }
+    public JsonElement CreditLimit { get; set; }
 }
 
 public sealed class LedgerAccountDto
@@ -175,6 +197,7 @@ public sealed class LedgerAccountDto
     public string Kind { get; set; } = LedgerAccountKind.Bank;
     public bool IsArchived { get; set; }
     public string Remaining { get; set; } = string.Empty;
+    public string? CreditLimit { get; set; }
     public string CreatedAt { get; set; } = string.Empty;
     public string UpdatedAt { get; set; } = string.Empty;
 }
@@ -199,4 +222,5 @@ public sealed class LedgerAccountReconcileTargetDto
     public bool IsArchived { get; set; }
     public JsonElement ExpectedCurrent { get; set; }
     public JsonElement Target { get; set; }
+    public JsonElement CreditLimit { get; set; }
 }

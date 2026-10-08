@@ -68,7 +68,11 @@ public class DatabaseInvariantTests
         var bucketConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_bucket");
         var kindConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_kind");
         Assert.Equal("\"Bucket\" IN ('Essentials', 'Growth', 'Stability', 'Rewards')", bucketConstraint.Sql);
-        Assert.Equal("\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'Other')", kindConstraint.Sql);
+        Assert.Equal("\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'CreditCard', 'Other')", kindConstraint.Sql);
+        var limitConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_creditlimit");
+        Assert.Equal("\"CreditLimit\" IS NULL OR (\"Kind\" = 'CreditCard' AND \"CreditLimit\" > 0)", limitConstraint.Sql);
+        var cardBucketConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_creditcard_bucket");
+        Assert.Equal("\"Kind\" <> 'CreditCard' OR \"Bucket\" IN ('Essentials', 'Rewards')", cardBucketConstraint.Sql);
 
         var transactionEntity = model.FindEntityType(typeof(Transaction))!;
         Assert.Contains(transactionEntity.GetCheckConstraints(), constraint => constraint.Name == "ck_transactions_account_tracking");
@@ -138,7 +142,7 @@ public class DatabaseInvariantTests
         {
             (typeof(Transaction), "ck_transactions_stabilityreloadintent", "\"StabilityReloadIntent\" IN ('Unanswered', 'Required', 'NotRequired')"),
             (typeof(LedgerAccount), "ck_ledgeraccounts_bucket", "\"Bucket\" IN ('Essentials', 'Growth', 'Stability', 'Rewards')"),
-            (typeof(LedgerAccount), "ck_ledgeraccounts_kind", "\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'Other')"),
+            (typeof(LedgerAccount), "ck_ledgeraccounts_kind", "\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'CreditCard', 'Other')"),
             (typeof(RecurringPayment), "ck_recurringpayments_paymentmode", "\"PaymentMode\" IN ('AutoDeduct', 'Manual')"),
             (typeof(RecurringPayment), "ck_recurringpayments_pushremindermode", "\"PushReminderMode\" IN ('Once', 'Daily')"),
             (typeof(RecurringPaymentOccurrence), "ck_recurringpaymentoccurrences_status", "\"Status\" IN ('Pending', 'PartiallyPaid', 'Paid', 'Discarded', 'SettledByLoanPayoff')"),

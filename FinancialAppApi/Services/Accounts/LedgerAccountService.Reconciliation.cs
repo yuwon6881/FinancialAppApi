@@ -39,8 +39,17 @@ public sealed partial class LedgerAccountService
             return new(LedgerAccountMutationStatus.Invalid, "Every account row needs a name.");
         if (targets.Select(target => target.Name.ToLowerInvariant()).Distinct().Count() != targets.Count)
             return new(LedgerAccountMutationStatus.Invalid, "Account names must be unique.");
-        if (targets.Any(target => target.Target < 0m))
-            return new(LedgerAccountMutationStatus.Invalid, "Account balance cannot be negative.");
+        // Only a card may be set below zero, and its kind may come from the stored account, so the
+        // sign is checked again once each row has resolved to an account.
+        if (targets.Any(target => target.Target < 0m && target.Kind is not null && !LedgerAccountKind.IsCreditCard(target.Kind)))
+            return new(LedgerAccountMutationStatus.Invalid, NegativeBalanceMessage);
+        if (targets.Any(target => !LedgerAccountKind.IsAllowedInBucket(target.Kind, bucket)))
+            return new(LedgerAccountMutationStatus.Invalid, CreditCardBucketMessage);
+        var limitError = targets
+            .Select(target => ValidateCreditLimit(target.Kind ?? LedgerAccountKind.CreditCard, target.CreditLimit, target.HasCreditLimit))
+            .FirstOrDefault(message => message is not null);
+        if (limitError is not null)
+            return new(LedgerAccountMutationStatus.Invalid, limitError);
         if (targets.Where(target => target.Id is not null)
             .GroupBy(target => target.Id!, StringComparer.Ordinal)
             .Any(group => group.Count() > 1))
@@ -147,11 +156,27 @@ public sealed partial class LedgerAccountService
                                 return await ConflictAsync(databaseTransaction, "An active recurring payment uses this account. Reassign it before closing the account.");
                             if (!bucketAccounts.Any(other => other.Id != account.Id && !other.IsArchived))
                                 return await ConflictAsync(databaseTransaction, "Every bucket needs one open account. Add another before closing this one.");
+                            if (LedgerAccountKind.IsCreditCard(target.Kind ?? account.Kind) && target.Target <= -0.005m)
+                                return await ConflictAsync(databaseTransaction, "Pay off this card before closing it.");
                         }
                         account.Name = target.Name;
                         if (target.Kind is not null) account.Kind = target.Kind;
                         account.IsArchived = target.IsArchived;
                         account.UpdatedAt = DateTime.UtcNow;
+                    }
+                    if (!LedgerAccountKind.IsCreditCard(account.Kind))
+                    {
+                        if (target.Target < 0m)
+                            return await InvalidAsync(databaseTransaction, NegativeBalanceMessage);
+                        if (target.HasCreditLimit && target.CreditLimit is not null)
+                            return await InvalidAsync(databaseTransaction, "Only a credit card can have a credit limit.");
+                        account.CreditLimit = null;
+                    }
+                    else
+                    {
+                        if (!LedgerAccountKind.IsAllowedInBucket(account.Kind, bucket))
+                            return await InvalidAsync(databaseTransaction, CreditCardBucketMessage);
+                        if (target.HasCreditLimit) account.CreditLimit = RoundLimit(target.CreditLimit);
                     }
                     resolvedTargets.Add(target with { Id = account.Id });
                 }

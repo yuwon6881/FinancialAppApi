@@ -147,13 +147,16 @@ public sealed partial class PushDispatchService
                         };
                     })
                     .Where(item => item.Account is not null && !string.IsNullOrWhiteSpace(item.AccountId)
+                        && !LedgerAccountCapacity.IsUnknown(item.Account)
                         && item.OffsetDays is >= 0 and <= 31 && item.Amount > 0m)
                     .Select(item => new RecurringAccountDebit(
                         item.Due.Id,
                         item.AccountId!,
                         item.Due.OccurrenceDate,
                         item.Amount));
-                var projections = RecurringAccountBalanceProjection.Project(projectedDebits, userBalances);
+                var projections = RecurringAccountBalanceProjection.Project(
+                    projectedDebits,
+                    LedgerAccountCapacity.ForAccounts(userAccounts, userBalances));
 
                 foreach (var (payment, due) in duePayments)
                 {

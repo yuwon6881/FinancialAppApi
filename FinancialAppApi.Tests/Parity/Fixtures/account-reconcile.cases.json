@@ -112,6 +112,32 @@
         ]
       },
       "expected": []
+    },
+    {
+      "id": "credit-card-owed",
+      "why": "A credit card may be set below zero: the negative balance is what is owed, recorded as an ordinary adjustment on the card.",
+      "input": {
+        "operationId": "test-card-owed",
+        "createdAt": 1755225600000,
+        "bucket": "Essentials",
+        "expectedBucketTotal": 500.0,
+        "targets": [
+          { "id": "acct-bank", "name": "Bank", "expectedCurrent": 500.0, "target": 500.0, "isArchived": false },
+          { "id": "acct-visa", "name": "Visa", "kind": "CreditCard", "expectedCurrent": 0.0, "target": -250.0, "isArchived": false }
+        ]
+      },
+      "expected": [
+        {
+          "id": "reconcile-test-card-owed-adjustment-0",
+          "description": "Account balance adjustment - Visa",
+          "category": "Adjustment",
+          "ledgerCategory": "Essentials",
+          "amount": -250.0,
+          "accountId": "acct-visa",
+          "counterAccountId": null,
+          "isAccountBalanceAdjustment": true
+        }
+      ]
     }
   ]
 }

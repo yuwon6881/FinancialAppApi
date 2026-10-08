@@ -41,13 +41,16 @@ public sealed class AccountReconcileParityTests
             var name = target.GetProperty("name").GetString()!;
             var expectedCurrent = target.GetProperty("expectedCurrent").GetDecimal();
             var targetAmount = target.GetProperty("target").GetDecimal();
+            var kind = target.TryGetProperty("kind", out var kindProperty)
+                ? kindProperty.GetString()!
+                : LedgerAccountKind.Bank;
 
             var account = new LedgerAccount
             {
                 Id = id,
                 Name = name,
                 Bucket = bucket,
-                Kind = LedgerAccountKind.Bank,
+                Kind = kind,
                 UserId = TestHelpers.DefaultUserId,
             };
             context.LedgerAccounts.Add(account);
@@ -71,7 +74,7 @@ public sealed class AccountReconcileParityTests
             targets.Add(new LedgerAccountReconcileTarget(
                 Id: id,
                 Name: name,
-                Kind: LedgerAccountKind.Bank,
+                Kind: kind,
                 ExpectedCurrent: expectedCurrent,
                 Target: targetAmount,
                 IsArchived: false));

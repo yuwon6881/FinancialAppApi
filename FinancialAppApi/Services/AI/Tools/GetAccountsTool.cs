@@ -16,9 +16,11 @@ public sealed class GetAccountsTool : IAiTool
     public string Name => "get_accounts";
 
     public string Description =>
-        "List the user's ledger accounts (bank, e-wallet, cash, card) with their id, bucket (Essentials, Growth, " +
-        "Stability, Rewards), current balance, and archived flag, plus each bucket's total. Use for balance " +
-        "questions and to find an account id before searching its activity or staging a transfer.";
+        "List the user's ledger accounts (bank, e-wallet, cash, debit card, credit card) with their id, bucket " +
+        "(Essentials, Growth, Stability, Rewards), current balance, and archived flag, plus each bucket's total. " +
+        "A CreditCard balance below zero is money owed, already counted against its bucket; its creditLimit and " +
+        "availableCredit are borrowing room, never money the user has. Use for balance questions and to find an " +
+        "account id before searching its activity or staging a transfer.";
 
     public JsonObject ParametersSchema { get; } = AiToolSchema.Object([]);
 
@@ -44,7 +46,11 @@ public sealed class GetAccountsTool : IAiTool
                 bucket = account.Bucket,
                 kind = account.Kind,
                 archived = account.IsArchived ? true : (bool?)null,
-                balance = balances.TryGetValue(account.Id, out var balance) ? balance : (decimal?)null
+                balance = balances.TryGetValue(account.Id, out var balance) ? balance : (decimal?)null,
+                creditLimit = context.SensitiveMode ? null : account.CreditLimit,
+                availableCredit = account.CreditLimit is { } limit && balances.TryGetValue(account.Id, out var owed)
+                    ? limit + owed
+                    : (decimal?)null
             }).ToList(),
             buckets = Buckets.Select(bucket => new
             {

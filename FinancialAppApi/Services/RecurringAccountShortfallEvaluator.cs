@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Accounts;
 
 namespace FinancialAppApi.Services;
 
@@ -30,7 +31,8 @@ public static class RecurringAccountShortfallEvaluator
                 return new { Occurrence = occurrence, Parent = parent, AccountId = accountId };
             })
             .Where(item => item.Parent?.PaymentMode == RecurringPaymentMode.AutoDeduct
-                && !string.IsNullOrWhiteSpace(item.AccountId))
+                && !string.IsNullOrWhiteSpace(item.AccountId)
+                && !LedgerAccountCapacity.IsUnknown(accountsById.GetValueOrDefault(item.AccountId!)))
             .Select(item => new
             {
                 item.Occurrence,
@@ -47,7 +49,7 @@ public static class RecurringAccountShortfallEvaluator
                 item.AccountId,
                 item.Occurrence.OccurrenceDate,
                 item.Amount)),
-            accountBalances);
+            LedgerAccountCapacity.ForAccounts(accounts, accountBalances));
         var shortfalls = new List<(int OffsetDays, object Shortfall)>();
 
         foreach (var item in eligible)
@@ -67,6 +69,8 @@ public static class RecurringAccountShortfallEvaluator
                 offsetDays = item.OffsetDays,
                 accountId = item.AccountId,
                 accountName = account?.Name ?? "Account",
+                // For a credit card the balance below is the credit still available, not money held.
+                isCreditCard = LedgerAccountKind.IsCreditCard(account?.Kind),
                 accountBalance = ObfuscationHelper.Obfuscate(projection.BalanceBefore),
                 shortfall = ObfuscationHelper.Obfuscate(projection.Shortfall)
             }));

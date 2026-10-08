@@ -986,6 +986,10 @@ namespace FinancialAppApi.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<decimal?>("CreditLimit")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
                     b.Property<bool>("IsArchived")
                         .HasColumnType("boolean");
 
@@ -1017,7 +1021,11 @@ namespace FinancialAppApi.Migrations
                         {
                             t.HasCheckConstraint("ck_ledgeraccounts_bucket", "\"Bucket\" IN ('Essentials', 'Growth', 'Stability', 'Rewards')");
 
-                            t.HasCheckConstraint("ck_ledgeraccounts_kind", "\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'Other')");
+                            t.HasCheckConstraint("ck_ledgeraccounts_creditcard_bucket", "\"Kind\" <> 'CreditCard' OR \"Bucket\" IN ('Essentials', 'Rewards')");
+
+                            t.HasCheckConstraint("ck_ledgeraccounts_creditlimit", "\"CreditLimit\" IS NULL OR (\"Kind\" = 'CreditCard' AND \"CreditLimit\" > 0)");
+
+                            t.HasCheckConstraint("ck_ledgeraccounts_kind", "\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'CreditCard', 'Other')");
                         });
                 });
 

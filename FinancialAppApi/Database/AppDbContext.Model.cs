@@ -70,6 +70,7 @@ public partial class AppDbContext
             entity.Property(e => e.Name).HasMaxLength(200);
             entity.Property(e => e.Bucket).HasMaxLength(20);
             entity.Property(e => e.Kind).HasMaxLength(20).HasDefaultValue(LedgerAccountKind.Bank);
+            entity.Property(e => e.CreditLimit).HasPrecision(18, 2);
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
             entity.HasIndex(e => new { e.UserId, e.Name }).IsUnique();
@@ -81,6 +82,12 @@ public partial class AppDbContext
                 table.HasCheckConstraint(
                     "ck_ledgeraccounts_kind",
                     $"\"Kind\" IN ({string.Join(", ", LedgerAccountKind.Values.Select(value => $"'{value}'"))})");
+                table.HasCheckConstraint(
+                    "ck_ledgeraccounts_creditlimit",
+                    $"\"CreditLimit\" IS NULL OR (\"Kind\" = '{LedgerAccountKind.CreditCard}' AND \"CreditLimit\" > 0)");
+                table.HasCheckConstraint(
+                    "ck_ledgeraccounts_creditcard_bucket",
+                    $"\"Kind\" <> '{LedgerAccountKind.CreditCard}' OR \"Bucket\" IN ({string.Join(", ", LedgerAccountKind.CreditCardBuckets.Select(value => $"'{value}'"))})");
             });
             entity.HasAlternateKey(e => new { e.UserId, e.Id });
         });

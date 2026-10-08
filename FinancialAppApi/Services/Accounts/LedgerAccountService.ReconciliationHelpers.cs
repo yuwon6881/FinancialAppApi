@@ -69,6 +69,16 @@ public sealed partial class LedgerAccountService
         return new(LedgerAccountMutationStatus.Conflict, message);
     }
 
+    private const string NegativeBalanceMessage = "Only a credit card balance can be negative.";
+
+    private static async Task<LedgerAccountReconcileResult> InvalidAsync(
+        Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction,
+        string message)
+    {
+        await transaction.RollbackAsync();
+        return new(LedgerAccountMutationStatus.Invalid, message);
+    }
+
     private static decimal RoundMoney(decimal value) =>
         MoneyRounding.RoundMoney(value);
 
