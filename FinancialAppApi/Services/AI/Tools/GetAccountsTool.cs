@@ -26,6 +26,12 @@ public sealed class GetAccountsTool : IAiTool
 
     public AiToolSensitivity Sensitivity => AiToolSensitivity.MasksAmounts;
 
+    // Card figures carry money under names the shared masker does not list.
+    public IReadOnlySet<string> AmountProperties { get; } = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "creditLimit", "availableCredit"
+    };
+
     public string ProgressLabel(AiToolArgs args) => "Checking your accounts";
 
     public async Task<AiToolResult> ExecuteAsync(AiToolArgs args, AiToolContext context, CancellationToken cancellationToken)

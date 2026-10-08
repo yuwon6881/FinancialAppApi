@@ -124,6 +124,22 @@ public sealed class LedgerAccountCreditCardTests
     }
 
     [Fact]
+    public async Task ACardStillOwingCannotStopBeingACard()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+        await service.CreateAsync(Bank(openingAmount: 100m));
+        await service.CreateAsync(Card(openingAmount: -40m, creditLimit: 5000m, hasCreditLimit: true));
+
+        var result = await service.UpdateAsync("acct-visa", Card() with { Kind = LedgerAccountKind.Bank });
+
+        Assert.Equal(LedgerAccountMutationStatus.Invalid, result.Status);
+        var stored = (await context.LedgerAccounts.FindAsync("acct-visa"))!;
+        Assert.Equal(LedgerAccountKind.CreditCard, stored.Kind);
+        Assert.Equal(5000m, stored.CreditLimit);
+    }
+
+    [Fact]
     public async Task ACardStillOwingCannotBeClosed()
     {
         await using var context = TestHelpers.NewInMemoryContext();

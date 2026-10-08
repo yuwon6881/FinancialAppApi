@@ -241,6 +241,13 @@ public sealed partial class LedgerAccountService
                     return Conflict("Pay off this card before closing it.");
             }
         }
+        // Only a card may sit below zero, so a card still owing cannot become another kind.
+        if (LedgerAccountKind.IsCreditCard(account.Kind) && !LedgerAccountKind.IsCreditCard(mutation.Kind))
+        {
+            var balances = await _balanceService.GetBalancesAsync([account], cancellationToken);
+            if (balances.GetValueOrDefault(account.Id) < 0m)
+                return Invalid(NegativeBalanceMessage);
+        }
         account.Name = mutation.Name.Trim();
         account.Bucket = nextBucket;
         account.Kind = LedgerAccountKind.Normalize(mutation.Kind);

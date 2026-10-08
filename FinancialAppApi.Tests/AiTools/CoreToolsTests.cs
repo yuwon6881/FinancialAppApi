@@ -177,6 +177,17 @@ public class CoreToolsTests
     }
 
     // Current cycle 2026-09 runs Sep 25 - Oct 24; today is Sep 29.
+    [Fact]
+    public void GetAccounts_DeclaresCardFiguresSoSensitiveModeStripsThem()
+    {
+        // A credit limit and the credit left are money figures under names the masker does not
+        // know, so a turn that turns sensitive mode on mid-run must still strip them.
+        var tool = new GetAccountsTool(NewAccountService(TestHelpers.NewInMemoryContext()));
+
+        Assert.Contains("creditLimit", tool.AmountProperties);
+        Assert.Contains("availableCredit", tool.AmountProperties);
+    }
+
     private static async Task<AppDbContext> SeedCycleAsync()
     {
         var db = TestHelpers.NewInMemoryContext();
