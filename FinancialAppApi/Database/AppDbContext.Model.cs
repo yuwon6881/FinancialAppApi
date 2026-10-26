@@ -105,7 +105,8 @@ public partial class AppDbContext
             entity.Property(e => e.PushReminderLeadDays).HasDefaultValue(1);
             entity.Property(e => e.PaymentMode).HasDefaultValue(RecurringPaymentMode.Manual);
             entity.Property(e => e.AccountId).HasMaxLength(100);
-            entity.HasIndex(e => e.UserId);
+            // Also serves per-user reads: UserId is its leading column, so a separate UserId-only
+            // index would only add write and storage cost.
             entity.HasIndex(e => new { e.UserId, e.AccountId });
             entity.HasOne<LedgerAccount>()
                 .WithMany()

@@ -335,15 +335,23 @@ public sealed class InvestmentMarketDataService(
                 "Provider returned no price bars for {Symbol}.", instrument.Symbol);
             return $"No recent prices were available for {instrument.Symbol}. Check the symbol mapping if this persists.";
         }
+        // One range read instead of a lookup per bar: a first refresh of a long-held position
+        // returns years of daily bars, and a per-bar query made the user wait on hundreds of
+        // sequential round trips. Keyed by date, so a repeated date in the provider's series
+        // updates the row it already added instead of inserting a duplicate.
+        var firstDate = bars.Min(bar => bar.Date);
+        var lastDate = bars.Max(bar => bar.Date);
+        var existingByDate = await context.MarketPriceBars
+            .Where(value => value.Provider == ProviderId &&
+                            value.ExternalInstrumentId == reference.ExternalId &&
+                            value.MarketDate >= firstDate &&
+                            value.MarketDate <= lastDate)
+            .ToDictionaryAsync(value => value.MarketDate, cancellationToken);
         foreach (var bar in bars)
         {
-            var existing = await context.MarketPriceBars.FirstOrDefaultAsync(value =>
-                value.Provider == ProviderId &&
-                value.ExternalInstrumentId == reference.ExternalId &&
-                value.MarketDate == bar.Date, cancellationToken);
-            if (existing is null)
+            if (!existingByDate.TryGetValue(bar.Date, out var existing))
             {
-                context.MarketPriceBars.Add(new MarketPriceBar
+                existingByDate[bar.Date] = context.MarketPriceBars.Add(new MarketPriceBar
                 {
                     Provider = ProviderId,
                     ExternalInstrumentId = reference.ExternalId,
@@ -351,7 +359,7 @@ public sealed class InvestmentMarketDataService(
                     Mic = instrument.ProviderMic ?? "",
                     MarketDate = bar.Date,
                     Close = bar.Close
-                });
+                }).Entity;
             }
             else
             {
@@ -394,23 +402,28 @@ public sealed class InvestmentMarketDataService(
                 "Provider returned no FX bars for {Base}/{Quote}.", baseCurrency, quoteCurrency);
             return $"No recent {baseCurrency}/{quoteCurrency} exchange rates were available.";
         }
+        // Same single range read as RefreshInstrumentAsync.
+        var firstDate = bars.Min(bar => bar.Date);
+        var lastDate = bars.Max(bar => bar.Date);
+        var existingByDate = await context.FxRateBars
+            .Where(value => value.Provider == ProviderId &&
+                            value.BaseCurrency == baseCurrency &&
+                            value.QuoteCurrency == quoteCurrency &&
+                            value.MarketDate >= firstDate &&
+                            value.MarketDate <= lastDate)
+            .ToDictionaryAsync(value => value.MarketDate, cancellationToken);
         foreach (var bar in bars)
         {
-            var existing = await context.FxRateBars.FirstOrDefaultAsync(value =>
-                value.Provider == ProviderId &&
-                value.BaseCurrency == baseCurrency &&
-                value.QuoteCurrency == quoteCurrency &&
-                value.MarketDate == bar.Date, cancellationToken);
-            if (existing is null)
+            if (!existingByDate.TryGetValue(bar.Date, out var existing))
             {
-                context.FxRateBars.Add(new FxRateBar
+                existingByDate[bar.Date] = context.FxRateBars.Add(new FxRateBar
                 {
                     Provider = ProviderId,
                     BaseCurrency = baseCurrency,
                     QuoteCurrency = quoteCurrency,
                     MarketDate = bar.Date,
                     Rate = bar.Rate
-                });
+                }).Entity;
             }
             else
             {

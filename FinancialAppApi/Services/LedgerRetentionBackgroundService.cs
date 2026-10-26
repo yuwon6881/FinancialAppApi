@@ -37,7 +37,7 @@ public sealed class LedgerRetentionBackgroundService : BackgroundService
                 if (result.Total > 0)
                 {
                     _logger.LogInformation(
-                        "Ledger retention deleted {PriceBars} price bars and {Notifications} notification records.",
+                        "Ledger retention deleted {PriceBars} price bars and {Other} other expired records.",
                         result.PriceBars,
                         result.Total - result.PriceBars);
                 }

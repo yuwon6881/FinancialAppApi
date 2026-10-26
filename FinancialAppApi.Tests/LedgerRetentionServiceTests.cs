@@ -173,6 +173,72 @@ public sealed class LedgerRetentionServiceTests
             context.PushSubscriptions.IgnoreQueryFilters().Select(s => s.Id).OrderBy(id => id).ToList());
     }
 
+    [Fact]
+    public async Task PruneAsync_CollectsExpiredCachesFinishedRefreshJobsAndExpiredAuthRows()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var context = NewContext(connection);
+        await context.Database.EnsureCreatedAsync();
+
+        var now = DateTime.UtcNow;
+        context.AppUsers.Add(new AppUser
+        {
+            Id = TestHelpers.DefaultUserId,
+            Username = "retention",
+            NormalizedUsername = "RETENTION",
+        });
+        context.InstrumentSearchCaches.AddRange(
+            new InstrumentSearchCache { ProviderId = "test", NormalizedQuery = "expired", ExpiresAt = now.AddHours(-1) },
+            new InstrumentSearchCache { ProviderId = "test", NormalizedQuery = "live", ExpiresAt = now.AddHours(1) });
+        context.MarketDataRefreshJobs.AddRange(
+            RefreshJob("Complete", completedAt: now.AddDays(-2)),
+            RefreshJob("Complete", completedAt: now.AddMinutes(-5)),
+            RefreshJob("Running", completedAt: null, createdAt: now.AddDays(-30)));
+        context.UserSessions.AddRange(
+            Session("expired", now.AddMinutes(-1)),
+            Session("live", now.AddDays(1)));
+        context.WebAuthnChallenges.AddRange(
+            new WebAuthnChallenge { Id = "expired", Purpose = "login", UserId = TestHelpers.DefaultUserId, ExpiresAt = now.AddMinutes(-1) },
+            new WebAuthnChallenge { Id = "live", Purpose = "login", UserId = TestHelpers.DefaultUserId, ExpiresAt = now.AddMinutes(5) });
+        context.PendingTwoFactors.AddRange(
+            new PendingTwoFactor { Username = "expired", UserId = TestHelpers.DefaultUserId, ExpiresAt = now.AddMinutes(-1) },
+            new PendingTwoFactor { Username = "live", UserId = TestHelpers.DefaultUserId, ExpiresAt = now.AddMinutes(5) });
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).PruneAsync();
+
+        Assert.Equal(1, result.SearchCacheEntries);
+        Assert.Equal(1, result.RefreshJobs);
+        Assert.Equal(3, result.ExpiredAuthRecords);
+        Assert.Equal(["live"], context.InstrumentSearchCaches.Select(entry => entry.NormalizedQuery).ToList());
+        // The in-flight job survives however old it is: a refresh resumes it.
+        Assert.Equal(2, context.MarketDataRefreshJobs.IgnoreQueryFilters().Count());
+        Assert.Contains(context.MarketDataRefreshJobs.IgnoreQueryFilters(), job => job.Status == "Running");
+        Assert.Equal(["live"], context.UserSessions.IgnoreQueryFilters().Select(session => session.Token).ToList());
+        Assert.Equal(["live"], context.WebAuthnChallenges.IgnoreQueryFilters().Select(challenge => challenge.Id).ToList());
+        Assert.Equal(["live"], context.PendingTwoFactors.IgnoreQueryFilters().Select(pending => pending.Username).ToList());
+    }
+
+    private static MarketDataRefreshJob RefreshJob(string status, DateTime? completedAt, DateTime? createdAt = null) => new()
+    {
+        UserId = TestHelpers.DefaultUserId,
+        Status = status,
+        ProviderId = "test",
+        CreatedAt = createdAt ?? completedAt ?? DateTime.UtcNow,
+        UpdatedAt = completedAt ?? createdAt ?? DateTime.UtcNow,
+        CompletedAt = completedAt,
+    };
+
+    private static UserSession Session(string token, DateTime expiresAt) => new()
+    {
+        Token = token,
+        UserId = TestHelpers.DefaultUserId,
+        Username = "retention",
+        CreatedAt = expiresAt.AddDays(-7),
+        ExpiresAt = expiresAt,
+    };
+
     private static PushSubscription Subscription(string id, string deviceId, bool enabled, DateTime updatedAt) => new()
     {
         Id = id,

@@ -291,6 +291,47 @@ public sealed class InvestmentMarketDataTests
     }
 
     [Fact]
+    public async Task RefreshUpsertsTheWholeSeriesUpdatingStoredBarsAndCollapsingRepeatedDates()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (_, instrument) = await SeedProviderBackedHoldingAsync(context);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var externalId = $"{instrument.ProviderSymbol}|";
+        context.MarketPriceBars.Add(new MarketPriceBar
+        {
+            Provider = "test",
+            ExternalInstrumentId = externalId,
+            Symbol = instrument.ProviderSymbol!,
+            Mic = "",
+            MarketDate = today.AddDays(-2),
+            Close = 90m,
+            FetchedAt = DateTime.UtcNow.AddDays(-3)
+        });
+        await context.SaveChangesAsync();
+        var provider = new CountingProvider
+        {
+            PriceBars =
+            [
+                new ProviderPriceBar(today.AddDays(-3), 98m),
+                new ProviderPriceBar(today.AddDays(-2), 99m),
+                new ProviderPriceBar(today.AddDays(-1), 100m),
+                new ProviderPriceBar(today.AddDays(-1), 101m),
+            ]
+        };
+
+        await NewService(context, provider).RefreshAsync(CancellationToken.None);
+
+        var bars = context.MarketPriceBars
+            .Where(bar => bar.ExternalInstrumentId == externalId)
+            .OrderBy(bar => bar.MarketDate)
+            .Select(bar => new { bar.MarketDate, bar.Close })
+            .ToList();
+        Assert.Equal(
+            [(today.AddDays(-3), 98m), (today.AddDays(-2), 99m), (today.AddDays(-1), 101m)],
+            bars.Select(bar => (bar.MarketDate, bar.Close)).ToList());
+    }
+
+    [Fact]
     public async Task OrchestrationPassesTheRealTradeDateToTheProviderAdapter()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -465,6 +506,7 @@ public sealed class InvestmentMarketDataTests
         public int PriceCallCount { get; private set; }
         public List<DateOnly> PriceStartDates { get; } = [];
         public List<(string Base, string Quote)> FxPairs { get; } = [];
+        public IReadOnlyList<ProviderPriceBar> PriceBars { get; init; } = [];
         public MarketDataProviderDescriptor Descriptor => TestDescriptor(_perUserDailyCallCeiling);
 
         public Task<IReadOnlyList<InstrumentSearchResult>> SearchAsync(string query, CancellationToken cancellationToken)
@@ -478,7 +520,7 @@ public sealed class InvestmentMarketDataTests
             CallCount++;
             PriceCallCount++;
             PriceStartDates.Add(startDate);
-            return Task.FromResult<IReadOnlyList<ProviderPriceBar>>([]);
+            return Task.FromResult(PriceBars);
         }
 
         public Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(string baseCurrency, string quoteCurrency, DateOnly startDate, CancellationToken cancellationToken)
