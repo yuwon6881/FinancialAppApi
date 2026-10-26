@@ -12,7 +12,10 @@ public sealed record LedgerRetentionResult(
     int OrphanedMilestones,
     int PushSubscriptions,
     int AiTurns = 0,
-    int AiUsageDays = 0)
+    int AiUsageDays = 0,
+    int SearchCacheEntries = 0,
+    int RefreshJobs = 0,
+    int ExpiredAuthRecords = 0)
 {
     public int Total => PriceBars
         + ReminderDeliveries
@@ -22,7 +25,10 @@ public sealed record LedgerRetentionResult(
         + OrphanedMilestones
         + PushSubscriptions
         + AiTurns
-        + AiUsageDays;
+        + AiUsageDays
+        + SearchCacheEntries
+        + RefreshJobs
+        + ExpiredAuthRecords;
 }
 
 /// <summary>
@@ -35,6 +41,8 @@ public sealed record LedgerRetentionResult(
 /// </summary>
 public sealed class LedgerRetentionService
 {
+    private static readonly TimeSpan TerminalRefreshJobAge = TimeSpan.FromDays(1);
+
     private readonly AppDbContext _context;
     private readonly LedgerRetentionPolicy _policy;
     private readonly FinancialClock _clock;
@@ -136,6 +144,36 @@ public sealed class LedgerRetentionService
             .Where(day => day.Date < usageCutoff)
             .ExecuteDeleteAsync(cancellationToken);
 
+        // Search results are only served while unexpired, and an expired row is otherwise only
+        // replaced if someone repeats that exact query -- so every distinct query left one behind.
+        var now = DateTime.UtcNow;
+        var searchCacheEntries = await _context.InstrumentSearchCaches
+            .Where(entry => entry.ExpiresAt < now)
+            .ExecuteDeleteAsync(cancellationToken);
+
+        // Only finished jobs: a refresh resumes its Pending/Running row, and nothing reads a job
+        // once it has completed or been superseded.
+        var jobCutoff = now - TerminalRefreshJobAge;
+        var refreshJobs = await _context.MarketDataRefreshJobs
+            .IgnoreQueryFilters()
+            .Where(job => job.CompletedAt != null && job.CompletedAt < jobCutoff)
+            .ExecuteDeleteAsync(cancellationToken);
+
+        // Expired auth rows are already rejected on use and deleted when their owner next signs in;
+        // this collects the ones whose owner never comes back.
+        var expiredAuthRecords = await _context.UserSessions
+            .IgnoreQueryFilters()
+            .Where(session => session.ExpiresAt < now)
+            .ExecuteDeleteAsync(cancellationToken);
+        expiredAuthRecords += await _context.WebAuthnChallenges
+            .IgnoreQueryFilters()
+            .Where(challenge => challenge.ExpiresAt < now)
+            .ExecuteDeleteAsync(cancellationToken);
+        expiredAuthRecords += await _context.PendingTwoFactors
+            .IgnoreQueryFilters()
+            .Where(pending => pending.ExpiresAt < now)
+            .ExecuteDeleteAsync(cancellationToken);
+
         return new LedgerRetentionResult(
             priceBars,
             reminderDeliveries,
@@ -145,6 +183,9 @@ public sealed class LedgerRetentionService
             orphanedMilestones,
             pushSubscriptions,
             aiTurns,
-            aiUsageDays);
+            aiUsageDays,
+            searchCacheEntries,
+            refreshJobs,
+            expiredAuthRecords);
     }
 }
