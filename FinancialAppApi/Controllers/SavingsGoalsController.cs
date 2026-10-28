@@ -12,7 +12,7 @@ namespace FinancialAppApi.Controllers;
 [Route("api/savings-goals")]
 [AuthorizeToken]
 [RefreshSlices(RefreshSliceNames.Core, RefreshSliceNames.SavingsGoals)]
-public class SavingsGoalsController : ControllerBase
+public partial class SavingsGoalsController : ControllerBase
 {
     private readonly SavingsGoalService _savingsGoalService;
 
