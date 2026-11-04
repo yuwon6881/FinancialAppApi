@@ -20,7 +20,8 @@ public sealed partial class InvestmentsController(
     InstrumentHistoryService instrumentHistoryService,
     InvestmentQueryService queryService,
     InvestmentMarketDataService marketDataService,
-    IMarketDataProvider marketDataProvider) : ControllerBase
+    IMarketDataProvider marketDataProvider,
+    InvestmentSnapshotService snapshotService) : ControllerBase
 {
     [HttpGet("portfolio")]
     public async Task<ActionResult<InvestmentPortfolioDto>> GetPortfolio(
