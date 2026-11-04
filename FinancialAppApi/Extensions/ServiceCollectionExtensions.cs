@@ -622,6 +622,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<InvestmentHistoryValidationService>();
         services.AddScoped<InvestmentQueryService>();
         services.AddScoped<InvestmentPortfolioService>();
+        services.AddScoped<InvestmentSnapshotService>();
         services.AddScoped<InstrumentHistoryService>();
         services.AddScoped<InvestmentMarketDataService>();
         services.AddScoped<InvestmentMarketSearchService>();

@@ -64,6 +64,8 @@ public partial class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<InvestmentPlan> InvestmentPlans => Set<InvestmentPlan>();
     public DbSet<MarketPriceBar> MarketPriceBars => Set<MarketPriceBar>();
     public DbSet<FxRateBar> FxRateBars => Set<FxRateBar>();
+    public DbSet<MarketSeriesCoverage> MarketSeriesCoverages => Set<MarketSeriesCoverage>();
+    public DbSet<InvestmentPeriodSnapshot> InvestmentPeriodSnapshots => Set<InvestmentPeriodSnapshot>();
     public DbSet<MarketDataRefreshJob> MarketDataRefreshJobs => Set<MarketDataRefreshJob>();
     public DbSet<MarketDataQuotaWindow> MarketDataQuotaWindows => Set<MarketDataQuotaWindow>();
     public DbSet<InstrumentSearchCache> InstrumentSearchCaches => Set<InstrumentSearchCache>();

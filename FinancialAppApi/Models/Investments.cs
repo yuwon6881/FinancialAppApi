@@ -159,6 +159,29 @@ public sealed class FxRateBar
     public DateTime FetchedAt { get; set; } = DateTime.UtcNow;
 }
 
+public static class MarketSeriesKinds
+{
+    public const string Price = "Price";
+    public const string Fx = "Fx";
+}
+
+/// <summary>
+/// How far back the provider has been asked for one shared daily series. Bars alone cannot say
+/// "asked, and the provider had nothing older", so without this a series whose history starts
+/// later than a user needs would be re-requested on every refresh. One row per series: bounded
+/// by the number of instruments and currency pairs, so it needs no sweep.
+/// </summary>
+public sealed class MarketSeriesCoverage
+{
+    public long Id { get; set; }
+    [Required, MaxLength(32)] public string Provider { get; set; } = string.Empty;
+    [Required, MaxLength(8)] public string Kind { get; set; } = MarketSeriesKinds.Price;
+    // ExternalInstrumentId for prices, "BASE/QUOTE" for exchange rates.
+    [Required, MaxLength(200)] public string SeriesKey { get; set; } = string.Empty;
+    public DateOnly CoveredFrom { get; set; }
+    public DateTime CheckedAt { get; set; } = DateTime.UtcNow;
+}
+
 public sealed class MarketDataRefreshJob : IUserOwnedEntity
 {
     public Guid Id { get; set; } = Guid.NewGuid();

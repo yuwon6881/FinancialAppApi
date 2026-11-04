@@ -70,8 +70,16 @@ public sealed class LedgerRetentionService
         var subscriptionCutoff = DateTime.UtcNow.AddDays(-_policy.PushSubscriptionRetentionDays);
 
         // MarketPriceBars is a shared provider cache with no owner, so it carries no query filter.
+        // Old history is compacted, not deleted: each series keeps its last bar of every month, which
+        // is all a month-end valuation or a rebuild after a backdated edit needs, decades back.
         var priceBars = await _context.MarketPriceBars
-            .Where(bar => bar.MarketDate < priceBarCutoff)
+            .Where(bar => bar.MarketDate < priceBarCutoff &&
+                          _context.MarketPriceBars.Any(later =>
+                              later.Provider == bar.Provider &&
+                              later.ExternalInstrumentId == bar.ExternalInstrumentId &&
+                              later.MarketDate > bar.MarketDate &&
+                              later.MarketDate.Year == bar.MarketDate.Year &&
+                              later.MarketDate.Month == bar.MarketDate.Month))
             .ExecuteDeleteAsync(cancellationToken);
 
         // The rest are user-owned. This runs outside any request, so the tenancy filter has no

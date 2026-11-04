@@ -27,11 +27,13 @@ public sealed class LedgerRetentionServiceTests
             Username = "retention",
             NormalizedUsername = "RETENTION",
         });
-        var longAgo = DateOnly.FromDateTime(DateTime.UtcNow).AddYears(-9);
-        var recently = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-3);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var longAgo = new DateOnly(today.Year - 9, today.Month, 3);
+        var recently = today.AddDays(-3);
         context.MarketPriceBars.AddRange(
-            PriceBar("stale", longAgo),
-            PriceBar("fresh", recently));
+            PriceBar("stale", longAgo, "series"),
+            PriceBar("month-end", longAgo.AddDays(20), "series"),
+            PriceBar("fresh", recently, "series"));
         context.FxRateBars.Add(new FxRateBar
         {
             Provider = "test",
@@ -50,9 +52,9 @@ public sealed class LedgerRetentionServiceTests
         Assert.Equal(1, result.PriceBars);
         Assert.Equal(1, result.AlertEvaluations);
 
-        // The bar that is still inside every supported chart range survives, and so does every
-        // FX rate regardless of age.
-        Assert.Equal(["fresh"], context.MarketPriceBars.Select(bar => bar.Symbol).ToList());
+        // The recent bar survives, the old month keeps only its closing bar, and every FX rate
+        // survives regardless of age.
+        Assert.Equal(["fresh", "month-end"], context.MarketPriceBars.Select(bar => bar.Symbol).OrderBy(symbol => symbol).ToList());
         Assert.Single(context.FxRateBars);
         Assert.Equal(["recent"], context.CategoryLimitAlertEvaluations.IgnoreQueryFilters()
             .Select(evaluation => evaluation.Id).ToList());
@@ -275,10 +277,40 @@ public sealed class LedgerRetentionServiceTests
             new FinancialClock(configuration));
     }
 
-    private static MarketPriceBar PriceBar(string symbol, DateOnly date) => new()
+    // Old daily prices thin to the last bar of each month, never to nothing: year-by-year history
+    // and a snapshot rebuild after a backdated edit both value a month-end, decades back.
+    [Fact]
+    public async Task PruneAsync_KeepsTheLastBarOfEveryOldMonthPerSeries()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var context = NewContext(connection);
+        await context.Database.EnsureCreatedAsync();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var march = new DateOnly(today.Year - 10, 3, 1);
+        context.MarketPriceBars.AddRange(
+            PriceBar("a-mar-03", march.AddDays(2), "a"),
+            PriceBar("a-mar-15", march.AddDays(14), "a"),
+            PriceBar("a-mar-28", march.AddDays(27), "a"),
+            PriceBar("a-apr-02", march.AddMonths(1).AddDays(1), "a"),
+            PriceBar("b-mar-03", march.AddDays(2), "b"),
+            PriceBar("b-mar-10", march.AddDays(9), "b"),
+            PriceBar("a-recent-1", today.AddDays(-4), "a"),
+            PriceBar("a-recent-2", today.AddDays(-3), "a"));
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).PruneAsync();
+
+        Assert.Equal(3, result.PriceBars);
+        Assert.Equal(
+            ["a-apr-02", "a-mar-28", "a-recent-1", "a-recent-2", "b-mar-10"],
+            context.MarketPriceBars.Select(bar => bar.Symbol).OrderBy(symbol => symbol).ToList());
+    }
+
+    private static MarketPriceBar PriceBar(string symbol, DateOnly date, string? series = null) => new()
     {
         Provider = "test",
-        ExternalInstrumentId = symbol,
+        ExternalInstrumentId = series ?? symbol,
         Symbol = symbol,
         MarketDate = date,
         Close = 10m,

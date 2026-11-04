@@ -76,6 +76,35 @@ public interface IMarketDataProvider
         CancellationToken cancellationToken);
 
     MarketInstrumentReference? TryResolveLegacyReference(string? symbol, string? mic);
+
+    /// <summary>
+    /// The longest calendar span one series request may ask for, chosen so a single response is
+    /// never truncated by the provider's row cap. Longer histories are fetched in several pages.
+    /// </summary>
+    int MaxSeriesDaysPerRequest => int.MaxValue;
+
+    /// <summary>A bounded series request; EndDate is inclusive and null means up to today.</summary>
+    async Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(
+        MarketInstrumentReference instrument,
+        DateOnly startDate,
+        DateOnly? endDate,
+        CancellationToken cancellationToken)
+    {
+        var bars = await GetDailySeriesAsync(instrument, startDate, cancellationToken);
+        return endDate is { } end ? bars.Where(bar => bar.Date <= end).ToList() : bars;
+    }
+
+    /// <summary>A bounded series request; EndDate is inclusive and null means up to today.</summary>
+    async Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(
+        string baseCurrency,
+        string quoteCurrency,
+        DateOnly startDate,
+        DateOnly? endDate,
+        CancellationToken cancellationToken)
+    {
+        var bars = await GetFxSeriesAsync(baseCurrency, quoteCurrency, startDate, cancellationToken);
+        return endDate is { } end ? bars.Where(bar => bar.Date <= end).ToList() : bars;
+    }
 }
 
 public sealed class MarketDataProviderException(

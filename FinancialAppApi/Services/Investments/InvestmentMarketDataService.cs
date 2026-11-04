@@ -16,7 +16,7 @@ public sealed record MarketRefreshResponse(
     IReadOnlyList<string> Warnings,
     string? Message);
 
-public sealed class InvestmentMarketDataService(
+public sealed partial class InvestmentMarketDataService(
     AppDbContext context,
     IMarketDataProvider provider,
     IOptions<MarketDataOptions> options,
@@ -165,6 +165,7 @@ public sealed class InvestmentMarketDataService(
         {
             var (key, attempts) = ParseItem(item);
             var succeeded = true;
+            var needsAnotherCall = false;
             try
             {
                 if (key.StartsWith("instrument:", StringComparison.Ordinal))
@@ -180,8 +181,9 @@ public sealed class InvestmentMarketDataService(
                         items.Remove(item);
                         continue;
                     }
-                    var warning = await RefreshInstrumentAsync(instrument, transactions, cancellationToken);
-                    if (warning is not null) warnings.Add(warning);
+                    var outcome = await RefreshInstrumentAsync(instrument, transactions, cancellationToken);
+                    if (outcome.Warning is not null) warnings.Add(outcome.Warning);
+                    needsAnotherCall = outcome.NeedsAnotherCall;
                 }
                 else
                 {
@@ -192,18 +194,14 @@ public sealed class InvestmentMarketDataService(
                         items.Remove(item);
                         continue;
                     }
-                    var relevantDates = transactions.Where(value =>
-                            heldInstruments.Any(instrument => instrument.Id == value.InstrumentId &&
-                                                          instrument.Currency.Equals(pair[1], StringComparison.OrdinalIgnoreCase)))
-                        .Select(value => value.TradeDate)
-                        .Concat(cashFlows
-                            .Where(value => value.Currency.Equals(pair[1], StringComparison.OrdinalIgnoreCase))
-                            .Select(value => value.Date))
-                        .ToList();
-                    var warning = await RefreshFxAsync(pair[1], pair[2],
-                        relevantDates.Count == 0 ? DateOnly.FromDateTime(DateTime.UtcNow) : relevantDates.Min(),
-                        cancellationToken);
-                    if (warning is not null) warnings.Add(warning);
+                    var needFrom = FxNeedFrom(
+                        pair[1],
+                        transactions.Select(value => (value.InstrumentId, value.TradeDate)),
+                        heldInstruments.ToDictionary(value => value.Id, value => value.Currency),
+                        cashFlows.Select(value => (value.Currency, value.ToCurrency, value.Date)));
+                    var outcome = await RefreshFxAsync(pair[1], pair[2], needFrom, cancellationToken);
+                    if (outcome.Warning is not null) warnings.Add(outcome.Warning);
+                    needsAnotherCall = outcome.NeedsAnotherCall;
                 }
             }
             catch (MarketDataProviderException exception)
@@ -216,6 +214,13 @@ public sealed class InvestmentMarketDataService(
             if (succeeded)
             {
                 activeJob.UpdatedItems++;
+                if (needsAnotherCall)
+                {
+                    // Another page of history (or the forward refresh a backfill skipped) is still
+                    // owed. Queue it as a fresh item so it waits for its own quota allowance.
+                    items.Add(key);
+                    activeJob.TotalItems++;
+                }
             }
             else if (attempts + 1 < MaxItemAttempts)
             {
@@ -253,17 +258,20 @@ public sealed class InvestmentMarketDataService(
                 .Select(value => value.Currency)
                 .FirstOrDefaultAsync(cancellationToken) ?? "USD")
             .ToUpperInvariant();
-        var instrumentIds = await context.InvestmentTransactions.AsNoTracking()
-            .Select(value => value.InstrumentId)
-            .Distinct()
+        var firstTrades = await context.InvestmentTransactions.AsNoTracking()
+            .GroupBy(value => value.InstrumentId)
+            .Select(group => new { InstrumentId = group.Key, TradeDate = group.Min(value => value.TradeDate) })
             .ToListAsync(cancellationToken);
+        var instrumentIds = firstTrades.Select(value => value.InstrumentId).ToList();
         var instruments = await context.InvestmentInstruments.AsNoTracking()
             .Where(value => instrumentIds.Contains(value.Id) && !value.IsArchived)
             .ToListAsync(cancellationToken);
-        var hasCashFlows = await context.InvestmentCashFlows.AsNoTracking()
-            .AnyAsync(cancellationToken);
-        var hasInvestmentData = instrumentIds.Count > 0 || hasCashFlows;
+        var cashFlows = await context.InvestmentCashFlows.AsNoTracking()
+            .Select(value => new { value.Currency, value.ToCurrency, value.Date })
+            .ToListAsync(cancellationToken);
+        var hasInvestmentData = instrumentIds.Count > 0 || cashFlows.Count > 0;
         var cutoff = DateTime.UtcNow.AddMinutes(-InvestmentAllocationService.AutomaticRefreshMinutes);
+        var series = new List<(string Kind, string SeriesKey, DateOnly NeedFrom)>();
         foreach (var instrument in instruments.Where(value => !value.IsCustom))
         {
             var reference = await MarketDataReferenceResolver.ResolveAsync(
@@ -274,17 +282,17 @@ public sealed class InvestmentMarketDataService(
                                 value.ExternalInstrumentId == reference.ExternalId)
                 .MaxAsync(value => (DateTime?)value.FetchedAt, cancellationToken);
             if (fetchedAt is null || fetchedAt < cutoff) return true;
+            series.Add((MarketSeriesKinds.Price, reference.ExternalId,
+                firstTrades.First(value => value.InstrumentId == instrument.Id).TradeDate));
         }
 
         var currencies = instruments.Select(value => value.Currency)
-            .Concat(await context.InvestmentCashFlows.AsNoTracking()
-                .Select(value => value.Currency).ToListAsync(cancellationToken))
-            .Concat(await context.InvestmentCashFlows.AsNoTracking()
-                .Where(value => value.ToCurrency != null)
-                .Select(value => value.ToCurrency!).ToListAsync(cancellationToken))
+            .Concat(cashFlows.Select(value => value.Currency))
+            .Concat(cashFlows.Where(value => value.ToCurrency is not null).Select(value => value.ToCurrency!))
             .Concat(appCurrency == "USD" || !hasInvestmentData ? [] : ["USD"])
             .Where(value => !value.Equals(appCurrency, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase);
+        var instrumentCurrencies = instruments.ToDictionary(value => value.Id, value => value.Currency);
         foreach (var currency in currencies)
         {
             var fetchedAt = await context.FxRateBars.AsNoTracking()
@@ -293,145 +301,15 @@ public sealed class InvestmentMarketDataService(
                                 value.QuoteCurrency == appCurrency)
                 .MaxAsync(value => (DateTime?)value.FetchedAt, cancellationToken);
             if (fetchedAt is null || fetchedAt < cutoff) return true;
+            series.Add((MarketSeriesKinds.Fx, FxSeriesKey(currency, appCurrency), FxNeedFrom(
+                currency,
+                firstTrades.Select(value => (value.InstrumentId, value.TradeDate)),
+                instrumentCurrencies,
+                cashFlows.Select(value => (value.Currency, value.ToCurrency, value.Date)))));
         }
-        return false;
-    }
-
-    /// <returns>A user-facing warning when the provider returned nothing, otherwise null.</returns>
-    private async Task<string?> RefreshInstrumentAsync(
-        InvestmentInstrument instrument,
-        IReadOnlyList<InvestmentTransaction> transactions,
-        CancellationToken cancellationToken)
-    {
-        var reference = await MarketDataReferenceResolver.ResolveAsync(
-            context, instrument, provider, cancellationToken);
-        if (reference is null)
-            return $"No market-data mapping is available for {instrument.Symbol}.";
-        var latest = await context.MarketPriceBars
-            .Where(value => value.Provider == ProviderId &&
-                            value.ExternalInstrumentId == reference.ExternalId)
-            .OrderByDescending(value => value.MarketDate)
-            .FirstOrDefaultAsync(cancellationToken);
-        if (latest is not null &&
-            DateTime.UtcNow - latest.FetchedAt < TimeSpan.FromMinutes(Math.Max(1, _options.FreshnessMinutes)))
-        {
-            return null;
-        }
-        var earliest = transactions.Where(value => value.InstrumentId == instrument.Id).Min(value => value.TradeDate);
-        var start = latest is null
-            ? earliest
-            : latest.MarketDate.AddDays(-7);
-        var bars = await provider.GetDailySeriesAsync(
-            reference,
-            start,
-            cancellationToken);
-        if (bars.Count == 0)
-        {
-            // Delisted symbol, market holiday, or a wrong ProviderSymbol mapping. Record the
-            // attempt anyway; otherwise the freshness gate never advances and this symbol
-            // re-burns a provider call on every refresh, forever.
-            if (latest is not null) latest.FetchedAt = DateTime.UtcNow;
-            logger.LogInformation(
-                "Provider returned no price bars for {Symbol}.", instrument.Symbol);
-            return $"No recent prices were available for {instrument.Symbol}. Check the symbol mapping if this persists.";
-        }
-        // One range read instead of a lookup per bar: a first refresh of a long-held position
-        // returns years of daily bars, and a per-bar query made the user wait on hundreds of
-        // sequential round trips. Keyed by date, so a repeated date in the provider's series
-        // updates the row it already added instead of inserting a duplicate.
-        var firstDate = bars.Min(bar => bar.Date);
-        var lastDate = bars.Max(bar => bar.Date);
-        var existingByDate = await context.MarketPriceBars
-            .Where(value => value.Provider == ProviderId &&
-                            value.ExternalInstrumentId == reference.ExternalId &&
-                            value.MarketDate >= firstDate &&
-                            value.MarketDate <= lastDate)
-            .ToDictionaryAsync(value => value.MarketDate, cancellationToken);
-        foreach (var bar in bars)
-        {
-            if (!existingByDate.TryGetValue(bar.Date, out var existing))
-            {
-                existingByDate[bar.Date] = context.MarketPriceBars.Add(new MarketPriceBar
-                {
-                    Provider = ProviderId,
-                    ExternalInstrumentId = reference.ExternalId,
-                    Symbol = instrument.ProviderSymbol ?? instrument.Symbol,
-                    Mic = instrument.ProviderMic ?? "",
-                    MarketDate = bar.Date,
-                    Close = bar.Close
-                }).Entity;
-            }
-            else
-            {
-                existing.Close = bar.Close;
-                existing.FetchedAt = DateTime.UtcNow;
-            }
-        }
-        return null;
-    }
-
-    /// <returns>A user-facing warning when the provider returned nothing, otherwise null.</returns>
-    private async Task<string?> RefreshFxAsync(
-        string baseCurrency,
-        string quoteCurrency,
-        DateOnly earliest,
-        CancellationToken cancellationToken)
-    {
-        var latest = await context.FxRateBars
-            .Where(value => value.Provider == ProviderId &&
-                            value.BaseCurrency == baseCurrency &&
-                            value.QuoteCurrency == quoteCurrency)
-            .OrderByDescending(value => value.MarketDate)
-            .FirstOrDefaultAsync(cancellationToken);
-        if (latest is not null &&
-            DateTime.UtcNow - latest.FetchedAt < TimeSpan.FromMinutes(Math.Max(1, _options.FreshnessMinutes)))
-        {
-            return null;
-        }
-        var bars = await provider.GetFxSeriesAsync(
-            baseCurrency,
-            quoteCurrency,
-            latest is null ? earliest : latest.MarketDate.AddDays(-7),
-            cancellationToken);
-        if (bars.Count == 0)
-        {
-            // See RefreshInstrumentAsync: record the attempt so the freshness gate advances
-            // even when the provider has nothing for this pair.
-            if (latest is not null) latest.FetchedAt = DateTime.UtcNow;
-            logger.LogInformation(
-                "Provider returned no FX bars for {Base}/{Quote}.", baseCurrency, quoteCurrency);
-            return $"No recent {baseCurrency}/{quoteCurrency} exchange rates were available.";
-        }
-        // Same single range read as RefreshInstrumentAsync.
-        var firstDate = bars.Min(bar => bar.Date);
-        var lastDate = bars.Max(bar => bar.Date);
-        var existingByDate = await context.FxRateBars
-            .Where(value => value.Provider == ProviderId &&
-                            value.BaseCurrency == baseCurrency &&
-                            value.QuoteCurrency == quoteCurrency &&
-                            value.MarketDate >= firstDate &&
-                            value.MarketDate <= lastDate)
-            .ToDictionaryAsync(value => value.MarketDate, cancellationToken);
-        foreach (var bar in bars)
-        {
-            if (!existingByDate.TryGetValue(bar.Date, out var existing))
-            {
-                existingByDate[bar.Date] = context.FxRateBars.Add(new FxRateBar
-                {
-                    Provider = ProviderId,
-                    BaseCurrency = baseCurrency,
-                    QuoteCurrency = quoteCurrency,
-                    MarketDate = bar.Date,
-                    Rate = bar.Rate
-                }).Entity;
-            }
-            else
-            {
-                existing.Rate = bar.Rate;
-                existing.FetchedAt = DateTime.UtcNow;
-            }
-        }
-        return null;
+        // Fresh is not enough: a pair another user keeps fresh may still stop short of this
+        // user's oldest entry, for example right after they switch their app currency.
+        return await AnySeriesNeedsBackfillAsync(series, cancellationToken);
     }
 
     private static int SecondsUntilNextMinute()

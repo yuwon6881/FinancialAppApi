@@ -6,6 +6,9 @@ public class QueryFilterBypassAuditTests
 {
     private static readonly HashSet<string> AuditedBypassFiles =
     [
+        // Snapshot invalidation reaches only the owner of the investment row being saved. Provider
+        // cutover writes market mappings with no signed-in user, and those must still invalidate.
+        "FinancialAppApi/Database/AppDbContext.InvestmentSnapshots.cs",
         "FinancialAppApi/Database/DbSeeder.cs",
         "FinancialAppApi/Services/Accounts/LedgerAccountService.Reconciliation.cs",
         "FinancialAppApi/Services/Investments/MarketDataCutoverService.cs",
