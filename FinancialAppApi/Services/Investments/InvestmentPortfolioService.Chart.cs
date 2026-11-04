@@ -13,7 +13,8 @@ public partial class InvestmentPortfolioService
         IReadOnlyDictionary<Guid, MarketInstrumentReference> references,
         IReadOnlyList<MarketPriceBar> priceBars,
         IReadOnlyList<FxRateBar> fxBars,
-        string appCurrency)
+        string appCurrency,
+        IReadOnlyList<InvestmentPeriodSnapshot> settled)
     {
         if (transactions.Count == 0 && cashFlows.Count == 0) return [];
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -21,11 +22,29 @@ public partial class InvestmentPortfolioService
             ?? transactions.Select(value => value.TradeDate)
                 .Concat(cashFlows.Select(value => value.Date))
                 .Min();
+
+        // Settled months come from the month-end cache; only the days after the newest one are
+        // valued here, starting from the positions and cash it carried. Without a usable cache
+        // the walk starts from nothing and values every date, as it always did.
+        var points = new List<InvestmentChartPointDto>();
+        var opening = ChartOpening.Empty;
+        var resume = settled.Count > 0 ? InvestmentCarryState.TryParse(settled[^1].CarryState) : null;
+        if (resume is not null)
+        {
+            decimal? deposits = 0;
+            foreach (var month in settled)
+            {
+                deposits += month.NetContributions;
+                if (month.PeriodEnd >= from) points.Add(new InvestmentChartPointDto(month.PeriodEnd, month.ClosingValue, deposits));
+            }
+            opening = new ChartOpening(settled[^1].PeriodEnd, resume, deposits);
+        }
+
         var dates = transactions.Select(value => value.TradeDate)
             .Concat(cashFlows.Select(value => value.Date))
             .Concat(priceBars.Select(value => value.MarketDate))
             .Append(today)
-            .Where(value => value >= from && value <= today)
+            .Where(value => value >= from && value > opening.Date && value <= today)
             .Distinct()
             .Order()
             .ToList();
@@ -40,14 +59,15 @@ public partial class InvestmentPortfolioService
             value => seriesResolver.ResolvePrices(references.GetValueOrDefault(value.Id), priceBars));
         decimal? HistoricalTradeFx(InvestmentTransaction transaction) =>
             seriesResolver.ResolveFx(transaction.Instrument.Currency, appCurrency, transaction.TradeDate, fxBars)?.Rate;
-        var points = new List<InvestmentChartPointDto>();
+        var laterTransactions = transactions.Where(value => value.TradeDate > opening.Date).ToList();
+        var laterFlows = cashFlows.Where(value => value.Date > opening.Date).ToList();
         foreach (var date in dates)
         {
-            var relevant = transactions.Where(value => value.TradeDate <= date);
-            var result = accounting.Calculate(relevant, appCurrency, HistoricalTradeFx);
+            var relevant = laterTransactions.Where(value => value.TradeDate <= date).ToList();
+            var result = accounting.Calculate(relevant, appCurrency, HistoricalTradeFx, opening.Carry.Positions);
             decimal market = 0;
             decimal cash = 0;
-            decimal deposits = 0;
+            decimal? deposits = opening.Deposits;
             var complete = true;
             foreach (var position in result.Positions)
             {
@@ -66,13 +86,13 @@ public partial class InvestmentPortfolioService
                 }
                 market += price.Price * position.Units * fx.Rate;
             }
-            var cashNative = new Dictionary<(Guid AccountId, string Currency), decimal>();
+            var cashNative = opening.Carry.Cash.ToDictionary(value => (value.AccountId, value.Currency), value => value.Amount);
             void AddCash(Guid accountId, string currency, decimal amount)
             {
                 var key = (accountId, currency);
                 cashNative[key] = cashNative.GetValueOrDefault(key) + amount;
             }
-            foreach (var flow in cashFlows.Where(value => value.Date <= date))
+            foreach (var flow in laterFlows.Where(value => value.Date <= date))
             {
                 AddCash(flow.AccountId, flow.Currency, flow.Amount);
                 if (flow.ToCurrency is not null && flow.ToAmount is not null)
@@ -94,6 +114,7 @@ public partial class InvestmentPortfolioService
             }
             foreach (var balance in cashNative)
             {
+                if (balance.Value == 0) continue;
                 var cashFx = seriesResolver.ResolveFx(balance.Key.Currency, appCurrency, date, fxBars);
                 if (cashFx is null) complete = false;
                 else cash += balance.Value * cashFx.Rate;
@@ -103,7 +124,14 @@ public partial class InvestmentPortfolioService
                 complete ? market + cash : null,
                 complete ? deposits : null));
         }
-        return points;
+        // Decades of month-ends would outgrow the cap on their own; thin the whole series.
+        return InvestmentChartRange.Sample(points);
+    }
+
+    /// <summary>Where the day-by-day walk starts: nothing, or the newest settled month-end.</summary>
+    private sealed record ChartOpening(DateOnly Date, InvestmentCarryState Carry, decimal? Deposits)
+    {
+        public static readonly ChartOpening Empty = new(DateOnly.MinValue, InvestmentCarryState.Empty, 0);
     }
 
     private static decimal RoundMoney(decimal value)

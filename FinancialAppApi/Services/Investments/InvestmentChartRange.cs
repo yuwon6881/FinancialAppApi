@@ -28,6 +28,16 @@ public static class InvestmentChartRange
     };
 
     /// <summary>
+    /// Ranges reaching back further than this draw settled months from the month-end snapshot
+    /// cache and value only the days since: replaying every day of decades of activity is what
+    /// made long ranges cost more each year.
+    /// </summary>
+    public const int MonthlyHistoryAfterDays = 400;
+
+    public static bool UsesMonthlyHistory(DateOnly from, DateOnly today)
+        => today.DayNumber - from.DayNumber > MonthlyHistoryAfterDays;
+
+    /// <summary>
     /// Thins an ordered series to <see cref="MaxPoints"/>, always keeping the last
     /// entry: the newest point is the one the reader actually looks at.
     /// </summary>
