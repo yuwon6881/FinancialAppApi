@@ -102,6 +102,36 @@ public partial class AppDbContext
             entity.HasIndex(e => new { e.Provider, e.BaseCurrency, e.QuoteCurrency, e.MarketDate }).IsUnique();
         });
 
+        modelBuilder.Entity<InvestmentPeriodSnapshot>(entity =>
+        {
+            entity.Property(e => e.PeriodEnd).HasColumnType("date");
+            entity.Property(e => e.ComputedAt).HasColumnType("timestamp with time zone");
+            entity.Property(e => e.CarryState).HasColumnType("jsonb");
+            foreach (var amount in new[]
+                     {
+                         nameof(InvestmentPeriodSnapshot.OpeningValue), nameof(InvestmentPeriodSnapshot.ClosingValue),
+                         nameof(InvestmentPeriodSnapshot.MarketValue), nameof(InvestmentPeriodSnapshot.CashValue),
+                         nameof(InvestmentPeriodSnapshot.NetContributions), nameof(InvestmentPeriodSnapshot.WeightedContributions),
+                         nameof(InvestmentPeriodSnapshot.Dividends), nameof(InvestmentPeriodSnapshot.RealisedProfitLoss),
+                         nameof(InvestmentPeriodSnapshot.CostBasis),
+                     })
+            {
+                entity.Property(amount).HasColumnType("numeric(28,10)");
+            }
+            // Serves both the resume read (newest Total row) and the invalidation delete (PeriodEnd >= date).
+            entity.HasIndex(e => new { e.UserId, e.PeriodEnd, e.Segment }).IsUnique();
+        });
+
+        modelBuilder.Entity<MarketSeriesCoverage>(entity =>
+        {
+            entity.Property(e => e.CoveredFrom).HasColumnType("date");
+            entity.Property(e => e.CheckedAt).HasColumnType("timestamp with time zone");
+            entity.HasIndex(e => new { e.Provider, e.Kind, e.SeriesKey }).IsUnique();
+            entity.ToTable(t => t.HasCheckConstraint(
+                "ck_marketseriescoverages_kind",
+                "\"Kind\" IN ('Price', 'Fx')"));
+        });
+
         modelBuilder.Entity<MarketDataRefreshJob>(entity =>
         {
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");

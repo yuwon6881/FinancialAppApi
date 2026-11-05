@@ -307,6 +307,12 @@ public sealed class InvestmentMarketDataTests
             Close = 90m,
             FetchedAt = DateTime.UtcNow.AddDays(-3)
         });
+        // Older history was already asked for, so this refresh is the forward one under test.
+        context.MarketSeriesCoverages.Add(new MarketSeriesCoverage
+        {
+            Provider = "test", Kind = MarketSeriesKinds.Price, SeriesKey = externalId,
+            CoveredFrom = today.AddDays(-30), CheckedAt = DateTime.UtcNow.AddDays(-3)
+        });
         await context.SaveChangesAsync();
         var provider = new CountingProvider
         {

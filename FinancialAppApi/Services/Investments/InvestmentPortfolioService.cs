@@ -148,7 +148,8 @@ public sealed partial class InvestmentPortfolioService(
     AppDbContext context,
     InvestmentAccountingService accounting,
     IMarketDataProvider provider,
-    InvestmentAllocationService? allocationService = null)
+    InvestmentAllocationService? allocationService = null,
+    InvestmentSnapshotService? periodSnapshots = null)
 {
     private readonly MarketDataSeriesResolver seriesResolver = new(provider.Descriptor);
 
@@ -441,8 +442,8 @@ public sealed partial class InvestmentPortfolioService(
             returnFlows.Add(new DatedInvestmentFlow(flow.Date, -amountApp));
         }
 
-        var chart = BuildChartIfRequested(
-            includeChart, range, transactions, cashFlows, instruments, references, priceBars, fxBars, appCurrency);
+        var chart = await BuildChartIfRequestedAsync(
+            includeChart, range, transactions, cashFlows, instruments, references, priceBars, fxBars, appCurrency, cancellationToken);
         var latestFetchedAt = holdings.Where(value => value.PriceFetchedAt is not null)
             .Select(value => value.PriceFetchedAt)
             .Max();

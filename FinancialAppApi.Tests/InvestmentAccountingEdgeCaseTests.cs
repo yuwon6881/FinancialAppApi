@@ -3,6 +3,7 @@ using FinancialAppApi.Models;
 using FinancialAppApi.Services.Investments;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -93,7 +94,11 @@ public sealed class InvestmentAccountingEdgeCaseTests
             new InstrumentHistoryService(context, accounting, provider),
             new InvestmentQueryService(context),
             market,
-            provider)
+            provider,
+            new InvestmentSnapshotService(
+                context, accounting, provider,
+                new FinancialAppApi.Services.FinancialClock(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Financial:TimeZoneId"] = "UTC" }).Build()),
+                NullLogger<InvestmentSnapshotService>.Instance))
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };

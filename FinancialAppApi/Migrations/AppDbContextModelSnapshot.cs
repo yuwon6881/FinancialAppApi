@@ -870,6 +870,85 @@ namespace FinancialAppApi.Migrations
                     b.ToTable("InvestmentInstrumentMarketMappings");
                 });
 
+            modelBuilder.Entity("FinancialAppApi.Models.InvestmentPeriodSnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AppCurrency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<string>("CarryState")
+                        .HasColumnType("jsonb");
+
+                    b.Property<decimal?>("CashValue")
+                        .HasColumnType("numeric(28,10)");
+
+                    b.Property<decimal?>("ClosingValue")
+                        .HasColumnType("numeric(28,10)");
+
+                    b.Property<DateTime>("ComputedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<decimal?>("CostBasis")
+                        .HasColumnType("numeric(28,10)");
+
+                    b.Property<decimal?>("Dividends")
+                        .HasColumnType("numeric(28,10)");
+
+                    b.Property<bool>("IsComplete")
+                        .HasColumnType("boolean");
+
+                    b.Property<decimal?>("MarketValue")
+                        .HasColumnType("numeric(28,10)");
+
+                    b.Property<string>("MissingReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<decimal?>("NetContributions")
+                        .HasColumnType("numeric(28,10)");
+
+                    b.Property<decimal?>("OpeningValue")
+                        .HasColumnType("numeric(28,10)");
+
+                    b.Property<DateOnly>("PeriodEnd")
+                        .HasColumnType("date");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<decimal?>("RealisedProfitLoss")
+                        .HasColumnType("numeric(28,10)");
+
+                    b.Property<int>("SchemaVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Segment")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<decimal?>("WeightedContributions")
+                        .HasColumnType("numeric(28,10)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "PeriodEnd", "Segment")
+                        .IsUnique();
+
+                    b.ToTable("InvestmentPeriodSnapshots");
+                });
+
             modelBuilder.Entity("FinancialAppApi.Models.InvestmentPlan", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1325,6 +1404,46 @@ namespace FinancialAppApi.Migrations
                         .IsUnique();
 
                     b.ToTable("MarketPriceBars");
+                });
+
+            modelBuilder.Entity("FinancialAppApi.Models.MarketSeriesCoverage", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("CheckedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateOnly>("CoveredFrom")
+                        .HasColumnType("date");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("SeriesKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Provider", "Kind", "SeriesKey")
+                        .IsUnique();
+
+                    b.ToTable("MarketSeriesCoverages", t =>
+                        {
+                            t.HasCheckConstraint("ck_marketseriescoverages_kind", "\"Kind\" IN ('Price', 'Fx')");
+                        });
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.PendingTwoFactor", b =>
@@ -2589,6 +2708,15 @@ namespace FinancialAppApi.Migrations
                         .IsRequired();
 
                     b.Navigation("InvestmentInstrument");
+                });
+
+            modelBuilder.Entity("FinancialAppApi.Models.InvestmentPeriodSnapshot", b =>
+                {
+                    b.HasOne("FinancialAppApi.Models.AppUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.InvestmentPlan", b =>

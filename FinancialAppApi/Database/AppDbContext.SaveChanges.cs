@@ -10,6 +10,7 @@ public partial class AppDbContext
     {
         CaptureCategoryLimitAlertEvaluations();
         ApplyUserOwnership();
+        InvalidateInvestmentSnapshots();
         var result = base.SaveChanges(acceptAllChangesOnSuccess);
         _capturedCategoryLimitTransactions.Clear();
         return result;
@@ -21,6 +22,7 @@ public partial class AppDbContext
     {
         CaptureCategoryLimitAlertEvaluations();
         ApplyUserOwnership();
+        await InvalidateInvestmentSnapshotsAsync(cancellationToken);
         var result = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
         _capturedCategoryLimitTransactions.Clear();
         return result;

@@ -3,6 +3,7 @@ using FinancialAppApi.Models;
 using FinancialAppApi.Services.Investments;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -19,8 +20,9 @@ public sealed class InvestmentsControllerTests
                 .Select(attribute => $"{attribute.HttpMethods.Single()} {attribute.Template}"))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        Assert.Equal(22, routes.Count);
+        Assert.Equal(23, routes.Count);
         Assert.Contains("GET portfolio", routes);
+        Assert.Contains("GET history", routes);
         Assert.Contains("GET accounts", routes);
         Assert.Contains("GET transactions", routes);
         Assert.Contains("GET cash-flows", routes);
@@ -28,6 +30,20 @@ public sealed class InvestmentsControllerTests
         Assert.Contains("POST market-data/refresh", routes);
         Assert.Contains("POST transactions/restore", routes);
         Assert.Contains("POST cash-flows/restore", routes);
+    }
+
+    [Fact]
+    public async Task HistoryWithNoActivityIsEmptyRatherThanZero()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var controller = NewController(context);
+
+        var history = Assert.IsType<InvestmentHistoryDto>(
+            Assert.IsType<OkObjectResult>((await controller.GetHistory()).Result).Value);
+
+        Assert.Empty(history.Years);
+        Assert.Empty(history.Months);
+        Assert.Null(history.Lifetime.Value);
     }
 
     [Fact]
@@ -264,7 +280,11 @@ public sealed class InvestmentsControllerTests
             new InvestmentMarketDataService(
                 context, provider, options,
                 NullLogger<InvestmentMarketDataService>.Instance),
-            provider)
+            provider,
+            new InvestmentSnapshotService(
+                context, accounting, provider,
+                new FinancialAppApi.Services.FinancialClock(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Financial:TimeZoneId"] = "UTC" }).Build()),
+                NullLogger<InvestmentSnapshotService>.Instance))
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };

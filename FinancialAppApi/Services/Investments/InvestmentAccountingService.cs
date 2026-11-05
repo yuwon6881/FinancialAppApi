@@ -41,13 +41,33 @@ public sealed class InvestmentAccountingService
     // foreign-currency dividends, fees, and trades be valued at the market rate on
     // the trade date (e.g. a stored provider daily close) instead of forcing the
     // user to type a rate they never executed.
+    //
+    // opening: positions carried from a stored month-end snapshot. Replaying only the
+    // transactions after that month-end from these positions gives the same result as
+    // replaying the whole history, which is what lets a snapshot rebuild resume.
     public InvestmentCalculation Calculate(
         IEnumerable<InvestmentTransaction> transactions,
         string appCurrency,
-        Func<InvestmentTransaction, decimal?>? historicalFx = null)
+        Func<InvestmentTransaction, decimal?>? historicalFx = null,
+        IEnumerable<CalculatedPosition>? opening = null)
     {
         var positions = new Dictionary<(Guid AccountId, Guid InstrumentId), MutablePosition>();
         var warnings = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var carried in opening ?? [])
+        {
+            positions[(carried.AccountId, carried.InstrumentId)] = new MutablePosition
+            {
+                Units = carried.Units,
+                Basis = carried.CostBasisNative,
+                BasisApp = carried.CostBasisApp,
+                Realised = carried.RealisedNative,
+                RealisedApp = carried.RealisedApp,
+                Dividends = carried.DividendsNative,
+                DividendsApp = carried.DividendsApp,
+                Contributions = carried.NetContributionsNative,
+                ContributionsApp = carried.NetContributionsApp,
+            };
+        }
 
         foreach (var transaction in OrderTransactions(transactions))
         {

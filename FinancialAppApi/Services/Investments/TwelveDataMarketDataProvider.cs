@@ -74,9 +74,22 @@ public sealed class TwelveDataMarketDataProvider(
         return results;
     }
 
+    /// <summary>
+    /// Ten years per request: under the 5,000-row response cap even for a series with a bar on
+    /// every calendar day, so no page is ever silently truncated at either end.
+    /// </summary>
+    public int MaxSeriesDaysPerRequest => 3650;
+
+    public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(
+        MarketInstrumentReference instrument,
+        DateOnly startDate,
+        CancellationToken cancellationToken)
+        => GetDailySeriesAsync(instrument, startDate, null, cancellationToken);
+
     public async Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(
         MarketInstrumentReference instrument,
         DateOnly startDate,
+        DateOnly? endDate,
         CancellationToken cancellationToken)
     {
         EnsureConfigured();
@@ -84,32 +97,47 @@ public sealed class TwelveDataMarketDataProvider(
         var (symbol, mic) = ParseReference(instrument.ExternalId);
         // Twelve Data rejects a start date that is still in the future for its own clock.
         var safeStart = Min(startDate, DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1));
-        var path = $"/time_series?symbol={Uri.EscapeDataString(symbol)}&interval=1day&start_date={safeStart:yyyy-MM-dd}&outputsize=5000";
+        var path = $"/time_series?symbol={Uri.EscapeDataString(symbol)}&interval=1day&start_date={safeStart:yyyy-MM-dd}{EndDateParameter(endDate)}&outputsize=5000";
         if (!string.IsNullOrWhiteSpace(mic))
         {
             path += $"&mic_code={Uri.EscapeDataString(mic)}";
         }
         using var json = await GetJsonAsync(path, cancellationToken);
         return ReadSeries(json.RootElement, "close")
+            .Where(value => endDate is null || value.Date <= endDate)
             .Select(value => new ProviderPriceBar(value.Date, value.Value))
             .ToList();
     }
+
+    public Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(
+        string baseCurrency,
+        string quoteCurrency,
+        DateOnly startDate,
+        CancellationToken cancellationToken)
+        => GetFxSeriesAsync(baseCurrency, quoteCurrency, startDate, null, cancellationToken);
 
     public async Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(
         string baseCurrency,
         string quoteCurrency,
         DateOnly startDate,
+        DateOnly? endDate,
         CancellationToken cancellationToken)
     {
         EnsureConfigured();
         var symbol = $"{baseCurrency.ToUpperInvariant()}/{quoteCurrency.ToUpperInvariant()}";
         using var json = await GetJsonAsync(
-            $"/time_series?symbol={Uri.EscapeDataString(symbol)}&interval=1day&start_date={startDate:yyyy-MM-dd}&outputsize=5000",
+            $"/time_series?symbol={Uri.EscapeDataString(symbol)}&interval=1day&start_date={startDate:yyyy-MM-dd}{EndDateParameter(endDate)}&outputsize=5000",
             cancellationToken);
         return ReadSeries(json.RootElement, "close")
+            .Where(value => endDate is null || value.Date <= endDate)
             .Select(value => new ProviderFxBar(value.Date, value.Value))
             .ToList();
     }
+
+    // Asks one day past the inclusive end and filters locally, so the result is the same whether
+    // the provider treats end_date as inclusive or exclusive.
+    private static string EndDateParameter(DateOnly? endDate)
+        => endDate is { } end ? $"&end_date={end.AddDays(1):yyyy-MM-dd}" : string.Empty;
 
     public MarketInstrumentReference? TryResolveLegacyReference(string? symbol, string? mic)
         => string.IsNullOrWhiteSpace(symbol) ? null : CreateReference(symbol, mic);

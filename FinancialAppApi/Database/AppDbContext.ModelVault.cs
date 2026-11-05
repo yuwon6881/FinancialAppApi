@@ -109,6 +109,7 @@ public partial class AppDbContext
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentTransaction>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentCashFlow>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<InvestmentPlan>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<InvestmentPeriodSnapshot>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<MarketDataRefreshJob>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<VaultDocument>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<TaxReliefCategoryLimit>(), applyQueryFilter: true);
