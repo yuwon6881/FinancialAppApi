@@ -4,14 +4,14 @@ using FinancialAppApi.Services.Investments;
 namespace FinancialAppApi.Tests;
 
 /// <summary>
-/// The long-range history is derived from month-end snapshots alone: these pin the time-weighted
-/// chaining, the calendar-year and lifetime totals, the per-market split, and that an unknown
+/// The long-range history is derived from month-end snapshots alone: these pin each period's
+/// return against what was at stake, the money-weighted yearly rate, the calendar-year and lifetime totals, the per-market split, and that an unknown
 /// month leaves every period containing it unknown instead of zero.
 /// </summary>
 public sealed class InvestmentHistorySummarizerTests
 {
     [Fact]
-    public void ChainsMonthlyReturnsIntoYearsAndTheLifetime()
+    public void MeasuresEachPeriodsGrowthAgainstWhatWasAtStake()
     {
         var rows = new List<InvestmentPeriodSnapshot>
         {
@@ -29,7 +29,7 @@ public sealed class InvestmentHistorySummarizerTests
         Assert.Equal([2031, 2030], history.Years.Select(year => year.Year).ToList());
         var y2030 = history.Years[1];
         Assert.True(y2030.IsFullYear);
-        Assert.Equal(2m, y2030.ReturnPercent); // 10 / (0 + 500)
+        Assert.Equal(1m, y2030.ReturnPercent); // 10 / (0 + 1000)
         Assert.Equal(10m, y2030.Growth);
         var y2031 = history.Years[0];
         Assert.False(y2031.IsFullYear);
@@ -38,12 +38,12 @@ public sealed class InvestmentHistorySummarizerTests
         Assert.Equal(1611m, y2031.ClosingValue);
         Assert.Equal(500m, y2031.NetContributions);
         Assert.Equal(101m, y2031.Growth);
-        Assert.Equal(10m, y2031.ReturnPercent);
+        Assert.Equal(6.6887m, y2031.ReturnPercent); // 101 / (1010 + 500)
 
         Assert.Equal(1500m, history.Lifetime.NetContributions);
         Assert.Equal(1611m, history.Lifetime.Value);
         Assert.Equal(111m, history.Lifetime.Growth);
-        Assert.Equal(12.2m, history.Lifetime.CumulativeReturnPercent); // 1.02 * 1.10 - 1
+        Assert.Equal(7.4m, history.Lifetime.CumulativeReturnPercent); // 111 / 1500
         Assert.Null(history.Lifetime.AnnualisedReturnPercent); // under a year is never extrapolated
         Assert.Equal([1000m, 1000m, 1500m], history.Months.Select(month => month.CumulativeContributions!.Value).ToList());
     }
@@ -87,7 +87,7 @@ public sealed class InvestmentHistorySummarizerTests
         Assert.Null(y2031.ClosingValue);
         Assert.False(y2031.IsComplete);
         Assert.Equal(["No price for VWRA on 2031-01-31."], y2031.MissingReasons);
-        Assert.Equal(2m, history.Years.Single(year => year.Year == 2030).ReturnPercent);
+        Assert.Equal(1m, history.Years.Single(year => year.Year == 2030).ReturnPercent);
         Assert.Null(history.Lifetime.CumulativeReturnPercent);
         Assert.False(history.Lifetime.IsComplete);
     }
@@ -110,7 +110,7 @@ public sealed class InvestmentHistorySummarizerTests
         Assert.Equal(["Bonds", "USEquity"], markets.Keys.Order().ToList());
         Assert.Equal(400m, markets["Bonds"].NetContributions);
         Assert.Equal(10m, markets["Bonds"].Growth);
-        Assert.Equal(5m, markets["Bonds"].ReturnPercent); // 10 / (400 / 2), Bonds idle in January
+        Assert.Equal(2.5m, markets["Bonds"].ReturnPercent); // 10 / 400; Bonds idle in January
         Assert.Equal(40m, markets["USEquity"].Growth);
         Assert.Equal(600m, markets["USEquity"].NetContributions);
     }
@@ -121,7 +121,37 @@ public sealed class InvestmentHistorySummarizerTests
         var history = InvestmentHistorySummarizer.Summarize("USD",
             [Total(2031, 1, opening: 0, closing: 1002, contributions: 1000, weighted: 0)]);
 
-        Assert.Equal(0.4m, history.Years[0].ReturnPercent); // 2 / (1000 / 2)
+        Assert.Equal(0.4m, history.Months[0].ReturnPercent); // 2 / (1000 / 2)
+        Assert.Equal(0.2m, history.Years[0].ReturnPercent); // 2 / 1000
+    }
+
+    [Fact]
+    public void AReturnNeverDisagreesInSignWithTheGrowthBesideIt()
+    {
+        // A small sum doubles, then a far larger sum arrives and loses: chained month returns
+        // would read +96% for a period that lost money overall.
+        var rows = new List<InvestmentPeriodSnapshot>
+        {
+            Total(2031, 1, opening: 0, closing: 200, contributions: 100, weighted: 100),
+            Segment(2031, 1, "InternationalExUS", opening: 0, closing: 200, contributions: 100),
+            Total(2031, 2, opening: 200, closing: 10000, contributions: 10000, weighted: 10000),
+            Segment(2031, 2, "InternationalExUS", opening: 200, closing: 10000, contributions: 10000),
+        };
+        for (var month = 3; month <= 13; month++)
+        {
+            rows.Add(Total(2031 + (month - 1) / 12, (month - 1) % 12 + 1, opening: 10000, closing: 10000, contributions: 0, weighted: 0));
+            rows.Add(Segment(2031 + (month - 1) / 12, (month - 1) % 12 + 1, "InternationalExUS", opening: 10000, closing: 10000, contributions: 0));
+        }
+
+        var history = InvestmentHistorySummarizer.Summarize("USD", rows);
+
+        var market = history.Lifetime.Segments.Single();
+        Assert.Equal(-100m, market.Growth);
+        Assert.True(market.ReturnPercent < 0);
+        Assert.Equal(-100m, history.Lifetime.Growth);
+        Assert.True(history.Lifetime.CumulativeReturnPercent < 0);
+        Assert.True(history.Lifetime.AnnualisedReturnPercent < 0);
+        Assert.True(history.Years.Single(year => year.Year == 2031).ReturnPercent < 0);
     }
 
     [Fact]

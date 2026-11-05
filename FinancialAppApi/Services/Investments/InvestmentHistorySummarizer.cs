@@ -44,9 +44,10 @@ public sealed record InvestmentHistoryLifetimeDto(
     decimal? Growth,
     decimal? Dividends,
     decimal? RealisedProfitLoss,
-    // Time-weighted: what the investments themselves earned, whatever was added or taken out.
+    // Growth against what was at stake, like every other period's return.
     decimal? CumulativeReturnPercent,
-    // Null until a full year of history exists, so a short run is never extrapolated.
+    // Money-weighted yearly rate (the rate that grows each contribution, from when it arrived, into
+    // today's value). Null until a full year of history exists, so a short run is never extrapolated.
     decimal? AnnualisedReturnPercent,
     bool IsComplete,
     IReadOnlyList<InvestmentHistorySegmentDto> Segments);
@@ -61,9 +62,13 @@ public sealed record InvestmentHistoryDto(
 /// Turns stored month-end snapshots into the long-range history: months, calendar years, and the
 /// lifetime, overall and per market. Pure, and its cost grows only with the number of months.
 ///
-/// Returns are time-weighted: each month's Modified Dietz return, chained. A month whose return
-/// cannot be known (a missing price or rate) leaves every period containing it unknown rather
-/// than silently skipping it. Percentages are percent (12.5 means 12.5%).
+/// A month's return is its Modified Dietz return. A longer period's return is its growth against
+/// what was at stake (the opening value plus every month's money added), so it always carries the
+/// same sign as the growth shown beside it: a chained, time-weighted return could read +0.8% beside
+/// a loss when a small early gain was followed by a loss on a larger sum. The lifetime's yearly rate
+/// is money-weighted for the same reason. A month whose figures cannot be known (a missing price or
+/// rate) leaves every period containing it unknown rather than silently skipping it. Percentages are
+/// percent (12.5 means 12.5%).
 /// </summary>
 public static class InvestmentHistorySummarizer
 {
@@ -144,8 +149,8 @@ public static class InvestmentHistorySummarizer
         var totals = months.Select(month => month.Total!).ToList();
         var period = Period(totals);
         decimal? annualised = null;
-        if (months.Count >= 12 && period.Factor is { } factor && factor > 0)
-            annualised = ToPercent((decimal)Math.Pow((double)factor, 12d / months.Count) - 1);
+        if (months.Count >= 12 && MonthlyMoneyWeightedRate(totals) is { } monthly)
+            annualised = ToPercent((decimal)(Math.Pow(1 + monthly, 12) - 1));
         return new InvestmentHistoryLifetimeDto(
             months[0].PeriodEnd,
             months[^1].PeriodEnd,
@@ -180,16 +185,43 @@ public static class InvestmentHistorySummarizer
         var opening = rows[0].OpeningValue;
         var closing = rows[^1].ClosingValue;
         var contributions = Sum(rows.Select(value => value.NetContributions));
-        decimal? factor = 1;
-        foreach (var row in rows) factor *= MonthFactor(row);
-        return new PeriodFigures(
-            opening,
-            closing,
-            contributions,
-            closing - opening - contributions,
-            factor,
-            ToPercent(factor - 1),
-            rows.All(value => value.IsComplete));
+        var growth = closing - opening - contributions;
+        // Withdrawals do not shrink what was at stake: only money added counts.
+        var atStake = opening + rows.Aggregate((decimal?)0, (sum, value) => sum + (value.NetContributions is { } added ? Math.Max(added, 0) : null));
+        decimal? returnPercent = null;
+        if (growth is { } known && atStake is { } stake)
+            returnPercent = stake > 0 ? ToPercent(known / stake) : known == 0 ? 0 : null;
+        return new PeriodFigures(opening, closing, contributions, growth, returnPercent, rows.All(value => value.IsComplete));
+    }
+
+    /// <summary>
+    /// The monthly rate r at which the opening value and every month's money, each compounding from
+    /// when it arrived, grows into the closing value. Solved by bisection; null when a figure is
+    /// unknown or no rate in range fits.
+    /// </summary>
+    private static double? MonthlyMoneyWeightedRate(IReadOnlyList<InvestmentPeriodSnapshot> rows)
+    {
+        if (rows[0].OpeningValue is not { } opening || rows[^1].ClosingValue is not { } closing) return null;
+        var count = rows.Count;
+        var flows = new List<(double Amount, double Months)>();
+        for (var index = 0; index < count; index++)
+        {
+            if (rows[index].NetContributions is not { } amount) return null;
+            if (amount == 0) continue;
+            // The share of its own month the money was invested for; mid-month when unrecorded.
+            var share = rows[index].WeightedContributions is { } weighted ? (double)(weighted / amount) : 0.5;
+            flows.Add(((double)amount, count - 1 - index + Math.Clamp(share, 0, 1)));
+        }
+        double Excess(double rate) => (double)opening * Math.Pow(1 + rate, count)
+            + flows.Sum(flow => flow.Amount * Math.Pow(1 + rate, flow.Months)) - (double)closing;
+        double low = -0.99, high = 1;
+        if (Math.Sign(Excess(low)) == Math.Sign(Excess(high))) return null;
+        for (var step = 0; step < 200; step++)
+        {
+            var middle = (low + high) / 2;
+            if (Math.Sign(Excess(middle)) == Math.Sign(Excess(low))) low = middle; else high = middle;
+        }
+        return (low + high) / 2;
     }
 
     /// <summary>One plus the month's Modified Dietz return, or null when it cannot be known.</summary>
@@ -235,7 +267,6 @@ public static class InvestmentHistorySummarizer
         decimal? Closing,
         decimal? Contributions,
         decimal? Growth,
-        decimal? Factor,
         decimal? ReturnPercent,
         bool IsComplete);
 }
