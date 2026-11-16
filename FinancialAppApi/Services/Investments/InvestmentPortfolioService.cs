@@ -424,11 +424,7 @@ public sealed partial class InvestmentPortfolioService(
         var contributionLegs = cashFlows
             .SelectMany(flow => InvestmentConstantCurrency.ContributionLegs(flow).Select(leg => (flow.Date, leg.Currency, leg.Amount)))
             .ToList();
-        var moneyPutIn = SumApp(contributionLegs, value => value.Currency, value => value.Amount);
-        var returnFlows = contributionLegs
-            .Where(value => value.Amount != 0)
-            .Select(value => new DatedInvestmentFlow(value.Date, -(ToApp(value.Currency, value.Amount) ?? 0)))
-            .ToList();
+        var annualReturn = CalculateAnnualReturn(contributionLegs, today, totalValue, ToApp);
 
         var chart = await BuildChartIfRequestedAsync(
             includeChart, range, transactions, cashFlows, instruments, references, priceBars, TodayFx, appCurrency, cancellationToken);
@@ -436,10 +432,6 @@ public sealed partial class InvestmentPortfolioService(
             .Select(value => value.PriceFetchedAt)
             .Max();
         var dailyComplete = holdings.Count == 0 || holdings.All(value => value.DailyChangeApp is not null);
-        var annualReturn = totalValue is not null && moneyPutIn is not null
-            ? InvestmentReturnCalculator.Calculate(returnFlows.Append(
-                new DatedInvestmentFlow(today, totalValue.Value)))
-            : null;
         var summary = new InvestmentSummaryDto(
             growthLedger,
             growthContributions,

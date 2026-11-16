@@ -2,6 +2,27 @@ namespace FinancialAppApi.Services.Investments;
 
 public sealed partial class InvestmentPortfolioService
 {
+    private static decimal? CalculateAnnualReturn(
+        IEnumerable<(DateOnly Date, string Currency, decimal Amount)> contributionLegs,
+        DateOnly today,
+        decimal? totalValue,
+        Func<string, decimal?, decimal?> toApp)
+    {
+        if (totalValue is not { } endingValue) return null;
+
+        // Same-day legs in one currency share a rate and cancel before conversion, even when
+        // that currency has no current rate.
+        var flows = new List<DatedInvestmentFlow>();
+        foreach (var day in contributionLegs.GroupBy(leg => (leg.Date, leg.Currency)))
+        {
+            if (toApp(day.Key.Currency, -day.Sum(leg => leg.Amount)) is not { } amount) return null;
+            flows.Add(new DatedInvestmentFlow(day.Key.Date, amount));
+        }
+
+        flows.Add(new DatedInvestmentFlow(today, endingValue));
+        return InvestmentReturnCalculator.Calculate(flows);
+    }
+
     /// <summary>
     /// The portfolio split by currency, each part in its own currency. A currency appears once it
     /// has held money, a position, or a result; one where everything has gone back to zero drops out.

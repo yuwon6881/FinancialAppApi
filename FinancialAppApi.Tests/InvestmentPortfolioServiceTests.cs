@@ -241,6 +241,8 @@ public sealed class InvestmentPortfolioServiceTests
         Assert.Equal(150m, inRinggit.NetDeposits);
         Assert.Equal(20m, inRinggit.UnrealisedProfitLoss);
         Assert.Equal(inRinggit.UnrealisedPercent, inDollars.UnrealisedPercent);
+        Assert.NotNull(inRinggit.AnnualReturn);
+        Assert.Equal(inRinggit.AnnualReturn, inDollars.AnnualReturn);
         Assert.Equivalent(inRinggit, backInRinggit, strict: true);
         // The per-currency view never converts, so it does not move at all.
         Assert.Equivalent(inRinggit.Currencies.Select(value => value with { RateToAppCurrency = null, RateDate = null }),
@@ -322,9 +324,62 @@ public sealed class InvestmentPortfolioServiceTests
 
         Assert.Equal(297m, portfolio.Summary.TotalValue);
         Assert.Null(portfolio.Summary.NetDeposits);
+        Assert.Null(portfolio.Summary.AnnualReturn);
         var latest = portfolio.Chart[^1];
         Assert.Equal(297m, latest.TotalValue);
         Assert.Null(latest.NetDeposits);
+    }
+
+    [Fact]
+    public async Task YearlyReturn_NetsSameDayConversionInItsOwnCurrencyBeforeApplyingFx()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var setting = new FinancialSetting { Currency = "USD" };
+        context.FinancialSettings.Add(setting);
+        var (account, instrument) = await SeedUsdFund(context);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var start = today.AddDays(-730);
+        context.InvestmentCashFlows.AddRange(
+            new InvestmentCashFlow
+            {
+                AccountId = account.Id, Currency = "MYR", Type = "Deposit", Amount = 1000, Date = start
+            },
+            new InvestmentCashFlow
+            {
+                AccountId = account.Id, Currency = "MYR", Type = "Conversion", Amount = -1000,
+                ToCurrency = "USD", ToAmount = 200, Date = start
+            },
+            new InvestmentCashFlow
+            {
+                AccountId = account.Id, Currency = "USD", Type = "Withdrawal", Amount = -20, Date = start.AddDays(365)
+            });
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+            Type = "Buy", TradeDate = start.AddDays(1), Units = 1, UnitPrice = 180, CashAmount = 180
+        });
+        context.MarketPriceBars.Add(new MarketPriceBar
+        {
+            Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST",
+            MarketDate = today.AddDays(-1), Close = 220
+        });
+        await context.SaveChangesAsync();
+
+        var inDollars = (await NewService(context).GetPortfolioAsync("1m", CancellationToken.None)).Summary;
+        Assert.Null(inDollars.NetDeposits);
+        Assert.Equal(220m, inDollars.TotalValue);
+        Assert.NotNull(inDollars.AnnualReturn);
+        Assert.InRange(inDollars.AnnualReturn.Value, 0.09999m, 0.10001m);
+
+        setting.Currency = "MYR";
+        context.FxRateBars.AddRange(
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = start, Rate = 4m },
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = today.AddDays(-1), Rate = 5.5m });
+        await context.SaveChangesAsync();
+
+        var inRinggit = (await NewService(context).GetPortfolioAsync("1m", CancellationToken.None)).Summary;
+        Assert.Equal(1210m, inRinggit.TotalValue);
+        Assert.Equal(inDollars.AnnualReturn, inRinggit.AnnualReturn);
     }
 
     private static async Task<(InvestmentAccount Account, InvestmentInstrument Instrument)> SeedUsdFund(Database.AppDbContext context)

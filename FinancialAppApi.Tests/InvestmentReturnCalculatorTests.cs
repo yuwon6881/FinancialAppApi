@@ -29,6 +29,35 @@ public sealed class InvestmentReturnCalculatorTests
         Assert.True(result > 0.05m);
     }
 
+    [Theory]
+    [InlineData("1")]
+    [InlineData("0.00000001")]
+    public void Calculate_IsIndependentOfCurrencyScale(string amount)
+    {
+        var principal = decimal.Parse(amount, System.Globalization.CultureInfo.InvariantCulture);
+        var start = new DateOnly(2024, 1, 1);
+        var result = InvestmentReturnCalculator.Calculate([
+            new DatedInvestmentFlow(start, -principal),
+            new DatedInvestmentFlow(start.AddDays(365), principal * 0.1m),
+            new DatedInvestmentFlow(start.AddDays(730), principal * 1.1m)
+        ]);
+
+        Assert.NotNull(result);
+        Assert.InRange(result.Value, 0.09999m, 0.10001m);
+    }
+
+    [Fact]
+    public void Calculate_ReturnsExactlyZeroForBreakEven()
+    {
+        var start = new DateOnly(2025, 1, 1);
+        var result = InvestmentReturnCalculator.Calculate([
+            new DatedInvestmentFlow(start, -1000m),
+            new DatedInvestmentFlow(start.AddDays(365), 1000m)
+        ]);
+
+        Assert.Equal(0m, result);
+    }
+
     [Fact]
     public void Calculate_RefusesFlowsWithoutAUsableReturn()
     {

@@ -3,9 +3,8 @@ namespace FinancialAppApi.Services.Investments;
 public sealed record DatedInvestmentFlow(DateOnly Date, decimal Amount);
 
 /// <summary>
-/// Money-weighted annual return for irregularly dated external portfolio cash flows.
-/// Negative amounts are money the investor contributed; positive amounts are money
-/// returned to the investor, including the terminal portfolio value.
+/// Money-weighted annual return for dated portfolio cash flows and the terminal value.
+/// Negative amounts are money put in. Positive amounts are money taken out or still held.
 /// </summary>
 public static class InvestmentReturnCalculator
 {
@@ -19,8 +18,9 @@ public static class InvestmentReturnCalculator
     public static decimal? Calculate(IEnumerable<DatedInvestmentFlow> source)
     {
         var flows = source
+            .GroupBy(flow => flow.Date)
+            .Select(day => new DatedInvestmentFlow(day.Key, day.Sum(flow => flow.Amount)))
             .Where(flow => flow.Amount != 0)
-            .Select(flow => (flow.Date, Amount: (double)flow.Amount))
             .ToList();
         if (flows.Count < 2 ||
             !flows.Any(flow => flow.Amount < 0) ||
@@ -28,12 +28,11 @@ public static class InvestmentReturnCalculator
             return null;
 
         var start = flows.Min(flow => flow.Date);
-        var end = flows.Max(flow => flow.Date);
-        if (end == start) return null;
-
+        var scale = flows.Max(flow => Math.Abs(flow.Amount));
+        var breaksEven = flows.Sum(flow => flow.Amount) == 0;
+        // Changing currency units should not affect the root or the stopping condition.
         var normalised = flows
-            .Select(flow => (Years: flow.Date.DayNumber - start.DayNumber, flow.Amount))
-            .Select(flow => (Years: flow.Years / DaysPerYear, flow.Amount))
+            .Select(flow => ((flow.Date.DayNumber - start.DayNumber) / DaysPerYear, (double)(flow.Amount / scale)))
             .ToList();
 
         static double PresentValue(IEnumerable<(double Years, double Amount)> values, double rate)
@@ -50,8 +49,8 @@ public static class InvestmentReturnCalculator
             {
                 rate = (low + high) / 2;
                 var value = PresentValue(values, rate);
-                if (Math.Abs(value) < Tolerance || high - low < Tolerance) return rate;
-                if (value * lowValue < 0) high = rate;
+                if (value == 0 || high - low < Tolerance * (1 + Math.Abs(rate))) return rate;
+                if (Math.Sign(value) != Math.Sign(lowValue)) high = rate;
                 else
                 {
                     low = rate;
@@ -73,13 +72,15 @@ public static class InvestmentReturnCalculator
             var rate = Math.Exp(minLog + (maxLog - minLog) * index / ScanIntervals) - 1;
             var value = PresentValue(normalised, rate);
             if (!double.IsFinite(value)) return null;
-            if (Math.Abs(previousValue) < Tolerance) roots.Add(previousRate);
-            else if (previousValue * value < 0)
-                roots.Add(Bisect(normalised, previousRate, rate, previousValue));
+            if (previousValue == 0) roots.Add(previousRate);
+            else if (value != 0 && Math.Sign(previousValue) != Math.Sign(value))
+                roots.Add(breaksEven && previousRate < 0 && rate > 0
+                    ? 0
+                    : Bisect(normalised, previousRate, rate, previousValue));
             previousRate = rate;
             previousValue = value;
         }
-        if (Math.Abs(previousValue) < Tolerance) roots.Add(previousRate);
+        if (previousValue == 0) roots.Add(previousRate);
 
         var distinctRoots = roots
             .Order()
