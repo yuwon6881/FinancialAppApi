@@ -13,6 +13,7 @@
   <ItemGroup>
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+    <PackageReference Include="System.Formats.Cbor" />
     <ProjectReference Include="..\FinancialAppApi\FinancialAppApi.csproj" />
   </ItemGroup>
 </Project>
