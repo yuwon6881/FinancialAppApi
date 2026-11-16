@@ -28,4 +28,5 @@ public static class FinancialConstants
     /// </para>
     /// </summary>
     public const int StabilityRecoveryCycles = 3;
+    public const int MaxStabilityRepaymentCycles = 24;
 }

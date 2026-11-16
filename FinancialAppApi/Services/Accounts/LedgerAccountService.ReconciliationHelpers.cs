@@ -59,7 +59,8 @@ public sealed partial class LedgerAccountService
             transaction.AccountId,
             transaction.CounterAccountId,
             transaction.IsAccountBalanceAdjustment,
-            transaction.StabilityReloadIntent);
+            transaction.StabilityReloadIntent,
+            transaction.StabilityRepaymentCycles);
 
     private static async Task<LedgerAccountReconcileResult> ConflictAsync(
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction,

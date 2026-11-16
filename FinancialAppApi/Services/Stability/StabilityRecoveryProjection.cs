@@ -7,7 +7,7 @@ public sealed record RecoveryProjectionCycle(string CycleKey, decimal PutBack, d
 /// What the recovery plan will ask for in the cycles ahead, if each ask is put back in full and the
 /// fund moves in no other way. Every cycle is priced by <see cref="StabilityRecoveryPlanner.ComputeCohortPlan"/>
 /// and its ask is discharged oldest-first, as a real top-up is, so the schedule is the planner's own
-/// answer rather than a second implementation of the three-cycle rule.
+/// answer rather than a second implementation of the repayment schedule.
 /// </summary>
 public static class StabilityRecoveryProjection
 {
@@ -33,7 +33,7 @@ public static class StabilityRecoveryProjection
         return schedule;
     }
 
-    /// <summary>Applies a repayment oldest cohort first, the order the reload queue uses.</summary>
+    /// <summary>Applies a repayment by origin cycle, retaining replay order within a cycle.</summary>
     public static IReadOnlyList<RecoveryCohortInput> Discharge(IEnumerable<RecoveryCohortInput> cohorts, decimal amount)
     {
         var left = Math.Max(0m, amount);
@@ -60,6 +60,5 @@ public static class StabilityRecoveryProjection
     private static IEnumerable<RecoveryCohortInput> Ordered(IEnumerable<RecoveryCohortInput> cohorts) =>
         cohorts
             .Where(cohort => cohort.RemainingShortfall > 0m)
-            .OrderBy(cohort => cohort.OriginCycleKey, StringComparer.Ordinal)
-            .ThenBy(cohort => cohort.FromDate);
+            .OrderBy(cohort => cohort.OriginCycleKey, StringComparer.Ordinal);
 }

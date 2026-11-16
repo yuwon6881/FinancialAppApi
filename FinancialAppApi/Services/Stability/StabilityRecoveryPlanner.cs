@@ -31,7 +31,8 @@ public sealed record RecoveryCohortInput(
     DateOnly FromDate,
     int TransactionCount,
     decimal RemainingShortfall,
-    decimal RepaidThisCycle);
+    decimal RepaidThisCycle,
+    int? RepaymentCycles = null);
 
 public sealed record RecoveryCohortPace(
     string OriginCycleKey,
@@ -41,7 +42,8 @@ public sealed record RecoveryCohortPace(
     int CyclesRemaining,
     decimal RequiredThisCycle,
     bool IsOverdue,
-    bool IsDeferred = false);
+    bool IsDeferred = false,
+    int? RepaymentCycles = null);
 
 public sealed record RecoveryCohortPlan(
     RecoveryPace Aggregate,
@@ -142,7 +144,7 @@ public static class StabilityRecoveryPlanner
     }
 
     /// <summary>
-    /// Gives each origin cycle its own recovery window while retaining one combined amount to ask
+    /// Groups withdrawals with the same origin cycle and repayment term while retaining one combined amount to ask
     /// from income. A cohort's anchor is its live remainder plus money applied to that cohort during
     /// this cycle, so its quoted share does not shrink while the user funds it.
     /// </summary>
@@ -155,19 +157,20 @@ public static class StabilityRecoveryPlanner
     {
         var paces = cohorts
             .Where(cohort => cohort.RemainingShortfall > 0m || cohort.RepaidThisCycle > 0m)
-            .GroupBy(cohort => cohort.OriginCycleKey, StringComparer.Ordinal)
+            .GroupBy(cohort => (cohort.OriginCycleKey, RepaymentCycles: cohort.RepaymentCycles ?? horizon))
             .Select(group => new RecoveryCohortInput(
-                group.Key,
+                group.Key.OriginCycleKey,
                 group.Min(cohort => cohort.FromDate),
                 group.Sum(cohort => Math.Max(1, cohort.TransactionCount)),
                 group.Sum(cohort => Math.Max(0m, cohort.RemainingShortfall)),
-                group.Sum(cohort => Math.Max(0m, cohort.RepaidThisCycle))))
+                group.Sum(cohort => Math.Max(0m, cohort.RepaidThisCycle)),
+                group.Key.RepaymentCycles))
             .Select(cohort =>
             {
                 var rawCyclesRemaining = CyclesRemaining(
                     cohort.OriginCycleKey,
                     currentCycleKey,
-                    horizon);
+                    cohort.RepaymentCycles ?? horizon);
                 var cyclesRemaining = Math.Max(1, rawCyclesRemaining);
                 var isDeferred = IsDeferred(cohort.OriginCycleKey, currentCycleKey);
                 var anchor = Math.Max(0m, cohort.RemainingShortfall)
@@ -185,10 +188,12 @@ public static class StabilityRecoveryPlanner
                     cyclesRemaining,
                     required,
                     rawCyclesRemaining <= 0 && cohort.RemainingShortfall > 0m,
-                    isDeferred);
+                    isDeferred,
+                    cohort.RepaymentCycles);
             })
             .OrderBy(cohort => cohort.OriginCycleKey, StringComparer.Ordinal)
             .ThenBy(cohort => cohort.FromDate)
+            .ThenBy(cohort => cohort.RepaymentCycles)
             .ToList();
 
         var shortfall = Math.Max(0m, outstandingShortfall);

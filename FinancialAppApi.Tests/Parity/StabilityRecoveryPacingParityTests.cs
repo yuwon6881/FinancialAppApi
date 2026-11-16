@@ -25,7 +25,8 @@ public sealed class StabilityRecoveryPacingParityTests
                 DateOnly.Parse(cohort.GetProperty("fromDate").GetString()!),
                 cohort.GetProperty("transactionCount").GetInt32(),
                 cohort.GetProperty("remainingShortfall").GetDecimal(),
-                cohort.GetProperty("repaidThisCycle").GetDecimal()))
+                cohort.GetProperty("repaidThisCycle").GetDecimal(),
+                cohort.TryGetProperty("repaymentCycles", out var term) ? term.GetInt32() : null))
             .ToList();
 
         var actual = StabilityRecoveryPlanner.ComputeCohortPlan(
@@ -52,6 +53,8 @@ public sealed class StabilityRecoveryPacingParityTests
             Assert.Equal(expectedCohort.GetProperty("requiredThisCycle").GetDecimal(), actualCohort.RequiredThisCycle);
             Assert.Equal(expectedCohort.GetProperty("isOverdue").GetBoolean(), actualCohort.IsOverdue);
             Assert.Equal(expectedCohort.GetProperty("isDeferred").GetBoolean(), actualCohort.IsDeferred);
+            if (expectedCohort.TryGetProperty("repaymentCycles", out var term))
+                Assert.Equal(term.GetInt32(), actualCohort.RepaymentCycles);
         }
 
         Assert.False(string.IsNullOrWhiteSpace(item.GetProperty("id").GetString()));

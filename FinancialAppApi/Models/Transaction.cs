@@ -56,6 +56,8 @@ public class Transaction : IUserOwnedEntity
     [StringLength(20)]
     public string StabilityReloadIntent { get; set; } = Models.StabilityReloadIntent.Unanswered;
 
+    public int? StabilityRepaymentCycles { get; set; }
+
     // Denormalized reference to the RecurringPayment this transaction was generated from, if any.
     // Intentionally not a real FK: it must survive the parent RecurringPayment being deleted so
     // historical cycles can still be identified as subscription payments.

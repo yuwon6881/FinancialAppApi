@@ -862,7 +862,7 @@ public class TransactionPersistenceServiceTests
     }
 
     [Fact]
-    public async Task CreateAndUpdateTransactionAsync_RoundTripTheReloadIntent()
+    public async Task CreateAndUpdateTransactionAsync_RoundTripTheReloadPlan()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         SeedCategories(context);
@@ -870,10 +870,24 @@ public class TransactionPersistenceServiceTests
         var service = NewService(context);
 
         var created = await service.CreateTransactionAsync(
-            NewRequest("reload-intent", ledgerCategory: "Stability", reloadIntent: StabilityReloadIntent.Required));
+            NewRequest("reload-intent", ledgerCategory: "Stability", reloadIntent: StabilityReloadIntent.Required)
+                with { StabilityRepaymentCycles = 24 });
 
         Assert.Equal(TransactionMutationStatus.Created, created.Status);
         Assert.Equal(StabilityReloadIntent.Required, created.Transaction!.StabilityReloadIntent);
+        Assert.Equal(24, created.Transaction.StabilityRepaymentCycles);
+
+        var invalid = await service.UpdateTransactionAsync(
+            "reload-intent",
+            NewRequest("reload-intent", ledgerCategory: "Stability") with { StabilityRepaymentCycles = 25 });
+        Assert.Equal(TransactionMutationStatus.InvalidAmount, invalid.Status);
+        Assert.Equal(24, created.Transaction.StabilityRepaymentCycles);
+
+        var shortened = await service.UpdateTransactionAsync(
+            "reload-intent",
+            NewRequest("reload-intent", ledgerCategory: "Stability") with { StabilityRepaymentCycles = 1 });
+        Assert.Equal(TransactionMutationStatus.Updated, shortened.Status);
+        Assert.Equal(1, shortened.Transaction!.StabilityRepaymentCycles);
 
         var updated = await service.UpdateTransactionAsync(
             "reload-intent",
@@ -881,6 +895,7 @@ public class TransactionPersistenceServiceTests
 
         Assert.Equal(TransactionMutationStatus.Updated, updated.Status);
         Assert.Equal(StabilityReloadIntent.NotRequired, updated.Transaction!.StabilityReloadIntent);
+        Assert.Null(updated.Transaction.StabilityRepaymentCycles);
     }
 
     [Fact]

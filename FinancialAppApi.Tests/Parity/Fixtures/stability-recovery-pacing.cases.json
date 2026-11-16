@@ -3,6 +3,61 @@
   "version": 2,
   "cases": [
     {
+      "id": "different-terms-in-one-spending-cycle",
+      "why": "Next-cycle and 24-cycle choices keep separate deadlines even when the withdrawals happened on the same date.",
+      "input": {
+        "currentCycleKey": "2027-01",
+        "horizon": 3,
+        "outstandingShortfall": 400,
+        "toppedUpThisCycle": 10,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-12",
+            "fromDate": "2026-12-03",
+            "transactionCount": 1,
+            "remainingShortfall": 40,
+            "repaidThisCycle": 10,
+            "repaymentCycles": 1
+          },
+          {
+            "originCycleKey": "2026-12",
+            "fromDate": "2026-12-03",
+            "transactionCount": 1,
+            "remainingShortfall": 360,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 24
+          }
+        ]
+      },
+      "expected": {
+        "cyclesRemaining": 1,
+        "requiredThisCycle": 65,
+        "outstandingThisCycle": 55,
+        "isOverdue": false,
+        "isDeferred": false,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-12",
+            "transactionCount": 1,
+            "cyclesRemaining": 1,
+            "requiredThisCycle": 50,
+            "isOverdue": false,
+            "isDeferred": false,
+            "repaymentCycles": 1
+          },
+          {
+            "originCycleKey": "2026-12",
+            "transactionCount": 1,
+            "cyclesRemaining": 24,
+            "requiredThisCycle": 15,
+            "isOverdue": false,
+            "isDeferred": false,
+            "repaymentCycles": 24
+          }
+        ]
+      }
+    },
+    {
       "id": "spending-cycle-asks-for-nothing",
       "why": "The cycle the money left in only carries the reminder: its plan opens next cycle, so nothing is due yet and the state says so rather than looking like a funded cycle.",
       "input": {

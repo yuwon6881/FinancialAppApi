@@ -122,6 +122,7 @@ public sealed class LedgerAccountsController : ControllerBase
                 counterAccountId = transaction.CounterAccountId,
                 isAccountBalanceAdjustment = transaction.IsAccountBalanceAdjustment,
                 stabilityReloadIntent = transaction.StabilityReloadIntent,
+                stabilityRepaymentCycles = transaction.StabilityRepaymentCycles,
             }).ToList(),
         });
     }

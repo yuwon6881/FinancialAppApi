@@ -59,7 +59,8 @@ public sealed record LedgerAccountReconcileTransaction(
     string? AccountId,
     string? CounterAccountId,
     bool IsAccountBalanceAdjustment = false,
-    string? StabilityReloadIntent = null);
+    string? StabilityReloadIntent = null,
+    int? StabilityRepaymentCycles = null);
 
 public sealed record LedgerAccountReconcileResult(
     LedgerAccountMutationStatus Status,

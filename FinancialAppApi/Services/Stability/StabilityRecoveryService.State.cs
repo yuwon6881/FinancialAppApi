@@ -52,9 +52,7 @@ public partial class StabilityRecoveryService
         return new StabilityRecoverySchedule(cycleKey, cycle.CurrentBalance, cycle.Target, cycle.Replay.Outstanding, cohorts, plan);
     }
 
-    // Groups the replayed obligations by the cycle their money left in; each such cohort gets its
-    // own three-cycle window. Obligations fully repaid this cycle stay in so a cohort's quoted
-    // share holds still while it is being funded.
+    // Keep individual obligations for FIFO projections. The planner groups matching terms.
     private static List<RecoveryCohortInput> BuildCohortInputs(ReloadState replay, int cycleDay)
     {
         var repaidByObligation = replay.RepaidByObligationThisRun
@@ -63,20 +61,18 @@ public partial class StabilityRecoveryService
             .Where(obligation => obligation.Date.HasValue
                 && (obligation.RemainingAmount > 0m
                     || repaidByObligation.GetValueOrDefault(obligation.TransactionId) > 0m))
-            .GroupBy(obligation =>
+            .Select(obligation =>
             {
-                var (cohortYear, cohortMonthIndex) = CategoryAttributionService
-                    .GetCycleYearAndMonthIndexForDate(obligation.Date!.Value, cycleDay);
-                return StabilityRecoveryPlanner.CycleKey(cohortYear, cohortMonthIndex);
-            }, StringComparer.Ordinal)
-            .Select(group => new RecoveryCohortInput(
-                group.Key,
-                group.Min(obligation => obligation.Date!.Value),
-                group.Count(),
-                group.Sum(obligation => Math.Max(0m, obligation.RemainingAmount)),
-                group.Sum(obligation => Math.Max(
-                    0m,
-                    repaidByObligation.GetValueOrDefault(obligation.TransactionId)))))
+                var date = obligation.Date!.Value;
+                var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(date, cycleDay);
+                return new RecoveryCohortInput(
+                    StabilityRecoveryPlanner.CycleKey(year, monthIndex),
+                    date,
+                    1,
+                    obligation.RemainingAmount,
+                    repaidByObligation.GetValueOrDefault(obligation.TransactionId),
+                    obligation.RepaymentCycles);
+            })
             .ToList();
     }
 

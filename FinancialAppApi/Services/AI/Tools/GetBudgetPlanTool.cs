@@ -12,8 +12,8 @@ namespace FinancialAppApi.Services.AI.Tools;
 public sealed class GetBudgetPlanTool : IAiTool
 {
     private const string ReloadRule =
-        "Money taken out of Stability is put back over the three cycles after the cycle it left in; the cycle it " +
-        "left in asks for nothing. Each withdrawal cycle has its own three-cycle window, and when windows overlap " +
+        "Money taken out of Stability is put back over the selected term, starting after the cycle it left in; the cycle it " +
+        "left in asks for nothing. Withdrawals with different terms can have different deadlines, and when plans overlap " +
         "their shares add up to one ask. An ordinary salary share into Stability does not count as putting money " +
         "back, and reaching the target clears everything owed. A withdrawal marked as not needing to be put back " +
         "creates nothing to repay.";
@@ -164,7 +164,7 @@ public sealed class GetBudgetPlanTool : IAiTool
             afterThisCycle,
             StabilityRecoveryProjection.NextCycleKey(schedule.CycleKey),
             FinancialConstants.StabilityRecoveryCycles,
-            FinancialConstants.StabilityRecoveryCycles + 1);
+            FinancialConstants.MaxStabilityRepaymentCycles);
     }
 
     private static List<object> Upcoming(

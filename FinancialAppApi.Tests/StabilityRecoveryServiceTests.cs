@@ -501,6 +501,25 @@ public class StabilityRecoveryServiceTests
     }
 
     [Fact]
+    public async Task BuildAsync_CarriesSelectedTermAcrossCycleBoundaries()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "opening", new DateTime(2026, 6, 3), "Stability", 1000m);
+        var drawdown = Add(context, "drawdown", new DateTime(2026, 6, 4), "Stability", -240m,
+            intent: StabilityReloadIntent.Required);
+        drawdown.StabilityRepaymentCycles = 24;
+        await context.SaveChangesAsync();
+        await new CycleBalanceService(context).EnsureComputedThroughAsync(2026, 7, CycleDay);
+
+        var recovery = await Build(context, setting, 2026, 7, opening: 760m, current: 760m);
+
+        Assert.Equal(24, Assert.Single(recovery.OpeningObligations).RepaymentCycles);
+        Assert.Equal(24, Assert.Single(recovery.RecoveryCohorts).CyclesRemaining);
+        Assert.Equal(10m, Money(recovery.RequiredThisCycle));
+    }
+
+    [Fact]
     public async Task BuildAsync_ReportsWhatSavingsGoalsStillNeedThisCycle()
     {
         await using var context = NewContext();

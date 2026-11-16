@@ -36,6 +36,9 @@ public partial class AppDbContext
             // Calendar date is primary; PostedAt resolves the order of records on that date.
             entity.HasIndex(e => new { e.UserId, e.Date, e.PostedAt, e.LedgerCategory })
                 .IsDescending(false, true, true, false);
+            entity.ToTable(t => t.HasCheckConstraint(
+                "ck_transactions_stabilityrepaymentcycles",
+                "\"StabilityRepaymentCycles\" BETWEEN 1 AND 24"));
             entity.Property(e => e.StabilityReloadIntent)
                 .HasDefaultValue(StabilityReloadIntent.Unanswered);
             entity.ToTable(t => t.HasCheckConstraint(

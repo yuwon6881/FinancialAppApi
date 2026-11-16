@@ -264,6 +264,7 @@ public partial class TransactionPersistenceService
         && string.Equals(left.StabilityRecoveryTopUpAmount, right.StabilityRecoveryTopUpAmount, StringComparison.Ordinal)
         && string.Equals(left.AccountId, right.AccountId, StringComparison.Ordinal)
         && string.Equals(left.CounterAccountId, right.CounterAccountId, StringComparison.Ordinal)
+        && left.StabilityRepaymentCycles == right.StabilityRepaymentCycles
         && string.Equals(
             StabilityReloadIntent.Normalize(left.StabilityReloadIntent),
             StabilityReloadIntent.Normalize(right.StabilityReloadIntent),
@@ -311,6 +312,7 @@ public partial class TransactionPersistenceService
             && existing.WishlistItemId == request.WishlistItemId
             && existing.RecurringOccurrenceDate == requestOccurrence
             && existing.StabilityRecoveryTopUpAmount == comparableRecoveryTopUp
+            && existing.StabilityRepaymentCycles == request.StabilityRepaymentCycles
             && string.Equals(existing.AccountId, NormalizeOptionalId(request.AccountId), StringComparison.Ordinal)
             && string.Equals(existing.CounterAccountId, NormalizeOptionalId(request.CounterAccountId), StringComparison.Ordinal)
             && string.Equals(

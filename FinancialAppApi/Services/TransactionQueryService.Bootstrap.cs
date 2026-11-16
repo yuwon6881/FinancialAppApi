@@ -32,6 +32,7 @@ public partial class TransactionQueryService
                 transaction.Amount,
                 transaction.StabilityRecoveryTopUpAmount,
                 transaction.StabilityReloadIntent,
+                transaction.StabilityRepaymentCycles,
                 transaction.RecurringPaymentId,
                 transaction.RecurringOccurrenceDate,
                 transaction.WishlistItemId,

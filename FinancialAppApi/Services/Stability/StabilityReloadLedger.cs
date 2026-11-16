@@ -9,13 +9,15 @@ public readonly record struct ReloadMovement(
     decimal Repayment,
     bool Marked,
     string? TransactionId = null,
-    DateTime? Timestamp = null);
+    DateTime? Timestamp = null,
+    int? RepaymentCycles = null);
 
 public sealed record ReloadObligation(
     string TransactionId,
     decimal OriginalAmount,
     decimal RemainingAmount,
-    DateOnly? Date = null);
+    DateOnly? Date = null,
+    int? RepaymentCycles = null);
 
 public sealed record ReloadPlanPoint(DateTime EffectiveAt, decimal TargetStabilityFund);
 
@@ -158,7 +160,8 @@ public static class StabilityReloadLedger
                     movement.TransactionId,
                     marked,
                     marked,
-                    movement.Date);
+                    movement.Date,
+                    movement.RepaymentCycles);
             }
         }
 
@@ -359,7 +362,8 @@ public static class StabilityReloadLedger
             repayment,
             marked,
             transaction.Id,
-            Normalize(transaction.PostedAt));
+            Normalize(transaction.PostedAt),
+            transaction.StabilityRepaymentCycles);
     }
 
     private static bool IsIncome(Transaction transaction) =>

@@ -35,7 +35,8 @@ public sealed record TransactionMutationRequest(
     string? StabilityReloadIntent = null,
     string? AccountId = null,
     string? CounterAccountId = null,
-    IReadOnlyDictionary<string, string>? SplitAccountIds = null);
+    IReadOnlyDictionary<string, string>? SplitAccountIds = null,
+    int? StabilityRepaymentCycles = null);
 
 public sealed record TransactionMutationResult(
     TransactionMutationStatus Status,
@@ -122,6 +123,8 @@ public partial class TransactionPersistenceService
         }
 
         if (!ObfuscationHelper.TryDeobfuscate(request.Amount, out var decodedAmount)) return InvalidAmount();
+        if (request.StabilityRepaymentCycles is < 1 or > FinancialConstants.MaxStabilityRepaymentCycles)
+            return InvalidAmount("Choose a Stability repayment term from 1 to 24 months.");
         var amount = Math.Round(decodedAmount, 2, MidpointRounding.AwayFromZero);
         if (!TryDecodeRecoveryTopUp(request.StabilityRecoveryTopUpAmount, out var requestedRecoveryTopUp))
             return InvalidAmount("The Stability reimbursement amount is invalid.");
@@ -165,6 +168,10 @@ public partial class TransactionPersistenceService
         await using var poolLock = ReducesCommitmentBacking(transaction)
             ? await _sharedPoolMutationLock.AcquireAsync(cancellationToken)
             : NoOpPoolLock.Instance;
+        if (transaction.StabilityReloadIntent == StabilityReloadIntent.Required
+            && Stability.StabilityReloadLedger.CanCarryReloadStatus(transaction))
+            transaction.StabilityRepaymentCycles = request.StabilityRepaymentCycles;
+
         var accountValidation = await ValidateAccountReferencesAsync(transaction, cancellationToken);
         if (accountValidation is not null) return accountValidation;
         var occurrence = await ResolveRecurringOccurrenceDateAsync(
@@ -371,6 +378,8 @@ public partial class TransactionPersistenceService
         }
 
         if (!ObfuscationHelper.TryDeobfuscate(request.Amount, out var decodedAmount)) return InvalidAmount();
+        if (request.StabilityRepaymentCycles is < 1 or > FinancialConstants.MaxStabilityRepaymentCycles)
+            return InvalidAmount("Choose a Stability repayment term from 1 to 24 months.");
         var amount = Math.Round(decodedAmount, 2, MidpointRounding.AwayFromZero);
         if (!TryDecodeRecoveryTopUp(request.StabilityRecoveryTopUpAmount, out var requestedRecoveryTopUp))
             return InvalidAmount("The Stability reimbursement amount is invalid.");
@@ -502,6 +511,10 @@ public partial class TransactionPersistenceService
             : StabilityReloadIntent.Normalize(request.StabilityReloadIntent);
         transaction.AccountId = accountProbe.AccountId;
         transaction.CounterAccountId = accountProbe.CounterAccountId;
+        transaction.StabilityRepaymentCycles = transaction.StabilityReloadIntent == StabilityReloadIntent.Required
+            && Stability.StabilityReloadLedger.CanCarryReloadStatus(transaction)
+            ? request.StabilityRepaymentCycles ?? transaction.StabilityRepaymentCycles
+            : null;
         transaction.ExcludeFromAutocomplete = TransactionAutocompletePolicy.ShouldExclude(transaction);
 
         if (transaction.RecurringOccurrenceDate.HasValue)

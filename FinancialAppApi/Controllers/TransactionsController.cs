@@ -117,6 +117,7 @@ public class TransactionsController : ControllerBase
             transaction.Amount,
             transaction.StabilityRecoveryTopUpAmount,
             transaction.StabilityReloadIntent,
+            transaction.StabilityRepaymentCycles,
             transaction.RecurringPaymentId,
             transaction.RecurringOccurrenceDate,
             transaction.WishlistItemId,
@@ -405,7 +406,8 @@ public class TransactionsController : ControllerBase
             dto.StabilityReloadIntent,
             dto.AccountId,
             dto.CounterAccountId,
-            dto.SplitAccountIds);
+            dto.SplitAccountIds,
+            dto.StabilityRepaymentCycles);
     }
 
     public static TransactionDto MapToDto(Transaction t, string? stabilityReloadStatus = null)
@@ -425,6 +427,7 @@ public class TransactionsController : ControllerBase
                 ? ObfuscationHelper.Obfuscate(t.StabilityRecoveryTopUpAmount.Value)
                 : null,
             StabilityReloadIntent = t.StabilityReloadIntent,
+            StabilityRepaymentCycles = t.StabilityRepaymentCycles,
             RecurringPaymentId = t.RecurringPaymentId,
             RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
             WishlistItemId = t.WishlistItemId,
@@ -452,6 +455,7 @@ public class TransactionsController : ControllerBase
                 ? ObfuscationHelper.Obfuscate(t.StabilityRecoveryTopUpAmount.Value)
                 : null,
             StabilityReloadIntent = t.StabilityReloadIntent,
+            StabilityRepaymentCycles = t.StabilityRepaymentCycles,
             RecurringPaymentId = t.RecurringPaymentId,
             RecurringOccurrenceDate = t.RecurringOccurrenceDate?.ToString("yyyy-MM-dd"),
             WishlistItemId = t.WishlistItemId,
@@ -477,6 +481,7 @@ public class TransactionDto
     public Dictionary<string, string>? SplitAccountIds { get; set; }
     public string? StabilityRecoveryTopUpAmount { get; set; }
     public string? StabilityReloadIntent { get; set; }
+    public int? StabilityRepaymentCycles { get; set; }
     public string? RecurringPaymentId { get; set; }
     public string? RecurringOccurrenceDate { get; set; }
     public int? WishlistItemId { get; set; }

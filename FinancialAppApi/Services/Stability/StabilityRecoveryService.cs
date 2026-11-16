@@ -16,10 +16,11 @@ public sealed record StabilityReloadObligationDto(
     string TransactionId,
     string OriginalAmount,
     string RemainingAmount,
-    string? Date);
+    string? Date,
+    int? RepaymentCycles);
 
 /// <summary>
-/// One origin cycle's independent three-cycle recovery schedule. <c>IsDeferred</c> marks the
+/// The recovery schedule for one origin cycle and repayment term. <c>IsDeferred</c> marks the
 /// spending cycle itself, where the plan is already known but has not opened yet, so
 /// <c>RequiredThisCycle</c> is zero for a reason the client has to be able to say out loud.
 /// </summary>
@@ -31,7 +32,8 @@ public sealed record StabilityRecoveryCohortDto(
     int CyclesRemaining,
     string RequiredThisCycle,
     bool IsOverdue,
-    bool IsDeferred);
+    bool IsDeferred,
+    int? RepaymentCycles);
 
 /// <summary>
 /// The emergency-fund recovery state the dashboard carries. Money fields are obfuscated strings,
@@ -324,7 +326,8 @@ public partial class StabilityRecoveryService
                     obligation.TransactionId,
                     ObfuscationHelper.Obfuscate(obligation.OriginalAmount),
                     ObfuscationHelper.Obfuscate(obligation.RemainingAmount),
-                    obligation.Date?.ToString("yyyy-MM-dd")))
+                    obligation.Date?.ToString("yyyy-MM-dd"),
+                    obligation.RepaymentCycles))
                 .ToList(),
             cohortPlan.Cohorts
                 .Select(cohort => new StabilityRecoveryCohortDto(
@@ -335,7 +338,8 @@ public partial class StabilityRecoveryService
                     cohort.CyclesRemaining,
                     ObfuscationHelper.Obfuscate(cohort.RequiredThisCycle),
                     cohort.IsOverdue,
-                    cohort.IsDeferred))
+                    cohort.IsDeferred,
+                    cohort.RepaymentCycles))
                 .ToList(),
             pace.CyclesRemaining,
             ObfuscationHelper.Obfuscate(pace.RequiredThisCycle),

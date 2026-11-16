@@ -2174,6 +2174,9 @@ namespace FinancialAppApi.Migrations
                         .HasColumnType("character varying(20)")
                         .HasDefaultValue("Unanswered");
 
+                    b.Property<int?>("StabilityRepaymentCycles")
+                        .HasColumnType("integer");
+
                     b.Property<string>("UserId")
                         .IsRequired()
                         .HasColumnType("text");
@@ -2204,6 +2207,8 @@ namespace FinancialAppApi.Migrations
                             t.HasCheckConstraint("ck_transactions_account_tracking", "(lower(\"LedgerCategory\") IN ('essentials', 'growth', 'stability', 'rewards') AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") = 'accountmove' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL) OR (lower(\"LedgerCategory\") LIKE 'transfer:%' AND ((lower(\"LedgerCategory\") LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NULL) OR (lower(\"LedgerCategory\") NOT LIKE 'transfer:income->%' AND \"AccountId\" IS NOT NULL AND \"CounterAccountId\" IS NOT NULL))) OR (lower(\"LedgerCategory\") NOT IN ('essentials', 'growth', 'stability', 'rewards', 'accountmove') AND lower(\"LedgerCategory\") NOT LIKE 'transfer:%' AND \"AccountId\" IS NULL AND \"CounterAccountId\" IS NULL)");
 
                             t.HasCheckConstraint("ck_transactions_stabilityreloadintent", "\"StabilityReloadIntent\" IN ('Unanswered', 'Required', 'NotRequired')");
+
+                            t.HasCheckConstraint("ck_transactions_stabilityrepaymentcycles", "\"StabilityRepaymentCycles\" BETWEEN 1 AND 24");
                         });
                 });
 

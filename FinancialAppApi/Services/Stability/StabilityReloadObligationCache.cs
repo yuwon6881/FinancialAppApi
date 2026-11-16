@@ -29,7 +29,8 @@ public static class StabilityReloadObligationCache
         string TransactionId,
         decimal OriginalAmount,
         decimal RemainingAmount,
-        string? Date);
+        string? Date,
+        int? RepaymentCycles);
 
     /// <summary>Returns null when nothing is owed, so an empty queue stores an empty column.</summary>
     public static string? Serialize(IReadOnlyList<ReloadObligation>? obligations)
@@ -40,7 +41,8 @@ public static class StabilityReloadObligationCache
                 obligation.TransactionId,
                 obligation.OriginalAmount,
                 obligation.RemainingAmount,
-                obligation.Date?.ToString("yyyy-MM-dd")))
+                obligation.Date?.ToString("yyyy-MM-dd"),
+                obligation.RepaymentCycles))
             .ToList();
         return open.Count == 0 ? null : JsonSerializer.Serialize(open, Options);
     }
@@ -77,7 +79,8 @@ public static class StabilityReloadObligationCache
                 obligation.TransactionId,
                 obligation.OriginalAmount,
                 obligation.RemainingAmount,
-                DateOnly.TryParse(obligation.Date, out var date) ? date : null))
+                DateOnly.TryParse(obligation.Date, out var date) ? date : null,
+                obligation.RepaymentCycles))
             .ToList();
     }
 
