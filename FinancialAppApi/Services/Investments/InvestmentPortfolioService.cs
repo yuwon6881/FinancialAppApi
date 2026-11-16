@@ -4,9 +4,12 @@ using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services.Investments;
 
+// Every money figure here is in the app currency at today's rate (constant currency): each
+// currency's own figure times one rate, never a rate from the day the money moved.
 public sealed record InvestmentSummaryDto(
     decimal GrowthLedgerBalance,
     decimal GrowthContributions,
+    // Sent to the broker: external deposits less withdrawals. A conversion inside the broker is not one.
     decimal? NetDeposits,
     decimal? MarketValue,
     decimal? CostBasis,
@@ -18,10 +21,29 @@ public sealed record InvestmentSummaryDto(
     decimal? AnnualReturn,
     decimal? CashValue,
     decimal? TotalValue,
-    // The share of DailyChange the prices moved, carried at the latest rate.
-    decimal? DailyPriceChange = null,
-    // The share of DailyChange the exchange rate moved. Zero for a single-currency portfolio.
-    decimal? DailyCurrencyChange = null);
+    IReadOnlyList<InvestmentCurrencySummaryDto> Currencies);
+
+/// <summary>
+/// One currency's part of the portfolio in that currency, with no conversion at all: the honest
+/// answer to how the markets priced in it have treated you. Value is unknown only without a price.
+/// </summary>
+public sealed record InvestmentCurrencySummaryDto(
+    string Currency,
+    // Today's rate into the app currency; null when none is stored.
+    decimal? RateToAppCurrency,
+    DateOnly? RateDate,
+    decimal? MarketValue,
+    decimal CashValue,
+    decimal? TotalValue,
+    // Money put into this currency: deposits less withdrawals, plus what conversions delivered into
+    // it, less what they took out of it.
+    decimal NetDeposits,
+    decimal CostBasis,
+    decimal? UnrealisedProfitLoss,
+    decimal? UnrealisedPercent,
+    decimal RealisedProfitLoss,
+    decimal NetDividends,
+    decimal? DailyChange);
 
 public sealed record InvestmentCashBalanceDto(
     Guid AccountId,
@@ -55,10 +77,17 @@ public sealed record InvestmentHoldingDto(
     decimal Units,
     decimal AverageCostNative,
     decimal? LatestPriceNative,
+    decimal CostBasisNative,
     decimal? ValueNative,
+    decimal? DailyChangeNative,
+    decimal? UnrealisedProfitLossNative,
+    decimal RealisedProfitLossNative,
+    decimal NetDividendsNative,
+    // The *App figures are the native ones at today's rate (FxRate); null without one.
     decimal? ValueApp,
     decimal? DailyChangeApp,
     decimal? UnrealisedProfitLossApp,
+    // Native, so a rate never moves it.
     decimal? UnrealisedPercent,
     decimal? RealisedProfitLossApp,
     decimal? NetDividendsApp,
@@ -70,11 +99,7 @@ public sealed record InvestmentHoldingDto(
     DateTime? FxFetchedAt,
     string? FxSource,
     string? PriceSource,
-    DateOnly? ValuationAsOf,
-    // The share of DailyChangeApp this fund price itself moved, carried at the latest rate.
-    decimal? DailyPriceChangeApp = null,
-    // The share of DailyChangeApp the exchange rate moved.
-    decimal? DailyCurrencyChangeApp = null);
+    DateOnly? ValuationAsOf);
 
 public sealed record InvestmentChartPointDto(
     DateOnly Date,
@@ -237,28 +262,30 @@ public sealed partial class InvestmentPortfolioService(
                 .Where(value => value.Provider == providerId && externalIds.Contains(value.ExternalInstrumentId))
                 .ToListAsync(cancellationToken);
         var currencies = instruments.Select(value => value.Currency)
-            .Concat(cashFlows.Select(value => value.Currency))
-            .Concat(cashFlows.Where(value => value.ToCurrency is not null).Select(value => value.ToCurrency!))
-            .Distinct()
+            .Concat(cashFlows.SelectMany(value => InvestmentConstantCurrency.ContributionLegs(value).Select(leg => leg.Currency)))
+            .Append(appCurrency)
+            .Append(CurrencyCatalog.ReferenceCurrency)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var fxBars = await context.FxRateBars.AsNoTracking()
-            .Where(value => value.Provider == providerId &&
-                            (currencies.Contains(value.BaseCurrency) ||
-                             currencies.Contains(value.QuoteCurrency) ||
-                             value.BaseCurrency == "USD" ||
-                             value.QuoteCurrency == "USD"))
-            .ToListAsync(cancellationToken);
+        var fxBars = await InvestmentConstantCurrency.LatestFxBarsAsync(
+            context, providerId, currencies, today, cancellationToken);
+        var todayRates = new Dictionary<string, ResolvedMarketFx?>(StringComparer.OrdinalIgnoreCase);
+        ResolvedMarketFx? TodayFx(string currency)
+        {
+            if (!todayRates.TryGetValue(currency, out var fx))
+                todayRates[currency] = fx = seriesResolver.ResolveFx(
+                    currency, appCurrency, today, fxBars, InvestmentConstantCurrency.RateNeedFrom(today));
+            return fx;
+        }
+        // Zero is zero in every currency, so a settled figure never waits on a rate.
+        decimal? ToApp(string currency, decimal? amount)
+            => amount is null ? null : amount == 0 ? 0m : TodayFx(currency) is { } fx ? amount * fx.Rate : null;
 
-        // Value foreign-currency dividends, fees, and trades at the market rate on
-        // their trade date (stored provider daily close), mirroring how current
-        // holdings are valued.
-        decimal? HistoricalTradeFx(InvestmentTransaction transaction) =>
-            seriesResolver.ResolveFx(transaction.Instrument.Currency, appCurrency, transaction.TradeDate, fxBars)?.Rate;
-        var calculation = accounting.Calculate(transactions, appCurrency, HistoricalTradeFx);
+        var calculation = accounting.Calculate(transactions);
         var accountById = accounts.ToDictionary(value => value.Id);
         var instrumentById = instruments.ToDictionary(value => value.Id);
         var holdings = new List<InvestmentHoldingDto>();
-        var warnings = calculation.Warnings.ToList();
+        var warnings = new List<string>();
 
         foreach (var position in calculation.Positions.Where(value => value.Units != 0))
         {
@@ -271,48 +298,16 @@ public sealed partial class InvestmentPortfolioService(
             var prices = seriesResolver.ResolvePrices(references.GetValueOrDefault(instrument.Id), priceBars);
             var latest = prices.LastOrDefault();
             var previous = prices.Count > 1 ? prices[^2] : null;
-            var fx = seriesResolver.ResolveFx(instrument.Currency, appCurrency, today, fxBars);
-            var previousFx = previous is null
-                ? null
-                : seriesResolver.ResolveFx(instrument.Currency, appCurrency, previous.Date, fxBars);
-            // The move between two price bars has to value both bars at their own date's rate.
-            // Today's rate belongs to `valueApp` — what the holding is worth if converted now —
-            // but pairing it with the older of two closes measured the price over one bar interval
-            // and the currency over however many days separate that close from today. A market
-            // holiday, a provider a day behind, or this app's quota-limited refresh was enough to
-            // put several days of currency drift into a figure labelled as the latest move, and to
-            // make that figure change on a day no new price arrived.
-            var latestFx = latest is null
-                ? null
-                : seriesResolver.ResolveFx(instrument.Currency, appCurrency, latest.Date, fxBars);
+            var fx = TodayFx(instrument.Currency);
             decimal? valueNative = latest is null ? null : latest.Price * position.Units;
-            decimal? valueApp = valueNative is not null && fx is not null ? valueNative * fx.Rate : null;
-            decimal? unrealised = valueApp is not null && position.CostBasisApp is not null
-                ? valueApp - position.CostBasisApp
+            decimal? unrealisedNative = valueNative - position.CostBasisNative;
+            // The move between the two latest closes, in the fund's own currency: the price alone.
+            decimal? dailyNative = latest is not null && previous is not null
+                ? (latest.Price - previous.Price) * position.Units
                 : null;
-            var canPriceMove = latest is not null && previous is not null
-                && latestFx is not null && previousFx is not null;
-            // Split exactly, so the two parts always add back to the move: the price leg is the
-            // change in price carried at the new rate, the currency leg is the change in rate
-            // applied to what the position was already worth. Without it the card states a figure
-            // in the app's currency and leaves no way to tell a fall in the shares from a rise in
-            // the ringgit — the two can, and regularly do, point in opposite directions.
-            decimal? dailyPrice = canPriceMove
-                ? (latest!.Price - previous!.Price) * latestFx!.Rate * position.Units
-                : null;
-            decimal? dailyCurrency = canPriceMove
-                ? previous!.Price * (latestFx!.Rate - previousFx!.Rate) * position.Units
-                : null;
-            decimal? daily = canPriceMove ? dailyPrice + dailyCurrency : null;
-            var incomplete = !instrument.Currency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase) && fx is null;
+            var incomplete = fx is null;
             if (incomplete)
-            {
-                warnings.Add($"Current FX is missing for {instrument.Currency}/{appCurrency}; converted totals are incomplete.");
-            }
-            if (previous is not null && previousFx is null)
-            {
-                warnings.Add($"Previous FX is missing for {instrument.Currency}/{appCurrency}; the latest value move is incomplete.");
-            }
+                warnings.Add($"Today's FX rate is missing for {instrument.Currency}/{appCurrency}; converted totals are incomplete.");
 
             holdings.Add(new InvestmentHoldingDto(
                 account.Id,
@@ -325,15 +320,20 @@ public sealed partial class InvestmentPortfolioService(
                 position.Units,
                 position.Units == 0 ? 0 : position.CostBasisNative / position.Units,
                 latest?.Price,
+                position.CostBasisNative,
                 valueNative,
-                valueApp,
-                daily,
-                unrealised,
-                unrealised is not null && position.CostBasisApp is > 0
-                    ? unrealised / position.CostBasisApp.Value * 100m
+                dailyNative,
+                unrealisedNative,
+                position.RealisedNative,
+                position.DividendsNative,
+                ToApp(instrument.Currency, valueNative),
+                ToApp(instrument.Currency, dailyNative),
+                ToApp(instrument.Currency, unrealisedNative),
+                unrealisedNative is not null && position.CostBasisNative > 0
+                    ? unrealisedNative / position.CostBasisNative * 100m
                     : null,
-                position.RealisedApp,
-                position.DividendsApp,
+                ToApp(instrument.Currency, position.RealisedNative),
+                ToApp(instrument.Currency, position.DividendsNative),
                 latest?.Date,
                 latest?.FetchedAt,
                 incomplete,
@@ -342,26 +342,22 @@ public sealed partial class InvestmentPortfolioService(
                 fx?.FetchedAt,
                 fx?.Source,
                 latest is null ? null : $"{provider.Descriptor.DisplayName} daily close",
-                latest is null || fx is null ? null : latest.Date < fx.Date ? latest.Date : fx.Date,
-                dailyPrice,
-                dailyCurrency));
+                latest is null || fx is null ? null : latest.Date < fx.Date ? latest.Date : fx.Date));
         }
 
-        // Each summary answers a different question. Missing historical trade FX
-        // can make cost or banked profit unavailable without making today's market
-        // value unavailable, so do not collapse them behind one completeness flag.
-        var openPositions = calculation.Positions.Where(value => value.Units != 0).ToList();
-        var marketValueComplete = holdings.All(value => value.ValueApp is not null);
-        var costBasisComplete = openPositions.All(value => value.CostBasisApp is not null);
-        var realisedComplete = calculation.Positions.All(value => value.RealisedApp is not null);
-        var dividendsComplete = calculation.Positions.All(value => value.DividendsApp is not null);
-        decimal? marketValue = marketValueComplete ? holdings.Sum(value => value.ValueApp ?? 0) : null;
-        decimal? costBasis = costBasisComplete
-            ? openPositions.Sum(value => value.CostBasisApp ?? 0)
-            : null;
-        decimal? realised = realisedComplete ? calculation.Positions.Sum(value => value.RealisedApp ?? 0) : null;
-        decimal? dividends = dividendsComplete ? calculation.Positions.Sum(value => value.DividendsApp ?? 0) : null;
-        decimal? unrealisedTotal = marketValue is not null && costBasis is not null ? marketValue - costBasis : null;
+        // Closed positions still carry what they banked and paid out.
+        var positionCurrency = calculation.Positions
+            .Where(value => instrumentById.ContainsKey(value.InstrumentId))
+            .Select(value => (Position: value, Currency: instrumentById[value.InstrumentId].Currency.ToUpperInvariant()))
+            .ToList();
+        var openPositions = positionCurrency.Where(value => value.Position.Units != 0).ToList();
+        decimal? SumApp<T>(IEnumerable<T> rows, Func<T, string> currency, Func<T, decimal?> amount)
+            => rows.Aggregate((decimal?)0, (sum, row) => sum + ToApp(currency(row), amount(row)));
+        decimal? marketValue = holdings.All(value => value.ValueApp is not null) ? holdings.Sum(value => value.ValueApp ?? 0) : null;
+        var costBasis = SumApp(openPositions, value => value.Currency, value => value.Position.CostBasisNative);
+        var realised = SumApp(positionCurrency, value => value.Currency, value => value.Position.RealisedNative);
+        var dividends = SumApp(positionCurrency, value => value.Currency, value => value.Position.DividendsNative);
+        var unrealisedTotal = marketValue - costBasis;
         var uncachedGrowthAmounts = uncachedLedgerTransactions
             .Select(value => new
             {
@@ -383,32 +379,27 @@ public sealed partial class InvestmentPortfolioService(
             InvestmentHistoryValidationService.BuildCashEvents(transactions, cashFlows),
             validateRestrictedDebits: false).Balances;
 
-        decimal? CurrencyFx(string currency) =>
-            seriesResolver.ResolveFx(currency, appCurrency, today, fxBars)?.Rate;
-
         var cashBalances = cashByKey
             .Select(pair =>
             {
-                // Zero is zero in every currency and does not require market data.
                 // Keeping touched zero balances visible lets the UI distinguish a
                 // fully settled currency from one that has no recorded history.
-                var fx = pair.Value == 0 ? 0m : CurrencyFx(pair.Key.Currency);
-                if (fx is null)
-                {
-                    warnings.Add($"Current FX is missing for {pair.Key.Currency}/{appCurrency}; cash totals are incomplete.");
-                }
+                var amountApp = ToApp(pair.Key.Currency, pair.Value);
+                if (amountApp is null)
+                    warnings.Add($"Today's FX rate is missing for {pair.Key.Currency}/{appCurrency}; cash totals are incomplete.");
                 return new InvestmentCashBalanceDto(
                     pair.Key.AccountId,
                     accountById.TryGetValue(pair.Key.AccountId, out var account) ? account.Name : "Account",
                     pair.Key.Currency,
                     pair.Value,
-                    fx is null ? null : pair.Value == 0 ? 0m : pair.Value * fx.Value);
+                    amountApp);
             })
             .OrderByDescending(value => value.AmountApp ?? decimal.MinValue)
             .ToList();
-        var cashComplete = cashBalances.All(value => value.AmountApp is not null);
-        decimal? cashValue = cashComplete ? cashBalances.Sum(value => value.AmountApp ?? 0) : null;
-        decimal? totalValue = marketValue is not null && cashValue is not null ? marketValue + cashValue : null;
+        decimal? cashValue = cashBalances.All(value => value.AmountApp is not null)
+            ? cashBalances.Sum(value => value.AmountApp ?? 0)
+            : null;
+        var totalValue = marketValue + cashValue;
         var contributionHistory = completedCycles
             .Where(value => value.GrowthContributions > 0m)
             .Select(value => new InvestmentContributionDto(
@@ -421,34 +412,31 @@ public sealed partial class InvestmentPortfolioService(
             .Where(value => value.Amount > 0)
             .Select(value => new InvestmentContributionDto(value.Date, value.Amount)))
             .ToList();
-        decimal? netDeposits = 0;
-        var returnFlows = new List<DatedInvestmentFlow>();
-        foreach (var flow in cashFlows)
-        {
-            // Conversions move value between currencies without adding any, so
-            // counting them here would book a phantom contribution.
-            if (IsConversion(flow)) continue;
-            var fx = seriesResolver.ResolveFx(flow.Currency, appCurrency, flow.Date, fxBars)?.Rate;
-            if (fx is null)
-            {
-                netDeposits = null;
-                break;
-            }
-            var amountApp = flow.Amount * fx.Value;
-            netDeposits += amountApp;
-            // A deposit is money leaving the investor; a negative withdrawal is
-            // money returning to them. Internal trades and income stay inside the
-            // terminal portfolio value and therefore are not external return flows.
-            returnFlows.Add(new DatedInvestmentFlow(flow.Date, -amountApp));
-        }
+
+        // Two different questions. What was sent to the broker is the external deposits and
+        // withdrawals alone, in the currency each was sent in: an exchange inside the broker sends
+        // nothing. What was put into each currency, for performance, also moves money across a
+        // conversion at the amounts exchanged. Both are valued at today's rate. A deposit is money
+        // leaving the investor and a withdrawal money returning; trades and income stay inside the
+        // portfolio's value and are not external flows.
+        var netDeposits = SumApp(
+            cashFlows.Where(flow => !IsConversion(flow)), flow => flow.Currency.ToUpperInvariant(), flow => flow.Amount);
+        var contributionLegs = cashFlows
+            .SelectMany(flow => InvestmentConstantCurrency.ContributionLegs(flow).Select(leg => (flow.Date, leg.Currency, leg.Amount)))
+            .ToList();
+        var moneyPutIn = SumApp(contributionLegs, value => value.Currency, value => value.Amount);
+        var returnFlows = contributionLegs
+            .Where(value => value.Amount != 0)
+            .Select(value => new DatedInvestmentFlow(value.Date, -(ToApp(value.Currency, value.Amount) ?? 0)))
+            .ToList();
 
         var chart = await BuildChartIfRequestedAsync(
-            includeChart, range, transactions, cashFlows, instruments, references, priceBars, fxBars, appCurrency, cancellationToken);
+            includeChart, range, transactions, cashFlows, instruments, references, priceBars, TodayFx, appCurrency, cancellationToken);
         var latestFetchedAt = holdings.Where(value => value.PriceFetchedAt is not null)
             .Select(value => value.PriceFetchedAt)
             .Max();
         var dailyComplete = holdings.Count == 0 || holdings.All(value => value.DailyChangeApp is not null);
-        var annualReturn = totalValue is not null && netDeposits is not null
+        var annualReturn = totalValue is not null && moneyPutIn is not null
             ? InvestmentReturnCalculator.Calculate(returnFlows.Append(
                 new DatedInvestmentFlow(today, totalValue.Value)))
             : null;
@@ -466,8 +454,8 @@ public sealed partial class InvestmentPortfolioService(
             annualReturn,
             cashValue,
             totalValue,
-            dailyComplete ? holdings.Sum(value => value.DailyPriceChangeApp ?? 0) : null,
-            dailyComplete ? holdings.Sum(value => value.DailyCurrencyChangeApp ?? 0) : null);
+            BuildCurrencySummaries(holdings, positionCurrency.Select(value => (value.Position, value.Currency)),
+                cashBalances, contributionLegs.Select(value => (value.Currency, value.Amount)), TodayFx));
 
         var openKeys = calculation.Positions.Where(value => value.Units != 0)
             .Select(value => (value.AccountId, value.InstrumentId)).ToHashSet();
@@ -501,13 +489,13 @@ public sealed partial class InvestmentPortfolioService(
             provider.Descriptor.IsConfigured, cancellationToken);
         var referenceRate = appCurrency.Equals(CurrencyCatalog.ReferenceCurrency, StringComparison.OrdinalIgnoreCase)
             ? 1m
-            : seriesResolver.ResolveFx(CurrencyCatalog.ReferenceCurrency, appCurrency, today, fxBars)?.Rate;
+            : TodayFx(CurrencyCatalog.ReferenceCurrency)?.Rate;
         var planFxRates = instruments
             .Where(value => !value.IsArchived && !string.IsNullOrWhiteSpace(value.AllocationSleeve))
             .Select(value => value.Currency.ToUpperInvariant())
             .Append(appCurrency)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(currency => (Currency: currency, Fx: seriesResolver.ResolveFx(currency, appCurrency, today, fxBars)))
+            .Select(currency => (Currency: currency, Fx: TodayFx(currency)))
             .Where(value => value.Fx is not null)
             .Select(value => new InvestmentPlanFxRateDto(
                 value.Currency, value.Fx!.Rate, value.Fx.Date, value.Fx.Source))

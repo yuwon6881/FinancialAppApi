@@ -11,7 +11,8 @@ namespace FinancialAppApi.Tests;
 /// <summary>
 /// Month-end investment snapshots are a cache over the activity: these pin the figures, that a
 /// resumed rebuild equals a full replay, and that every way the source can change -- a backdated
-/// edit, a reclassification, a currency switch, a newly arrived rate -- removes what it affects.
+/// edit, a reclassification, a provider switch -- removes what it affects, while a change of app
+/// currency or a new rate changes only how the stored months are read.
 /// </summary>
 public sealed class InvestmentSnapshotServiceTests
 {
@@ -28,26 +29,28 @@ public sealed class InvestmentSnapshotServiceTests
         Assert.Equal([new DateOnly(2031, 1, 31), new DateOnly(2031, 2, 28)],
             rows.Where(row => row.Segment == InvestmentSnapshotSegments.Total).Select(row => row.PeriodEnd).ToList());
         var january = Row(rows, 2031, 1, InvestmentSnapshotSegments.Total);
+        // Every row is in the funds' own currency; nothing is converted when it is stored.
+        Assert.All(rows, row => Assert.Equal("USD", row.Currency));
         Assert.Equal(0m, january.OpeningValue);
-        Assert.Equal(1000m * Rate, january.NetContributions);
-        Assert.Equal(Math.Round(1000m * Rate * 21 / 31, 10), january.WeightedContributions);
-        Assert.Equal(5 * 110m * Rate, january.MarketValue);
-        Assert.Equal(500m * Rate, january.CashValue);
-        Assert.Equal(5 * 110m * Rate + 500m * Rate, january.ClosingValue);
+        Assert.Equal(1000m, january.NetContributions);
+        Assert.Equal(Math.Round(1000m * 21 / 31, 10), january.WeightedContributions);
+        Assert.Equal(5 * 110m, january.MarketValue);
+        Assert.Equal(500m, january.CashValue);
+        Assert.Equal(5 * 110m + 500m, january.ClosingValue);
         Assert.True(january.IsComplete);
         Assert.NotNull(InvestmentCarryState.TryParse(january.CarryState));
         var januaryUs = Row(rows, 2031, 1, "USEquity");
-        Assert.Equal(500m * Rate, januaryUs.NetContributions);
-        Assert.Equal(5 * 110m * Rate, januaryUs.ClosingValue);
+        Assert.Equal(500m, januaryUs.NetContributions);
+        Assert.Equal(5 * 110m, januaryUs.ClosingValue);
         Assert.Null(januaryUs.CarryState);
 
         var february = Row(rows, 2031, 2, InvestmentSnapshotSegments.Total);
         Assert.Equal(january.ClosingValue, february.OpeningValue);
         Assert.Equal(0m, february.NetContributions);
-        Assert.Equal((5 * 120m + 2 * 100m + 300m) * Rate, february.ClosingValue);
+        Assert.Equal((5 * 120m + 2 * 100m + 300m), february.ClosingValue);
         var februaryBonds = Row(rows, 2031, 2, "Bonds");
         Assert.Equal(0m, februaryBonds.OpeningValue);
-        Assert.Equal(200m * Rate, februaryBonds.NetContributions);
+        Assert.Equal(200m, februaryBonds.NetContributions);
         Assert.Equal(seed.Bnd.Id, Assert.Single(InvestmentCarryState.TryParse(february.CarryState)!.Positions,
             position => position.InstrumentId == seed.Bnd.Id).InstrumentId);
     }
@@ -123,20 +126,28 @@ public sealed class InvestmentSnapshotServiceTests
     }
 
     [Fact]
-    public async Task SwitchingTheAppCurrencyRebuildsEveryMonthInTheNewCurrency()
+    public async Task SwitchingTheAppCurrencyKeepsEveryStoredMonthAndOnlyChangesTheRateRead()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         await SeedAsync(context);
         var service = NewService(context, new DateOnly(2031, 3, 20));
-        await service.EnsureAsync(CancellationToken.None);
+        var stored = Figures(await service.EnsureAsync(CancellationToken.None));
+        var computedAt = context.InvestmentPeriodSnapshots.Select(row => row.ComputedAt).ToList();
+        var inSgd = await service.GetHistoryAsync(CancellationToken.None);
 
         context.FinancialSettings.Single().Currency = "USD";
         await context.SaveChangesAsync();
-        var rows = await service.EnsureAsync(CancellationToken.None);
+        var inUsd = await service.GetHistoryAsync(CancellationToken.None);
+        context.FinancialSettings.Single().Currency = "SGD";
+        await context.SaveChangesAsync();
+        var backInSgd = await service.GetHistoryAsync(CancellationToken.None);
 
-        Assert.All(rows, row => Assert.Equal("USD", row.AppCurrency));
-        Assert.Equal((5 * 120m + 2 * 100m + 300m), Row(rows, 2031, 2, InvestmentSnapshotSegments.Total).ClosingValue);
-        Assert.Equal(rows.Count, context.InvestmentPeriodSnapshots.Count());
+        Assert.Equal(stored, Figures(context.InvestmentPeriodSnapshots.ToList()));
+        Assert.Equal(computedAt, context.InvestmentPeriodSnapshots.Select(row => row.ComputedAt).ToList());
+        Assert.Equal(5 * 120m + 2 * 100m + 300m, inUsd.Lifetime.Value);
+        Assert.Equal((5 * 120m + 2 * 100m + 300m) * Rate, inSgd.Lifetime.Value);
+        Assert.Equal(inUsd.Lifetime.CumulativeReturnPercent, inSgd.Lifetime.CumulativeReturnPercent);
+        Assert.Equivalent(inSgd, backInSgd, strict: true);
     }
 
     [Fact]
@@ -155,38 +166,69 @@ public sealed class InvestmentSnapshotServiceTests
     }
 
     [Fact]
-    public async Task AMissingRateLeavesTheMonthUnknownUntilNewMarketDataArrives()
+    public async Task AMissingCurrentRateLeavesTheHistoryUnknownWithoutTouchingTheStoredMonths()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         await SeedAsync(context, withRates: false);
         var service = NewService(context, new DateOnly(2031, 3, 20));
 
         var rows = await service.EnsureAsync(CancellationToken.None);
+        Assert.All(rows, row => Assert.True(row.IsComplete, row.MissingReason));
+        var history = await service.GetHistoryAsync(CancellationToken.None);
+        Assert.False(history.Lifetime.IsComplete);
+        Assert.Null(history.Lifetime.Value);
+        Assert.Contains("USD/SGD", Assert.Single(history.Years, year => year.Year == 2031).MissingReasons.Single());
 
-        var january = Row(rows, 2031, 1, InvestmentSnapshotSegments.Total);
-        Assert.False(january.IsComplete);
-        Assert.Null(january.ClosingValue);
-        Assert.Null(january.NetContributions);
-        Assert.Contains("USD/SGD", january.MissingReason);
-
-        // Nothing new from the provider: the stored months are kept as they are.
-        var computedAt = january.ComputedAt;
-        await service.EnsureAsync(CancellationToken.None);
-        Assert.Equal(computedAt, context.InvestmentPeriodSnapshots.Single(row =>
-            row.PeriodEnd == january.PeriodEnd && row.Segment == InvestmentSnapshotSegments.Total).ComputedAt);
-
-        // The rates arrive (the backfill records that the provider answered): the months complete.
+        // Today's rate arrives: the same stored months now read in full, none recomputed.
+        var computedAt = context.InvestmentPeriodSnapshots.Select(row => row.ComputedAt).ToList();
         SeedRates(context);
+        await context.SaveChangesAsync();
+        history = await service.GetHistoryAsync(CancellationToken.None);
+
+        Assert.True(history.Lifetime.IsComplete);
+        Assert.Equal(1000m * Rate, history.Lifetime.NetContributions);
+        Assert.Equal(computedAt, context.InvestmentPeriodSnapshots.Select(row => row.ComputedAt).ToList());
+    }
+
+    [Fact]
+    public async Task AMissingPriceInALaterCurrencyRebuildsTheMonthOnceNewMarketDataArrives()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var seed = await SeedAsync(context);
+        // USD sorts first, so its Total row carries the month; the ZAR fund has no price yet.
+        var zar = new InvestmentInstrument
+        {
+            Symbol = "ZZZ", Name = "Johannesburg fund", Type = "ETF", Currency = "ZAR", ProviderSymbol = "ZZZ",
+        };
+        context.InvestmentInstruments.Add(zar);
+        await context.SaveChangesAsync();
+        context.InvestmentTransactions.Add(Buy(seed, zar, new DateOnly(2031, 1, 20), 10, 50));
+        await context.SaveChangesAsync();
+        var service = NewService(context, new DateOnly(2031, 3, 20));
+
+        var rows = await service.EnsureAsync(CancellationToken.None);
+        var carrier = rows.Single(row => row.PeriodEnd == new DateOnly(2031, 1, 31) && row.CarryState is not null);
+        Assert.Equal("USD", carrier.Currency);
+        Assert.True(carrier.IsComplete);
+        var januaryZar = rows.Single(row => row.PeriodEnd == new DateOnly(2031, 1, 31) &&
+                                            row.Segment == InvestmentSnapshotSegments.Total && row.Currency == "ZAR");
+        Assert.False(januaryZar.IsComplete);
+        Assert.Null(januaryZar.ClosingValue);
+
+        // The provider answers with the ZAR prices: every month from January is rebuilt and complete.
+        for (var date = new DateOnly(2031, 1, 2); date <= new DateOnly(2031, 3, 19); date = date.AddDays(1))
+            context.MarketPriceBars.Add(Bar("ZZZ|", date, 60m));
         context.MarketSeriesCoverages.Add(new MarketSeriesCoverage
         {
-            Provider = "test", Kind = MarketSeriesKinds.Fx, SeriesKey = "USD/SGD",
+            Provider = "test", Kind = MarketSeriesKinds.Price, SeriesKey = "ZZZ|",
             CoveredFrom = new DateOnly(2031, 1, 1), CheckedAt = DateTime.UtcNow.AddMinutes(1),
         });
         await context.SaveChangesAsync();
         rows = await service.EnsureAsync(CancellationToken.None);
 
         Assert.All(rows, row => Assert.True(row.IsComplete, row.MissingReason));
-        Assert.Equal(1000m * Rate, Row(rows, 2031, 1, InvestmentSnapshotSegments.Total).NetContributions);
+        Assert.Equal(10 * 60m + -500m, rows.Single(row => row.PeriodEnd == new DateOnly(2031, 2, 28) &&
+            row.Segment == InvestmentSnapshotSegments.Total && row.Currency == "ZAR").ClosingValue);
     }
 
     [Fact]
@@ -212,7 +254,7 @@ public sealed class InvestmentSnapshotServiceTests
         context.FinancialSettings.Add(new FinancialSetting { Currency = "SGD" });
         context.InvestmentPeriodSnapshots.Add(new InvestmentPeriodSnapshot
         {
-            PeriodEnd = new DateOnly(2031, 1, 31), AppCurrency = "SGD", Provider = "test", SchemaVersion = InvestmentSnapshotService.SchemaVersion,
+            PeriodEnd = new DateOnly(2031, 1, 31), Currency = "USD", Provider = "test", SchemaVersion = InvestmentSnapshotService.SchemaVersion,
         });
         await context.SaveChangesAsync();
 
@@ -312,8 +354,8 @@ public sealed class InvestmentSnapshotServiceTests
         => rows.Single(row => row.PeriodEnd.Year == year && row.PeriodEnd.Month == month && row.Segment == segment);
 
     private static List<string> Figures(IEnumerable<InvestmentPeriodSnapshot> rows) => rows
-        .OrderBy(row => row.PeriodEnd).ThenBy(row => row.Segment, StringComparer.Ordinal)
-        .Select(row => string.Join("|", row.PeriodEnd, row.Segment, row.AppCurrency, row.OpeningValue, row.ClosingValue,
+        .OrderBy(row => row.PeriodEnd).ThenBy(row => row.Segment, StringComparer.Ordinal).ThenBy(row => row.Currency, StringComparer.Ordinal)
+        .Select(row => string.Join("|", row.PeriodEnd, row.Segment, row.Currency, row.OpeningValue, row.ClosingValue,
             row.MarketValue, row.CashValue, row.NetContributions, row.WeightedContributions, row.Dividends,
             row.RealisedProfitLoss, row.CostBasis, row.IsComplete, row.MissingReason))
         .ToList();

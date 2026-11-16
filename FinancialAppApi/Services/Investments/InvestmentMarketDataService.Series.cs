@@ -103,6 +103,9 @@ public sealed partial class InvestmentMarketDataService
         var request = MarketSeriesFetchPlanner.Next(
             needFrom, state, Today, DateTime.UtcNow, Freshness, provider.MaxSeriesDaysPerRequest);
         if (request is null) return new(null, false);
+        // Only today's rate is ever read: a pair last refreshed long ago is caught up from the
+        // lookback, not from its newest stored bar, which would ask for every day in between.
+        if (!request.IsBackfill && request.Start < needFrom) request = request with { Start = needFrom };
 
         var fetched = await provider.GetFxSeriesAsync(baseCurrency, quoteCurrency, request.Start, request.End, cancellationToken);
         string? warning = null;
@@ -232,26 +235,10 @@ public sealed partial class InvestmentMarketDataService
     }
 
     /// <summary>
-    /// The oldest date a currency must be converted from: its funds' trades and every cash
-    /// movement in or out of it, including the bought side of a conversion. Today when unused.
+    /// The oldest rate a currency pair needs: only a recent stretch, because the portfolio is
+    /// reported at today's rate and no older rate is ever read.
     /// </summary>
-    internal static DateOnly FxNeedFrom(
-        string currency,
-        IEnumerable<(Guid InstrumentId, DateOnly TradeDate)> trades,
-        IReadOnlyDictionary<Guid, string> instrumentCurrencies,
-        IEnumerable<(string Currency, string? ToCurrency, DateOnly Date)> cashFlows)
-    {
-        var dates = trades
-            .Where(trade => instrumentCurrencies.TryGetValue(trade.InstrumentId, out var value) &&
-                            value.Equals(currency, StringComparison.OrdinalIgnoreCase))
-            .Select(trade => trade.TradeDate)
-            .Concat(cashFlows
-                .Where(flow => flow.Currency.Equals(currency, StringComparison.OrdinalIgnoreCase) ||
-                               (flow.ToCurrency?.Equals(currency, StringComparison.OrdinalIgnoreCase) ?? false))
-                .Select(flow => flow.Date))
-            .ToList();
-        return dates.Count == 0 ? Today : dates.Min();
-    }
+    internal static DateOnly FxNeedFrom() => InvestmentConstantCurrency.RateNeedFrom(Today);
 
     private static DateOnly Today => DateOnly.FromDateTime(DateTime.UtcNow);
 }

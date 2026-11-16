@@ -876,11 +876,6 @@ namespace FinancialAppApi.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<string>("AppCurrency")
-                        .IsRequired()
-                        .HasMaxLength(3)
-                        .HasColumnType("character varying(3)");
-
                     b.Property<string>("CarryState")
                         .HasColumnType("jsonb");
 
@@ -895,6 +890,11 @@ namespace FinancialAppApi.Migrations
 
                     b.Property<decimal?>("CostBasis")
                         .HasColumnType("numeric(28,10)");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
 
                     b.Property<decimal?>("Dividends")
                         .HasColumnType("numeric(28,10)");
@@ -943,7 +943,7 @@ namespace FinancialAppApi.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("UserId", "PeriodEnd", "Segment")
+                    b.HasIndex("UserId", "PeriodEnd", "Segment", "Currency")
                         .IsUnique();
 
                     b.ToTable("InvestmentPeriodSnapshots");

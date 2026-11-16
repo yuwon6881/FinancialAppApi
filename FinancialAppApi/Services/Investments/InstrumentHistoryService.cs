@@ -49,7 +49,7 @@ public sealed class InstrumentHistoryService(
         // Positions are per (account, instrument); a fund held in two brokers is one
         // fund to the reader, so combine them into a single average price paid.
         var positions = accounting
-            .Calculate(transactions, instrument.Currency, _ => 1m)
+            .Calculate(transactions)
             .Positions
             .Where(value => value.InstrumentId == instrumentId)
             .ToList();

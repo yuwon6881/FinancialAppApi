@@ -19,9 +19,10 @@ public static class InvestmentSnapshotSegments
 /// deletes it and everything after it. Readers resume from the newest row instead of replaying
 /// decades of history.
 ///
-/// Values are in the app currency, each flow converted at its own date's rate, so a currency
-/// switch invalidates every row. Monthly figures (contributions, dividends, realised) are flows
-/// within the month; CostBasis and the values are levels at the month-end. Unknown stays null.
+/// Each row is one currency's part, in that currency, with nothing converted (constant currency):
+/// a reader combines currencies at today's rate, so a change of app currency invalidates nothing.
+/// The month's carry rides on its first Total row. Monthly figures (contributions, dividends,
+/// realised) are flows within the month; CostBasis and the values are levels at the month-end. Unknown stays null.
 /// </summary>
 public sealed class InvestmentPeriodSnapshot : IUserOwnedEntity
 {
@@ -29,8 +30,8 @@ public sealed class InvestmentPeriodSnapshot : IUserOwnedEntity
     [Required] public string UserId { get; set; } = string.Empty;
     public DateOnly PeriodEnd { get; set; }
     [Required, MaxLength(32)] public string Segment { get; set; } = InvestmentSnapshotSegments.Total;
-    [Required, MaxLength(3)] public string AppCurrency { get; set; } = "USD";
-    // The market-data provider whose prices and rates valued this month; a switch rebuilds it.
+    [Required, MaxLength(3)] public string Currency { get; set; } = "USD";
+    // The market-data provider whose prices valued this month; a switch rebuilds it.
     [Required, MaxLength(32)] public string Provider { get; set; } = string.Empty;
     public int SchemaVersion { get; set; }
 

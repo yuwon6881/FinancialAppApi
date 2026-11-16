@@ -27,7 +27,7 @@ public sealed class InvestmentAccountingServiceTests
             Tx("Sell", new DateOnly(2025, 4, 1), units: 10, price: 25, fees: 3, taxes: 2),
         };
 
-        var result = _service.Calculate(transactions, "USD");
+        var result = _service.Calculate(transactions);
         var position = Assert.Single(result.Positions);
 
         Assert.Equal(10m, position.Units);
@@ -35,55 +35,27 @@ public sealed class InvestmentAccountingServiceTests
         Assert.Equal(93m, position.RealisedNative);
         Assert.Equal(10m, position.DividendsNative);
         Assert.Equal(59m, position.NetContributionsNative);
-        Assert.Empty(result.Warnings);
     }
 
     [Fact]
-    public void ForeignCurrencyWithoutTradeFx_KeepsNativeValuesAndMarksAppValuesIncomplete()
+    public void ForeignCurrencyStaysInItsOwnCurrencyWithoutAnyRate()
     {
+        // Constant currency: a fund is accounted for in the currency it trades in, so no rate on
+        // any date is needed and a later change of app currency has nothing to recompute.
         _instrument.Currency = "EUR";
         var result = _service.Calculate(
-            [Tx("Buy", new DateOnly(2025, 1, 1), units: 2, price: 50)],
-            "USD");
+        [
+            Tx("Buy", new DateOnly(2025, 1, 1), units: 2, price: 50, fees: 1),
+            Tx("Dividend", new DateOnly(2025, 3, 1), cash: 10, taxes: 1),
+            Tx("Sell", new DateOnly(2025, 4, 1), units: 1, price: 60),
+        ]);
 
         var position = Assert.Single(result.Positions);
-        Assert.Equal(100m, position.CostBasisNative);
-        Assert.Null(position.CostBasisApp);
-        Assert.Contains(result.Warnings, value => value.Contains("Historical FX", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void ForeignCurrencyWithHistoricalFxFallback_ValuesAppAmountsWithoutManualRate()
-    {
-        _instrument.Currency = "EUR";
-        var result = _service.Calculate(
-            [
-                Tx("Buy", new DateOnly(2025, 1, 1), units: 2, price: 50),
-                Tx("Dividend", new DateOnly(2025, 3, 1), cash: 10),
-            ],
-            "USD",
-            // The reporting rate always comes from the market fallback (e.g. a stored
-            // provider daily close).
-            _ => 1.1m);
-
-        var position = Assert.Single(result.Positions);
-        Assert.Equal(100m, position.CostBasisNative);
-        Assert.Equal(110m, position.CostBasisApp);
-        Assert.Equal(10m, position.DividendsNative);
-        Assert.Equal(11m, position.DividendsApp);
-        Assert.Empty(result.Warnings);
-    }
-
-    [Fact]
-    public void ForeignCurrencyTrade_UsesHistoricalFxFallbackRate()
-    {
-        _instrument.Currency = "EUR";
-        var trade = Tx("Buy", new DateOnly(2025, 1, 1), units: 2, price: 50);
-
-        var result = _service.Calculate([trade], "USD", _ => 1.25m);
-
-        var position = Assert.Single(result.Positions);
-        Assert.Equal(125m, position.CostBasisApp);
+        Assert.Equal(1m, position.Units);
+        Assert.Equal(50.5m, position.CostBasisNative);
+        Assert.Equal(9.5m, position.RealisedNative);
+        Assert.Equal(9m, position.DividendsNative);
+        Assert.Equal(41m, position.NetContributionsNative);
     }
 
     [Fact]
@@ -95,7 +67,7 @@ public sealed class InvestmentAccountingServiceTests
             Tx("Sell", new DateOnly(2025, 2, 1), units: 3, price: 12)
         };
 
-        var error = Assert.Throws<InvestmentValidationException>(() => _service.Calculate(transactions, "USD"));
+        var error = Assert.Throws<InvestmentValidationException>(() => _service.Calculate(transactions));
         Assert.Contains("more units", error.Message);
     }
 

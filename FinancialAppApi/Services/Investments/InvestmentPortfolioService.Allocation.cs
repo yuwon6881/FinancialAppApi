@@ -18,7 +18,7 @@ public sealed partial class InvestmentPortfolioService
         IReadOnlyList<InvestmentInstrument> instruments,
         IReadOnlyDictionary<Guid, MarketInstrumentReference> references,
         IReadOnlyList<MarketPriceBar> priceBars,
-        IReadOnlyList<FxRateBar> fxBars,
+        Func<string, ResolvedMarketFx?> todayFx,
         string appCurrency,
         CancellationToken cancellationToken)
     {
@@ -30,11 +30,13 @@ public sealed partial class InvestmentPortfolioService
         // Only a long range reads the month-end cache; a short one is cheap to value day by day.
         var settled = periodSnapshots is not null && first is { } start &&
                       InvestmentChartRange.UsesMonthlyHistory(InvestmentChartRange.StartFor(range, today) ?? start, today)
-            ? (await periodSnapshots.EnsureAsync(cancellationToken))
-                .Where(value => value.Segment == InvestmentSnapshotSegments.Total)
-                .OrderBy(value => value.PeriodEnd)
+            ? InvestmentSnapshotConversion.Combine(
+                    (await periodSnapshots.EnsureAsync(cancellationToken))
+                        .Where(value => value.Segment == InvestmentSnapshotSegments.Total),
+                    currency => todayFx(currency)?.Rate,
+                    appCurrency)
                 .ToList()
             : [];
-        return BuildChart(range, transactions, cashFlows, instruments, references, priceBars, fxBars, appCurrency, settled);
+        return BuildChart(range, transactions, cashFlows, instruments, references, priceBars, todayFx, settled);
     }
 }

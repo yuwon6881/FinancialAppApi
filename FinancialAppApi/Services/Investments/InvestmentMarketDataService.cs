@@ -194,12 +194,7 @@ public sealed partial class InvestmentMarketDataService(
                         items.Remove(item);
                         continue;
                     }
-                    var needFrom = FxNeedFrom(
-                        pair[1],
-                        transactions.Select(value => (value.InstrumentId, value.TradeDate)),
-                        heldInstruments.ToDictionary(value => value.Id, value => value.Currency),
-                        cashFlows.Select(value => (value.Currency, value.ToCurrency, value.Date)));
-                    var outcome = await RefreshFxAsync(pair[1], pair[2], needFrom, cancellationToken);
+                    var outcome = await RefreshFxAsync(pair[1], pair[2], FxNeedFrom(), cancellationToken);
                     if (outcome.Warning is not null) warnings.Add(outcome.Warning);
                     needsAnotherCall = outcome.NeedsAnotherCall;
                 }
@@ -292,7 +287,6 @@ public sealed partial class InvestmentMarketDataService(
             .Concat(appCurrency == "USD" || !hasInvestmentData ? [] : ["USD"])
             .Where(value => !value.Equals(appCurrency, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase);
-        var instrumentCurrencies = instruments.ToDictionary(value => value.Id, value => value.Currency);
         foreach (var currency in currencies)
         {
             var fetchedAt = await context.FxRateBars.AsNoTracking()
@@ -301,11 +295,7 @@ public sealed partial class InvestmentMarketDataService(
                                 value.QuoteCurrency == appCurrency)
                 .MaxAsync(value => (DateTime?)value.FetchedAt, cancellationToken);
             if (fetchedAt is null || fetchedAt < cutoff) return true;
-            series.Add((MarketSeriesKinds.Fx, FxSeriesKey(currency, appCurrency), FxNeedFrom(
-                currency,
-                firstTrades.Select(value => (value.InstrumentId, value.TradeDate)),
-                instrumentCurrencies,
-                cashFlows.Select(value => (value.Currency, value.ToCurrency, value.Date)))));
+            series.Add((MarketSeriesKinds.Fx, FxSeriesKey(currency, appCurrency), FxNeedFrom()));
         }
         // Fresh is not enough: a pair another user keeps fresh may still stop short of this
         // user's oldest entry, for example right after they switch their app currency.

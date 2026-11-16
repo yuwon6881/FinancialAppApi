@@ -133,11 +133,6 @@ public partial class InvestmentsController
                 value.Currency,
                 value.Amount)));
 
-    private async Task<string> GetAppCurrencyAsync()
-        => (await context.FinancialSettings.AsNoTracking()
-            .Select(value => value.Currency)
-            .FirstOrDefaultAsync(HttpContext.RequestAborted) ?? "USD").ToUpperInvariant();
-
     private static string? ValidateAccount(AccountMutationDto dto)
     {
         if (string.IsNullOrWhiteSpace(dto.Name) || dto.Name.Trim().Length > 120) return "Account name is required.";
@@ -234,7 +229,7 @@ public partial class InvestmentsController
             .ToListAsync(HttpContext.RequestAborted);
         if (transactions.Count > 0)
         {
-            var calculation = accountingService.Calculate(transactions, await GetAppCurrencyAsync());
+            var calculation = accountingService.Calculate(transactions);
             if (calculation.Positions.Any(value => value.Units != 0))
                 return "Close all positions before archiving this account.";
         }

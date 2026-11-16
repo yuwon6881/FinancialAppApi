@@ -18,8 +18,9 @@ public sealed class GetInvestmentsTool : IAiTool
     public string Description =>
         "The user's stored investment portfolio for a time range: totals (latest value, on paper, already banked, " +
         "dividends received, you paid, sent to broker), allocation, and the largest holdings with price and valuation " +
-        "dates. Explains stored calculations only: never infer market causes, recommend a security, or suggest trades. " +
-        "Missing prices stay unavailable.";
+        "dates, plus each currency's own figures. Every app-currency figure is the fund's own-currency figure at today's " +
+        "exchange rate, so gains reflect market prices and never currency moves. Explains stored calculations only: never " +
+        "infer market causes, recommend a security, or suggest trades. Missing prices stay unavailable.";
 
     public JsonObject ParametersSchema { get; } = AiToolSchema.Object(
     [
@@ -63,6 +64,7 @@ public sealed class GetInvestmentsTool : IAiTool
                 value = holding.ValueApp,
                 onPaper = holding.UnrealisedProfitLossApp,
                 onPaperPercent = holding.UnrealisedPercent,
+                onPaperInFundCurrency = holding.UnrealisedProfitLossNative,
                 alreadyBanked = holding.RealisedProfitLossApp,
                 dividendsReceived = holding.NetDividendsApp,
                 valuationDate = holding.ValuationAsOf,
@@ -81,6 +83,7 @@ public sealed class GetInvestmentsTool : IAiTool
             coverage = new
             {
                 source = "stored portfolio calculations",
+                valuation = "own-currency figures at today's exchange rate (constant currency)",
                 pricesUpdatedAt = portfolio.PricesUpdatedAt,
                 marketDataConfigured = portfolio.MarketDataConfigured,
                 warnings = portfolio.Warnings,
@@ -96,6 +99,17 @@ public sealed class GetInvestmentsTool : IAiTool
                 sentToBroker = portfolio.Summary.NetDeposits,
                 cashValue = portfolio.Summary.CashValue
             },
+            byCurrency = portfolio.Summary.Currencies.Select(value => new
+            {
+                currency = value.Currency,
+                rateToAppCurrency = value.RateToAppCurrency,
+                latestValue = value.TotalValue,
+                onPaper = value.UnrealisedProfitLoss,
+                onPaperPercent = value.UnrealisedPercent,
+                alreadyBanked = value.RealisedProfitLoss,
+                dividendsReceived = value.NetDividends,
+                moneyPutIn = value.NetDeposits
+            }),
             allocation = instrumentId == null ? portfolio.Allocation : null,
             holdings,
             totalHoldings = portfolio.Holdings.Count

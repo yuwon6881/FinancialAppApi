@@ -5,6 +5,10 @@ namespace FinancialAppApi.Services.Investments;
 
 public partial class InvestmentPortfolioService
 {
+    /// <summary>
+    /// Value and money put in over time, every date at today's rate (constant currency): the line
+    /// moves with the markets, and a rate change rescales it rather than reshaping it.
+    /// </summary>
     private IReadOnlyList<InvestmentChartPointDto> BuildChart(
         string range,
         IReadOnlyList<InvestmentTransaction> transactions,
@@ -12,8 +16,7 @@ public partial class InvestmentPortfolioService
         IReadOnlyList<InvestmentInstrument> instruments,
         IReadOnlyDictionary<Guid, MarketInstrumentReference> references,
         IReadOnlyList<MarketPriceBar> priceBars,
-        IReadOnlyList<FxRateBar> fxBars,
-        string appCurrency,
+        Func<string, ResolvedMarketFx?> todayFx,
         IReadOnlyList<InvestmentPeriodSnapshot> settled)
     {
         if (transactions.Count == 0 && cashFlows.Count == 0) return [];
@@ -57,14 +60,12 @@ public partial class InvestmentPortfolioService
         var pricesByInstrument = instruments.ToDictionary(
             value => value.Id,
             value => seriesResolver.ResolvePrices(references.GetValueOrDefault(value.Id), priceBars));
-        decimal? HistoricalTradeFx(InvestmentTransaction transaction) =>
-            seriesResolver.ResolveFx(transaction.Instrument.Currency, appCurrency, transaction.TradeDate, fxBars)?.Rate;
         var laterTransactions = transactions.Where(value => value.TradeDate > opening.Date).ToList();
         var laterFlows = cashFlows.Where(value => value.Date > opening.Date).ToList();
         foreach (var date in dates)
         {
             var relevant = laterTransactions.Where(value => value.TradeDate <= date).ToList();
-            var result = accounting.Calculate(relevant, appCurrency, HistoricalTradeFx, opening.Carry.Positions);
+            var result = accounting.Calculate(relevant, opening.Carry.Positions);
             decimal market = 0;
             decimal cash = 0;
             decimal? deposits = opening.Deposits;
@@ -78,7 +79,7 @@ public partial class InvestmentPortfolioService
                 }
                 if (position.Units == 0) continue;
                 var price = pricesByInstrument[instrument.Id].LastOrDefault(value => value.Date <= date);
-                var fx = seriesResolver.ResolveFx(instrument.Currency, appCurrency, date, fxBars);
+                var fx = todayFx(instrument.Currency);
                 if (price is null || fx is null)
                 {
                     complete = false;
@@ -94,14 +95,14 @@ public partial class InvestmentPortfolioService
             }
             foreach (var flow in laterFlows.Where(value => value.Date <= date))
             {
-                AddCash(flow.AccountId, flow.Currency, flow.Amount);
-                if (flow.ToCurrency is not null && flow.ToAmount is not null)
-                    AddCash(flow.AccountId, flow.ToCurrency, flow.ToAmount.Value);
-                // Conversions are value-neutral and never count as deposits.
-                if (IsConversion(flow)) continue;
-                var flowFx = seriesResolver.ResolveFx(flow.Currency, appCurrency, flow.Date, fxBars);
-                if (flowFx is null) complete = false;
-                else deposits += flow.Amount * flowFx.Rate;
+                foreach (var (currency, amount) in InvestmentConstantCurrency.ContributionLegs(flow))
+                {
+                    AddCash(flow.AccountId, currency, amount);
+                    if (amount == 0) continue;
+                    // An unknown rate leaves only the money-put-in line unknown: the value is
+                    // known whenever what is held today can be valued, whatever moved before.
+                    deposits = todayFx(currency) is { } flowFx ? deposits + amount * flowFx.Rate : null;
+                }
             }
             foreach (var transaction in relevant)
             {
@@ -115,14 +116,14 @@ public partial class InvestmentPortfolioService
             foreach (var balance in cashNative)
             {
                 if (balance.Value == 0) continue;
-                var cashFx = seriesResolver.ResolveFx(balance.Key.Currency, appCurrency, date, fxBars);
+                var cashFx = todayFx(balance.Key.Currency);
                 if (cashFx is null) complete = false;
                 else cash += balance.Value * cashFx.Rate;
             }
             points.Add(new InvestmentChartPointDto(
                 date,
                 complete ? market + cash : null,
-                complete ? deposits : null));
+                deposits));
         }
         // Decades of month-ends would outgrow the cap on their own; thin the whole series.
         return InvestmentChartRange.Sample(points);

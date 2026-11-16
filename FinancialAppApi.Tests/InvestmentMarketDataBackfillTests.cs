@@ -17,30 +17,44 @@ public sealed class InvestmentMarketDataBackfillTests
     private static DateOnly Today => DateOnly.FromDateTime(DateTime.UtcNow);
 
     [Fact]
-    public async Task FreshPairStoredForAnotherUserIsBackfilledToThisUsersOldestCashFlow()
+    public async Task AFreshPairIsNeverBackfilledBecauseOnlyTodaysRateIsRead()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         var instrument = await SeedAsync(context, "SGD", Today.AddDays(-400));
         SeedPriceBars(context, instrument, Today.AddDays(-400), Today);
-        // Another user's refresh keeps USD/SGD fresh, but only for the last month.
+        // Another user's refresh keeps USD/SGD fresh for the last month only. The portfolio is
+        // reported at today's rate, so the year-old cash flow needs no rate from its own date.
         for (var date = Today.AddDays(-30); date <= Today; date = date.AddDays(1))
             context.FxRateBars.Add(new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "SGD", MarketDate = date, Rate = 1.3m });
         await context.SaveChangesAsync();
         var provider = new RangeProvider();
-        var service = NewService(context, provider);
 
-        await service.RefreshAsync(CancellationToken.None);
+        var result = await NewService(context, provider).RefreshAsync(CancellationToken.None);
 
-        Assert.Equal([(Today.AddDays(-400), (DateOnly?)Today.AddDays(-31))], provider.FxRequests);
-        Assert.Empty(provider.PriceRequests);
-        Assert.Equal(Today.AddDays(-400), context.MarketSeriesCoverages
-            .Single(value => value.Kind == MarketSeriesKinds.Fx && value.SeriesKey == "USD/SGD").CoveredFrom);
-        Assert.Contains(context.FxRateBars, bar => bar.MarketDate < Today.AddDays(-300));
+        Assert.Equal("Fresh", result.Status);
+        Assert.Empty(provider.FxRequests);
+        Assert.DoesNotContain(context.FxRateBars, bar => bar.MarketDate < Today.AddDays(-30));
+    }
 
-        var second = await service.RefreshAsync(CancellationToken.None);
+    [Fact]
+    public async Task AStaleCachedPairIsCaughtUpFromTheLookbackNotFromItsLastBar()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var instrument = await SeedAsync(context, "SGD", Today.AddDays(-400));
+        SeedPriceBars(context, instrument, Today.AddDays(-400), Today);
+        // The pair was last refreshed a year ago and has not been asked for since.
+        context.FxRateBars.Add(new FxRateBar
+        {
+            Provider = "test", BaseCurrency = "USD", QuoteCurrency = "SGD", MarketDate = Today.AddDays(-365),
+            Rate = 1.3m, FetchedAt = DateTime.UtcNow.AddDays(-365),
+        });
+        await context.SaveChangesAsync();
+        var provider = new RangeProvider();
 
-        Assert.Equal("Fresh", second.Status);
-        Assert.Single(provider.FxRequests);
+        await NewService(context, provider).RefreshAsync(CancellationToken.None);
+
+        Assert.Equal([(Today.AddDays(-InvestmentConstantCurrency.RateLookbackDays), (DateOnly?)null)], provider.FxRequests);
+        Assert.Contains(context.FxRateBars, bar => bar.MarketDate == Today);
     }
 
     [Fact]

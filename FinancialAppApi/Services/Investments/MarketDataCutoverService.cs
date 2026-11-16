@@ -228,19 +228,21 @@ public sealed class MarketDataCutoverService(
         var instruments = await RequiredInstrumentsAsync(cancellationToken);
         var cashFlows = await context.InvestmentCashFlows.IgnoreQueryFilters().AsNoTracking().ToListAsync(cancellationToken);
         var pairs = new Dictionary<(string Base, string Quote), DateOnly>();
+        // Only today's rate is ever read (constant currency), so only a recent stretch is required.
+        var recent = InvestmentConstantCurrency.RateNeedFrom(DateOnly.FromDateTime(DateTime.UtcNow));
         foreach (var setting in settings)
         {
             var quote = setting.Currency.ToUpperInvariant();
             var userInstruments = instruments.Where(value => value.Instrument.UserId == setting.UserId).ToList();
             foreach (var item in userInstruments.Where(value => !value.Instrument.Currency.Equals(quote, StringComparison.OrdinalIgnoreCase)))
-                AddPair(item.Instrument.Currency, quote, item.EarliestTradeDate);
+                AddPair(item.Instrument.Currency, quote, recent);
             foreach (var flow in cashFlows.Where(value => value.UserId == setting.UserId && !value.Currency.Equals(quote, StringComparison.OrdinalIgnoreCase)))
-                AddPair(flow.Currency, quote, flow.Date);
+                AddPair(flow.Currency, quote, recent);
             foreach (var flow in cashFlows.Where(value => value.UserId == setting.UserId &&
                          value.ToCurrency is not null && !value.ToCurrency.Equals(quote, StringComparison.OrdinalIgnoreCase)))
-                AddPair(flow.ToCurrency!, quote, flow.Date);
+                AddPair(flow.ToCurrency!, quote, recent);
             if (quote != CurrencyCatalog.ReferenceCurrency && (userInstruments.Count > 0 || cashFlows.Any(value => value.UserId == setting.UserId)))
-                AddPair(CurrencyCatalog.ReferenceCurrency, quote, DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-7));
+                AddPair(CurrencyCatalog.ReferenceCurrency, quote, recent);
         }
         return pairs.Select(value => new RequiredFxPair(value.Key.Base, value.Key.Quote, value.Value)).ToList();
 

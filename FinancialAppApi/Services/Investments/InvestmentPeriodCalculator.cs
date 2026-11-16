@@ -5,12 +5,17 @@ namespace FinancialAppApi.Services.Investments;
 
 public sealed record InvestmentCashCarry(Guid AccountId, string Currency, decimal Amount);
 
-/// <summary>Everything the next month needs from the one before it: no price or rate is carried.</summary>
+/// <summary>
+/// Everything the next month needs from the one before it: no price or rate is carried.
+/// Currencies lists every currency the portfolio has ever touched, so each one keeps a Total row
+/// even after its cash and positions return to zero.
+/// </summary>
 public sealed record InvestmentCarryState(
     IReadOnlyList<CalculatedPosition> Positions,
-    IReadOnlyList<InvestmentCashCarry> Cash)
+    IReadOnlyList<InvestmentCashCarry> Cash,
+    IReadOnlyList<string> Currencies)
 {
-    public static readonly InvestmentCarryState Empty = new([], []);
+    public static readonly InvestmentCarryState Empty = new([], [], []);
 
     public string Serialize() => JsonSerializer.Serialize(this);
 
@@ -21,7 +26,7 @@ public sealed record InvestmentCarryState(
         try
         {
             var state = JsonSerializer.Deserialize<InvestmentCarryState>(json);
-            return state?.Positions is null || state.Cash is null ? null : state;
+            return state?.Positions is null || state.Cash is null || state.Currencies is null ? null : state;
         }
         catch (JsonException)
         {
@@ -30,9 +35,11 @@ public sealed record InvestmentCarryState(
     }
 }
 
+/// <summary>One month of one segment in one currency, in that currency.</summary>
 public sealed record InvestmentPeriodFigures(
     DateOnly PeriodEnd,
     string Segment,
+    string Currency,
     decimal? OpeningValue,
     decimal? ClosingValue,
     decimal? MarketValue,
@@ -55,84 +62,73 @@ public sealed record InvestmentPeriodResult(
 /// <summary>
 /// Walks the portfolio forward one month-end at a time from a carried state. Each month replays
 /// only its own activity, so a rebuild costs what changed, not the age of the account. Pure: the
-/// caller supplies prices and rates, and a missing one leaves the figure null with a reason.
+/// caller supplies prices, and a missing one leaves the figure null with a reason.
+///
+/// Every row is in one currency and nothing is converted (constant currency): a reader combines
+/// currencies at today's rate, so a change of app currency never invalidates a stored month.
 /// </summary>
 public sealed class InvestmentPeriodCalculator(InvestmentAccountingService accounting)
 {
     public IReadOnlyList<InvestmentPeriodResult> Walk(
-        string appCurrency,
         InvestmentCarryState opening,
-        IReadOnlyDictionary<string, decimal?> openingValues,
+        IReadOnlyDictionary<(string Segment, string Currency), decimal?> openingValues,
         DateOnly openingDate,
         IReadOnlyList<InvestmentTransaction> transactions,
         IReadOnlyList<InvestmentCashFlow> cashFlows,
         IReadOnlyDictionary<Guid, InvestmentInstrument> instruments,
         IReadOnlyList<DateOnly> monthEnds,
-        Func<Guid, DateOnly, decimal?> price,
-        Func<string, DateOnly, decimal?> fx)
+        Func<Guid, DateOnly, decimal?> price)
     {
         var results = new List<InvestmentPeriodResult>();
         var carry = opening;
-        var previousValues = new Dictionary<string, decimal?>(openingValues);
+        var previousValues = new Dictionary<(string, string), decimal?>(openingValues);
         var previousEnd = openingDate;
         foreach (var monthEnd in monthEnds)
         {
             var start = previousEnd;
             var monthTransactions = transactions.Where(value => value.TradeDate > start && value.TradeDate <= monthEnd).ToList();
             var monthFlows = cashFlows.Where(value => value.Date > start && value.Date <= monthEnd).ToList();
-            var result = Month(appCurrency, carry, previousValues, monthEnd, monthTransactions, monthFlows, instruments, price, fx);
+            var result = Month(carry, previousValues, monthEnd, monthTransactions, monthFlows, instruments, price);
             results.Add(result);
             carry = result.Carry;
-            previousValues = result.Rows.ToDictionary(row => row.Segment, row => row.ClosingValue);
+            previousValues = result.Rows.ToDictionary(row => (row.Segment, row.Currency), row => row.ClosingValue);
             previousEnd = monthEnd;
         }
         return results;
     }
 
     private InvestmentPeriodResult Month(
-        string appCurrency,
         InvestmentCarryState opening,
-        IReadOnlyDictionary<string, decimal?> openingValues,
+        IReadOnlyDictionary<(string Segment, string Currency), decimal?> openingValues,
         DateOnly monthEnd,
         IReadOnlyList<InvestmentTransaction> transactions,
         IReadOnlyList<InvestmentCashFlow> flows,
         IReadOnlyDictionary<Guid, InvestmentInstrument> instruments,
-        Func<Guid, DateOnly, decimal?> price,
-        Func<string, DateOnly, decimal?> fx)
+        Func<Guid, DateOnly, decimal?> price)
     {
-        var missing = new SortedSet<string>(StringComparer.Ordinal);
-        var calculation = accounting.Calculate(
-            transactions,
-            appCurrency,
-            transaction => fx(transaction.Instrument.Currency, transaction.TradeDate),
-            opening.Positions);
-        foreach (var warning in calculation.Warnings) missing.Add(warning);
+        var calculation = accounting.Calculate(transactions, opening.Positions);
+        var currencies = new SortedSet<string>(opening.Currencies, StringComparer.Ordinal);
+        var totalMissing = new SortedSet<string>(StringComparer.Ordinal);
 
         var cash = opening.Cash.ToDictionary(value => (value.AccountId, value.Currency), value => value.Amount);
         void AddCash(Guid accountId, string currency, decimal amount)
-            => cash[(accountId, currency)] = cash.GetValueOrDefault((accountId, currency)) + amount;
+        {
+            currency = currency.ToUpperInvariant();
+            currencies.Add(currency);
+            cash[(accountId, currency)] = cash.GetValueOrDefault((accountId, currency)) + amount;
+        }
         var daysInMonth = monthEnd.Day;
-        decimal? contributions = 0;
-        decimal? weighted = 0;
+        var contributions = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        var weighted = new Dictionary<string, decimal>(StringComparer.Ordinal);
         foreach (var flow in flows)
         {
-            AddCash(flow.AccountId, flow.Currency, flow.Amount);
-            if (flow.ToCurrency is not null && flow.ToAmount is not null)
-                AddCash(flow.AccountId, flow.ToCurrency, flow.ToAmount.Value);
-            // A conversion moves value between currencies without adding any.
-            if (flow.Type.Equals("Conversion", StringComparison.OrdinalIgnoreCase)) continue;
-            var rate = fx(flow.Currency, flow.Date);
-            if (rate is null)
+            foreach (var (currency, amount) in InvestmentConstantCurrency.ContributionLegs(flow))
             {
-                missing.Add($"No {flow.Currency}/{appCurrency} rate for a cash movement on {flow.Date:yyyy-MM-dd}.");
-                contributions = null;
-                weighted = null;
-                continue;
+                AddCash(flow.AccountId, currency, amount);
+                contributions[currency] = contributions.GetValueOrDefault(currency) + amount;
+                // Invested from the end of its day to the end of the month.
+                weighted[currency] = weighted.GetValueOrDefault(currency) + amount * (daysInMonth - flow.Date.Day) / daysInMonth;
             }
-            var amount = flow.Amount * rate.Value;
-            contributions += amount;
-            // Invested from the end of its day to the end of the month.
-            weighted += amount * (daysInMonth - flow.Date.Day) / daysInMonth;
         }
         foreach (var transaction in transactions)
         {
@@ -153,81 +149,69 @@ public sealed class InvestmentPeriodCalculator(InvestmentAccountingService accou
         }
 
         var before = opening.Positions.ToDictionary(value => (value.AccountId, value.InstrumentId));
-        var segments = new Dictionary<string, SegmentTotals>(StringComparer.Ordinal);
-        SegmentTotals SegmentFor(string key)
-        {
-            if (!segments.TryGetValue(key, out var totals)) segments[key] = totals = new SegmentTotals();
-            return totals;
-        }
+        var segments = new Dictionary<(string Segment, string Currency), SegmentTotals>();
         foreach (var position in calculation.Positions)
         {
             if (!instruments.TryGetValue(position.InstrumentId, out var instrument))
             {
-                missing.Add("An investment in this history no longer exists.");
+                totalMissing.Add("An investment in this history no longer exists.");
                 continue;
             }
-            var totals = SegmentFor(InvestmentSnapshotSegments.For(instrument));
+            var currency = instrument.Currency.ToUpperInvariant();
+            currencies.Add(currency);
+            var key = (InvestmentSnapshotSegments.For(instrument), currency);
+            if (!segments.TryGetValue(key, out var totals)) segments[key] = totals = new SegmentTotals();
             before.TryGetValue((position.AccountId, position.InstrumentId), out var previous);
-            totals.Contributions = Delta(totals.Contributions, position.NetContributionsApp, previous?.NetContributionsApp ?? 0);
-            totals.Dividends = Delta(totals.Dividends, position.DividendsApp, previous?.DividendsApp ?? 0);
-            totals.Realised = Delta(totals.Realised, position.RealisedApp, previous?.RealisedApp ?? 0);
-            totals.CostBasis = position.CostBasisApp is null ? null : totals.CostBasis + position.CostBasisApp;
+            totals.Contributions += position.NetContributionsNative - (previous?.NetContributionsNative ?? 0);
+            totals.Dividends += position.DividendsNative - (previous?.DividendsNative ?? 0);
+            totals.Realised += position.RealisedNative - (previous?.RealisedNative ?? 0);
             if (position.Units == 0) continue;
+            totals.CostBasis += position.CostBasisNative;
             var close = price(instrument.Id, monthEnd);
-            var rate = fx(instrument.Currency, monthEnd);
             if (close is null) totals.Missing.Add($"No price for {instrument.Symbol} on {monthEnd:yyyy-MM-dd}.");
-            if (rate is null) totals.Missing.Add($"No {instrument.Currency}/{appCurrency} rate on {monthEnd:yyyy-MM-dd}.");
-            totals.Value = close is null || rate is null ? null : totals.Value + position.Units * close.Value * rate.Value;
+            totals.Value = close is null ? null : totals.Value + position.Units * close.Value;
         }
 
-        decimal? cashValue = 0;
-        foreach (var ((_, currency), amount) in cash)
-        {
-            if (amount == 0) continue;
-            var rate = fx(currency, monthEnd);
-            if (rate is null)
-            {
-                missing.Add($"No {currency}/{appCurrency} rate on {monthEnd:yyyy-MM-dd}.");
-                cashValue = null;
-            }
-            else if (cashValue is not null)
-            {
-                cashValue += amount * rate.Value;
-            }
-        }
-
-        foreach (var totals in segments.Values)
-        {
-            // A trade with no rate for its own date leaves its flows unknown (the reason is
-            // already among the accounting warnings on the Total row).
-            if (totals.Contributions is null || totals.Dividends is null || totals.Realised is null || totals.CostBasis is null)
-                totals.Missing.Add("A trade in this market has no exchange rate for its date.");
-            missing.UnionWith(totals.Missing);
-        }
-        var missingList = missing.ToList();
         var rows = new List<InvestmentPeriodFigures>();
-        decimal? marketValue = segments.Values.Aggregate((decimal?)0, (sum, value) => sum + value.Value);
-        rows.Add(new InvestmentPeriodFigures(
-            monthEnd,
-            InvestmentSnapshotSegments.Total,
-            openingValues.GetValueOrDefault(InvestmentSnapshotSegments.Total, 0),
-            marketValue + cashValue,
-            marketValue,
-            cashValue,
-            contributions,
-            weighted,
-            segments.Values.Aggregate((decimal?)0, (sum, value) => sum + value.Dividends),
-            segments.Values.Aggregate((decimal?)0, (sum, value) => sum + value.Realised),
-            segments.Values.Aggregate((decimal?)0, (sum, value) => sum + value.CostBasis),
-            missingList));
-        foreach (var (segment, totals) in segments.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        foreach (var currency in currencies)
         {
+            var parts = segments.Where(pair => pair.Key.Currency == currency).Select(pair => pair.Value).ToList();
+            var missing = new SortedSet<string>(totalMissing, StringComparer.Ordinal);
+            foreach (var part in parts) missing.UnionWith(part.Missing);
+            var market = parts.Aggregate((decimal?)0, (sum, value) => sum + value.Value);
+            var cashValue = cash.Where(pair => pair.Key.Currency == currency).Sum(pair => pair.Value);
+            rows.Add(new InvestmentPeriodFigures(
+                monthEnd,
+                InvestmentSnapshotSegments.Total,
+                currency,
+                openingValues.GetValueOrDefault((InvestmentSnapshotSegments.Total, currency), 0),
+                market + cashValue,
+                market,
+                cashValue,
+                contributions.GetValueOrDefault(currency),
+                weighted.GetValueOrDefault(currency),
+                parts.Sum(value => value.Dividends),
+                parts.Sum(value => value.Realised),
+                parts.Sum(value => value.CostBasis),
+                missing.ToList()));
+        }
+        foreach (var ((segment, currency), totals) in segments
+                     .OrderBy(pair => pair.Key.Segment, StringComparer.Ordinal)
+                     .ThenBy(pair => pair.Key.Currency, StringComparer.Ordinal))
+        {
+            var openingValue = openingValues.GetValueOrDefault((segment, currency), 0);
+            // A market that has held nothing for good adds a row of zeros; the reader treats a
+            // missing row as exactly that.
+            if (openingValue == 0 && totals.Value == 0 && totals.Contributions == 0 && totals.Dividends == 0 &&
+                totals.Realised == 0 && totals.CostBasis == 0 && totals.Missing.Count == 0)
+                continue;
             // A segment's flows are its trades. Their exact timing inside the month is not kept,
             // so they count as invested for half of it -- the standard mid-period convention.
             rows.Add(new InvestmentPeriodFigures(
                 monthEnd,
                 segment,
-                openingValues.GetValueOrDefault(segment, 0),
+                currency,
+                openingValue,
                 totals.Value,
                 totals.Value,
                 null,
@@ -244,20 +228,18 @@ public sealed class InvestmentPeriodCalculator(InvestmentAccountingService accou
             cash.Where(pair => pair.Value != 0)
                 .Select(pair => new InvestmentCashCarry(pair.Key.AccountId, pair.Key.Currency, pair.Value))
                 .OrderBy(value => value.AccountId).ThenBy(value => value.Currency, StringComparer.Ordinal)
-                .ToList());
+                .ToList(),
+            currencies.ToList());
         return new InvestmentPeriodResult(monthEnd, rows, carry);
     }
-
-    private static decimal? Delta(decimal? sum, decimal? after, decimal? before)
-        => sum is null || after is null || before is null ? null : sum + after - before;
 
     private sealed class SegmentTotals
     {
         public decimal? Value = 0;
-        public decimal? Contributions = 0;
-        public decimal? Dividends = 0;
-        public decimal? Realised = 0;
-        public decimal? CostBasis = 0;
+        public decimal Contributions;
+        public decimal Dividends;
+        public decimal Realised;
+        public decimal CostBasis;
         public readonly SortedSet<string> Missing = new(StringComparer.Ordinal);
     }
 

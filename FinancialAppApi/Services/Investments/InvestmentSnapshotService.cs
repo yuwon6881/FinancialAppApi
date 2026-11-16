@@ -8,7 +8,7 @@ namespace FinancialAppApi.Services.Investments;
 /// Keeps the current user's investment month-end snapshots up to date and returns them. The rows
 /// are a cache (see <see cref="InvestmentPeriodSnapshot"/>): this resumes from the newest usable
 /// month, replays only what follows it, and falls back to a full replay whenever a stored row
-/// cannot be trusted. It never guesses a missing price or rate.
+/// cannot be trusted. It never guesses a missing price.
 /// </summary>
 public sealed class InvestmentSnapshotService(
     AppDbContext context,
@@ -18,7 +18,7 @@ public sealed class InvestmentSnapshotService(
     ILogger<InvestmentSnapshotService> logger)
 {
     /// <summary>Bump when a stored figure's meaning changes: every row is then rebuilt.</summary>
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
 
     /// <summary>
     /// A month is stored only once its end is this far behind: a refresh re-reads the last week of
@@ -28,12 +28,32 @@ public sealed class InvestmentSnapshotService(
 
     private readonly MarketDataSeriesResolver seriesResolver = new(provider.Descriptor);
 
-    public async Task<IReadOnlyList<InvestmentPeriodSnapshot>> EnsureAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// The long-range history in the app currency at today's rate. The stored months never change
+    /// with the app currency; only the rate read here does.
+    /// </summary>
+    public async Task<InvestmentHistoryDto> GetHistoryAsync(CancellationToken cancellationToken)
     {
+        var rows = await EnsureAsync(cancellationToken);
         var appCurrency = ((await context.FinancialSettings.AsNoTracking()
                 .Select(value => value.Currency)
                 .FirstOrDefaultAsync(cancellationToken)) ?? "USD")
             .ToUpperInvariant();
+        var currencies = rows.Select(value => value.Currency).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var fxBars = await InvestmentConstantCurrency.LatestFxBarsAsync(
+            context, provider.Descriptor.Id, currencies, clock.Today, cancellationToken);
+        var rates = currencies.ToDictionary(
+            currency => currency,
+            currency => seriesResolver.ResolveFx(
+                currency, appCurrency, clock.Today, fxBars, InvestmentConstantCurrency.RateNeedFrom(clock.Today))?.Rate,
+            StringComparer.OrdinalIgnoreCase);
+        return InvestmentHistorySummarizer.Summarize(
+            appCurrency,
+            InvestmentSnapshotConversion.Combine(rows, currency => rates.GetValueOrDefault(currency), appCurrency));
+    }
+
+    public async Task<IReadOnlyList<InvestmentPeriodSnapshot>> EnsureAsync(CancellationToken cancellationToken)
+    {
         var firstTrade = await context.InvestmentTransactions.AsNoTracking()
             .MinAsync(value => (DateOnly?)value.TradeDate, cancellationToken);
         var firstFlow = await context.InvestmentCashFlows.AsNoTracking()
@@ -54,13 +74,13 @@ public sealed class InvestmentSnapshotService(
         }
 
         var monthEnds = InvestmentPeriodCalculator.MonthEndsBetween(first.Value, lastSettled);
-        var usable = await UsablePrefixAsync(stored, monthEnds, appCurrency, cancellationToken);
-        var resumeRow = usable.LastOrDefault(value => value.Segment == InvestmentSnapshotSegments.Total);
+        var usable = await UsablePrefixAsync(stored, monthEnds, cancellationToken);
+        var resumeRow = usable.LastOrDefault(value => value.CarryState is not null);
         var remaining = monthEnds.Where(value => resumeRow is null || value > resumeRow.PeriodEnd).ToList();
         if (remaining.Count == 0) return usable;
 
         var fingerprint = await SourceFingerprintAsync(cancellationToken);
-        var computed = await ComputeAsync(appCurrency, resumeRow, usable, remaining, cancellationToken);
+        var computed = await ComputeAsync(resumeRow, usable, remaining, cancellationToken);
         if (computed is null) return usable;
         if (fingerprint != await SourceFingerprintAsync(cancellationToken))
         {
@@ -83,14 +103,13 @@ public sealed class InvestmentSnapshotService(
     }
 
     /// <summary>
-    /// The stored rows that can be trusted: same currency, provider and schema, contiguous from the first
+    /// The stored rows that can be trusted: same provider and schema, contiguous from the first
     /// month, each month with a readable carry, and no incomplete month that newer market data may
     /// now complete. Everything after the first untrusted month is deleted.
     /// </summary>
     private async Task<List<InvestmentPeriodSnapshot>> UsablePrefixAsync(
         List<InvestmentPeriodSnapshot> stored,
         IReadOnlyList<DateOnly> monthEnds,
-        string appCurrency,
         CancellationToken cancellationToken)
     {
         // Coverage is checked whenever the provider answers for any series; an incomplete month is
@@ -103,13 +122,14 @@ public sealed class InvestmentSnapshotService(
         foreach (var monthEnd in monthEnds)
         {
             if (!byMonth.TryGetValue(monthEnd, out var rows)) break;
-            var total = rows.FirstOrDefault(value => value.Segment == InvestmentSnapshotSegments.Total);
+            var total = rows.FirstOrDefault(value => value.Segment == InvestmentSnapshotSegments.Total && value.CarryState is not null);
             var trusted = total is not null &&
                           rows.All(value => value.SchemaVersion == SchemaVersion &&
-                                            value.Provider == provider.Descriptor.Id &&
-                                            value.AppCurrency.Equals(appCurrency, StringComparison.OrdinalIgnoreCase)) &&
+                                            value.Provider == provider.Descriptor.Id) &&
                           InvestmentCarryState.TryParse(total.CarryState) is not null &&
-                          (total.IsComplete || lastAnswer is null || lastAnswer <= total.ComputedAt);
+                          // Each currency has its own rows and its own missing prices: the carry
+                          // rides on the first currency only, so every row is asked, not just that one.
+                          rows.All(value => value.IsComplete || lastAnswer is null || lastAnswer <= value.ComputedAt);
             if (!trusted) break;
             usable.AddRange(rows);
         }
@@ -119,7 +139,6 @@ public sealed class InvestmentSnapshotService(
     }
 
     private async Task<List<InvestmentPeriodSnapshot>?> ComputeAsync(
-        string appCurrency,
         InvestmentPeriodSnapshot? resumeRow,
         IReadOnlyList<InvestmentPeriodSnapshot> usable,
         IReadOnlyList<DateOnly> monthEnds,
@@ -128,7 +147,7 @@ public sealed class InvestmentSnapshotService(
         var openingDate = resumeRow?.PeriodEnd ?? DateOnly.MinValue;
         var carry = resumeRow is null ? InvestmentCarryState.Empty : InvestmentCarryState.TryParse(resumeRow.CarryState)!;
         var openingValues = usable.Where(value => value.PeriodEnd == openingDate)
-            .ToDictionary(value => value.Segment, value => value.ClosingValue, StringComparer.Ordinal);
+            .ToDictionary(value => (value.Segment, value.Currency), value => value.ClosingValue);
 
         var instruments = await context.InvestmentInstruments.AsNoTracking().ToDictionaryAsync(value => value.Id, cancellationToken);
         var transactions = await context.InvestmentTransactions.AsNoTracking()
@@ -139,7 +158,7 @@ public sealed class InvestmentSnapshotService(
             .Where(value => value.Date > openingDate)
             .ToListAsync(cancellationToken);
 
-        // Market data only from a month before the resume point: every price or rate this walk
+        // Market data only from a month before the resume point: every price this walk
         // reads is dated after it, and month-end compaction keeps one bar per month for the gap.
         var barsFrom = openingDate == DateOnly.MinValue ? DateOnly.MinValue : openingDate.AddMonths(-1);
         var references = new Dictionary<Guid, MarketInstrumentReference>();
@@ -153,18 +172,6 @@ public sealed class InvestmentSnapshotService(
         var priceBars = externalIds.Count == 0 ? [] : await context.MarketPriceBars.AsNoTracking()
             .Where(value => value.Provider == providerId && externalIds.Contains(value.ExternalInstrumentId) && value.MarketDate >= barsFrom)
             .ToListAsync(cancellationToken);
-        var currencies = instruments.Values.Select(value => value.Currency)
-            .Concat(carry.Cash.Select(value => value.Currency))
-            .Concat(cashFlows.Select(value => value.Currency))
-            .Concat(cashFlows.Where(value => value.ToCurrency is not null).Select(value => value.ToCurrency!))
-            .Append("USD")
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var fxBars = await context.FxRateBars.AsNoTracking()
-            .Where(value => value.Provider == providerId && value.MarketDate >= barsFrom &&
-                            (currencies.Contains(value.BaseCurrency) || currencies.Contains(value.QuoteCurrency)))
-            .ToListAsync(cancellationToken);
-
         var prices = instruments.Keys.ToDictionary(
             id => id,
             id => seriesResolver.ResolvePrices(references.GetValueOrDefault(id), priceBars));
@@ -182,19 +189,11 @@ public sealed class InvestmentSnapshotService(
             }
             return found < 0 ? null : series[found].Price;
         }
-        var rates = new Dictionary<(string, DateOnly), decimal?>();
-        decimal? Fx(string currency, DateOnly date)
-        {
-            if (!rates.TryGetValue((currency, date), out var rate))
-                rates[(currency, date)] = rate = seriesResolver.ResolveFx(currency, appCurrency, date, fxBars)?.Rate;
-            return rate;
-        }
-
         IReadOnlyList<InvestmentPeriodResult> results;
         try
         {
             results = new InvestmentPeriodCalculator(accounting).Walk(
-                appCurrency, carry, openingValues, openingDate, transactions, cashFlows, instruments, monthEnds, Price, Fx);
+                carry, openingValues, openingDate, transactions, cashFlows, instruments, monthEnds, Price);
         }
         catch (InvestmentValidationException exception)
         {
@@ -205,11 +204,11 @@ public sealed class InvestmentSnapshotService(
         }
 
         var now = DateTime.UtcNow;
-        return results.SelectMany(result => result.Rows.Select(row => new InvestmentPeriodSnapshot
+        return results.SelectMany(result => result.Rows.Select((row, index) => new InvestmentPeriodSnapshot
             {
                 PeriodEnd = row.PeriodEnd,
                 Segment = row.Segment,
-                AppCurrency = appCurrency,
+                Currency = row.Currency,
                 Provider = provider.Descriptor.Id,
                 SchemaVersion = SchemaVersion,
                 OpeningValue = Round(row.OpeningValue),
@@ -223,7 +222,8 @@ public sealed class InvestmentSnapshotService(
                 CostBasis = Round(row.CostBasis),
                 IsComplete = row.IsComplete,
                 MissingReason = row.Missing.Count == 0 ? null : Truncate(string.Join(" ", row.Missing), 500),
-                CarryState = row.Segment == InvestmentSnapshotSegments.Total ? result.Carry.Serialize() : null,
+                // Rows come Total-first, so the first row of the month carries what the next month resumes from.
+                CarryState = index == 0 ? result.Carry.Serialize() : null,
                 ComputedAt = now,
             }))
             .ToList();

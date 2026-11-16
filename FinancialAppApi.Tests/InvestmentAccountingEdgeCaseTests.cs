@@ -26,7 +26,7 @@ public sealed class InvestmentAccountingEdgeCaseTests
     public void DividendBeforeAnyBuyIsRejectedWithUserVisibleValidation()
     {
         var error = Assert.Throws<InvestmentValidationException>(() => _accounting.Calculate(
-            [Transaction("Dividend", cashAmount: 10, date: new DateOnly(2026, 1, 1))], "USD"));
+            [Transaction("Dividend", cashAmount: 10, date: new DateOnly(2026, 1, 1))]));
 
         Assert.Contains("before any units are held", error.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -35,7 +35,7 @@ public sealed class InvestmentAccountingEdgeCaseTests
     public void SplitLikeAdjustmentIsRejectedInsteadOfChangingThePosition()
     {
         var error = Assert.Throws<InvestmentValidationException>(() => _accounting.Calculate(
-            [Transaction("Split", units: 2, date: new DateOnly(2026, 1, 1))], "USD"));
+            [Transaction("Split", units: 2, date: new DateOnly(2026, 1, 1))]));
 
         Assert.Contains("Unsupported investment transaction type", error.Message, StringComparison.Ordinal);
     }

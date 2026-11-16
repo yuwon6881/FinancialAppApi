@@ -320,7 +320,7 @@ public sealed class PerformanceQueryCountTests
     [Theory]
     [InlineData(1)]
     [InlineData(2_000)]
-    public async Task InvestmentTransactionValidation_ReusesThreeQuerySnapshotAtAnyHistorySize(
+    public async Task InvestmentTransactionValidation_ReusesTwoQuerySnapshotAtAnyHistorySize(
         int historySize)
     {
         await using var fixture = await SqliteFixture.CreateAsync();
@@ -371,7 +371,46 @@ public sealed class PerformanceQueryCountTests
 
         Assert.Null(result.PositionError);
         Assert.Null(result.CashError);
-        Assert.Equal(3, fixture.Counter.CommandCount);
+        Assert.Equal(2, fixture.Counter.CommandCount);
+    }
+
+    // Constant-currency reporting reads only today's rate, so the read is one query returning one
+    // bar per pair however many years of rates are stored.
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2_000)]
+    public async Task InvestmentTodaysRates_ReadOneBarPerPairInOneQueryAtAnyHistorySize(int days)
+    {
+        await using var fixture = await SqliteFixture.CreateAsync();
+        var today = new DateOnly(2031, 6, 30);
+        for (var offset = 0; offset < days; offset++)
+        {
+            var date = today.AddDays(-offset);
+            fixture.Context.FxRateBars.AddRange(
+                new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = date, Rate = 4m + offset },
+                new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "SGD", MarketDate = date, Rate = 1m + offset },
+                new FxRateBar { Provider = "other", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = date, Rate = 99m });
+        }
+        // A bar dated after "today" is never today's rate, and a pair last priced before the
+        // lookback has no current rate at all.
+        fixture.Context.FxRateBars.AddRange(
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = today.AddDays(1), Rate = 7m },
+            new FxRateBar
+            {
+                Provider = "test", BaseCurrency = "MYR", QuoteCurrency = "JPY",
+                MarketDate = today.AddDays(-InvestmentConstantCurrency.RateLookbackDays - 1), Rate = 33m,
+            });
+        await fixture.Context.SaveChangesAsync();
+        fixture.Counter.Reset();
+
+        var bars = await InvestmentConstantCurrency.LatestFxBarsAsync(
+            fixture.Context, "test", ["MYR"], today, CancellationToken.None);
+
+        Assert.Equal(1, fixture.Counter.CommandCount);
+        Assert.Equal(
+            [("USD", "MYR", today, 4m), ("USD", "SGD", today, 1m)],
+            bars.Select(bar => (bar.BaseCurrency, bar.QuoteCurrency, bar.MarketDate, bar.Rate))
+                .OrderBy(bar => bar.QuoteCurrency).ToList());
     }
 
     private sealed class SqliteFixture : IAsyncDisposable

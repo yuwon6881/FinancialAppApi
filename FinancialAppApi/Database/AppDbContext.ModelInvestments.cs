@@ -119,7 +119,7 @@ public partial class AppDbContext
                 entity.Property(amount).HasColumnType("numeric(28,10)");
             }
             // Serves both the resume read (newest Total row) and the invalidation delete (PeriodEnd >= date).
-            entity.HasIndex(e => new { e.UserId, e.PeriodEnd, e.Segment }).IsUnique();
+            entity.HasIndex(e => new { e.UserId, e.PeriodEnd, e.Segment, e.Currency }).IsUnique();
         });
 
         modelBuilder.Entity<MarketSeriesCoverage>(entity =>

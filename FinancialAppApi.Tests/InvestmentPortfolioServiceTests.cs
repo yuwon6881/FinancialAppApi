@@ -19,7 +19,7 @@ public sealed class InvestmentPortfolioServiceTests
         context.FxRateBars.Add(new FxRateBar
         {
             Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR",
-            MarketDate = new DateOnly(2026, 8, 25), Rate = 4.48m
+            MarketDate = DaysAgo(1), Rate = 4.48m
         });
         await context.SaveChangesAsync();
 
@@ -28,7 +28,7 @@ public sealed class InvestmentPortfolioServiceTests
         var fx = Assert.Single(portfolio.PlanFxRates, rate => rate.Currency == "USD");
         Assert.Equal("USD", fx.Currency);
         Assert.Equal(4.48m, fx.RateToAppCurrency);
-        Assert.Equal(new DateOnly(2026, 8, 25), fx.AsOf);
+        Assert.Equal(DaysAgo(1), fx.AsOf);
         Assert.Equal("Test data direct", fx.Source);
     }
 
@@ -105,13 +105,13 @@ public sealed class InvestmentPortfolioServiceTests
             new FxRateBar
             {
                 Provider = "test",
-                BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 1),
+                BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = DaysAgo(30),
                 Rate = 4.1m
             },
             new FxRateBar
             {
                 Provider = "test",
-                BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 23),
+                BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = DaysAgo(1),
                 Rate = 4.0968097876965978622781814333m
             });
         await context.SaveChangesAsync();
@@ -151,7 +151,7 @@ public sealed class InvestmentPortfolioServiceTests
         context.FxRateBars.Add(new FxRateBar
         {
             Provider = "test",
-            BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 22), Rate = 4.2m
+            BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = DaysAgo(1), Rate = 4.2m
         });
         await context.SaveChangesAsync();
 
@@ -162,18 +162,11 @@ public sealed class InvestmentPortfolioServiceTests
     }
 
     [Fact]
-    public async Task ChangeToday_IncludesFxMovementBetweenTheTwoPriceDates()
+    public async Task ChangeToday_IsThePriceMoveAtTodaysRate()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
-        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
-        var instrument = new InvestmentInstrument
-        {
-            Symbol = "TEST", Name = "Test", Type = "Stock", Currency = "USD", ProviderSymbol = "TEST"
-        };
-        context.InvestmentAccounts.Add(account);
-        context.InvestmentInstruments.Add(instrument);
-        await context.SaveChangesAsync();
+        var (account, instrument) = await SeedUsdFund(context);
         context.InvestmentTransactions.Add(new InvestmentTransaction
         {
             AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
@@ -182,74 +175,160 @@ public sealed class InvestmentPortfolioServiceTests
         context.MarketPriceBars.AddRange(
             new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 20), Close = 10 },
             new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 23), Close = 12 });
+        // The rate moved between the two closes and again after them; none of that is the market.
         context.FxRateBars.AddRange(
-            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 20), Rate = 4 },
-            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 23), Rate = 5 });
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = DaysAgo(10), Rate = 4 },
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = DaysAgo(3), Rate = 5 },
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = DaysAgo(1), Rate = 3 });
         await context.SaveChangesAsync();
 
         var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
         var holding = Assert.Single(portfolio.Holdings);
 
-        // Two units moved from MYR 40 to MYR 60 each: (12*5 - 10*4) * 2.
-        Assert.Equal(40m, holding.DailyChangeApp);
-        Assert.Equal(40m, portfolio.Summary.DailyChange);
-        Assert.Equal(120m, portfolio.Summary.MarketValue);
-        Assert.Null(portfolio.Summary.CostBasis);
-
-        // The move splits exactly: the price rose 2 at the new rate of 5 over two units, and the
-        // rate rose 1 on the 10 those two units were already worth apiece.
-        Assert.Equal(20m, holding.DailyPriceChangeApp);
-        Assert.Equal(20m, holding.DailyCurrencyChangeApp);
-        Assert.Equal(20m, portfolio.Summary.DailyPriceChange);
-        Assert.Equal(20m, portfolio.Summary.DailyCurrencyChange);
-    }
-
-    [Fact]
-    public async Task ChangeToday_PairsEachPriceWithItsOwnDatesRateWhenPricesAreBehind()
-    {
-        await using var context = TestHelpers.NewInMemoryContext();
-        context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
-        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
-        var instrument = new InvestmentInstrument
-        {
-            Symbol = "TEST", Name = "Test", Type = "Stock", Currency = "USD", ProviderSymbol = "TEST"
-        };
-        context.InvestmentAccounts.Add(account);
-        context.InvestmentInstruments.Add(instrument);
-        await context.SaveChangesAsync();
-        context.InvestmentTransactions.Add(new InvestmentTransaction
-        {
-            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
-            Type = "Buy", TradeDate = new DateOnly(2026, 7, 1), Units = 2, UnitPrice = 10, CashAmount = 20
-        });
-        // The two closes are both old — a market holiday, a provider a day behind, or a refresh the
-        // daily quota skipped. The rate has kept moving since, and that drift belongs to neither
-        // close: the latest move covers 07-20 to 07-23 and nothing after it.
-        context.MarketPriceBars.AddRange(
-            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 20), Close = 10 },
-            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 23), Close = 12 });
-        context.FxRateBars.AddRange(
-            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 20), Rate = 4 },
-            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 23), Rate = 5 },
-            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 30), Rate = 3 });
-        await context.SaveChangesAsync();
-
-        var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
-        var holding = Assert.Single(portfolio.Holdings);
-
-        // Still (12*5 - 10*4) * 2, not (12*3 - 10*4) * 2 = -8.
-        Assert.Equal(40m, holding.DailyChangeApp);
-        Assert.Equal(40m, portfolio.Summary.DailyChange);
-        // Today's rate is still what the holding is worth if converted now.
+        // Two units up USD 2 each, at today's rate of 3.
+        Assert.Equal(4m, holding.DailyChangeNative);
+        Assert.Equal(12m, holding.DailyChangeApp);
+        Assert.Equal(12m, portfolio.Summary.DailyChange);
         Assert.Equal(3m, holding.FxRate);
         Assert.Equal(72m, portfolio.Summary.MarketValue);
+        // The cost is the USD paid at today's rate too, so the gain is the market's alone: +20%.
+        Assert.Equal(60m, portfolio.Summary.CostBasis);
+        Assert.Equal(12m, portfolio.Summary.UnrealisedProfitLoss);
+        Assert.Equal(20m, portfolio.Summary.UnrealisedPercent);
+        Assert.Equal(20m, holding.UnrealisedPercent);
+        Assert.Equal(4m, holding.UnrealisedProfitLossNative);
     }
 
     [Fact]
-    public async Task ChangeToday_SplitsIntoPriceAndCurrencyThatAddBackToTheMove()
+    public async Task SwitchingTheAppCurrencyAndBackLeavesEveryFigureUnchanged()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var setting = new FinancialSetting { Currency = "MYR" };
+        context.FinancialSettings.Add(setting);
+        var (account, instrument) = await SeedUsdFund(context);
+        context.InvestmentCashFlows.Add(new InvestmentCashFlow
+        {
+            AccountId = account.Id, Currency = "USD", Type = "Deposit", Amount = 30, Date = new DateOnly(2026, 7, 1)
+        });
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+            Type = "Buy", TradeDate = new DateOnly(2026, 7, 1), Units = 2, UnitPrice = 10, CashAmount = 20
+        });
+        context.MarketPriceBars.Add(new MarketPriceBar
+        {
+            Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 23), Close = 12
+        });
+        context.FxRateBars.AddRange(
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = DaysAgo(30), Rate = 4 },
+            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = DaysAgo(1), Rate = 5 });
+        await context.SaveChangesAsync();
+
+        var inRinggit = (await NewService(context).GetPortfolioAsync("all", CancellationToken.None)).Summary;
+        setting.Currency = "USD";
+        await context.SaveChangesAsync();
+        var inDollars = (await NewService(context).GetPortfolioAsync("all", CancellationToken.None)).Summary;
+        setting.Currency = "MYR";
+        await context.SaveChangesAsync();
+        var backInRinggit = (await NewService(context).GetPortfolioAsync("all", CancellationToken.None)).Summary;
+
+        // In dollars, the fund's own figures: 2 x 12 held, 10 cash, 30 put in.
+        Assert.Equal(34m, inDollars.TotalValue);
+        Assert.Equal(30m, inDollars.NetDeposits);
+        Assert.Equal(4m, inDollars.UnrealisedProfitLoss);
+        // In ringgit, the same figures at today's rate of 5, whatever the rate was on 1 July.
+        Assert.Equal(170m, inRinggit.TotalValue);
+        Assert.Equal(150m, inRinggit.NetDeposits);
+        Assert.Equal(20m, inRinggit.UnrealisedProfitLoss);
+        Assert.Equal(inRinggit.UnrealisedPercent, inDollars.UnrealisedPercent);
+        Assert.Equivalent(inRinggit, backInRinggit, strict: true);
+        // The per-currency view never converts, so it does not move at all.
+        Assert.Equivalent(inRinggit.Currencies.Select(value => value with { RateToAppCurrency = null, RateDate = null }),
+            inDollars.Currencies.Select(value => value with { RateToAppCurrency = null, RateDate = null }), strict: true);
+    }
+
+    [Fact]
+    public async Task AConversionCountsAsMoneyPutIntoTheCurrencyItBought()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { Currency = "MYR" });
+        var (account, instrument) = await SeedUsdFund(context);
+        context.InvestmentCashFlows.AddRange(
+            new InvestmentCashFlow
+            {
+                AccountId = account.Id, Currency = "MYR", Type = "Deposit", Amount = 1000, Date = new DateOnly(2026, 7, 1)
+            },
+            // RM1000 bought USD 220: a rate of 0.22, whatever today's rate is.
+            new InvestmentCashFlow
+            {
+                AccountId = account.Id, Currency = "MYR", Type = "Conversion", Amount = -1000,
+                ToCurrency = "USD", ToAmount = 220, Date = new DateOnly(2026, 7, 2)
+            });
+        context.InvestmentTransactions.Add(new InvestmentTransaction
+        {
+            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
+            Type = "Buy", TradeDate = new DateOnly(2026, 7, 3), Units = 2, UnitPrice = 100, CashAmount = 200
+        });
+        context.MarketPriceBars.Add(new MarketPriceBar
+        {
+            Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 23), Close = 110
+        });
+        context.FxRateBars.Add(new FxRateBar
+        {
+            Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = DaysAgo(1), Rate = 4.5m
+        });
+        await context.SaveChangesAsync();
+
+        var summary = (await NewService(context).GetPortfolioAsync("all", CancellationToken.None)).Summary;
+
+        // USD 220 put in, USD 240 now (2 x 110 held + 20 cash): the gain is the market's USD 20.
+        var dollars = Assert.Single(summary.Currencies);
+        Assert.Equal("USD", dollars.Currency);
+        Assert.Equal(220m, dollars.NetDeposits);
+        Assert.Equal(240m, dollars.TotalValue);
+        Assert.Equal(20m, dollars.UnrealisedProfitLoss);
+        Assert.Equal(10m, dollars.UnrealisedPercent);
+        Assert.Equal(4.5m, dollars.RateToAppCurrency);
+        // What was sent to the broker is the RM1,000 deposit: the exchange inside it sends nothing,
+        // so nothing shows as still waiting to be sent.
+        Assert.Equal(1000m, summary.NetDeposits);
+        Assert.Equal(1080m, summary.TotalValue);
+    }
+
+    [Fact]
+    public async Task AMissingRateForAnOldCashMovementLeavesOnlyMoneyPutInUnknown()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "SGD" });
+        var (account, _) = await SeedUsdFund(context);
+        context.InvestmentCashFlows.AddRange(
+            new InvestmentCashFlow
+            {
+                AccountId = account.Id, Currency = "MYR", Type = "Deposit", Amount = 1000, Date = new DateOnly(2026, 7, 1)
+            },
+            new InvestmentCashFlow
+            {
+                AccountId = account.Id, Currency = "MYR", Type = "Conversion", Amount = -1000,
+                ToCurrency = "USD", ToAmount = 220, Date = new DateOnly(2026, 7, 2)
+            });
+        // Only USD can be valued today; the ringgit, now fully converted away, has no rate.
+        context.FxRateBars.Add(new FxRateBar
+        {
+            Provider = "test", BaseCurrency = "USD", QuoteCurrency = "SGD", MarketDate = DaysAgo(1), Rate = 1.35m
+        });
+        await context.SaveChangesAsync();
+
+        var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
+
+        Assert.Equal(297m, portfolio.Summary.TotalValue);
+        Assert.Null(portfolio.Summary.NetDeposits);
+        var latest = portfolio.Chart[^1];
+        Assert.Equal(297m, latest.TotalValue);
+        Assert.Null(latest.NetDeposits);
+    }
+
+    private static async Task<(InvestmentAccount Account, InvestmentInstrument Instrument)> SeedUsdFund(Database.AppDbContext context)
+    {
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         var instrument = new InvestmentInstrument
         {
@@ -258,31 +337,7 @@ public sealed class InvestmentPortfolioServiceTests
         context.InvestmentAccounts.Add(account);
         context.InvestmentInstruments.Add(instrument);
         await context.SaveChangesAsync();
-        context.InvestmentTransactions.Add(new InvestmentTransaction
-        {
-            AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
-            Type = "Buy", TradeDate = new DateOnly(2026, 7, 1), Units = 2, UnitPrice = 10, CashAmount = 20
-        });
-        // The shares gained and the ringgit strengthened harder, which is the case the summary card
-        // could not explain: a rising position reporting a falling day.
-        context.MarketPriceBars.AddRange(
-            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 20), Close = 10 },
-            new MarketPriceBar { Provider = "test", ExternalInstrumentId = "TEST|", Symbol = "TEST", MarketDate = new DateOnly(2026, 7, 23), Close = 11 });
-        context.FxRateBars.AddRange(
-            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 20), Rate = 5 },
-            new FxRateBar { Provider = "test", BaseCurrency = "USD", QuoteCurrency = "MYR", MarketDate = new DateOnly(2026, 7, 23), Rate = 4 });
-        await context.SaveChangesAsync();
-
-        var portfolio = await NewService(context).GetPortfolioAsync("all", CancellationToken.None);
-        var holding = Assert.Single(portfolio.Holdings);
-
-        // Shares up 1 at the new rate over two units; the rate down 1 on 10 apiece.
-        Assert.Equal(8m, holding.DailyPriceChangeApp);
-        Assert.Equal(-20m, holding.DailyCurrencyChangeApp);
-        Assert.Equal(-12m, holding.DailyChangeApp);
-        Assert.Equal(
-            portfolio.Summary.DailyChange,
-            portfolio.Summary.DailyPriceChange + portfolio.Summary.DailyCurrencyChange);
+        return (account, instrument);
     }
 
     [Fact]
@@ -501,7 +556,7 @@ public sealed class InvestmentPortfolioServiceTests
             Provider = "test",
             BaseCurrency = "USD",
             QuoteCurrency = "MYR",
-            MarketDate = date,
+            MarketDate = DaysAgo(1),
             Rate = 4
         });
         await context.SaveChangesAsync();
@@ -654,6 +709,9 @@ public sealed class InvestmentPortfolioServiceTests
         Assert.Equal([accountA.Id, accountB.Id, archived.Id], portfolio.Accounts.Select(account => account.Id));
         Assert.Equal([instrumentA.Id, instrumentB.Id, instrumentC.Id], portfolio.Instruments.Select(instrument => instrument.Id));
     }
+
+    // Today's rate must be recent to stand for today (InvestmentConstantCurrency.RateLookbackDays).
+    private static DateOnly DaysAgo(int days) => DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-days);
 
     private static InvestmentPortfolioService NewService(Database.AppDbContext context)
         => new(context, new InvestmentAccountingService(), new StubProvider());

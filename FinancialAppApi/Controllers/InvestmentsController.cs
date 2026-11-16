@@ -199,7 +199,7 @@ public sealed partial class InvestmentsController(
                 .Where(value => value.InstrumentId == id)
                 .ToListAsync(HttpContext.RequestAborted);
             if (history.Count > 0 &&
-                accountingService.Calculate(history, await GetAppCurrencyAsync())
+                accountingService.Calculate(history)
                     .Positions.Any(value => value.Units != 0))
                 return Conflict(new { message = "Close all units before archiving this investment." });
         }

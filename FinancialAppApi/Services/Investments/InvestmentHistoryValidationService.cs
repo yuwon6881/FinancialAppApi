@@ -26,7 +26,7 @@ public sealed class InvestmentHistoryValidationService(
         string? positionError;
         try
         {
-            accountingService.Calculate(transactions, await GetAppCurrencyAsync(cancellationToken));
+            accountingService.Calculate(transactions);
             positionError = null;
         }
         catch (InvestmentValidationException exception)
@@ -49,7 +49,7 @@ public sealed class InvestmentHistoryValidationService(
 
         try
         {
-            accountingService.Calculate(transactions, await GetAppCurrencyAsync(cancellationToken));
+            accountingService.Calculate(transactions);
             return null;
         }
         catch (InvestmentValidationException exception)
@@ -230,12 +230,6 @@ public sealed class InvestmentHistoryValidationService(
         databaseRows.Clear();
         databaseRows.AddRange(rowsById.Values);
     }
-
-    private async Task<string> GetAppCurrencyAsync(CancellationToken cancellationToken) =>
-        (await context.FinancialSettings
-            .AsNoTracking()
-            .Select(setting => setting.Currency)
-            .FirstOrDefaultAsync(cancellationToken) ?? "USD").ToUpperInvariant();
 }
 
 internal sealed record InvestmentCashEvent(
