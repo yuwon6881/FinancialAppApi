@@ -172,8 +172,7 @@ public partial class DocumentVaultService
 
     /// <summary>
     /// Removes a relief category from one tax year. Documents carry a required relief category,
-    /// so a category that is still referenced by a document in that year is refused rather than
-    /// leaving those documents pointing at a category that no longer exists.
+    /// so the category cannot be removed while used by that year or by later years inheriting it.
     /// </summary>
     public async Task<TaxReliefCategoryMutationResult> DeleteReliefCategoryAsync(
         int taxYear,
@@ -185,21 +184,44 @@ public partial class DocumentVaultService
             return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.Invalid);
         }
 
-        var rows = await EnsureExplicitConfigurationAsync(taxYear, ct);
-        var category = rows.FirstOrDefault(row => row.CategoryId == categoryId);
-        if (category == null)
+        var (effective, isInherited) = await GetEffectiveCategoryRowsAsync(taxYear, ct);
+        if (!effective.Any(row => row.CategoryId == categoryId))
         {
             return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.NotFound);
         }
 
+        var nextConfiguredYear = await ConfiguredTaxYears()
+            .Where(year => year > taxYear)
+            .OrderBy(year => year)
+            .Select(year => (int?)year)
+            .FirstOrDefaultAsync(ct);
         var isInUse = await _context.VaultDocuments
-            .AnyAsync(document => document.TaxYear == taxYear && document.ReliefCategory == categoryId, ct);
+            .AnyAsync(document => document.TaxYear >= taxYear &&
+                (nextConfiguredYear == null || document.TaxYear < nextConfiguredYear) &&
+                document.ReliefCategory == categoryId, ct);
         if (isInUse)
         {
             return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.InUse);
         }
 
-        _context.TaxReliefCategoryLimits.Remove(category);
+        if (isInherited)
+        {
+            CopyTaxYearCategories(effective.Where(row => row.CategoryId != categoryId), taxYear);
+        }
+        else
+        {
+            var category = await _context.TaxReliefCategoryLimits
+                .SingleAsync(row => row.TaxYear == taxYear && row.CategoryId == categoryId, ct);
+            _context.TaxReliefCategoryLimits.Remove(category);
+        }
+        if (effective.Count == 1 && !await _context.TaxReliefEmptyYears.AnyAsync(row => row.TaxYear == taxYear, ct))
+        {
+            _context.TaxReliefEmptyYears.Add(new TaxReliefEmptyYear
+            {
+                UserId = _context.RequireCurrentUserId(),
+                TaxYear = taxYear,
+            });
+        }
         await _context.SaveChangesAsync(ct);
 
         return new TaxReliefCategoryMutationResult(TaxReliefCategoryMutationStatus.Saved);

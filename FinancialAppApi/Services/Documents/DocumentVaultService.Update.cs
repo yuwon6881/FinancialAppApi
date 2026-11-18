@@ -69,11 +69,13 @@ public sealed partial class DocumentVaultService
         }
         reliefCategory = string.IsNullOrWhiteSpace(reliefCategory) ? null : reliefCategory.Trim();
         var targetTaxYear = taxYear ?? doc.TaxYear;
-        if (updateReliefCategory && reliefCategory == null)
+        var targetCategory = updateReliefCategory ? reliefCategory : doc.ReliefCategory;
+        if ((updateReliefCategory || targetTaxYear != doc.TaxYear) && targetCategory == null)
         {
             return Invalid(ReliefCategoryRequiredMessage);
         }
-        if (updateReliefCategory && !await IsReliefCategoryConfiguredAsync(targetTaxYear, reliefCategory!, ct))
+        if ((updateReliefCategory || targetTaxYear != doc.TaxYear) &&
+            !await IsReliefCategoryConfiguredAsync(targetTaxYear, targetCategory!, ct))
         {
             return Invalid(ReliefCategoryNotConfiguredMessage);
         }

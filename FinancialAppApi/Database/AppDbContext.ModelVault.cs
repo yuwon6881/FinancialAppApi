@@ -27,6 +27,7 @@ public partial class AppDbContext
             entity.Property(e => e.Limit).HasPrecision(18, 2);
             entity.HasIndex(e => new { e.UserId, e.TaxYear, e.CategoryId }).IsUnique();
         });
+        modelBuilder.Entity<TaxReliefEmptyYear>().HasKey(entity => new { entity.UserId, entity.TaxYear });
 
         modelBuilder.Entity<SavingsGoalCompletion>(entity =>
         {
@@ -113,6 +114,7 @@ public partial class AppDbContext
         ConfigureUserOwnership(modelBuilder.Entity<MarketDataRefreshJob>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<VaultDocument>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<TaxReliefCategoryLimit>(), applyQueryFilter: true);
+        ConfigureUserOwnership(modelBuilder.Entity<TaxReliefEmptyYear>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<AiConversation>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<AiConversationTurn>(), applyQueryFilter: true);
         ConfigureUserOwnership(modelBuilder.Entity<AiUsageDay>(), applyQueryFilter: true);

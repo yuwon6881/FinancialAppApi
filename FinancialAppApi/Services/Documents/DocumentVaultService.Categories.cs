@@ -56,24 +56,27 @@ public partial class DocumentVaultService
             return (current, false);
         }
 
-        var previousYear = await _context.TaxReliefCategoryLimits
-            .AsNoTracking()
-            .Where(row => row.TaxYear < taxYear)
-            .OrderByDescending(row => row.TaxYear)
-            .Select(row => (int?)row.TaxYear)
+        var effectiveYear = await ConfiguredTaxYears()
+            .Where(year => year <= taxYear)
+            .OrderByDescending(year => year)
+            .Select(year => (int?)year)
             .FirstOrDefaultAsync(ct);
-        if (!previousYear.HasValue)
+        if (!effectiveYear.HasValue || effectiveYear == taxYear)
         {
-            return ([], true);
+            return ([], effectiveYear != taxYear);
         }
 
         var inherited = await _context.TaxReliefCategoryLimits
             .AsNoTracking()
-            .Where(row => row.TaxYear == previousYear.Value)
+            .Where(row => row.TaxYear == effectiveYear.Value)
             .OrderBy(row => row.Id)
             .ToListAsync(ct);
         return (inherited, true);
     }
+
+    private IQueryable<int> ConfiguredTaxYears() => _context.TaxReliefCategoryLimits
+        .Select(row => row.TaxYear)
+        .Union(_context.TaxReliefEmptyYears.Select(row => row.TaxYear));
 
     private async Task<List<TaxReliefCategoryLimit>> EnsureExplicitConfigurationAsync(
         int taxYear,
@@ -89,19 +92,9 @@ public partial class DocumentVaultService
         }
 
         var (inherited, _) = await GetEffectiveCategoryRowsAsync(taxYear, ct);
-        foreach (var row in inherited)
-        {
-            _context.TaxReliefCategoryLimits.Add(new TaxReliefCategoryLimit
-            {
-                CategoryId = row.CategoryId,
-                Name = row.Name,
-                Limit = row.Limit,
-                TaxYear = taxYear
-            });
-        }
-
         if (inherited.Count > 0)
         {
+            CopyTaxYearCategories(inherited, taxYear);
             await _context.SaveChangesAsync(ct);
         }
 
@@ -110,6 +103,15 @@ public partial class DocumentVaultService
             .OrderBy(row => row.Id)
             .ToListAsync(ct);
     }
+
+    private void CopyTaxYearCategories(IEnumerable<TaxReliefCategoryLimit> categories, int taxYear) =>
+        _context.TaxReliefCategoryLimits.AddRange(categories.Select(row => new TaxReliefCategoryLimit
+        {
+            CategoryId = row.CategoryId,
+            Name = row.Name,
+            Limit = row.Limit,
+            TaxYear = taxYear,
+        }));
 
     private static TaxReliefCategoryDefinition ToDefinition(
         TaxReliefCategoryLimit row,

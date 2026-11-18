@@ -90,6 +90,11 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         Assert.Equal(HttpStatusCode.NotFound, missingDocumentUpdate.StatusCode);
         await AssertCarriesAReason(missingDocumentUpdate);
 
+        var unconfiguredYear = await client.PatchAsJsonAsync($"/api/documents/{documentId}", new { taxYear = 2025 });
+        Assert.Equal(HttpStatusCode.BadRequest, unconfiguredYear.StatusCode);
+        await AssertCarriesAReason(unconfiguredYear);
+        Assert.Equal(categoryId, await AddCategoryAsync(client, 2025));
+
         var updateResponse = await client.PatchAsJsonAsync($"/api/documents/{documentId}", new
         {
             taxYear = 2025,

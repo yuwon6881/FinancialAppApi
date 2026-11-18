@@ -2113,6 +2113,19 @@ namespace FinancialAppApi.Migrations
                     b.ToTable("TaxReliefCategoryLimits");
                 });
 
+            modelBuilder.Entity("FinancialAppApi.Models.TaxReliefEmptyYear", b =>
+                {
+                    b.Property<string>("UserId")
+                        .HasColumnType("text");
+
+                    b.Property<int>("TaxYear")
+                        .HasColumnType("integer");
+
+                    b.HasKey("UserId", "TaxYear");
+
+                    b.ToTable("TaxReliefEmptyYears");
+                });
+
             modelBuilder.Entity("FinancialAppApi.Models.Transaction", b =>
                 {
                     b.Property<string>("Id")
@@ -2914,6 +2927,15 @@ namespace FinancialAppApi.Migrations
                 });
 
             modelBuilder.Entity("FinancialAppApi.Models.TaxReliefCategoryLimit", b =>
+                {
+                    b.HasOne("FinancialAppApi.Models.AppUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("FinancialAppApi.Models.TaxReliefEmptyYear", b =>
                 {
                     b.HasOne("FinancialAppApi.Models.AppUser", null)
                         .WithMany()

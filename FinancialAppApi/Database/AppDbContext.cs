@@ -71,6 +71,7 @@ public partial class AppDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<InstrumentSearchCache> InstrumentSearchCaches => Set<InstrumentSearchCache>();
     public DbSet<VaultDocument> VaultDocuments => Set<VaultDocument>();
     public DbSet<TaxReliefCategoryLimit> TaxReliefCategoryLimits => Set<TaxReliefCategoryLimit>();
+    public DbSet<TaxReliefEmptyYear> TaxReliefEmptyYears => Set<TaxReliefEmptyYear>();
     public DbSet<AiConversation> AiConversations => Set<AiConversation>();
     public DbSet<AiConversationTurn> AiConversationTurns => Set<AiConversationTurn>();
     public DbSet<AiUsageDay> AiUsageDays => Set<AiUsageDay>();

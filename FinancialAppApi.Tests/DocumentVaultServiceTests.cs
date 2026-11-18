@@ -279,6 +279,37 @@ public class DocumentVaultServiceTests
     }
 
     [Fact]
+    public async Task DeleteReliefCategoryAsync_PreservesInheritingDocumentsAndExplicitEmptyYears()
+    {
+        await using var context = TestHelpers.NewInMemoryContext("test-user");
+        context.AppUsers.Add(new AppUser { Id = "test-user", Username = "test", PasswordHash = "hash" });
+        AddTestCategory(context, 2025);
+        var inherited = VaultDocumentForYear(2026, 1);
+        inherited.ReliefCategory = "test-category";
+        context.VaultDocuments.Add(inherited);
+        await context.SaveChangesAsync();
+        var service = NewService(context, new FakeDocumentVaultStore());
+
+        var inUse = await service.DeleteReliefCategoryAsync(2025, "test-category");
+        Assert.Equal(TaxReliefCategoryMutationStatus.InUse, inUse.Status);
+
+        context.VaultDocuments.Remove(inherited);
+        await context.SaveChangesAsync();
+        var removed = await service.DeleteReliefCategoryAsync(2026, "test-category");
+        Assert.Equal(TaxReliefCategoryMutationStatus.Saved, removed.Status);
+        Assert.Single(await service.GetReliefCategoriesAsync(2025));
+        Assert.Empty(await service.GetReliefCategoriesAsync(2026));
+
+        var filed = VaultDocumentForYear(2025, 2);
+        filed.ReliefCategory = "test-category";
+        context.VaultDocuments.Add(filed);
+        await context.SaveChangesAsync();
+        var move = await service.UpdateAsync(2, 2026, null, false, null, false, null, false, null, null);
+        Assert.Equal(DocumentVaultUpdateStatus.InvalidMetadata, move.Status);
+        Assert.Equal(2025, filed.TaxYear);
+    }
+
+    [Fact]
     public async Task CreateAsync_RejectsOverQuota()
     {
         await using var context = TestHelpers.NewInMemoryContext("test-user");
