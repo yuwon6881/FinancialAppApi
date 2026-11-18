@@ -192,18 +192,10 @@ public class CycleBalanceService
                     LowerBound(cycleEndExclusive) - sliceStart);
 
                 var stabilityOpening = stability;
-                var cycleStartUtc = DateTime.SpecifyKind(cycleStart, DateTimeKind.Utc);
-                var cycleEndExclusiveUtc = DateTime.SpecifyKind(cycleEnd.Date.AddDays(1), DateTimeKind.Utc);
-                var planAtStart = StabilityPlanRevisionService.At(planRevisions, cycleStartUtc);
-                var cyclePlanPoints = planRevisions
-                    .Where(revision => revision.EffectiveAt > cycleStartUtc && revision.EffectiveAt < cycleEndExclusiveUtc)
-                    .Select(revision => new ReloadPlanPoint(revision.EffectiveAt, revision.TargetStabilityFund))
-                    .Prepend(new ReloadPlanPoint(planAtStart.EffectiveAt, planAtStart.TargetStabilityFund))
-                    .ToList();
                 var reloaded = StabilityReloadLedger.Replay(
                     reloadState,
                     stabilityOpening,
-                    cyclePlanPoints,
+                    StabilityPlanRevisionService.PointsForCycle(planRevisions, cycleStart, cycleEnd),
                     StabilityReloadLedger.DescribeAll(
                         cycleTxs,
                         transaction => StabilityPlanRevisionService.At(

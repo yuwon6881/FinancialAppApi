@@ -52,7 +52,7 @@ public sealed class StabilityReloadStatusService
 
         var revisions = await _planRevisionService.GetAsync(setting, cancellationToken);
         var seed = await ResolveSeedAsync(setting, forTransactionIds is { Count: > 0 }, cancellationToken);
-        var replay = await ReplayAsync(revisions, seed, cancellationToken);
+        var replay = await ReplayAsync(revisions, seed, setting.CycleDay, cancellationToken);
         var transactions = replay.Transactions;
         var state = replay.State;
         var obligations = state.Obligations?.ToDictionary(
@@ -113,7 +113,7 @@ public sealed class StabilityReloadStatusService
 
         var revisions = await _planRevisionService.GetAsync(setting, cancellationToken);
         var seed = await ResolveSeedAsync(setting, useLatestBoundary: true, cancellationToken);
-        var replay = await ReplayAsync(revisions, seed, cancellationToken);
+        var replay = await ReplayAsync(revisions, seed, setting.CycleDay, cancellationToken);
 
         return (replay.State.Obligations ?? [])
             .Where(obligation => obligation.RemainingAmount > 0m)
@@ -131,6 +131,7 @@ public sealed class StabilityReloadStatusService
     private async Task<StatusReplay> ReplayAsync(
         IReadOnlyList<StabilityPlanSnapshot> revisions,
         ReplaySeed? seed,
+        int cycleDay,
         CancellationToken cancellationToken)
     {
         var query = _context.Transactions
@@ -147,17 +148,50 @@ public sealed class StabilityReloadStatusService
             .ThenBy(transaction => transaction.PostedAt)
             .ThenBy(transaction => transaction.Id)
             .ToListAsync(cancellationToken);
-        var movements = StabilityReloadLedger.DescribeAll(
-            transactions,
-            transaction => StabilityPlanRevisionService.At(
-                revisions,
-                transaction.PostedAt).StabilityAlloc);
-        var state = StabilityReloadLedger.Replay(
-            seed?.Opening ?? new ReloadState(0m, null, 0m, 0m),
-            openingBalance: seed?.OpeningBalance ?? 0m,
-            PlanPointsFrom(revisions, seed?.From),
-            movements);
+        var state = ReplayCycles(transactions, revisions, seed, cycleDay);
         return new StatusReplay(transactions, state);
+    }
+
+    private static ReloadState ReplayCycles(
+        IReadOnlyList<Transaction> transactions,
+        IReadOnlyList<StabilityPlanSnapshot> revisions,
+        ReplaySeed? seed,
+        int cycleDay)
+    {
+        (int Year, int Month) Cycle(DateTime date) =>
+            CategoryAttributionService.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(date), cycleDay);
+
+        var history = transactions.GroupBy(transaction => Cycle(transaction.Date))
+            .ToDictionary(group => group.Key, group => group.ToArray());
+        var cycles = new SortedSet<(int Year, int Month)>(history.Keys);
+        foreach (var revision in revisions.Skip(1))
+        {
+            if (seed is null || revision.EffectiveAt >= seed.Value.From)
+                cycles.Add(Cycle(revision.EffectiveAt));
+        }
+        if (seed is { } boundary) cycles.Add(Cycle(boundary.From));
+
+        var state = seed?.Opening ?? new ReloadState(0m, null, 0m, 0m);
+        var balance = seed?.OpeningBalance ?? 0m;
+        var settled = new List<ReloadObligation>();
+        // Financial dates decide which cycle owns each row, matching the cache. The replay
+        // itself still preserves posting order within the cycle.
+        foreach (var (year, month) in cycles)
+        {
+            var (start, end, _) = CategoryAttributionService.GetCycleRange(year, month, cycleDay);
+            var items = history.GetValueOrDefault((year, month)) ?? [];
+            state = StabilityReloadLedger.Replay(
+                state, balance, StabilityPlanRevisionService.PointsForCycle(revisions, start, end),
+                StabilityReloadLedger.DescribeAll(items, transaction =>
+                    StabilityPlanRevisionService.At(revisions, transaction.PostedAt).StabilityAlloc));
+            balance += items.Sum(transaction => CategoryAttributionService.GetCategoryAmount(transaction, "Stability"));
+            settled.AddRange((state.Obligations ?? []).Where(obligation => obligation.RemainingAmount <= 0m));
+        }
+
+        return state with
+        {
+            Obligations = [.. settled, ..(state.Obligations ?? []).Where(obligation => obligation.RemainingAmount > 0m)]
+        };
     }
 
     /// <summary>
@@ -217,22 +251,4 @@ public sealed class StabilityReloadStatusService
             row.StabilityBalance);
     }
 
-    private static IEnumerable<ReloadPlanPoint> PlanPointsFrom(
-        IReadOnlyList<StabilityPlanSnapshot> revisions,
-        DateTime? from)
-    {
-        if (from is null)
-        {
-            return revisions.Select(revision => new ReloadPlanPoint(
-                revision.EffectiveAt,
-                revision.TargetStabilityFund));
-        }
-
-        var boundary = DateTime.SpecifyKind(from.Value, DateTimeKind.Utc);
-        var active = StabilityPlanRevisionService.At(revisions, boundary);
-        return revisions
-            .Where(revision => revision.EffectiveAt > boundary)
-            .Select(revision => new ReloadPlanPoint(revision.EffectiveAt, revision.TargetStabilityFund))
-            .Prepend(new ReloadPlanPoint(boundary, active.TargetStabilityFund));
-    }
 }

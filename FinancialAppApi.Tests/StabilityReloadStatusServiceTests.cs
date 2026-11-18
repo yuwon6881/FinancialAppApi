@@ -81,6 +81,28 @@ public sealed class StabilityReloadStatusServiceTests
     }
 
     [Fact]
+    public async Task BackdatedDrawdownUsesTheSameCycleOrderWithAndWithoutACache()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedSetting(context, target: 0m);
+        Add(context, "withdrawal", new DateTime(2026, 2, 10), -100m, StabilityReloadIntent.Required);
+        var backdated = (await context.Transactions.FindAsync("withdrawal"))!;
+        backdated.PostedAt = new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc);
+        Add(context, "repayment", new DateTime(2026, 3, 10), 100m,
+            StabilityReloadIntent.Unanswered, ledgerCategory: "Transfer:Growth->Stability");
+        await context.SaveChangesAsync();
+        var clock = ClockAt(new DateTimeOffset(2026, 4, 15, 0, 0, 0, TimeSpan.Zero));
+
+        var cold = await new StabilityReloadStatusService(context, clock: clock).GetStatusMapAsync();
+        await new CycleBalanceService(context).EnsureComputedThroughAsync(2026, 3, cycleDay: 1);
+        var warm = await new StabilityReloadStatusService(context, clock: clock)
+            .GetStatusMapAsync(forTransactionIds: ["withdrawal"]);
+
+        Assert.Equal(StabilityReloadStatus.Complete, cold["withdrawal"]);
+        Assert.Equal(cold["withdrawal"], warm["withdrawal"]);
+    }
+
+    [Fact]
     public async Task GetStatusMapAsync_CurrentSnapshotDoesNotReapplyHistoricalTargets()
     {
         await using var context = TestHelpers.NewInMemoryContext();

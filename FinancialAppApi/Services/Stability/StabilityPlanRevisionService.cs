@@ -16,6 +16,17 @@ public sealed record StabilityPlanSnapshot(
 /// </summary>
 public sealed class StabilityPlanRevisionService
 {
+    internal static IEnumerable<ReloadPlanPoint> PointsForCycle(
+        IReadOnlyList<StabilityPlanSnapshot> revisions, DateTime start, DateTime end)
+    {
+        var startUtc = DateTime.SpecifyKind(start, DateTimeKind.Utc);
+        var endExclusiveUtc = DateTime.SpecifyKind(end.Date.AddDays(1), DateTimeKind.Utc);
+        var opening = At(revisions, startUtc);
+        return revisions
+            .Where(revision => revision.EffectiveAt > startUtc && revision.EffectiveAt < endExclusiveUtc)
+            .Select(revision => new ReloadPlanPoint(revision.EffectiveAt, revision.TargetStabilityFund))
+            .Prepend(new ReloadPlanPoint(opening.EffectiveAt, opening.TargetStabilityFund));
+    }
     private static readonly DateTime Baseline = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
     private readonly AppDbContext _context;
