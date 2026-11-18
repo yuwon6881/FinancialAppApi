@@ -294,7 +294,8 @@ public partial class TransactionQueryService
     private static string EscapeCsvField(string value)
     {
         if (string.IsNullOrEmpty(value)) return string.Empty;
-        if (value.Contains(',') || value.Contains('"') || value.Contains('\n'))
+        // A bare \r is a record break to spreadsheet readers, so it needs quoting like \n.
+        if (value.AsSpan().IndexOfAny(",\"\r\n") >= 0)
         {
             return $"\"{value.Replace("\"", "\"\"")}\"";
         }

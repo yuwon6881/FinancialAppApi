@@ -105,6 +105,9 @@ public class RecurringPaymentAlertService
                 paidAmount = ObfuscationHelper.Obfuscate(paidSoFar),
                 remainingAmount = ObfuscationHelper.Obfuscate(remaining),
                 status = occurrence.Status,
+                // The occurrence's own snapshot: review hides part payment for auto-deduct bills,
+                // which the settlement endpoint rejects.
+                paymentMode = occurrence.PaymentMode,
                 category = occurrence.Category ?? string.Empty,
                 ledgerCategory = occurrence.LedgerCategory ?? string.Empty,
                 // The occurrence's frozen account, so confirming settles where this bill was

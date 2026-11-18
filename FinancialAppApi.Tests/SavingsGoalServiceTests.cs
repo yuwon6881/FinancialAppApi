@@ -291,6 +291,22 @@ public class SavingsGoalServiceTests
         Assert.Equal(SavingsGoalMutationStatus.Success, result.Status);
         // Holding money the goal does not need would starve everything else for no reason.
         Assert.Equal(1200m, context.SavingsGoals.Single().EarmarkedAmount);
+        // Undo and the success message must reverse what moved, not what was asked for.
+        Assert.Equal(100m, result.AppliedAmount);
+    }
+
+    [Fact]
+    public async Task ContributeAsync_ReportsAClampedReleaseAsTheAmountActuallyReleased()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var goal = NewGoal("Car service", 1200m, earmarked: 400m, targetDate: new DateOnly(2026, 9, 20));
+        context.SavingsGoals.Add(goal);
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).ContributeAsync(goal.Id, -900m);
+
+        Assert.Equal(SavingsGoalMutationStatus.Success, result.Status);
+        Assert.Equal(-400m, result.AppliedAmount);
     }
 
     [Fact]

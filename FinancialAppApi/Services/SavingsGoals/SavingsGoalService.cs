@@ -30,7 +30,8 @@ public sealed record SavingsGoalResult(
     Transaction? CompletionTransaction = null,
     string? Message = null,
     string? Code = null,
-    IReadOnlyList<string>? MissingBuckets = null);
+    IReadOnlyList<string>? MissingBuckets = null,
+    decimal? AppliedAmount = null);
 
 public sealed record SavingsGoalFundingResult(
     SavingsGoalMutationStatus Status,
@@ -401,8 +402,9 @@ public partial class SavingsGoalService
         // own target -- overshooting would quietly hold money the goal does not need.
         var next = Math.Clamp(goal.EarmarkedAmount + amount, 0m, goal.TargetAmount);
         // Credit the *applied* delta, not the requested one, so a clamped top-up does not claim more
-        // of this cycle's entitlement than it actually consumed.
-        ApplyCycleFunding(goal, next - goal.EarmarkedAmount, await GetCurrentCycleKeyAsync(cancellationToken));
+        // of this cycle's entitlement than it actually consumed. The caller's Undo reverses it too.
+        var applied = next - goal.EarmarkedAmount;
+        ApplyCycleFunding(goal, applied, await GetCurrentCycleKeyAsync(cancellationToken));
         if (next != goal.EarmarkedAmount) InvalidateCompletionUndo(goal);
         goal.EarmarkedAmount = next;
 
@@ -416,7 +418,7 @@ public partial class SavingsGoalService
                 SavingsGoalMutationStatus.Conflict,
                 Message: "This commitment changed while money was being moved. Refresh and try again.");
         }
-        return new SavingsGoalResult(SavingsGoalMutationStatus.Success, goal);
+        return new SavingsGoalResult(SavingsGoalMutationStatus.Success, goal, AppliedAmount: applied);
     }
 
     /// <summary>

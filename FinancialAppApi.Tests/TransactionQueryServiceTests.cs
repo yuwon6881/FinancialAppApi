@@ -312,6 +312,23 @@ public class TransactionQueryServiceTests
     }
 
     [Fact]
+    public async Task WriteTransactionsCsvAsync_QuotesFieldsContainingABareCarriageReturn()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.Transactions.Add(NewTransaction("cr", "Coffee\rBeans", "Food", "Essentials", -4m));
+        await context.SaveChangesAsync();
+        var service = new TransactionQueryService(context);
+        await using var destination = new MemoryStream();
+
+        await service.WriteTransactionsCsvAsync(destination, sort: "amount-asc");
+
+        destination.Position = 0;
+        using var reader = new StreamReader(destination);
+        var csv = await reader.ReadToEndAsync();
+        Assert.Contains("\"Coffee\rBeans\"", csv);
+    }
+
+    [Fact]
     public async Task GetAutocompleteSuggestionsAsync_ExcludesGeneratedIncomeSplits()
     {
         await using var context = TestHelpers.NewInMemoryContext();

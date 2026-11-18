@@ -113,7 +113,7 @@ public partial class SavingsGoalsController : ControllerBase
         return result.Status switch
         {
             SavingsGoalMutationStatus.NotFound => NotFound(),
-            SavingsGoalMutationStatus.Success => Ok(MapToDto(result.Goal!)),
+            SavingsGoalMutationStatus.Success => Ok(MapToContributionDto(result.Goal!, result.AppliedAmount ?? 0m)),
             SavingsGoalMutationStatus.Conflict => Conflict(new { message = result.Message }),
             _ => BadRequest(new { message = result.Message })
         };
@@ -219,26 +219,31 @@ public partial class SavingsGoalsController : ControllerBase
         return default;
     }
 
-    internal static SavingsGoalDto MapToDto(SavingsGoal goal)
+    internal static SavingsGoalDto MapToDto(SavingsGoal goal) => FillDto(new SavingsGoalDto(), goal);
+
+    private static T FillDto<T>(T dto, SavingsGoal goal) where T : SavingsGoalDto
     {
-        return new SavingsGoalDto
-        {
-            Id = goal.Id,
-            Name = goal.Name,
-            TargetAmount = ObfuscationHelper.Obfuscate(goal.TargetAmount),
-            EarmarkedAmount = ObfuscationHelper.Obfuscate(goal.EarmarkedAmount),
-            TargetDate = goal.TargetDate,
-            Priority = goal.Priority,
-            Status = goal.Status,
-            IsRecurring = goal.IsRecurring,
-            RecurrenceMonths = goal.RecurrenceMonths,
-            FundingBucket = goal.FundingBucket,
-            CycleFundedKey = goal.CycleFundedKey,
-            CycleFundedAmount = ObfuscationHelper.Obfuscate(goal.CycleFundedAmount),
-            CreatedAt = goal.CreatedAt,
-            CompletedAt = goal.CompletedAt
-        };
+        dto.Id = goal.Id;
+        dto.Name = goal.Name;
+        dto.TargetAmount = ObfuscationHelper.Obfuscate(goal.TargetAmount);
+        dto.EarmarkedAmount = ObfuscationHelper.Obfuscate(goal.EarmarkedAmount);
+        dto.TargetDate = goal.TargetDate;
+        dto.Priority = goal.Priority;
+        dto.Status = goal.Status;
+        dto.IsRecurring = goal.IsRecurring;
+        dto.RecurrenceMonths = goal.RecurrenceMonths;
+        dto.FundingBucket = goal.FundingBucket;
+        dto.CycleFundedKey = goal.CycleFundedKey;
+        dto.CycleFundedAmount = ObfuscationHelper.Obfuscate(goal.CycleFundedAmount);
+        dto.CreatedAt = goal.CreatedAt;
+        dto.CompletedAt = goal.CompletedAt;
+        return dto;
     }
+
+    // Undo and the success message reverse the earmark change the server applied after clamping,
+    // which can be smaller than the amount the user asked to move.
+    private static SavingsGoalContributionResultDto MapToContributionDto(SavingsGoal goal, decimal applied) =>
+        FillDto(new SavingsGoalContributionResultDto { AppliedAmount = ObfuscationHelper.Obfuscate(applied) }, goal);
 
     internal static SavingsGoalPoolDto MapToDto(SavingsGoalPoolSummary summary)
     {
@@ -318,6 +323,12 @@ public class SavingsGoalDto
     public string CycleFundedAmount { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
+}
+
+public class SavingsGoalContributionResultDto : SavingsGoalDto
+{
+    /// <summary>The earmark change actually applied, signed; obfuscated like every amount.</summary>
+    public string AppliedAmount { get; set; } = string.Empty;
 }
 
 public class SavingsGoalPoolDto

@@ -85,6 +85,25 @@ public class RecurringPaymentAlertServiceTests
     }
 
     [Fact]
+    public async Task GetSubscriptionAlertsAsync_CarriesThePaymentModeTheReviewActionsDependOn()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        var payment = AnnualInsurance();
+        payment.PaymentMode = RecurringPaymentMode.AutoDeduct;
+        context.RecurringPayments.Add(payment);
+        await context.SaveChangesAsync();
+
+        var alerts = await NewService(context, new DateTimeOffset(2028, 5, 15, 12, 0, 0, TimeSpan.Zero))
+            .GetSubscriptionAlertsAsync();
+
+        // The review sheet hides part payment for auto-deduct bills, which the API rejects.
+        var json = JsonSerializer.SerializeToElement(Assert.Single(alerts));
+        Assert.Equal(RecurringPaymentMode.AutoDeduct, json.GetProperty("paymentMode").GetString());
+        Assert.Equal(RecurringOccurrenceStatus.Pending, json.GetProperty("status").GetString());
+    }
+
+    [Fact]
     public async Task GetSubscriptionAlertsAsync_AnnualPaymentDoesNotAlertOutsideItsBillingMonth()
     {
         await using var context = TestHelpers.NewInMemoryContext();
