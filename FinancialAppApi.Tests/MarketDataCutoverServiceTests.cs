@@ -22,7 +22,7 @@ public sealed class MarketDataCutoverServiceTests
         context.InvestmentTransactions.Add(new InvestmentTransaction
         {
             AccountId = account.Id, InstrumentId = instrument.Id, Instrument = instrument,
-            Type = "Buy", TradeDate = new DateOnly(2026, 1, 2), Units = 1, UnitPrice = 10, CashAmount = 10
+            Type = "Buy", TradeDate = new DateOnly(2026, 1, 3), Units = 1, UnitPrice = 10, CashAmount = 10
         });
         await context.SaveChangesAsync();
         var provider = new StubProvider();
@@ -37,8 +37,9 @@ public sealed class MarketDataCutoverServiceTests
 
         Assert.Equal(1, first.MappingsCreated);
         Assert.Equal(0, second.MappingsCreated);
+        Assert.Equal(0, second.CallsUsed);
         Assert.Single(context.InvestmentInstrumentMarketMappings);
-        Assert.Single(context.MarketPriceBars);
+        Assert.Equal(new DateOnly(2026, 1, 2), Assert.Single(context.MarketPriceBars).MarketDate);
     }
 
     [Fact]
@@ -137,7 +138,11 @@ public sealed class MarketDataCutoverServiceTests
 
         public Task<IReadOnlyList<ProviderPriceBar>> GetDailySeriesAsync(
             MarketInstrumentReference instrument, DateOnly startDate, CancellationToken cancellationToken)
-            => Task.FromResult<IReadOnlyList<ProviderPriceBar>>([new ProviderPriceBar(startDate, 12m)]);
+        {
+            var friday = new DateOnly(2026, 1, 2);
+            var firstAvailable = startDate <= friday ? friday : new DateOnly(2026, 1, 5);
+            return Task.FromResult<IReadOnlyList<ProviderPriceBar>>([new ProviderPriceBar(firstAvailable, 12m)]);
+        }
 
         public Task<IReadOnlyList<ProviderFxBar>> GetFxSeriesAsync(
             string baseCurrency, string quoteCurrency, DateOnly startDate, CancellationToken cancellationToken)

@@ -39,6 +39,7 @@ public sealed class MarketDataCutoverService(
     IOptions<MarketDataOptions> options,
     ILogger<MarketDataCutoverService> logger)
 {
+    private const int PriceBackfillLookbackDays = 7;
     private readonly MarketDataOptions _options = options.Value;
 
     public async Task<MarketDataBackfillResult> BackfillAsync(
@@ -104,7 +105,8 @@ public sealed class MarketDataCutoverService(
             calls++;
             var bars = await provider.GetDailySeriesAsync(
                 new MarketInstrumentReference(providerId, mapping.ExternalInstrumentId),
-                required.EarliestTradeDate,
+                // A trade dated on a weekend or holiday needs the preceding trading session.
+                DateOnly.FromDayNumber(Math.Max(0, required.EarliestTradeDate.DayNumber - PriceBackfillLookbackDays)),
                 cancellationToken);
             await UpsertPricesAsync(providerId, mapping, bars, cancellationToken);
             if (bars.Count > 0) pricesUpdated++;
@@ -269,9 +271,8 @@ public sealed class MarketDataCutoverService(
     {
         var rows = context.FxRateBars.AsNoTracking().Where(value => value.Provider == providerId &&
             value.BaseCurrency == baseCurrency && value.QuoteCurrency == quoteCurrency);
-        return await rows.AnyAsync(cancellationToken) &&
-               await rows.MinAsync(value => value.MarketDate, cancellationToken) <= earliest &&
-               await rows.MaxAsync(value => value.FetchedAt, cancellationToken) >= FreshnessCutoff();
+        var cutoff = FreshnessCutoff();
+        return await rows.AnyAsync(value => value.MarketDate >= earliest && value.FetchedAt >= cutoff, cancellationToken);
     }
 
     private DateTime FreshnessCutoff()

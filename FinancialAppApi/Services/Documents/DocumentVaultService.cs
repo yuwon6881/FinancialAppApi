@@ -267,11 +267,12 @@ public sealed partial class DocumentVaultService
         }
         catch
         {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             try
             {
-                await _store.DeleteIfExistsAsync(objectPath, ct);
+                await _store.DeleteIfExistsAsync(objectPath, cleanup.Token);
             }
-            catch (DocumentVaultStoreException cleanupEx)
+            catch (Exception cleanupEx) when (cleanupEx is DocumentVaultStoreException or OperationCanceledException)
             {
                 _logger.LogError(cleanupEx, "Failed to rollback GCS object {ObjectPath} after DB insert failed.", objectPath);
             }

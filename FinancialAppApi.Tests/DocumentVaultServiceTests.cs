@@ -350,10 +350,13 @@ public class DocumentVaultServiceTests
         Assert.Single(store.Objects);
     }
 
-    [Fact]
-    public async Task CreateAsync_RollsBackStoreOnDbFailure()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CreateAsync_RollsBackStoreOnDbFailure(bool cancelRequest)
     {
-        var interceptor = new FailVaultDocumentSaveInterceptor();
+        using var request = new CancellationTokenSource();
+        var interceptor = new FailVaultDocumentSaveInterceptor(cancelRequest ? request : null);
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString("N"))
             .AddInterceptors(interceptor)
@@ -370,7 +373,11 @@ public class DocumentVaultServiceTests
 
         var data = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D };
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync("file.pdf", data, 2026, null, null, "test-category"));
+        var create = () => service.CreateAsync("file.pdf", data, 2026, null, null, "test-category", ct: request.Token);
+        if (cancelRequest)
+            await Assert.ThrowsAsync<OperationCanceledException>(create);
+        else
+            await Assert.ThrowsAsync<InvalidOperationException>(create);
 
         Assert.Empty(store.Objects);
     }
@@ -716,7 +723,7 @@ public class DocumentVaultServiceTests
         RetentionUntil = new DateOnly(year, 12, 31).AddYears(7)
     };
 
-    private sealed class FailVaultDocumentSaveInterceptor : SaveChangesInterceptor
+    private sealed class FailVaultDocumentSaveInterceptor(CancellationTokenSource? request) : SaveChangesInterceptor
     {
         public bool FailVaultDocumentSaves { get; set; }
 
@@ -729,6 +736,8 @@ public class DocumentVaultServiceTests
                 eventData.Context?.ChangeTracker.Entries<VaultDocument>()
                     .Any(entry => entry.State == EntityState.Added) == true)
             {
+                request?.Cancel();
+                cancellationToken.ThrowIfCancellationRequested();
                 throw new InvalidOperationException("Simulated database failure.");
             }
 

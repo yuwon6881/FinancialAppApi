@@ -128,11 +128,12 @@ public class OcrScanJobService
         }
         catch
         {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             try
             {
-                await _imageStore.DeleteIfExistsAsync(storageObjectPath, cancellationToken);
+                await _imageStore.DeleteIfExistsAsync(storageObjectPath, cleanup.Token);
             }
-            catch (ReceiptImageStoreException cleanupException)
+            catch (Exception cleanupException) when (cleanupException is ReceiptImageStoreException or OperationCanceledException)
             {
                 _logger.LogError(
                     cleanupException,
