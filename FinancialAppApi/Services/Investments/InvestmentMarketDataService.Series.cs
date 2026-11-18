@@ -10,7 +10,9 @@ namespace FinancialAppApi.Services.Investments;
 /// </summary>
 public sealed partial class InvestmentMarketDataService
 {
-    private sealed record SeriesRefreshOutcome(string? Warning, bool NeedsAnotherCall);
+    // CalledProvider is false when coverage was already fresh or no mapping exists, so the refresh
+    // loop can give that reserved call to the next item instead of spending it.
+    private sealed record SeriesRefreshOutcome(string? Warning, bool NeedsAnotherCall, bool CalledProvider = true);
 
     private TimeSpan Freshness => TimeSpan.FromMinutes(Math.Max(1, _options.FreshnessMinutes));
 
@@ -25,7 +27,7 @@ public sealed partial class InvestmentMarketDataService
         var reference = await MarketDataReferenceResolver.ResolveAsync(
             context, instrument, provider, cancellationToken);
         if (reference is null)
-            return new($"No market-data mapping is available for {instrument.Symbol}.", false);
+            return new($"No market-data mapping is available for {instrument.Symbol}.", false, CalledProvider: false);
         var bars = context.MarketPriceBars.Where(value =>
             value.Provider == ProviderId && value.ExternalInstrumentId == reference.ExternalId);
         var latest = await bars.OrderByDescending(value => value.MarketDate).FirstOrDefaultAsync(cancellationToken);
@@ -36,7 +38,7 @@ public sealed partial class InvestmentMarketDataService
         var needFrom = transactions.Where(value => value.InstrumentId == instrument.Id).Min(value => value.TradeDate);
         var request = MarketSeriesFetchPlanner.Next(
             needFrom, state, Today, DateTime.UtcNow, Freshness, provider.MaxSeriesDaysPerRequest);
-        if (request is null) return new(null, false);
+        if (request is null) return new(null, false, CalledProvider: false);
 
         var fetched = await provider.GetDailySeriesAsync(reference, request.Start, request.End, cancellationToken);
         string? warning = null;
@@ -102,7 +104,7 @@ public sealed partial class InvestmentMarketDataService
         var state = new MarketSeriesState(earliest, latest?.MarketDate, latest?.FetchedAt, coverage?.CoveredFrom, coverage?.CheckedAt);
         var request = MarketSeriesFetchPlanner.Next(
             needFrom, state, Today, DateTime.UtcNow, Freshness, provider.MaxSeriesDaysPerRequest);
-        if (request is null) return new(null, false);
+        if (request is null) return new(null, false, CalledProvider: false);
         // Only today's rate is ever read: a pair last refreshed long ago is caught up from the
         // lookback, not from its newest stored bar, which would ask for every day in between.
         if (!request.IsBackfill && request.Start < needFrom) request = request with { Start = needFrom };

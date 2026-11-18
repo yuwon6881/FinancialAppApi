@@ -58,6 +58,43 @@ public sealed class LoanRepaymentServiceTests
     }
 
     [Fact]
+    public async Task AdvanceCyclesRepayment_UsesTheLoansOwnDatesAfterTheBillCadenceIsEdited()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, payment, account) = await SeedLoanAsync(context);
+        // The bill's due day moves after the loan was set up; the loan keeps its own cadence snapshot.
+        payment.StartDate = "2026-01-15";
+        payment.DueDate = 15;
+        await context.SaveChangesAsync();
+
+        var result = await CreateService(context).AdvanceCyclesRepaymentAsync(
+            loan.Id, cycles: 1, accountId: account.Id, clientKey: "key-cadence",
+            postedAt: new DateTime(2026, 1, 1, 10, 0, 0));
+
+        Assert.True(result.Status == LoanRepaymentStatus.Success, $"{result.Status}: {result.Message}");
+        var occurrence = Assert.Single(await context.RecurringPaymentOccurrences
+            .Where(o => o.RecurringPaymentId == payment.Id).ToListAsync());
+        Assert.Equal(new DateOnly(2026, 1, 1), occurrence.OccurrenceDate);
+        Assert.Equal(RecurringOccurrenceStatus.Paid, occurrence.Status);
+    }
+
+    [Fact]
+    public async Task FullSettlementRepayment_SucceedsWhenTheBillsTrackingWindowEndsBeforeTheNextInstalment()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, payment, account) = await SeedLoanAsync(context);
+        payment.EndDate = "2025-12-31";
+        await context.SaveChangesAsync();
+
+
+        var result = await CreateService(context).FullSettlementRepaymentAsync(
+            loan.Id, 1000m, account.Id, "key-window",
+            postedAt: new DateTime(2026, 1, 1, 10, 0, 0));
+
+        Assert.True(result.Status == LoanRepaymentStatus.Success, $"{result.Status}: {result.Message}");
+    }
+
+    [Fact]
     public async Task AdvanceCyclesRepayment_AllowsAnyOpenAccountAndUsesItsBucketForTheLedgerEntry()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -295,6 +332,30 @@ public sealed class LoanRepaymentServiceTests
         // Transaction is deleted
         var txCount = await context.Transactions.CountAsync();
         Assert.Equal(0, txCount);
+    }
+
+    [Fact]
+    public async Task UndoRepayment_RefusesWhenARepaymentEntryNoLongerMatchesItsSnapshot()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var (loan, payment, account) = await SeedLoanAsync(context);
+        var service = CreateService(context);
+        var result = await service.FullSettlementRepaymentAsync(
+            loan.Id, lenderQuoteAmount: 950m, accountId: account.Id, clientKey: "key-tampered",
+            postedAt: new DateTime(2026, 1, 1, 10, 0, 0));
+        Assert.Equal(LoanRepaymentStatus.Success, result.Status);
+
+        var entry = await context.Transactions.SingleAsync();
+        entry.Amount = -10m;
+        await context.SaveChangesAsync();
+
+        var undo = await service.UndoRepaymentActionAsync(result.ActionId!);
+
+        Assert.Equal(LoanRepaymentStatus.Conflict, undo.Status);
+        Assert.Equal("repayment_entries_changed", undo.Code);
+        Assert.Equal(1, await context.Transactions.CountAsync());
+        Assert.False((await context.RecurringPayments.FindAsync(payment.Id))!.Active);
+        Assert.Equal(1, await context.LoanRepaymentActions.CountAsync());
     }
 
     [Fact]

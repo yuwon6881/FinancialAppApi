@@ -116,6 +116,10 @@ public sealed class AiConversationMemoryServiceTests
         Assert.NotNull(first.PendingTurn);
         Assert.NotNull(second.Replay);
         Assert.Contains("still being processed", second.Replay!.Reply);
+        // Flagged so the caller answers with a retryable status: a 200 would read as the finished
+        // turn and the client would drop the handle it needs to collect the real result.
+        Assert.True(second.InProgress);
+        Assert.False(first.InProgress);
         Assert.Single(context.AiConversationTurns);
     }
 

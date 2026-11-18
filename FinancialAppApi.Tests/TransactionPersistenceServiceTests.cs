@@ -388,6 +388,68 @@ public class TransactionPersistenceServiceTests
     }
 
     [Fact]
+    public async Task UpdateTransactionAsync_CannotRaiseABillPaymentPastWhatTheOccurrenceStillOwes()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedPartlyPaidBill(context);
+        await context.SaveChangesAsync();
+
+        // 60 is already paid elsewhere on a 100 bill, so this 25 payment may rise to at most 40.
+        var result = await NewService(context).UpdateTransactionAsync(
+            "bill-part-2", NewRequest("bill-part-2", amount: -45m) with { RecurringPaymentId = "bill-internet" });
+
+        Assert.Equal(TransactionMutationStatus.Conflict, result.Status);
+        Assert.Contains("40.00", result.Message);
+        Assert.Equal(-25m, (await context.Transactions.SingleAsync(t => t.Id == "bill-part-2")).Amount);
+    }
+
+    [Fact]
+    public async Task UpdateTransactionAsync_AllowsRaisingABillPaymentUpToTheRemainder()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        SeedPartlyPaidBill(context);
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).UpdateTransactionAsync(
+            "bill-part-2", NewRequest("bill-part-2", amount: -40m) with { RecurringPaymentId = "bill-internet" });
+
+        Assert.Equal(TransactionMutationStatus.Updated, result.Status);
+    }
+
+    private static void SeedPartlyPaidBill(AppDbContext context)
+    {
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "bill-internet",
+            Name = "Internet",
+            Amount = 100m,
+            Frequency = "Monthly",
+            Category = "Other",
+            LedgerCategory = "Rewards",
+            StartDate = "2026-01-09",
+            DueDate = 9,
+            Active = true
+        });
+        foreach (var (id, amount) in new[] { ("bill-part-1", -60m), ("bill-part-2", -25m) })
+        {
+            context.Transactions.Add(new Transaction
+            {
+                Id = id,
+                Date = new DateTime(2026, 7, 9, 0, 0, 0, DateTimeKind.Utc),
+                PostedAt = new DateTime(2026, 7, 9, 0, 0, 0, DateTimeKind.Utc),
+                Description = "Internet",
+                Category = "Other",
+                LedgerCategory = "Rewards",
+                Amount = amount,
+                RecurringPaymentId = "bill-internet",
+                RecurringOccurrenceDate = new DateOnly(2026, 7, 9)
+            });
+        }
+    }
+
+    [Fact]
     public async Task UpdateTransactionAsync_CannotChangeARecordedRecurringOccurrenceDate()
     {
         await using var context = TestHelpers.NewInMemoryContext();

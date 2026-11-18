@@ -76,6 +76,28 @@ public sealed class RecurringAccountShortfallEvaluatorTests
     }
 
     [Fact]
+    public void ABlankAccountSnapshotFallsBackToTheBillsAccountExactlyAsSettlementDoes()
+    {
+        var today = new DateOnly(2026, 8, 15);
+        var account = new LedgerAccount { Id = "acct-main", Name = "Main Bank", Bucket = "Essentials", Kind = LedgerAccountKind.Bank };
+        var recurring = new List<RecurringPayment>
+        {
+            new() { Id = "rec-rent", Name = "Rent", Amount = 500m, PaymentMode = RecurringPaymentMode.AutoDeduct, AccountId = account.Id, LedgerCategory = "Essentials" }
+        };
+        // Pre-attribution occurrences carry an empty snapshot, which means "never assigned".
+        var occurrences = new List<RecurringPaymentOccurrence>
+        {
+            new() { Id = "occ-rent", RecurringPaymentId = "rec-rent", Name = "Rent", ScheduledAmount = 500m, OccurrenceDate = today.AddDays(1), Status = RecurringOccurrenceStatus.Pending, AccountId = "" }
+        };
+
+        var shortfalls = RecurringAccountShortfallEvaluator.EvaluateShortfalls(
+            occurrences, recurring, [account], new Dictionary<string, decimal> { [account.Id] = 100m }, today);
+
+        dynamic result = Assert.Single(shortfalls);
+        Assert.Equal(400m, ObfuscationHelper.Deobfuscate((string)result.shortfall));
+    }
+
+    [Fact]
     public void EvaluatesShortfalls_ForUpcomingAutoDeductOccurrencesWithInsufficientBalance()
     {
         var today = new DateOnly(2026, 8, 15);

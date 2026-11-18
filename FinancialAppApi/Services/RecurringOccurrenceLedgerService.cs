@@ -281,13 +281,16 @@ public sealed partial class RecurringOccurrenceLedgerService
         payment.NextDueDate = null;
     }
 
+    // scheduleAuthorized is true only when the caller's own schedule vouches for the date (a loan
+    // instalment); it then skips the check against the bill's current cadence and tracking window.
     public async Task<RecurringPaymentOccurrence> EnsureOccurrenceAsync(
         RecurringPayment payment,
         DateOnly date,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool scheduleAuthorized = false)
     {
         var existing = await FindAsync(payment.Id, date, cancellationToken);
-        return existing ?? Materialize(payment, date);
+        return existing ?? Materialize(payment, date, scheduleAuthorized);
     }
 
     public async Task<RecurringPaymentOccurrence?> FindByTransactionAsync(
@@ -316,9 +319,10 @@ public sealed partial class RecurringOccurrenceLedgerService
         return existing;
     }
 
-    private RecurringPaymentOccurrence Materialize(RecurringPayment payment, DateOnly date)
+    private RecurringPaymentOccurrence Materialize(RecurringPayment payment, DateOnly date, bool scheduleAuthorized = false)
     {
-        if (date < TrackingStart(payment) || _dates.GetNextOccurrenceOnOrAfter(payment, date) != date)
+        if (!scheduleAuthorized
+            && (date < TrackingStart(payment) || _dates.GetNextOccurrenceOnOrAfter(payment, date) != date))
         {
             throw new InvalidOperationException("The selected date is not a tracked occurrence of this recurring payment.");
         }

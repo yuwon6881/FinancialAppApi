@@ -36,7 +36,10 @@ public sealed record TransactionMutationRequest(
     string? AccountId = null,
     string? CounterAccountId = null,
     IReadOnlyDictionary<string, string>? SplitAccountIds = null,
-    int? StabilityRepaymentCycles = null);
+    int? StabilityRepaymentCycles = null,
+    // Internal only, never bound from HTTP: the loan repayment path settles dates from the loan's
+    // own frozen cadence, which the bill's editable cadence and tracking window may no longer match.
+    bool OccurrenceAuthorizedByLoan = false);
 
 public sealed record TransactionMutationResult(
     TransactionMutationStatus Status,
@@ -177,6 +180,7 @@ public partial class TransactionPersistenceService
         var occurrence = await ResolveRecurringOccurrenceDateAsync(
             transaction,
             request.RecurringOccurrenceDate,
+            request.OccurrenceAuthorizedByLoan,
             cancellationToken);
         if (!occurrence.IsValid)
         {
@@ -203,7 +207,11 @@ public partial class TransactionPersistenceService
             }
             try
             {
-                occurrenceRow = await _occurrenceLedger.EnsureOccurrenceAsync(payment, occurrence.Date.Value, cancellationToken);
+                occurrenceRow = await _occurrenceLedger.EnsureOccurrenceAsync(
+                    payment,
+                    occurrence.Date.Value,
+                    cancellationToken,
+                    scheduleAuthorized: request.OccurrenceAuthorizedByLoan);
             }
             catch (InvalidOperationException exception)
             {
@@ -428,6 +436,9 @@ public partial class TransactionPersistenceService
                     "A transaction's recurring occurrence date cannot be changed after it is recorded.");
             }
         }
+        var overpayment = await RejectOccurrenceOverpaymentAsync(
+            transaction, ledgerValidation.LedgerCategory, amount, cancellationToken);
+        if (overpayment is not null) return overpayment;
         var nextRecoveryTopUp = request.StabilityRecoveryTopUpAmount == null
             ? originalRecoveryTopUp
             : requestedRecoveryTopUp;

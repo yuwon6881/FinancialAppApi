@@ -35,7 +35,8 @@ public sealed partial class AiConversationMemoryService
         bool Conflict = false,
         AiChatResponse? Replay = null,
         AiConversationTurn? PendingTurn = null,
-        int ClientContractVersion = 1);
+        int ClientContractVersion = 1,
+        bool InProgress = false);
 
     public async Task<AiConversationResponse> GetActiveAsync(
         bool forceSensitiveMode = false,
@@ -166,7 +167,8 @@ public sealed partial class AiConversationMemoryService
                         [],
                         ConversationId: conversation.Id,
                         ConversationVersion: conversation.Version),
-                    ClientContractVersion: request.ClientContractVersion);
+                    ClientContractVersion: request.ClientContractVersion,
+                    InProgress: true);
             }
             return new PreparedConversation(
                 conversation,

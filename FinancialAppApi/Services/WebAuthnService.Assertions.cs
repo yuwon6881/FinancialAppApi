@@ -113,6 +113,74 @@ public partial class WebAuthnService
         return new OkObjectResult(new { verified = true });
     }
 
+    /// <summary>
+    /// Options for re-deriving a lost device-unlock marker (SEC-17). A separate challenge purpose,
+    /// so a restore challenge can never be spent to unlock a session and vice versa.
+    /// </summary>
+    public Task<IActionResult> RestoreOptionsAsync(
+        string? username,
+        string? requestOrigin,
+        string fallbackOrigin,
+        CancellationToken cancellationToken = default) =>
+        BuildAssertionOptionsAsync(username, "restore", requestOrigin, fallbackOrigin, cancellationToken);
+
+    /// <summary>
+    /// Verifies a restore assertion and names the credential this device holds. It never unlocks
+    /// the session, and it refuses a cross-platform (hybrid-transport) authenticator: the marker
+    /// arms the installed-PWA launch gate, which must only ever trust a credential on this device.
+    /// </summary>
+    public async Task<IActionResult> RestoreVerifyAsync(
+        string? username,
+        string challengeId,
+        AuthenticatorAssertionRawResponse credential,
+        string? authenticatorAttachment,
+        string? requestOrigin,
+        string fallbackOrigin,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(username))
+        {
+            return new UnauthorizedObjectResult(new { message = "User not found in session" });
+        }
+
+        var userId = _context.RequireCurrentUserId();
+        var challenge = await ClaimChallengeAsync(challengeId, "restore", userId, cancellationToken);
+        if (challenge == null)
+        {
+            return new UnauthorizedObjectResult(new { message = "Verification challenge expired or invalid. Please try again." });
+        }
+
+        // The browser reports how the credential was reached; this Fido2 version does not carry it
+        // on the raw response. Checked after the challenge is claimed, so a refused attempt still
+        // burns it and leaves no cheaper retry than an honest one.
+        if (!string.Equals(authenticatorAttachment, "platform", StringComparison.Ordinal))
+        {
+            return new BadRequestObjectResult(new
+            {
+                message = "Use this device's own fingerprint or screen lock. A phone or security key cannot restore device unlock here."
+            });
+        }
+
+        var storedCred = await _context.WebAuthnCredentials
+            .FirstOrDefaultAsync(c => c.CredentialId == credential.RawId && c.UserId == userId, cancellationToken);
+        if (storedCred == null)
+        {
+            return new UnauthorizedObjectResult(new { message = "Unrecognized device credential." });
+        }
+
+        var verifyResult = await VerifyAssertionAsync(
+            storedCred, credential, challenge.OptionsJson, requestOrigin, fallbackOrigin, cancellationToken);
+        if (verifyResult != null)
+        {
+            return verifyResult;
+        }
+
+        await _context.SaveChangesAsync(cancellationToken);
+        // The server names the credential, in the same base64url form as PublicKeyCredential.id,
+        // rather than echoing the client's claim, so the marker names one this account owns.
+        return new OkObjectResult(new { verified = true, credentialId = System.Buffers.Text.Base64Url.EncodeToString(storedCred.CredentialId) });
+    }
+
     public async Task<IActionResult> ListCredentialsAsync(
         string? username,
         CancellationToken cancellationToken = default)

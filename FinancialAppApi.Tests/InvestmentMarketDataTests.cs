@@ -291,6 +291,30 @@ public sealed class InvestmentMarketDataTests
     }
 
     [Fact]
+    public async Task ARefreshItemThatNeedsNoProviderCallHandsItsReservedQuotaBack()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        await SeedProviderBackedHoldingAsync(context);
+        // A queued item whose instrument has since gone is dropped without asking the provider.
+        context.MarketDataRefreshJobs.Add(new MarketDataRefreshJob
+        {
+            ProviderId = "test",
+            Status = "Pending",
+            ReportingCurrency = "USD",
+            TotalItems = 1,
+            PendingItemsJson = $"[\"instrument:{Guid.NewGuid()}\"]"
+        });
+        await context.SaveChangesAsync();
+        var provider = new CountingProvider();
+
+        await NewService(context, provider).RefreshAsync(CancellationToken.None);
+
+        Assert.Equal(0, provider.CallCount);
+        Assert.Equal(0, context.MarketDataQuotaWindows.Where(w => w.Scope == "test:refresh-minute").Sum(w => w.Used));
+        Assert.Equal(0, context.MarketDataQuotaWindows.Where(w => w.Scope == "test:provider-day").Sum(w => w.Used));
+    }
+
+    [Fact]
     public async Task RefreshUpsertsTheWholeSeriesUpdatingStoredBarsAndCollapsingRepeatedDates()
     {
         await using var context = TestHelpers.NewInMemoryContext();

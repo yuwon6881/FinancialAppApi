@@ -12,8 +12,18 @@ public sealed class MarketDataQuotaService(AppDbContext context, IMarketDataProv
 
     public async Task<(int Calls, bool DailyLimitReached)> ReserveRefreshAsync(int requested, CancellationToken cancellationToken)
     {
-        if (requested <= 0) return (0, false);
-        (int Calls, bool DailyLimitReached) result = default;
+        var reservation = await ReserveRefreshWindowAsync(requested, cancellationToken);
+        return (reservation.Calls, reservation.DailyLimitReached);
+    }
+
+    /// <summary>
+    /// Reserves refresh calls and reports when, so calls that turn out not to be needed can be
+    /// handed back to the same windows with <see cref="ReleaseRefreshAsync"/>.
+    /// </summary>
+    public async Task<RefreshReservation> ReserveRefreshWindowAsync(int requested, CancellationToken cancellationToken)
+    {
+        if (requested <= 0) return new RefreshReservation(0, false, DateTime.UtcNow);
+        RefreshReservation result = default!;
         await context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
             var now = DateTime.UtcNow;
@@ -42,9 +52,46 @@ public sealed class MarketDataQuotaService(AppDbContext context, IMarketDataProv
                 await context.SaveChangesAsync(cancellationToken);
             }
             await transaction.CommitAsync(cancellationToken);
-            result = (allowed, day.Used >= Policy.DailyCallCeiling || userDay.Used >= Policy.PerUserDailyCallCeiling);
+            result = new RefreshReservation(
+                allowed,
+                day.Used >= Policy.DailyCallCeiling || userDay.Used >= Policy.PerUserDailyCallCeiling,
+                now);
         });
         return result;
+    }
+
+    /// <summary>
+    /// Returns reserved refresh calls that were never sent to the provider, e.g. a series whose
+    /// coverage turned out to be fresh. Spending quota on a call that never happened starves the
+    /// rest of the minute and the user's daily ceiling for nothing.
+    /// </summary>
+    public async Task ReleaseRefreshAsync(int unused, DateTime reservedAt, CancellationToken cancellationToken)
+    {
+        if (unused <= 0) return;
+        await context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            var minuteStart = MinuteStart(reservedAt);
+            var dayStart = reservedAt.Date;
+            var now = DateTime.UtcNow;
+            await using var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+            await AcquireLockAsync(cancellationToken);
+            foreach (var (scope, start) in new[]
+            {
+                (Scope("refresh-minute"), minuteStart),
+                (Scope("provider-minute"), minuteStart),
+                (Scope("provider-day"), dayStart),
+                (UserDayScope(), dayStart),
+            })
+            {
+                var window = await context.MarketDataQuotaWindows.FirstOrDefaultAsync(
+                    value => value.Scope == scope && value.WindowStart == start, cancellationToken);
+                if (window is null) continue;
+                window.Used = Math.Max(0, window.Used - unused);
+                window.UpdatedAt = now;
+            }
+            await context.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        });
     }
 
     public async Task<bool> ReserveDiscoveryAsync(CancellationToken cancellationToken)
@@ -149,3 +196,5 @@ public sealed class MarketDataQuotaService(AppDbContext context, IMarketDataProv
     private string Scope(string value) => $"{ProviderId}:{value}";
     private string UserDayScope() => Scope($"user-day:{context.RequireCurrentUserId()}");
 }
+
+public sealed record RefreshReservation(int Calls, bool DailyLimitReached, DateTime ReservedAt);

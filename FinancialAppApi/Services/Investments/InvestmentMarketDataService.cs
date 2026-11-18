@@ -153,8 +153,9 @@ public sealed partial class InvestmentMarketDataService(
             return ToResponse(activeJob, [], null);
         }
 
-        var (allowance, dailyLimitReached) = await _quota.ReserveRefreshAsync(
+        var reservation = await _quota.ReserveRefreshWindowAsync(
             Math.Min(items.Count, Math.Max(1, QuotaPolicy.RefreshCallsPerMinute)), cancellationToken);
+        var (allowance, dailyLimitReached) = (reservation.Calls, reservation.DailyLimitReached);
         if (allowance == 0)
         {
             if (dailyLimitReached)
@@ -164,8 +165,12 @@ public sealed partial class InvestmentMarketDataService(
 
         activeJob.Status = "Running";
         var warnings = WarningList(activeJob.Warning);
-        foreach (var item in items.Take(allowance).ToList())
+        // The allowance counts provider calls, not items: an item whose series is already fresh
+        // costs nothing, so the loop moves on to the next one rather than ending the batch early.
+        var callsMade = 0;
+        foreach (var item in items.ToList())
         {
+            if (callsMade >= allowance) break;
             var (key, attempts) = ParseItem(item);
             var succeeded = true;
             var needsAnotherCall = false;
@@ -185,6 +190,7 @@ public sealed partial class InvestmentMarketDataService(
                         continue;
                     }
                     var outcome = await RefreshInstrumentAsync(instrument, transactions, cancellationToken);
+                    if (outcome.CalledProvider) callsMade++;
                     if (outcome.Warning is not null) warnings.Add(outcome.Warning);
                     needsAnotherCall = outcome.NeedsAnotherCall;
                 }
@@ -198,12 +204,15 @@ public sealed partial class InvestmentMarketDataService(
                         continue;
                     }
                     var outcome = await RefreshFxAsync(pair[1], pair[2], FxNeedFrom(), cancellationToken);
+                    if (outcome.CalledProvider) callsMade++;
                     if (outcome.Warning is not null) warnings.Add(outcome.Warning);
                     needsAnotherCall = outcome.NeedsAnotherCall;
                 }
             }
             catch (MarketDataProviderException exception)
             {
+                // A provider failure means the call went out, so it counts against the allowance.
+                callsMade++;
                 succeeded = false;
                 logger.LogWarning("Market refresh item failed with category {Failure}.", exception.Failure);
                 warnings.Add(exception.Message);
@@ -247,6 +256,8 @@ public sealed partial class InvestmentMarketDataService(
             activeJob.Status = "Pending";
         }
         await context.SaveChangesAsync(cancellationToken);
+        // After the job is saved, so the release commits only its own counters.
+        await _quota.ReleaseRefreshAsync(allowance - callsMade, reservation.ReservedAt, cancellationToken);
         return ToResponse(activeJob, warnings, items.Count > 0 ? SecondsUntilNextMinute() : null);
     }
 

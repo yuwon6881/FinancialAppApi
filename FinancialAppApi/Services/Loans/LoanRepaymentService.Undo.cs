@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -34,6 +35,13 @@ public partial class LoanRepaymentService
         if (action == null) return new LoanRepaymentActionResult(LoanRepaymentStatus.NotFound);
 
         var txIds = action.TransactionIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (!await RepaymentEntriesMatchFingerprintsAsync(action, cancellationToken))
+        {
+            return new LoanRepaymentActionResult(
+                LoanRepaymentStatus.Conflict,
+                Message: "The ledger entries for this repayment have changed since it was recorded, so it cannot be undone automatically.",
+                Code: "repayment_entries_changed");
+        }
 
         if (action.Kind == LoanRepaymentActionKind.FullSettlement)
         {
@@ -111,6 +119,36 @@ public partial class LoanRepaymentService
             LoanRepaymentStatus.Success,
             ActionId: actionId,
             Kind: action.Kind);
+    }
+
+    private sealed record RepaymentFingerprint(string Id, decimal Amount, DateTime Date);
+
+    // Undo deletes exactly what the repayment wrote. If an entry's amount or date no longer matches
+    // the snapshot taken when it was created, deleting it would reverse something else. A missing
+    // entry is already gone and is fine; an action recorded before fingerprints existed has none.
+    private async Task<bool> RepaymentEntriesMatchFingerprintsAsync(
+        LoanRepaymentAction action,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(action.UndoFingerprints)) return true;
+        List<RepaymentFingerprint>? fingerprints;
+        try
+        {
+            fingerprints = JsonSerializer.Deserialize<List<RepaymentFingerprint>>(action.UndoFingerprints);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+        if (fingerprints is null || fingerprints.Count == 0) return true;
+
+        var ids = fingerprints.Select(f => f.Id).ToList();
+        var current = await _context.Transactions.AsNoTracking()
+            .Where(t => ids.Contains(t.Id))
+            .Select(t => new { t.Id, t.Amount, t.Date })
+            .ToDictionaryAsync(t => t.Id, cancellationToken);
+        return fingerprints.All(f => !current.TryGetValue(f.Id, out var tx)
+            || (tx.Amount == f.Amount && tx.Date == f.Date));
     }
 
     private static string BuildRepaymentTransactionId(string key)

@@ -79,7 +79,10 @@ public sealed record AiChatOutcome(
     bool IsProviderError,
     bool IsConflict = false,
     IReadOnlyList<AI.Agent.AiToolTrace>? ToolTrace = null,
-    bool SensitiveMode = false);
+    bool SensitiveMode = false,
+    // The same clientTurnId is still running. Not an answer: the client must keep its retry
+    // handle and ask again, so this maps to a retryable status rather than 200.
+    bool IsInProgress = false);
 
 public partial class AiAssistantService
 {
@@ -170,6 +173,10 @@ public partial class AiAssistantService
         }
 
         var prepared = await _conversationMemory.PrepareAsync(request, cancellationToken);
+        if (prepared.InProgress && prepared.Replay != null)
+        {
+            return new AiChatOutcome(prepared.Replay, IsProviderError: false, IsInProgress: true);
+        }
         if (prepared.Replay != null)
         {
             return Ok(prepared.Replay);

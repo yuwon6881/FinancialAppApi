@@ -27,7 +27,9 @@ public static class RecurringAccountShortfallEvaluator
             .Select(occurrence =>
             {
                 var parent = parentById.GetValueOrDefault(occurrence.RecurringPaymentId);
-                var accountId = occurrence.AccountId ?? parent?.AccountId;
+                // The same rule settlement uses, so the warning names the account the money will
+                // actually leave: a blank snapshot means "never assigned", not "no account".
+                var accountId = RecurringOccurrenceAccounts.Scheduled(occurrence.AccountId, parent?.AccountId);
                 return new { Occurrence = occurrence, Parent = parent, AccountId = accountId };
             })
             .Where(item => item.Parent?.PaymentMode == RecurringPaymentMode.AutoDeduct

@@ -36,6 +36,11 @@ public class AiController : ControllerBase
         {
             var outcome = await _aiAssistantService.ChatAsync(request, cancellationToken);
             if (outcome.IsConflict) return Conflict(outcome.Response);
+            if (outcome.IsInProgress)
+            {
+                Response.Headers.RetryAfter = "2";
+                return StatusCode(503, outcome.Response);
+            }
             return outcome.IsProviderError ? StatusCode(503, outcome.Response) : Ok(outcome.Response);
         }
         // A browser disconnect surfaces as a plain OperationCanceledException from the
@@ -72,6 +77,7 @@ public class AiController : ControllerBase
         {
             var outcome = await _aiAssistantService.ChatAsync(request, events, cancellationToken);
             if (outcome.IsConflict) await events.ErrorAsync(StatusCodes.Status409Conflict, outcome.Response, cancellationToken);
+            else if (outcome.IsInProgress) await events.ErrorAsync(StatusCodes.Status503ServiceUnavailable, outcome.Response, cancellationToken);
             else if (outcome.IsProviderError) await events.ErrorAsync(StatusCodes.Status503ServiceUnavailable, outcome.Response, cancellationToken);
             else await events.DoneAsync(outcome.Response, cancellationToken);
         }

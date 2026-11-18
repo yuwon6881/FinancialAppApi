@@ -131,48 +131,52 @@ public partial class AuthAccountService
         var passwordError = ValidateNewPassword(password);
         if (passwordError != null) return new BadRequestObjectResult(new { message = passwordError });
 
-        var slot = await AllocateRegistrationSlotAsync(cancellationToken);
-        if (slot is null && MaxUsers != int.MaxValue)
+        // Two concurrent registrations can pick the same free slot; the unique index rejects one of
+        // them. While another slot is still free that loser is retried, not shown a server error.
+        const int maxSlotAttempts = 5;
+        for (var attempt = 1; ; attempt++)
         {
-            return new BadRequestObjectResult(new { message = "Registration is closed. The user limit has been reached." });
-        }
-
-        var user = new AppUser
-        {
-            Id = Guid.NewGuid().ToString(),
-            Username = username.Trim(),
-            NormalizedUsername = username.Trim().ToUpperInvariant(),
-            // A distinct slot in [1..MaxUsers]; its unique index makes the cap race-safe
-            // (two concurrent registrations for the last slot collide, and one is rejected).
-            RegistrationSlot = slot
-        };
-        user.PasswordHash = _passwordHasher.HashPassword(user.Username, password);
-
-        _context.SetCurrentUser(user.Id);
-        _context.AppUsers.Add(user);
-        DbSeeder.EnsureUserDefaults(_context, user.Id, _financialClock);
-        try
-        {
-            await _context.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateException)
-        {
-            _context.ChangeTracker.Clear();
-            if (await _context.AppUsers.AnyAsync(existing =>
-                    existing.NormalizedUsername == user.NormalizedUsername,
-                    cancellationToken))
-            {
-                return new BadRequestObjectResult(new { message = "That username is already registered." });
-            }
-
-            // A concurrent registration may have claimed the slot we picked; if the cap is now
-            // full, report it as closed rather than surfacing a raw persistence error.
-            if (!await IsRegistrationOpenAsync(cancellationToken))
+            var slot = await AllocateRegistrationSlotAsync(cancellationToken);
+            if (slot is null && MaxUsers != int.MaxValue)
             {
                 return new BadRequestObjectResult(new { message = "Registration is closed. The user limit has been reached." });
             }
 
-            throw;
+            var user = new AppUser
+            {
+                Id = Guid.NewGuid().ToString(),
+                Username = username.Trim(),
+                NormalizedUsername = username.Trim().ToUpperInvariant(),
+                // A distinct slot in [1..MaxUsers]; its unique index makes the cap race-safe.
+                RegistrationSlot = slot
+            };
+            user.PasswordHash = _passwordHasher.HashPassword(user.Username, password);
+
+            _context.SetCurrentUser(user.Id);
+            _context.AppUsers.Add(user);
+            DbSeeder.EnsureUserDefaults(_context, user.Id, _financialClock);
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+                break;
+            }
+            catch (DbUpdateException)
+            {
+                _context.ChangeTracker.Clear();
+                if (await _context.AppUsers.AnyAsync(existing =>
+                        existing.NormalizedUsername == user.NormalizedUsername,
+                        cancellationToken))
+                {
+                    return new BadRequestObjectResult(new { message = "That username is already registered." });
+                }
+
+                if (!await IsRegistrationOpenAsync(cancellationToken))
+                {
+                    return new BadRequestObjectResult(new { message = "Registration is closed. The user limit has been reached." });
+                }
+
+                if (slot is null || attempt >= maxSlotAttempts) throw;
+            }
         }
 
         return new OkObjectResult(new { message = "Registration successful" });

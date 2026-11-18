@@ -131,7 +131,8 @@ public partial class LoanRepaymentService
             payment.Id,
             null,
             dateStr,
-            AccountId: requestedAccountId), cancellationToken);
+            AccountId: requestedAccountId,
+            OccurrenceAuthorizedByLoan: true), cancellationToken);
 
         if (mutation.Status is not (TransactionMutationStatus.Created or TransactionMutationStatus.Existing))
         {

@@ -78,6 +78,42 @@ public class AuthAccountServiceTests
     }
 
     [Fact]
+    public async Task RegisterAsync_RetriesASlotCollisionWhileAnotherSlotIsFree()
+    {
+        // The first save fails the way a lost race on the slot's unique index does.
+        var options = new DbContextOptionsBuilder<Database.AppDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning))
+            .AddInterceptors(new FailFirstSaveInterceptor())
+            .Options;
+        await using var context = new Database.AppDbContext(options);
+        var service = NewService(context, TestHelpers.NewConfiguration(("Auth:MaxUsers", "2")));
+
+        var result = await service.RegisterAsync("alice", "password123");
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.Equal(1, await context.AppUsers.IgnoreQueryFilters().CountAsync());
+    }
+
+    private sealed class FailFirstSaveInterceptor : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+    {
+        private bool _failed;
+
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+            Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_failed && eventData.Context!.ChangeTracker.Entries<AppUser>().Any(e => e.State == EntityState.Added))
+            {
+                _failed = true;
+                throw new DbUpdateException("duplicate key value violates unique constraint \"IX_AppUsers_RegistrationSlot\"");
+            }
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    [Fact]
     public async Task GetStatusAsync_ReportsRegistrationOpenUntilCapReached()
     {
         await using var context = TestHelpers.NewInMemoryContext();

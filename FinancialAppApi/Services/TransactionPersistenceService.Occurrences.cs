@@ -12,6 +12,7 @@ public partial class TransactionPersistenceService
     private async Task<(bool IsValid, DateOnly? Date, string? Message)> ResolveRecurringOccurrenceDateAsync(
         Transaction transaction,
         string? requestedOccurrenceDate,
+        bool authorizedByLoan,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(transaction.RecurringPaymentId))
@@ -51,7 +52,12 @@ public partial class TransactionPersistenceService
         var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(candidateDate, cycleDay);
         var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
 
-        DateOnly? matchedOccurrence = null;
+        // A loan instalment date comes from the loan's immutable cadence snapshot, so it stays valid
+        // after the bill's due day, frequency, or tracking window is edited.
+        DateOnly? matchedOccurrence = authorizedByLoan && !string.IsNullOrWhiteSpace(requestedOccurrenceDate)
+            ? candidateDate
+            : null;
+        if (matchedOccurrence == null)
         foreach (var billingDate in _occurrenceService.GetOccurrencesInRange(payment, cycleStart, cycleEnd, cycleDay))
         {
             if (DateOnly.FromDateTime(billingDate) == candidateDate)
@@ -86,6 +92,47 @@ public partial class TransactionPersistenceService
         }
 
         return (true, matchedOccurrence, null);
+    }
+
+    // Creating a bill payment is capped at what the occurrence still owes; editing one must hold to
+    // the same cap, counting every other payment on the occurrence. Loan-linked bills are exempt on
+    // both paths because a lender's figure legitimately differs from the scheduled instalment.
+    private async Task<TransactionMutationResult?> RejectOccurrenceOverpaymentAsync(
+        Transaction transaction,
+        string nextLedgerCategory,
+        decimal nextAmount,
+        CancellationToken cancellationToken)
+    {
+        if (transaction.RecurringPaymentId is not { } paymentId
+            || transaction.RecurringOccurrenceDate is not { } occurrenceDate
+            || nextLedgerCategory == RecurringOccurrenceAmounts.DiscardedLedgerCategory
+            || Math.Abs(nextAmount) <= Math.Abs(transaction.Amount))
+        {
+            return null;
+        }
+
+        if (await _context.Loans.AsNoTracking().AnyAsync(l => l.RecurringPaymentId == paymentId, cancellationToken))
+        {
+            return null;
+        }
+
+        var payment = await _context.RecurringPayments.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == paymentId, cancellationToken);
+        var occurrenceRow = await _context.RecurringPaymentOccurrences.AsNoTracking()
+            .FirstOrDefaultAsync(o => o.RecurringPaymentId == paymentId && o.OccurrenceDate == occurrenceDate, cancellationToken);
+        var scheduled = Math.Abs(occurrenceRow?.ScheduledAmount ?? payment?.Amount ?? 0m);
+        if (scheduled <= 0m) return null;
+
+        var others = await _context.Transactions.AsNoTracking()
+            .Where(t => t.RecurringPaymentId == paymentId && t.RecurringOccurrenceDate == occurrenceDate && t.Id != transaction.Id)
+            .ToListAsync(cancellationToken);
+        var remaining = RecurringOccurrenceAmounts.Remaining(scheduled, RecurringOccurrenceAmounts.PaidSoFar(others));
+        if (Math.Abs(nextAmount) <= remaining) return null;
+
+        return new TransactionMutationResult(
+            TransactionMutationStatus.Conflict,
+            transaction,
+            $"Payment amount cannot exceed the remaining amount of {remaining:N2}.");
     }
 
     private async Task InvalidateCycleBalancesFromAsync(
