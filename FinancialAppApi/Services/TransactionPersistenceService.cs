@@ -324,6 +324,12 @@ public partial class TransactionPersistenceService
             return new TransactionMutationResult(TransactionMutationStatus.NotFound);
         }
 
+        if (SavingsGoals.SavingsGoalService.IsInterestTransaction(transaction))
+        {
+            return new TransactionMutationResult(TransactionMutationStatus.Conflict, transaction,
+                "This entry records commitment interest and cannot be edited from the ledger.");
+        }
+
         await using var recurringLease = !string.IsNullOrWhiteSpace(transaction.RecurringPaymentId)
             ? await _recurringPaymentMutationLock.AcquireAsync(transaction.RecurringPaymentId, cancellationToken)
             : NoOpPoolLock.Instance;

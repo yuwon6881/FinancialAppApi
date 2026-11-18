@@ -24,6 +24,12 @@ public partial class TransactionPersistenceService
             return new TransactionMutationResult(TransactionMutationStatus.NotFound);
         }
 
+        if (SavingsGoals.SavingsGoalService.IsInterestTransaction(transaction))
+        {
+            return new TransactionMutationResult(TransactionMutationStatus.Conflict, transaction,
+                "This entry records commitment interest and cannot be deleted from the ledger.");
+        }
+
         await using var recurringLease = !string.IsNullOrWhiteSpace(transaction.RecurringPaymentId)
             ? await _recurringPaymentMutationLock.AcquireAsync(transaction.RecurringPaymentId, cancellationToken)
             : NoOpPoolLock.Instance;
@@ -105,6 +111,11 @@ public partial class TransactionPersistenceService
         var transactions = await _context.Transactions
             .Where(transaction => canonicalIds.Contains(transaction.Id))
             .ToListAsync(cancellationToken);
+        if (transactions.Any(SavingsGoals.SavingsGoalService.IsInterestTransaction))
+        {
+            return (TransactionMutationStatus.Conflict, [],
+                "Commitment interest entries cannot be deleted from the ledger.");
+        }
         await using var recurringLeases = await AcquireRecurringLocksAsync(
             transactions.Select(transaction => transaction.RecurringPaymentId),
             cancellationToken);

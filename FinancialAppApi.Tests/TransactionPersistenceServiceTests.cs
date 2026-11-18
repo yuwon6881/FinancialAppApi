@@ -1174,6 +1174,27 @@ public class TransactionPersistenceServiceTests
     }
 
     [Fact]
+    public async Task LedgerMutations_RejectAnExistingCommitmentInterestCredit()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        var credit = NewTransaction("goal-interest-existing");
+        credit.IsAccountBalanceAdjustment = true;
+        context.Transactions.Add(credit);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var update = await service.UpdateTransactionAsync(credit.Id, NewRequest(credit.Id));
+        var singleDelete = await service.DeleteTransactionAsync(credit.Id);
+        var bulkDelete = await service.DeleteTransactionsAsync([credit.Id]);
+
+        Assert.Equal(TransactionMutationStatus.Conflict, update.Status);
+        Assert.Equal(TransactionMutationStatus.Conflict, singleDelete.Status);
+        Assert.Equal(TransactionMutationStatus.Conflict, bulkDelete.Status);
+        Assert.Same(credit, await context.Transactions.FindAsync(credit.Id));
+    }
+
+    [Fact]
     public async Task RestoreTransactionsAsync_RelinksDocumentsDetachedByTheBulkDelete()
     {
         await using var context = TestHelpers.NewInMemoryContext();

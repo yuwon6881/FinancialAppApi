@@ -42,7 +42,7 @@ public class SavingsGoalInterestTests
         Assert.Equal("2026-07", result.Goal.CycleFundedKey);
 
         var transactions = await context.Transactions
-            .Where(t => t.Id == "goal-interest-op-success-1")
+            .Where(t => t.Id == $"goal-interest-v2-{goal.Id}-op-success-1")
             .ToListAsync();
         Assert.Single(transactions);
         var tx = transactions[0];
@@ -84,7 +84,7 @@ public class SavingsGoalInterestTests
 
         var reloadedGoal = await context.SavingsGoals.FindAsync(goal.Id);
         Assert.Equal(450m, reloadedGoal!.EarmarkedAmount);
-        Assert.Empty(await context.Transactions.Where(t => t.Id == "goal-interest-op-over-target").ToListAsync());
+        Assert.Empty(await context.Transactions.Where(t => t.Id == $"goal-interest-v2-{goal.Id}-op-over-target").ToListAsync());
     }
 
     [Fact]
@@ -104,7 +104,7 @@ public class SavingsGoalInterestTests
 
         Assert.Equal(SavingsGoalMutationStatus.InvalidAccount, result.Status);
         Assert.Equal("Choose an account in the Rewards bucket.", result.Message);
-        Assert.Empty(await context.Transactions.Where(t => t.Id == "goal-interest-op-wrong-bucket").ToListAsync());
+        Assert.Empty(await context.Transactions.Where(t => t.Id == $"goal-interest-v2-{goal.Id}-op-wrong-bucket").ToListAsync());
         var reloaded = await context.SavingsGoals.FindAsync(goal.Id);
         Assert.Equal(100m, reloaded!.EarmarkedAmount);
     }
@@ -133,7 +133,7 @@ public class SavingsGoalInterestTests
 
         Assert.Equal(SavingsGoalMutationStatus.InvalidAccount, result.Status);
         Assert.Equal("A credit card account cannot receive interest.", result.Message);
-        Assert.Empty(await context.Transactions.Where(t => t.Id == "goal-interest-op-card").ToListAsync());
+        Assert.Empty(await context.Transactions.Where(t => t.Id == $"goal-interest-v2-{goal.Id}-op-card").ToListAsync());
     }
 
     [Fact]
@@ -161,7 +161,7 @@ public class SavingsGoalInterestTests
 
         Assert.Equal(SavingsGoalMutationStatus.InvalidAccount, result.Status);
         Assert.Equal("Choose an account in the Rewards bucket.", result.Message);
-        Assert.Empty(await context.Transactions.Where(t => t.Id == "goal-interest-op-archived").ToListAsync());
+        Assert.Empty(await context.Transactions.Where(t => t.Id == $"goal-interest-v2-{goal.Id}-op-archived").ToListAsync());
     }
 
     [Fact]
@@ -224,7 +224,7 @@ public class SavingsGoalInterestTests
 
         Assert.Equal(SavingsGoalMutationStatus.AlreadyCompleted, result.Status);
         Assert.Equal("This goal is already completed.", result.Message);
-        Assert.Empty(await context.Transactions.Where(t => t.Id == "goal-interest-op-completed").ToListAsync());
+        Assert.Empty(await context.Transactions.Where(t => t.Id == $"goal-interest-v2-{goal.Id}-op-completed").ToListAsync());
     }
 
     [Theory]
@@ -265,7 +265,7 @@ public class SavingsGoalInterestTests
 
         Assert.Equal(SavingsGoalMutationStatus.Success, first.Status);
         Assert.Equal(250m, first.Goal!.EarmarkedAmount);
-        Assert.Single(await context.Transactions.Where(t => t.Id == "goal-interest-idemp-1").ToListAsync());
+        Assert.Single(await context.Transactions.Where(t => t.Id == $"goal-interest-v2-{goal.Id}-idemp-1").ToListAsync());
 
         // Repeated operation with identical data: success, earmark NOT increased twice
         var repeated = await service.RecordInterestAsync(
@@ -276,7 +276,7 @@ public class SavingsGoalInterestTests
 
         Assert.Equal(SavingsGoalMutationStatus.Success, repeated.Status);
         Assert.Equal(250m, repeated.Goal!.EarmarkedAmount);
-        Assert.Single(await context.Transactions.Where(t => t.Id == "goal-interest-idemp-1").ToListAsync());
+        Assert.Single(await context.Transactions.Where(t => t.Id == $"goal-interest-v2-{goal.Id}-idemp-1").ToListAsync());
 
         // Same operation ID with differing amount: conflict
         var conflicting = await service.RecordInterestAsync(
@@ -287,7 +287,28 @@ public class SavingsGoalInterestTests
 
         Assert.Equal(SavingsGoalMutationStatus.Conflict, conflicting.Status);
         Assert.Equal(250m, (await context.SavingsGoals.FindAsync(goal.Id))!.EarmarkedAmount);
-        Assert.Single(await context.Transactions.Where(t => t.Id == "goal-interest-idemp-1").ToListAsync());
+        Assert.Single(await context.Transactions.Where(t => t.Id == $"goal-interest-v2-{goal.Id}-idemp-1").ToListAsync());
+    }
+
+    [Fact]
+    public async Task RecordInterestAsync_ScopesReplayToTheGoal()
+    {
+        await using var context = NewContext(rewardsBalance: 3000m);
+        var targetDate = new DateOnly(2026, 9, 20);
+        var first = NewGoal("Vacation", 1000m, targetDate, earmarked: 200m);
+        var second = NewGoal("New bike", 1000m, targetDate, earmarked: 50m);
+        context.SavingsGoals.AddRange(first, second);
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var firstResult = await service.RecordInterestAsync(first.Id, 10m, "acct-rewards", "interest-op");
+        var secondResult = await service.RecordInterestAsync(second.Id, 10m, "acct-rewards", "interest-op");
+
+        Assert.Equal(SavingsGoalMutationStatus.Success, firstResult.Status);
+        Assert.Equal(SavingsGoalMutationStatus.Success, secondResult.Status);
+        Assert.Equal(210m, first.EarmarkedAmount);
+        Assert.Equal(60m, second.EarmarkedAmount);
+        Assert.Equal(2, await context.Transactions.CountAsync(transaction => transaction.IsAccountBalanceAdjustment));
     }
 
     [Fact]
@@ -306,7 +327,7 @@ public class SavingsGoalInterestTests
             "op-reporting-test");
 
         Assert.Equal(SavingsGoalMutationStatus.Success, result.Status);
-        var tx = await context.Transactions.SingleAsync(t => t.Id == "goal-interest-op-reporting-test");
+        var tx = await context.Transactions.SingleAsync(t => t.Id == $"goal-interest-v2-{goal.Id}-op-reporting-test");
 
         // Verify reporting exclusion semantics
         Assert.True(TransactionReportSemantics.IsBalanceAdjustment(tx));

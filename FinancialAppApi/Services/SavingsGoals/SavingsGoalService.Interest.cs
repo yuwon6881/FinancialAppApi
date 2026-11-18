@@ -6,6 +6,9 @@ namespace FinancialAppApi.Services.SavingsGoals;
 
 public partial class SavingsGoalService
 {
+    internal static bool IsInterestTransaction(Transaction transaction) =>
+        transaction.IsAccountBalanceAdjustment && transaction.Id.StartsWith("goal-interest-", StringComparison.Ordinal);
+
     /// <summary>
     /// Records growth from pocket interest: credits the adjustment inflow to the user's ledger account
     /// in the goal's funding bucket and raises the goal's earmark by the same amount. Free-to-spend
@@ -70,13 +73,21 @@ public partial class SavingsGoalService
                 Message: "A credit card account cannot receive interest.");
         }
 
-        var transactionId = $"goal-interest-{operationId}";
+        var transactionId = $"goal-interest-v2-{goal.Id}-{operationId}";
+        var legacyId = $"goal-interest-{operationId}";
         var existingTransaction = await _context.Transactions
-            .FirstOrDefaultAsync(t => t.Id == transactionId, cancellationToken);
+            .Where(t => t.Id == transactionId || t.Id == legacyId)
+            .OrderByDescending(t => t.Id == transactionId)
+            .FirstOrDefaultAsync(cancellationToken);
 
         if (existingTransaction != null)
         {
-            var matches = existingTransaction.AccountId == account.Id
+            // Legacy rows stored the goal only in their display description. A renamed or
+            // ambiguous legacy goal cannot safely claim the old operation as its own.
+            var matchesGoal = existingTransaction.Id == transactionId ||
+                (existingTransaction.Description == $"Interest earned - {goal.Name}" &&
+                 !await _context.SavingsGoals.AnyAsync(other => other.Id != goal.Id && other.Name == goal.Name, cancellationToken));
+            var matches = matchesGoal && existingTransaction.AccountId == account.Id
                 && string.Equals(existingTransaction.LedgerCategory, goal.FundingBucket, StringComparison.OrdinalIgnoreCase)
                 && existingTransaction.Amount == amount
                 && existingTransaction.IsAccountBalanceAdjustment
