@@ -5,6 +5,7 @@ using FinancialAppApi.Services.Documents;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Net.Http.Headers;
 using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
@@ -245,10 +246,11 @@ public partial class DocumentsController : ControllerBase
         // OriginalFileName is user-controlled and legacy rows predate the current upload checks.
         // Keep the encoded filename useful for downloads, but never copy controls or quotes into
         // the fallback filename parameter where they could split the response header.
-        var safeFileName = string.Concat(document.FileName.Select(character =>
-            char.IsControl(character) || character == '"' ? '_' : character));
-        var disposition = isViewable ? "inline" : "attachment";
-        Response.Headers.ContentDisposition = $"{disposition}; filename=\"{safeFileName}\"; filename*=UTF-8''{Uri.EscapeDataString(document.FileName)}";
+        var disposition = new ContentDispositionHeaderValue(isViewable ? "inline" : "attachment");
+        disposition.SetHttpFileName(document.FileName);
+        disposition.FileName = string.Concat(document.FileName.Select(character =>
+            character is >= ' ' and <= '~' and not ('"' or '\\') ? character : '_'));
+        Response.GetTypedHeaders().ContentDisposition = disposition;
         return File(data, document.ContentType, enableRangeProcessing: true);
     }
 

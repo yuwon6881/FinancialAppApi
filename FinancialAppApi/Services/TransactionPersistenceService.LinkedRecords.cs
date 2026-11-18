@@ -109,7 +109,9 @@ public partial class TransactionPersistenceService
         item.PurchasedAt = null;
         item.PurchaseTransactionId = null;
 
-        var hasActiveUnpurchased = await _context.WishlistItems
+        var hasActiveUnpurchased = _context.WishlistItems.Local.Any(
+            candidate => candidate.Id != item.Id && !candidate.IsPurchased && candidate.IsActive)
+            || await _context.WishlistItems
             .AnyAsync(
                 w => w.Id != item.Id && !w.IsPurchased && w.IsActive,
                 cancellationToken);

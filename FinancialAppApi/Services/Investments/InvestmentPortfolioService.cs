@@ -226,16 +226,13 @@ public sealed partial class InvestmentPortfolioService(
             .Select(balance => new { balance.Year, balance.MonthIndex, balance.GrowthContributions })
             .ToListAsync(cancellationToken);
 
-        // Snapshots cover the app's 2026+ timeline through the latest closed cycle. Read only the
-        // uncached tails: hypothetical pre-baseline imports plus the current/future rows whose
-        // values have not reached a closed-cycle snapshot yet. The category prefixes are part of
-        // the accounting contract and keep salary splits and structural transfers exact.
-        var baselineStart = TransactionDate.StartOfDate(new DateOnly(Math.Min(2026, currentCycleYear), 1, 1));
+        // The opening snapshot includes all closed cycles. Only current and future activity
+        // remains to be added without counting historical balances or contributions twice.
         var uncachedLedgerTransactions = await context.Transactions.AsNoTracking()
             .Where(value => value.LedgerCategory.ToUpper().StartsWith("GROWTH")
                             || value.LedgerCategory.ToUpper().StartsWith("INCOMESPLIT:")
                             || value.LedgerCategory.ToUpper().StartsWith("TRANSFER:"))
-            .Where(value => value.Date < baselineStart || value.Date >= currentStart)
+            .Where(value => value.Date >= currentStart)
             .OrderBy(value => value.Date)
             .Select(value => new { value.Date, value.Amount, value.LedgerCategory })
             .ToListAsync(cancellationToken);

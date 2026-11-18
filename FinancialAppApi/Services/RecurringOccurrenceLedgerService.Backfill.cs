@@ -80,7 +80,7 @@ public partial class RecurringOccurrenceLedgerService
                         tracked.Status = RecurringOccurrenceStatus.Discarded;
                         tracked.PaidDate = null;
                     }
-                    else if (scheduled > 0m && totalPaid >= scheduled)
+            else if (totalPaid > 0m && (scheduled <= 0m || totalPaid >= scheduled))
                     {
                         tracked.Status = RecurringOccurrenceStatus.Paid;
                         tracked.PaidDate = lastPaymentDate;

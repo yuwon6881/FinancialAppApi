@@ -33,7 +33,9 @@ public sealed class LedgerAccountsController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<LedgerAccountDto>> PostAccount(LedgerAccountMutationDto dto)
     {
-        var result = await _accountService.CreateAsync(ToMutation(dto), HttpContext.RequestAborted);
+        var mutation = ToMutation(dto);
+        if (mutation is null) return BadRequest(new { message = "Enter valid account amounts." });
+        var result = await _accountService.CreateAsync(mutation, HttpContext.RequestAborted);
         if (result.Status == LedgerAccountMutationStatus.Conflict)
             return Conflict(new { message = result.Message });
         if (result.Status != LedgerAccountMutationStatus.Success)
@@ -50,7 +52,9 @@ public sealed class LedgerAccountsController : ControllerBase
     [HttpPut("{id}")]
     public async Task<ActionResult<LedgerAccountDto>> PutAccount(string id, LedgerAccountMutationDto dto)
     {
-        var result = await _accountService.UpdateAsync(id, ToMutation(dto, id), HttpContext.RequestAborted);
+        var mutation = ToMutation(dto, id);
+        if (mutation is null) return BadRequest(new { message = "Enter valid account amounts." });
+        var result = await _accountService.UpdateAsync(id, mutation, HttpContext.RequestAborted);
         if (result.Status == LedgerAccountMutationStatus.NotFound) return NotFound();
         if (result.Status == LedgerAccountMutationStatus.Conflict)
             return Conflict(new { message = result.Message });
@@ -78,27 +82,21 @@ public sealed class LedgerAccountsController : ControllerBase
         if (dto.Targets is null)
             return BadRequest(new { message = "At least one account target is required." });
 
+        if (ReadAmount(dto.ExpectedBucketTotal) is not { } bucketTotal)
+            return BadRequest(new { message = "Enter a valid current bucket balance." });
+        var targets = new List<LedgerAccountReconcileTarget>(dto.Targets.Count);
+        foreach (var target in dto.Targets)
+        {
+            if (ReadAmount(target.ExpectedCurrent) is not { } current
+                || ReadAmount(target.Target) is not { } balance
+                || !TryReadOptionalAmount(target.CreditLimit, out var creditLimit, out var hasCreditLimit))
+                return BadRequest(new { message = "Enter valid account amounts." });
+            targets.Add(new(
+                target.Id, target.Name ?? string.Empty, target.Kind, target.IsArchived, current, balance,
+                target.ExpectedName, target.ExpectedKind, target.ExpectedIsArchived, creditLimit, hasCreditLimit));
+        }
         var request = new LedgerAccountReconcileRequest(
-            dto.OperationId ?? string.Empty,
-            dto.Bucket ?? string.Empty,
-            ReadAmount(dto.ExpectedBucketTotal),
-            dto.Targets.Select(target =>
-            {
-                var (creditLimit, hasCreditLimit) = ReadOptionalAmount(target.CreditLimit);
-                return new LedgerAccountReconcileTarget(
-                    target.Id,
-                    target.Name ?? string.Empty,
-                    target.Kind,
-                    target.IsArchived,
-                    ReadAmount(target.ExpectedCurrent),
-                    ReadAmount(target.Target),
-                    target.ExpectedName,
-                    target.ExpectedKind,
-                    target.ExpectedIsArchived,
-                    creditLimit,
-                    hasCreditLimit);
-            }).ToList(),
-            dto.Description);
+            dto.OperationId ?? string.Empty, dto.Bucket ?? string.Empty, bucketTotal, targets, dto.Description);
         var result = await _accountService.ReconcileAsync(request, HttpContext.RequestAborted);
         if (result.Status == LedgerAccountMutationStatus.Conflict)
             return Conflict(new { message = result.Message });
@@ -143,39 +141,42 @@ public sealed class LedgerAccountsController : ControllerBase
         UpdatedAt = account.UpdatedAt.ToUniversalTime().ToString("O"),
     };
 
-    private static LedgerAccountMutation ToMutation(LedgerAccountMutationDto dto, string? id = null)
+    private static LedgerAccountMutation? ToMutation(LedgerAccountMutationDto dto, string? id = null)
     {
-        var (creditLimit, hasCreditLimit) = ReadOptionalAmount(dto.CreditLimit);
+        var opening = dto.OpeningAmount.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
+            ? 0m
+            : ReadAmount(dto.OpeningAmount);
+        if (opening is null || !TryReadOptionalAmount(dto.CreditLimit, out var creditLimit, out var hasCreditLimit))
+            return null;
         return new(
             id ?? dto.Id ?? string.Empty,
             dto.Name ?? string.Empty,
             dto.Bucket ?? string.Empty,
             dto.Kind ?? LedgerAccountKind.Bank,
             dto.IsArchived,
-            ReadAmount(dto.OpeningAmount),
+            opening.Value,
             creditLimit,
             hasCreditLimit);
     }
 
     // Absent keeps the stored value, null clears it, and a number sets it.
-    private static (decimal? Value, bool IsPresent) ReadOptionalAmount(JsonElement value) =>
-        value.ValueKind switch
-        {
-            JsonValueKind.Undefined => (null, false),
-            JsonValueKind.Null => (null, true),
-            _ => (ReadAmount(value), true),
-        };
+    private static bool TryReadOptionalAmount(JsonElement value, out decimal? amount, out bool isPresent)
+    {
+        isPresent = value.ValueKind != JsonValueKind.Undefined;
+        amount = ReadAmount(value);
+        return value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null || amount.HasValue;
+    }
 
-    private static decimal ReadAmount(JsonElement value)
+    private static decimal? ReadAmount(JsonElement value)
     {
         if (value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out var number)) return number;
-        if (value.ValueKind != JsonValueKind.String) return 0m;
+        if (value.ValueKind != JsonValueKind.String) return null;
         var text = value.GetString() ?? string.Empty;
         return ObfuscationHelper.TryDeobfuscate(text, out var obfuscated)
             ? obfuscated
             : decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out var plain)
                 ? plain
-                : 0m;
+                : null;
     }
 }
 

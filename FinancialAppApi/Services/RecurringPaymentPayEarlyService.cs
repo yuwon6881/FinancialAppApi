@@ -323,6 +323,7 @@ public class RecurringPaymentPayEarlyService
                 Active = p.Active,
                 Category = p.Category,
                 LedgerCategory = p.LedgerCategory,
+            AccountId = p.AccountId,
                 PaymentMode = p.PaymentMode,
                 OccurrenceTrackingStartDate = p.OccurrenceTrackingStartDate,
             })

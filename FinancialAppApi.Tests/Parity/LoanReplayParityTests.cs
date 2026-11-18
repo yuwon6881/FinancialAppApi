@@ -73,6 +73,10 @@ public sealed class LoanReplayParityTests
                 DateOnly.Parse(expectedFirst.GetString()!),
                 result.FutureSchedule[0].OccurrenceDate);
         }
+        if (expected.TryGetProperty("firstFuturePayment", out var futurePayment))
+        {
+            Assert.Equal(futurePayment.GetDecimal(), result.FutureSchedule[0].Payment);
+        }
     }
 
     private static string FixturePath => Path.Combine(

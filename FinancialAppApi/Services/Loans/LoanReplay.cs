@@ -65,6 +65,7 @@ public static class LoanReplay
         var paymentNumber = 0;
         var totalInterestPaid = 0m;
         var accrualDate = loan.TrackingStartDate;
+        var unpaidDailyInterest = 0m;
         DateOnly? lastOccurrenceDate = null;
         DateOnly? payoffDate = null;
         var payments = new List<LoanPaymentSplit>();
@@ -96,7 +97,8 @@ public static class LoanReplay
             var periodInterestDue = loan.InterestMethod switch
             {
                 LoanInterestMethod.Flat => LoanAmortization.FlatInterestForPayment(loan, frequency, paymentNumber + 1, flatInterestPaid),
-                LoanInterestMethod.ReducingBalanceDaily => LoanAmortization.DailyInterest(loan, balance, accrualDate, occurrenceDate),
+                LoanInterestMethod.ReducingBalanceDaily =>
+                    unpaidDailyInterest + LoanAmortization.DailyInterest(loan, balance, accrualDate, occurrenceDate),
                 _ => LoanAmortization.RoundMoney(balance * LoanAmortization.AnnualRate(loan.AnnualRatePercent) / LoanAmortization.PeriodsPerYear(frequency))
             };
 
@@ -130,10 +132,15 @@ public static class LoanReplay
                 }
             }
 
+            // A part payment closes the accrual interval, even while the occurrence stays open.
+            // Carry the unpaid interest instead of charging the elapsed days again.
+            accrualDate = occurrenceDate;
+            unpaidDailyInterest = loan.InterestMethod == LoanInterestMethod.ReducingBalanceDaily
+                ? remainingInterestForPeriod
+                : 0m;
             if (totalPaidForPeriod >= scheduledPayment || balance <= 0m)
             {
                 paymentNumber++;
-                accrualDate = occurrenceDate;
                 lastOccurrenceComplete = true;
                 lastOccurrenceRemainder = 0m;
                 lastOccurrenceRemainingInterest = 0m;
@@ -183,6 +190,7 @@ public static class LoanReplay
                 balance = entry.BalanceAfter;
                 flatInterestPaid = LoanAmortization.RoundMoney(flatInterestPaid + entry.Interest);
                 accrualDate = nextDate;
+                unpaidDailyInterest = Math.Max(0m, unpaidDailyInterest - entry.Interest);
                 paymentNumber++;
                 if (balance <= 0m)
                 {
@@ -194,6 +202,9 @@ public static class LoanReplay
             }
 
             var futureNum = paymentNumber + 1;
+            decimal? interestDue = loan.InterestMethod == LoanInterestMethod.ReducingBalanceDaily
+                ? unpaidDailyInterest + LoanAmortization.DailyInterest(loan, balance, accrualDate, nextDate)
+                : null;
             entry = LoanAmortization.ApplyScheduledPayment(
                 loan,
                 frequency,
@@ -201,11 +212,13 @@ public static class LoanReplay
                 balance,
                 futureNum,
                 flatInterestPaid,
-                accrualDate);
+                accrualDate,
+                interestDueOverride: interestDue);
 
             futureSchedule.Add(entry);
             balance = entry.BalanceAfter;
             flatInterestPaid = LoanAmortization.RoundMoney(flatInterestPaid + entry.Interest);
+            unpaidDailyInterest = Math.Max(0m, (interestDue ?? 0m) - entry.Interest);
             accrualDate = nextDate;
             paymentNumber++;
             if (balance <= 0m)

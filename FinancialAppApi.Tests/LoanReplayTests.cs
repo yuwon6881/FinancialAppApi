@@ -6,6 +6,32 @@ namespace FinancialAppApi.Tests;
 public sealed class LoanReplayTests
 {
     [Fact]
+    public void DailyRestDoesNotAccrueTheSameDaysAfterAPartialPayment()
+    {
+        var loan = NewLoan(rate: 12m);
+        loan.InterestMethod = LoanInterestMethod.ReducingBalanceDaily;
+        loan.TermPeriods = 10;
+
+        var result = LoanReplay.Replay(loan, [
+            new(new DateOnly(2026, 2, 1), DateTime.MinValue, 50m),
+            new(new DateOnly(2026, 3, 1), DateTime.MinValue, 50m),
+        ]);
+
+        Assert.Equal(10.19m, result.Payments[0].Interest);
+        Assert.Equal(8.84m, result.Payments[1].Interest);
+    }
+
+    [Fact]
+    public void ShortenedFinalInstalmentOnlyChargesOutstandingPrincipalAndInterest()
+    {
+        var loan = NewLoan(rate: 0m);
+        loan.TermPeriods = 10;
+        var result = LoanReplay.Replay(loan, [new(new DateOnly(2026, 1, 1), DateTime.MinValue, 950m)]);
+
+        Assert.Equal(50m, Assert.Single(result.FutureSchedule).Payment);
+    }
+
+    [Fact]
     public void OrdersByOccurrenceDateBeforePostedAt()
     {
         var loan = NewLoan(rate: 12m);

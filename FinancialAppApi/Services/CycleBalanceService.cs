@@ -11,7 +11,7 @@ namespace FinancialAppApi.Services;
 // history on every request. Balances carry forward cycle-to-cycle (never reset), matching
 // FinancialController's original in-memory roll-forward loop exactly -- this class computes the
 // same per-cycle net changes (via CategoryAttributionService.GetCategoryAmount) and caches the running
-// total instead of recomputing it from year 2026 on every dashboard load.
+// total instead of recomputing it from the first recorded transaction on every dashboard load.
 //
 // Invalidation: because any past transaction can be edited/deleted, a change dated in cycle X
 // can change the ending balance of every cycle from X onward. Callers must invoke
@@ -23,10 +23,6 @@ namespace FinancialAppApi.Services;
 // EnsureComputedThroughAsync.
 public class CycleBalanceService
 {
-    // Matches the hardcoded roll-forward start year FinancialController used before snapshots
-    // existed, so behavior for any (hypothetical) pre-2026 transaction data is unchanged.
-    private const int BaselineYear = 2026;
-
     private readonly AppDbContext _context;
     private readonly StabilityPlanRevisionService _stabilityPlanRevisionService;
 
@@ -61,10 +57,8 @@ public class CycleBalanceService
         int cycleDay,
         CancellationToken cancellationToken = default)
     {
-        var startYear = Math.Min(BaselineYear, year);
-
         var last = await _context.CycleBalances
-            .Where(b => b.Year >= startYear && (b.Year < year || (b.Year == year && b.MonthIndex <= monthIndex)))
+            .Where(b => b.Year < year || (b.Year == year && b.MonthIndex <= monthIndex))
             .OrderByDescending(b => b.Year)
             .ThenByDescending(b => b.MonthIndex)
             .FirstOrDefaultAsync(cancellationToken);
@@ -95,7 +89,9 @@ public class CycleBalanceService
                 last.StabilityReloadOutstanding,
                 last.StabilityReloadOldestDate,
                 last.StabilityReloadObligations);
-        int fromYear = startYear, fromMonth = 1;
+        var finalRange = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
+        var finalEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(finalRange.end));
+        int fromYear, fromMonth;
 
         // Running per-account balances for the walk. Null means the previous row predates the
         // AccountBalances column and cannot seed it; recovered below once firstDate is known.
@@ -117,13 +113,24 @@ public class CycleBalanceService
                 accountBalances = new Dictionary<string, decimal>(cachedAccounts, StringComparer.Ordinal);
             }
         }
+        else
+        {
+            // The transaction date index makes this a bounded lookup even for a long history.
+            // Materialize the requested cycle when it predates any activity.
+            var earliest = await _context.Transactions.AsNoTracking()
+                .Where(transaction => transaction.Date < finalEndExclusive)
+                .OrderBy(transaction => transaction.Date)
+                .Select(transaction => (DateTime?)transaction.Date)
+                .FirstOrDefaultAsync(cancellationToken);
+            (fromYear, fromMonth) = earliest is { } first
+                ? CategoryAttributionService.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(first), cycleDay)
+                : (year, monthIndex);
+        }
 
         CycleBalance current = last!;
 
         var firstRange = CategoryAttributionService.GetCycleRange(fromYear, fromMonth, cycleDay);
-        var finalRange = CategoryAttributionService.GetCycleRange(year, monthIndex, cycleDay);
         var firstDate = TransactionDate.StartOfDate(DateOnly.FromDateTime(firstRange.start));
-        var finalEndExclusive = TransactionDate.ExclusiveEndOfDate(DateOnly.FromDateTime(finalRange.end));
         // A row written before the AccountBalances column existed cannot seed the account tally.
         // One scan of everything preceding this walk recovers it; because every row written below
         // carries the column, no later read has to pay for this again.
@@ -286,8 +293,7 @@ public class CycleBalanceService
         int cycleDay,
         CancellationToken cancellationToken = default)
     {
-        var startYear = Math.Min(BaselineYear, year);
-        if (year == startYear && monthIndex == 1)
+        if (year == 1 && monthIndex == 1)
         {
             return (0m, 0m, 0m, 0m);
         }
@@ -325,8 +331,7 @@ public class CycleBalanceService
         int cycleDay,
         CancellationToken cancellationToken = default)
     {
-        var startYear = Math.Min(BaselineYear, year);
-        if (year == startYear && monthIndex == 1)
+        if (year == 1 && monthIndex == 1)
         {
             return new Dictionary<string, decimal>(StringComparer.Ordinal);
         }

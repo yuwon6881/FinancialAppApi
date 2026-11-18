@@ -131,6 +131,122 @@
         "futureScheduleCount": 6,
         "firstFutureOccurrenceDate": "2027-01-10"
       }
+    },
+    {
+      "id": "daily-rest-accrual-after-part-payment",
+      "why": "Daily-rest interest is accrued once per elapsed date interval after a part payment.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 1000,
+          "termPeriods": 10,
+          "trackingStartDate": "2026-01-01",
+          "scheduleStartDate": "2026-01-01",
+          "scheduleFrequency": "Monthly",
+          "scheduleDueDay": 1,
+          "scheduleStatus": "Complete",
+          "annualRatePercent": 12,
+          "interestMethod": "ReducingBalanceDaily"
+        },
+        "inputs": [
+          {
+            "occurrenceDate": "2026-02-01",
+            "amount": 50,
+            "isDiscarded": false
+          },
+          {
+            "occurrenceDate": "2026-03-01",
+            "amount": 50,
+            "isDiscarded": false
+          }
+        ]
+      },
+      "expected": {
+        "outstandingBalance": 919.03,
+        "scheduledPayment": 105.58,
+        "totalScheduledInterest": 55.8,
+        "totalInterestPaid": 19.03,
+        "payoffDate": "2026-12-01",
+        "lastOccurrenceDate": "2026-03-01",
+        "paymentCount": 2,
+        "futureScheduleCount": 10,
+        "firstFutureOccurrenceDate": "2026-03-01"
+      }
+    },
+    {
+      "id": "discard-wins-over-payments-for-the-same-occurrence",
+      "why": "Replay excludes the entire occurrence if it was discarded, even if a prior payment row remains.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 1000,
+          "termPeriods": 10,
+          "trackingStartDate": "2026-01-01",
+          "scheduleStartDate": "2026-01-01",
+          "scheduleFrequency": "Monthly",
+          "scheduleDueDay": 1,
+          "scheduleStatus": "Complete",
+          "annualRatePercent": 0,
+          "interestMethod": "ReducingBalance"
+        },
+        "inputs": [
+          {
+            "occurrenceDate": "2026-01-01",
+            "amount": 50,
+            "isDiscarded": false
+          },
+          {
+            "occurrenceDate": "2026-01-01",
+            "amount": 0,
+            "isDiscarded": true
+          }
+        ]
+      },
+      "expected": {
+        "outstandingBalance": 1000,
+        "scheduledPayment": 100,
+        "totalScheduledInterest": 0,
+        "totalInterestPaid": 0,
+        "payoffDate": "2026-11-01",
+        "lastOccurrenceDate": "2026-01-01",
+        "paymentCount": 0,
+        "futureScheduleCount": 10,
+        "firstFutureOccurrenceDate": "2026-02-01"
+      }
+    },
+    {
+      "id": "final-schedule-payment-is-capped",
+      "why": "The last scheduled debit is limited to the principal and interest still owed.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 1000,
+          "termPeriods": 10,
+          "trackingStartDate": "2026-01-01",
+          "scheduleStartDate": "2026-01-01",
+          "scheduleFrequency": "Monthly",
+          "scheduleDueDay": 1,
+          "scheduleStatus": "Complete",
+          "annualRatePercent": 0,
+          "interestMethod": "ReducingBalance"
+        },
+        "inputs": [
+          {
+            "occurrenceDate": "2026-01-01",
+            "amount": 950,
+            "isDiscarded": false
+          }
+        ]
+      },
+      "expected": {
+        "outstandingBalance": 50,
+        "scheduledPayment": 100,
+        "totalScheduledInterest": 0,
+        "totalInterestPaid": 0,
+        "payoffDate": "2026-02-01",
+        "lastOccurrenceDate": "2026-01-01",
+        "paymentCount": 1,
+        "futureScheduleCount": 1,
+        "firstFutureOccurrenceDate": "2026-02-01",
+        "firstFuturePayment": 50
+      }
     }
   ]
 }

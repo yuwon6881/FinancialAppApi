@@ -160,7 +160,7 @@ public class PushSubscriptionServiceTests
         var service = new PushSubscriptionService(context);
 
         var subscription = await service.SubscribeAsync(
-            "device-1", "token", billReminders: false, categoryAlerts: true);
+            "device-1", "token", categoryAlerts: true);
 
         Assert.NotNull(subscription);
         Assert.False(subscription!.BillRemindersEnabled);

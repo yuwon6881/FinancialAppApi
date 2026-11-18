@@ -181,7 +181,7 @@ public class PushSubscriptionService
         // A brand-new device with no stated channels registers for bill reminders only: spending
         // alerts have always been the deliberate second opt-in, and defaulting them on would opt
         // a device into notifications its user never asked for.
-        var newBills = billReminders ?? true;
+        var newBills = billReminders ?? (categoryAlerts is null);
         var newAlerts = categoryAlerts ?? false;
         if (!newBills && !newAlerts) return null;
 

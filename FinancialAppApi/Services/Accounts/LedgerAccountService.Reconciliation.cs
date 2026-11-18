@@ -109,6 +109,10 @@ public sealed partial class LedgerAccountService
                 var resolvedTargets = new List<LedgerAccountReconcileTarget>(targets.Count);
                 foreach (var target in targets)
                 {
+                    if (accounts.Any(candidate => candidate.Bucket != bucket
+                        && candidate.Name.Equals(target.Name, StringComparison.OrdinalIgnoreCase)))
+                        return await ConflictAsync(databaseTransaction, "This account name is already in use.");
+
                     var existingById = target.Id is null
                         ? null
                         : accounts.FirstOrDefault(account => account.Id == target.Id);
@@ -154,8 +158,6 @@ public sealed partial class LedgerAccountService
                                     payment => payment.AccountId == account.Id && payment.Active,
                                     cancellationToken))
                                 return await ConflictAsync(databaseTransaction, "An active recurring payment uses this account. Reassign it before closing the account.");
-                            if (!bucketAccounts.Any(other => other.Id != account.Id && !other.IsArchived))
-                                return await ConflictAsync(databaseTransaction, "Every bucket needs one open account. Add another before closing this one.");
                             if (LedgerAccountKind.IsCreditCard(target.Kind ?? account.Kind) && target.Target <= -0.005m)
                                 return await ConflictAsync(databaseTransaction, "Pay off this card before closing it.");
                         }

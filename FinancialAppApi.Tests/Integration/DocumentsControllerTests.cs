@@ -15,7 +15,8 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         var originalBytes = Encoding.UTF8.GetBytes("%PDF-1.7 vault test");
         var categoryId = await AddCategoryAsync(client, 2026);
 
-        using var uploadForm = CreateUploadForm(originalBytes, "tax evidence.pdf", categoryId);
+        const string fileName = "tax évidence.pdf";
+        using var uploadForm = CreateUploadForm(originalBytes, fileName, categoryId);
         var uploadResponse = await client.PostAsync("/api/documents", uploadForm);
 
         Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
@@ -60,6 +61,9 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         Assert.Equal(originalBytes, await downloadResponse.Content.ReadAsByteArrayAsync());
         Assert.Equal("application/pdf", downloadResponse.Content.Headers.ContentType?.MediaType);
         Assert.Equal("inline", downloadResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal(fileName, downloadResponse.Content.Headers.ContentDisposition?.FileNameStar);
+        Assert.All(downloadResponse.Content.Headers.GetValues("Content-Disposition").Single(),
+            character => Assert.InRange(character, ' ', '~'));
 
         using var rangeRequest = new HttpRequestMessage(HttpMethod.Get, $"/api/documents/{documentId}/content");
         rangeRequest.Headers.Range = new RangeHeaderValue(0, 9);

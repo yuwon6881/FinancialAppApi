@@ -2,6 +2,10 @@ using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
 using FinancialAppApi.Services.Accounts;
+using FinancialAppApi.Controllers;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 
 namespace FinancialAppApi.Tests;
 
@@ -11,6 +15,38 @@ public sealed class LedgerAccountReconciliationTests
         context,
         new LedgerAccountBalanceService(context),
         new CycleBalanceService(context));
+
+    [Fact]
+    public async Task ReconcileRejectsMalformedTargetInsteadOfInterpretingItAsZero()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var controller = new LedgerAccountsController(Service(context))
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
+        };
+        var dto = JsonSerializer.Deserialize<LedgerAccountReconcileDto>("""
+            {"OperationId":"op-test","Bucket":"Essentials","ExpectedBucketTotal":0,
+             "Targets":[{"Id":"acct-main","Name":"Cash","ExpectedCurrent":0,"Target":"invalid amount"}]}
+            """)!;
+
+        Assert.IsType<BadRequestObjectResult>(await controller.Reconcile(dto));
+        Assert.Empty(context.Transactions);
+    }
+
+    [Fact]
+    public async Task ReconcileRejectsAnAccountNameOwnedByAnotherBucket()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.LedgerAccounts.Add(new LedgerAccount { Id = "acct-growth", Name = "Savings", Bucket = "Growth" });
+        await context.SaveChangesAsync();
+
+        var result = await Service(context).ReconcileAsync(new(
+            "op-duplicate-name", "Essentials", 0m,
+            [new("acct-new", "Savings", LedgerAccountKind.Bank, false, 0m, 0m)]));
+
+        Assert.Equal(LedgerAccountMutationStatus.Conflict, result.Status);
+        Assert.Single(context.LedgerAccounts);
+    }
 
     [Fact]
     public async Task ReconcileAsync_ReturnsConflict409_WhenBucketTotalChangedUnderneathPreview()

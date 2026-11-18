@@ -587,6 +587,30 @@ public class TransactionPersistenceServiceTests
     }
 
     [Fact]
+    public async Task DeleteTransactionsAsync_RestoresClaimsWithOnlyOneFocusedReward()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        foreach (var id in new[] { 1, 2 })
+        {
+            var transaction = NewTransaction($"claim-{id}", wishlistItemId: id);
+            context.Transactions.Add(transaction);
+            context.WishlistItems.Add(new WishlistItem
+            {
+                Id = id, Name = $"Reward {id}", Price = 25m, IsPurchased = true,
+                PurchaseTransactionId = transaction.Id,
+            });
+        }
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).DeleteTransactionsAsync(["claim-1", "claim-2"]);
+
+        Assert.Equal(TransactionMutationStatus.Deleted, result.Status);
+        var items = await context.WishlistItems.ToListAsync();
+        Assert.All(items, item => Assert.False(item.IsPurchased));
+        Assert.Single(items, item => item.IsActive);
+    }
+
+    [Fact]
     public async Task DeleteTransactionsAsync_RejectsCommitmentWithoutDeletingOtherRows()
     {
         await using var context = TestHelpers.NewInMemoryContext();

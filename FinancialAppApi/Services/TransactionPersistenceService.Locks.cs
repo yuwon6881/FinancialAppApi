@@ -10,14 +10,21 @@ public partial class TransactionPersistenceService
         || CategoryAttributionService.GetCategoryAmount(transaction, "Rewards") < 0m;
 
     private static bool ReducesCommitmentBacking(Transaction current, Transaction proposed) =>
-        CategoryAttributionService.GetCategoryAmount(proposed, "Essentials")
+        IsIncomeLedgerCategory(current.LedgerCategory)
+        || CategoryAttributionService.GetCategoryAmount(proposed, "Essentials")
             < CategoryAttributionService.GetCategoryAmount(current, "Essentials")
         || CategoryAttributionService.GetCategoryAmount(proposed, "Rewards")
             < CategoryAttributionService.GetCategoryAmount(current, "Rewards");
 
     private static bool RemovingReducesCommitmentBacking(Transaction transaction) =>
-        CategoryAttributionService.GetCategoryAmount(transaction, "Essentials") > 0m
+        IsIncomeLedgerCategory(transaction.LedgerCategory)
+        || CategoryAttributionService.GetCategoryAmount(transaction, "Essentials") > 0m
         || CategoryAttributionService.GetCategoryAmount(transaction, "Rewards") > 0m;
+
+    // Legacy claims may only retain the reverse link from the reward.
+    private static bool MayRestoreWishlistClaim(Transaction transaction) =>
+        transaction.WishlistItemId.HasValue
+        || string.Equals(transaction.LedgerCategory, "Rewards", StringComparison.OrdinalIgnoreCase) && transaction.Amount < 0m;
 
     private sealed class NoOpPoolLock : IAsyncDisposable
     {

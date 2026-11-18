@@ -143,7 +143,8 @@ public static class LoanAmortization
         decimal balanceBefore,
         int paymentNumber,
         decimal flatInterestPaidBefore,
-        DateOnly previousAccrualDate)
+        DateOnly previousAccrualDate,
+        decimal? interestDueOverride = null)
     {
         var split = ApplyPayment(
             loan,
@@ -153,10 +154,11 @@ public static class LoanAmortization
             ScheduledPayment(loan, frequency),
             paymentNumber,
             flatInterestPaidBefore,
-            previousAccrualDate);
+            previousAccrualDate,
+            interestDueOverride: interestDueOverride);
         return new LoanScheduleEntry(
             occurrenceDate,
-            split.Payment,
+            split.Payment - split.Surplus,
             split.Interest,
             split.Principal,
             split.BalanceAfter);
