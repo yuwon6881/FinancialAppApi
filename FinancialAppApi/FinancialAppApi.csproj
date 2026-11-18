@@ -18,6 +18,7 @@
     <!-- Expose internal AI intent/forecast/sufficiency types so the test project can assert
          on typed results rather than serialized prompt substrings (Phase 9). -->
     <InternalsVisibleTo Include="FinancialAppApi.Tests" />
+    <InternalsVisibleTo Include="FinancialAppApi.PerformanceTests" />
   </ItemGroup>
 
   <ItemGroup>

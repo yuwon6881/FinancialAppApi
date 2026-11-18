@@ -34,6 +34,7 @@ await using (var setup = new AppDbContext(optionsBuilder.Options))
 {
     await setup.Database.EnsureDeletedAsync();
     await setup.Database.EnsureCreatedAsync();
+    await MarketPriceQueryCheck.VerifyAsync(setup);
     foreach (var selectedProfile in profiles)
     {
         await PerformanceSeed.SeedAsync(setup, selectedProfile);

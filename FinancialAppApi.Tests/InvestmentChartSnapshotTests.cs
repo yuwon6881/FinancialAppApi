@@ -60,6 +60,26 @@ public sealed class InvestmentChartSnapshotTests
         Assert.Empty(context.InvestmentPeriodSnapshots);
     }
 
+    [Fact]
+    public async Task AZeroNetCurrencyNeedsNoRateForChartContributions()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { Currency = "SGD" });
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        context.InvestmentAccounts.Add(account);
+        await context.SaveChangesAsync();
+        context.InvestmentCashFlows.AddRange(
+            new InvestmentCashFlow { AccountId = account.Id, Currency = "USD", Type = "Deposit", Amount = 100, Date = Today.AddDays(-5) },
+            new InvestmentCashFlow { AccountId = account.Id, Currency = "USD", Type = "Withdrawal", Amount = -100, Date = Today.AddDays(-2) });
+        await context.SaveChangesAsync();
+
+        var portfolio = await PortfolioService(context, new ChartProvider(), withSnapshots: false)
+            .GetPortfolioAsync("1m", CancellationToken.None);
+
+        Assert.Null(Assert.Single(portfolio.Chart, point => point.Date == Today.AddDays(-5)).NetDeposits);
+        Assert.Equal(0m, portfolio.Chart[^1].NetDeposits);
+    }
+
     private static decimal? Round(decimal? value) => value is null ? null : Math.Round(value.Value, 6);
 
     private static InvestmentPortfolioService PortfolioService(AppDbContext context, IMarketDataProvider provider, bool withSnapshots)

@@ -91,6 +91,26 @@ public sealed class InvestmentSnapshotServiceTests
     }
 
     [Fact]
+    public async Task ResumingKeepsTheLastKnownCloseWhenThereAreNoRecentBars()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        await SeedAsync(context);
+        var lastVooClose = new DateOnly(2031, 1, 31);
+        context.MarketPriceBars.RemoveRange(context.MarketPriceBars.Where(
+            bar => bar.ExternalInstrumentId.StartsWith("VOO") && bar.MarketDate > lastVooClose));
+        await context.SaveChangesAsync();
+
+        var opening = await NewService(context, new DateOnly(2031, 4, 20)).EnsureAsync(CancellationToken.None);
+        var resumed = await NewService(context, new DateOnly(2031, 5, 20)).EnsureAsync(CancellationToken.None);
+
+        var march = Row(opening, 2031, 3, "USEquity");
+        Assert.True(march.IsComplete, march.MissingReason);
+        var april = Row(resumed, 2031, 4, "USEquity");
+        Assert.True(april.IsComplete, april.MissingReason);
+        Assert.Equal(550m, april.MarketValue);
+    }
+
+    [Fact]
     public async Task BackdatedActivityRemovesItsMonthAndEveryLaterOne()
     {
         await using var context = TestHelpers.NewInMemoryContext();

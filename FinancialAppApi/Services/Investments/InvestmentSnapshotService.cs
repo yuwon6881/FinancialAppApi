@@ -18,7 +18,7 @@ public sealed class InvestmentSnapshotService(
     ILogger<InvestmentSnapshotService> logger)
 {
     /// <summary>Bump when a stored figure's meaning changes: every row is then rebuilt.</summary>
-    public const int SchemaVersion = 2;
+    public const int SchemaVersion = 3;
 
     /// <summary>
     /// A month is stored only once its end is this far behind: a refresh re-reads the last week of
@@ -158,20 +158,24 @@ public sealed class InvestmentSnapshotService(
             .Where(value => value.Date > openingDate)
             .ToListAsync(cancellationToken);
 
-        // Market data only from a month before the resume point: every price this walk
-        // reads is dated after it, and month-end compaction keeps one bar per month for the gap.
-        var barsFrom = openingDate == DateOnly.MinValue ? DateOnly.MinValue : openingDate.AddMonths(-1);
         var references = new Dictionary<Guid, MarketInstrumentReference>();
         foreach (var instrument in instruments.Values.Where(value => !value.IsCustom))
         {
             if (await MarketDataReferenceResolver.ResolveAsync(context, instrument, provider, cancellationToken) is { } reference)
                 references[instrument.Id] = reference;
         }
-        var externalIds = references.Values.Select(value => value.ExternalId).Distinct().ToList();
+        var externalIds = references.Values.Select(value => value.ExternalId).Distinct().ToArray();
         var providerId = provider.Descriptor.Id;
-        var priceBars = externalIds.Count == 0 ? [] : await context.MarketPriceBars.AsNoTracking()
-            .Where(value => value.Provider == providerId && externalIds.Contains(value.ExternalInstrumentId) && value.MarketDate >= barsFrom)
+        var priceBars = externalIds.Length == 0 ? [] : await context.MarketPriceBars.AsNoTracking()
+            .Where(value => value.Provider == providerId && externalIds.Contains(value.ExternalInstrumentId) &&
+                (resumeRow == null || value.MarketDate > openingDate))
             .ToListAsync(cancellationToken);
+        if (resumeRow is not null)
+        {
+            // The latest close at the opening can be older than one month, even after compaction.
+            priceBars.AddRange(await MarketPriceHistory.ReadTrailingAsync(
+                context, providerId, externalIds, openingDate, 1, cancellationToken));
+        }
         var prices = instruments.Keys.ToDictionary(
             id => id,
             id => seriesResolver.ResolvePrices(references.GetValueOrDefault(id), priceBars));

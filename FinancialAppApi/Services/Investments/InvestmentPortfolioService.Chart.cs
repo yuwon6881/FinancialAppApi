@@ -34,13 +34,11 @@ public partial class InvestmentPortfolioService
         var resume = settled.Count > 0 ? InvestmentCarryState.TryParse(settled[^1].CarryState) : null;
         if (resume is not null)
         {
-            decimal? deposits = 0;
             foreach (var month in settled)
             {
-                deposits += month.NetContributions;
-                if (month.PeriodEnd >= from) points.Add(new InvestmentChartPointDto(month.PeriodEnd, month.ClosingValue, deposits));
+                if (month.PeriodEnd >= from) points.Add(new InvestmentChartPointDto(month.PeriodEnd, month.ClosingValue, null));
             }
-            opening = new ChartOpening(settled[^1].PeriodEnd, resume, deposits);
+            opening = new ChartOpening(settled[^1].PeriodEnd, resume);
         }
 
         var dates = transactions.Select(value => value.TradeDate)
@@ -68,7 +66,6 @@ public partial class InvestmentPortfolioService
             var result = accounting.Calculate(relevant, opening.Carry.Positions);
             decimal market = 0;
             decimal cash = 0;
-            decimal? deposits = opening.Deposits;
             var complete = true;
             foreach (var position in result.Positions)
             {
@@ -98,10 +95,6 @@ public partial class InvestmentPortfolioService
                 foreach (var (currency, amount) in InvestmentConstantCurrency.ContributionLegs(flow))
                 {
                     AddCash(flow.AccountId, currency, amount);
-                    if (amount == 0) continue;
-                    // An unknown rate leaves only the money-put-in line unknown: the value is
-                    // known whenever what is held today can be valued, whatever moved before.
-                    deposits = todayFx(currency) is { } flowFx ? deposits + amount * flowFx.Rate : null;
                 }
             }
             foreach (var transaction in relevant)
@@ -123,16 +116,41 @@ public partial class InvestmentPortfolioService
             points.Add(new InvestmentChartPointDto(
                 date,
                 complete ? market + cash : null,
-                deposits));
+                null));
         }
         // Decades of month-ends would outgrow the cap on their own; thin the whole series.
-        return InvestmentChartRange.Sample(points);
+        return WithNetDeposits(InvestmentChartRange.Sample(points), cashFlows, todayFx);
+    }
+
+    private static IReadOnlyList<InvestmentChartPointDto> WithNetDeposits(
+        IReadOnlyList<InvestmentChartPointDto> points,
+        IReadOnlyList<InvestmentCashFlow> cashFlows,
+        Func<string, ResolvedMarketFx?> todayFx)
+    {
+        var flows = new Queue<InvestmentCashFlow>(cashFlows.OrderBy(flow => flow.Date));
+        var nativeTotals = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<InvestmentChartPointDto>(points.Count);
+        foreach (var point in points)
+        {
+            while (flows.TryPeek(out var flow) && flow.Date <= point.Date)
+            {
+                flows.Dequeue();
+                foreach (var (currency, amount) in InvestmentConstantCurrency.ContributionLegs(flow))
+                    nativeTotals[currency] = nativeTotals.GetValueOrDefault(currency) + amount;
+            }
+
+            // A currency whose contributions cancel out does not need an exchange rate.
+            var deposits = nativeTotals.Where(pair => pair.Value != 0).Aggregate(
+                (decimal?)0, (sum, pair) => sum + pair.Value * todayFx(pair.Key)?.Rate);
+            result.Add(point with { NetDeposits = deposits });
+        }
+        return result;
     }
 
     /// <summary>Where the day-by-day walk starts: nothing, or the newest settled month-end.</summary>
-    private sealed record ChartOpening(DateOnly Date, InvestmentCarryState Carry, decimal? Deposits)
+    private sealed record ChartOpening(DateOnly Date, InvestmentCarryState Carry)
     {
-        public static readonly ChartOpening Empty = new(DateOnly.MinValue, InvestmentCarryState.Empty, 0);
+        public static readonly ChartOpening Empty = new(DateOnly.MinValue, InvestmentCarryState.Empty);
     }
 
     private static decimal RoundMoney(decimal value)
@@ -140,7 +158,8 @@ public partial class InvestmentPortfolioService
 
     private static IReadOnlyList<string> BuildInsights(
         IReadOnlyList<InvestmentHoldingDto> holdings,
-        IReadOnlyList<string> warnings)
+        IReadOnlyList<string> warnings,
+        DateOnly today)
     {
         if (holdings.Count == 0) return ["Add a buy transaction to begin portfolio analysis."];
         var insights = new List<string>();
@@ -160,7 +179,7 @@ public partial class InvestmentPortfolioService
                 insights.Add("Concentration: one holding represents at least half of the valued portfolio.");
         }
         if (warnings.Any(value => value.Contains("FX", StringComparison.OrdinalIgnoreCase))) insights.Add("Converted totals are incomplete until missing FX rates are supplied.");
-        if (holdings.Any(value => value.PriceDate is null || value.PriceDate < DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-5))))
+        if (holdings.Any(value => value.PriceDate is null || value.PriceDate < today.AddDays(-5)))
             insights.Add("Some holdings have stale or unavailable prices.");
         return insights;
     }

@@ -254,10 +254,12 @@ public sealed partial class InvestmentPortfolioService(
             })
             .Where(value => value.Reference is not null)
             .ToDictionary(value => value.Id, value => value.Reference!);
-        var externalIds = references.Values.Select(value => value.ExternalId).Distinct().ToList();
-        var priceBars = externalIds.Count == 0
+        var externalIds = references.Values.Select(value => value.ExternalId).Distinct().ToArray();
+        var priceBars = externalIds.Length == 0
             ? []
-            : await context.MarketPriceBars.AsNoTracking()
+            : !includeChart
+                ? await MarketPriceHistory.ReadTrailingAsync(context, providerId, externalIds, DateOnly.MaxValue, 2, cancellationToken)
+                : await context.MarketPriceBars.AsNoTracking()
                 .Where(value => value.Provider == providerId && externalIds.Contains(value.ExternalInstrumentId))
                 .ToListAsync(cancellationToken);
         var currencies = instruments.Select(value => value.Currency)
@@ -506,7 +508,7 @@ public sealed partial class InvestmentPortfolioService(
             cashBalances,
             transactions.Count,
             cashFlows.Count,
-            BuildInsights(holdings, warnings),
+            BuildInsights(holdings, warnings, today),
             warnings.Distinct().ToList(),
             latestFetchedAt,
             provider.Descriptor.IsConfigured,

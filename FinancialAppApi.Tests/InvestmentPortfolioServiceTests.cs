@@ -298,7 +298,7 @@ public sealed class InvestmentPortfolioServiceTests
     }
 
     [Fact]
-    public async Task AMissingRateForAnOldCashMovementLeavesOnlyMoneyPutInUnknown()
+    public async Task ChartValuesNetCurrencyLegsWhileBrokerDepositsUseExternalMovements()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         context.FinancialSettings.Add(new FinancialSetting { Currency = "SGD" });
@@ -327,7 +327,8 @@ public sealed class InvestmentPortfolioServiceTests
         Assert.Null(portfolio.Summary.AnnualReturn);
         var latest = portfolio.Chart[^1];
         Assert.Equal(297m, latest.TotalValue);
-        Assert.Null(latest.NetDeposits);
+        Assert.Equal(297m, latest.NetDeposits);
+        Assert.Null(Assert.Single(portfolio.Chart, point => point.Date == new DateOnly(2026, 7, 1)).NetDeposits);
     }
 
     [Fact]
