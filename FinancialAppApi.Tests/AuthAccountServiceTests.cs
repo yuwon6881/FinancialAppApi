@@ -368,6 +368,12 @@ public class AuthAccountServiceTests
             CreatedAt = DateTime.UtcNow,
             ExpiresAt = DateTime.UtcNow.AddDays(7)
         });
+        context.PendingTwoFactors.Add(new PendingTwoFactor
+        {
+            UserId = user.Id,
+            Username = user.Username,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(5),
+        });
         context.SaveChanges();
         var service = NewService(context);
 
@@ -392,6 +398,7 @@ public class AuthAccountServiceTests
         Assert.IsType<OkObjectResult>(reset);
         // All prior sessions are revoked.
         Assert.Empty(context.UserSessions);
+        Assert.Empty(context.PendingTwoFactors);
         // Old password no longer works; the new one does.
         Assert.IsType<UnauthorizedObjectResult>(await service.LoginAsync("alice", "old-password", null, null, null, null));
         Assert.IsType<OkObjectResult>(await service.LoginAsync("alice", "new-password", null, null, null, null));

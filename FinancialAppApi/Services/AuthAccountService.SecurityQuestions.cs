@@ -102,15 +102,9 @@ public partial class AuthAccountService
                 u => u.NormalizedUsername == normalizedUsername,
                 cancellationToken);
 
-        if (user == null)
+        if (user == null || !user.HasSetupSecurityQuestions)
         {
-            // Do not reveal user existence; just return empty or generic response
             return new BadRequestObjectResult(new { message = "If the user exists and has security questions, they will be displayed." });
-        }
-
-        if (!user.HasSetupSecurityQuestions)
-        {
-             return new BadRequestObjectResult(new { message = "This user has not set up security questions." });
         }
 
         var userQuestions = await _context.SecurityQuestionAnswers
@@ -202,9 +196,9 @@ public partial class AuthAccountService
             user.SecurityQuestionRecoveryFailedAttempts = 0;
             user.SecurityQuestionRecoveryLockedUntil = null;
 
-            await _context.SaveChangesAsync(cancellationToken);
-            // This endpoint is unauthenticated (no current-user DB scope), so revoke by the
-            // verified user's id rather than the ambient scope.
+            // Both services share the scoped context. Persist the password and the revocation
+            // of authenticated and pending sessions in the same SaveChanges call.
+            await RemovePendingTwoFactorsAsync(user.Id, cancellationToken);
             await _authSessionService.RevokeAllSessionsForUserAsync(
                 user.Id,
                 cancellationToken);

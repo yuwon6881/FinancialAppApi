@@ -117,13 +117,14 @@ public partial class AuthAccountService
         if (passwordFailure != null) return passwordFailure;
 
         var secret = _secretProtector.Unprotect(user.TotpSecret);
-        var validTotp = _totpService.ValidateCode(secret, code ?? string.Empty);
+        var validTotp = _totpService.ValidateCode(secret, code ?? string.Empty, out var timeStep);
         var validRecovery = !validTotp && await _recoveryCodeService.TryConsumeAsync(
             username,
             code ?? string.Empty,
             user.Id,
             cancellationToken);
-        if (!validTotp && !validRecovery)
+        if ((!validTotp && !validRecovery) ||
+            (validTotp && !await TryClaimTotpTimeStepAsync(user, timeStep, cancellationToken)))
         {
             return new BadRequestObjectResult(new { message = "Invalid code." });
         }
