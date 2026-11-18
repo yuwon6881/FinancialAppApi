@@ -13,14 +13,14 @@ public sealed class MarketDataQuotaServiceTests
         var second = new TestProvider("second", new MarketDataQuotaPolicy(1, 10, 10));
 
         var alice = new MarketDataQuotaService(context, first);
-        Assert.Equal(1, await alice.ReserveRefreshAsync(1, CancellationToken.None));
+        Assert.Equal((1, false), await alice.ReserveRefreshAsync(1, CancellationToken.None));
 
         context.SetCurrentUser("bob");
         var bob = new MarketDataQuotaService(context, first);
-        Assert.Equal(0, await bob.ReserveRefreshAsync(1, CancellationToken.None));
+        Assert.Equal((0, false), await bob.ReserveRefreshAsync(1, CancellationToken.None));
 
         var otherProvider = new MarketDataQuotaService(context, second);
-        Assert.Equal(1, await otherProvider.ReserveRefreshAsync(1, CancellationToken.None));
+        Assert.Equal((1, false), await otherProvider.ReserveRefreshAsync(1, CancellationToken.None));
     }
 
     [Fact]
@@ -30,8 +30,8 @@ public sealed class MarketDataQuotaServiceTests
         var provider = new TestProvider("limited", new MarketDataQuotaPolicy(2, 2, 2));
         var service = new MarketDataQuotaService(context, provider);
 
-        Assert.Equal(2, await service.ReserveRefreshAsync(10, CancellationToken.None));
-        Assert.Equal(0, await service.ReserveRefreshAsync(10, CancellationToken.None));
+        Assert.Equal((2, true), await service.ReserveRefreshAsync(10, CancellationToken.None));
+        Assert.Equal((0, true), await service.ReserveRefreshAsync(10, CancellationToken.None));
     }
 
     [Fact]

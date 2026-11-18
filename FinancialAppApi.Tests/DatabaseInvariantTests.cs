@@ -199,6 +199,8 @@ public class DatabaseInvariantTests
         AssertSingleColumnIndex<CategoryLimitAlertEvent>(context, nameof(CategoryLimitAlertEvent.CreatedAt));
         AssertSingleColumnIndex<CategoryLimitAlertDelivery>(context, nameof(CategoryLimitAlertDelivery.SentAt));
         AssertSingleColumnIndex<PushSubscription>(context, nameof(PushSubscription.UpdatedAt));
+        AssertSingleColumnIndex<PendingTwoFactor>(context, nameof(PendingTwoFactor.ExpiresAt));
+        AssertSingleColumnIndex<MarketDataRefreshJob>(context, nameof(MarketDataRefreshJob.CompletedAt));
     }
 
     private static void AssertSingleColumnIndex<TEntity>(DbContext context, string propertyName)

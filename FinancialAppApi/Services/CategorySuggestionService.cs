@@ -420,6 +420,7 @@ Rules:
             appliedCount = 0;
             undoActions.Clear();
             conflictMessage = null;
+            _context.ChangeTracker.Clear();
 
             await using var transaction = await _context.Database.BeginTransactionAsync();
 

@@ -66,8 +66,8 @@ public sealed class LedgerRetentionService
 
         var today = _clock.Today;
         var priceBarCutoff = today.AddDays(-_policy.PriceBarRetentionDays);
-        var notificationCutoff = DateTime.UtcNow.AddDays(-_policy.NotificationRetentionDays);
-        var subscriptionCutoff = DateTime.UtcNow.AddDays(-_policy.PushSubscriptionRetentionDays);
+        var notificationCutoff = _clock.UtcNow.AddDays(-_policy.NotificationRetentionDays);
+        var subscriptionCutoff = _clock.UtcNow.AddDays(-_policy.PushSubscriptionRetentionDays);
 
         // MarketPriceBars is a shared provider cache with no owner, so it carries no query filter.
         // Old history is compacted, not deleted: each series keeps its last bar of every month, which
@@ -139,14 +139,14 @@ public sealed class LedgerRetentionService
 
         // Ask AI turns past the retention horizon, plus any turn still Pending long after a real
         // turn could run -- one a crash left behind. A live Pending turn is never that old.
-        var turnCutoff = DateTime.UtcNow.AddDays(-_policy.AiTurnRetentionDays);
-        var abandonedCutoff = DateTime.UtcNow - AiConversationMemoryService.AbandonedPendingTurnAge;
+        var turnCutoff = _clock.UtcNow.AddDays(-_policy.AiTurnRetentionDays);
+        var abandonedCutoff = _clock.UtcNow - AiConversationMemoryService.AbandonedPendingTurnAge;
         var aiTurns = await _context.AiConversationTurns
             .IgnoreQueryFilters()
             .Where(turn => turn.CreatedAt < turnCutoff || (turn.Status != "Completed" && turn.CreatedAt < abandonedCutoff))
             .ExecuteDeleteAsync(cancellationToken);
 
-        var usageCutoff = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-_policy.AiUsageRetentionDays);
+        var usageCutoff = DateOnly.FromDateTime(_clock.UtcNow).AddDays(-_policy.AiUsageRetentionDays);
         var aiUsageDays = await _context.AiUsageDays
             .IgnoreQueryFilters()
             .Where(day => day.Date < usageCutoff)
@@ -154,7 +154,7 @@ public sealed class LedgerRetentionService
 
         // Search results are only served while unexpired, and an expired row is otherwise only
         // replaced if someone repeats that exact query -- so every distinct query left one behind.
-        var now = DateTime.UtcNow;
+        var now = _clock.UtcNow;
         var searchCacheEntries = await _context.InstrumentSearchCaches
             .Where(entry => entry.ExpiresAt < now)
             .ExecuteDeleteAsync(cancellationToken);

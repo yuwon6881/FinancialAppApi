@@ -127,6 +127,8 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
                 !string.Equals(holding.FxSource, "Manual FX", StringComparison.OrdinalIgnoreCase))
                 freshnessInputs.Add(($"{holding.Currency}/{appCurrency} FX", holding.FxFetchedAt));
         }
+        foreach (var cash in cashBalances.Where(value => value.Amount != 0 && value.AmountApp is null))
+            freshnessInputs.Add(($"{cash.Currency}/{appCurrency} FX", null));
 
         var cutoff = DateTime.UtcNow.AddMinutes(-AutomaticRefreshMinutes);
         var staleInputs = freshnessInputs
@@ -302,12 +304,19 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
         InvestmentPlanDto plan,
         IReadOnlyList<InvestmentHoldingDto> holdings,
         IReadOnlyList<InvestmentInstrumentSetupDto> instruments)
-        => SleeveDefinitions.Select(value => new InvestmentSleeveAllocationDto(
-            value.Key, value.Label, Targets(plan)[value.Key], null,
-            holdings.Where(holding => holding.ValueApp is not null &&
-                    instruments.First(instrument => instrument.Id == holding.InstrumentId).AllocationSleeve == value.Key)
-                .Sum(holding => holding.ValueApp ?? 0),
-            null, null, "Incomplete")).ToList();
+    {
+        var targets = Targets(plan);
+        var assignments = instruments.ToDictionary(instrument => instrument.Id, instrument => instrument.AllocationSleeve);
+        return SleeveDefinitions.Select(definition =>
+        {
+            var members = holdings.Where(holding => assignments.GetValueOrDefault(holding.InstrumentId) == definition.Key).ToList();
+            var value = members.Any(holding => holding.ValueApp is null)
+                ? null
+                : (decimal?)members.Sum(holding => holding.ValueApp ?? 0);
+            return new InvestmentSleeveAllocationDto(
+                definition.Key, definition.Label, targets[definition.Key], null, value, null, null, "Incomplete");
+        }).ToList();
+    }
 
     private static IReadOnlyList<InvestmentSleeveAllocationDto> BuildValuedSleeves(
         InvestmentPlanDto plan,

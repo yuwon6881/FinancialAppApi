@@ -153,9 +153,12 @@ public sealed partial class InvestmentMarketDataService(
             return ToResponse(activeJob, [], null);
         }
 
-        var allowance = await _quota.ReserveRefreshAsync(Math.Min(items.Count, Math.Max(1, QuotaPolicy.RefreshCallsPerMinute)), cancellationToken);
+        var (allowance, dailyLimitReached) = await _quota.ReserveRefreshAsync(
+            Math.Min(items.Count, Math.Max(1, QuotaPolicy.RefreshCallsPerMinute)), cancellationToken);
         if (allowance == 0)
         {
+            if (dailyLimitReached)
+                return ToResponse(activeJob, ["The daily market data limit has been reached. Try again tomorrow."], null);
             return ToResponse(activeJob, WarningList(activeJob.Warning), SecondsUntilNextMinute());
         }
 
@@ -264,6 +267,11 @@ public sealed partial class InvestmentMarketDataService(
         var cashFlows = await context.InvestmentCashFlows.AsNoTracking()
             .Select(value => new { value.Currency, value.ToCurrency, value.Date })
             .ToListAsync(cancellationToken);
+        var plannedCurrencies = await context.InvestmentInstruments.AsNoTracking()
+            .Where(value => !value.IsArchived && value.AllocationSleeve != null)
+            .Select(value => value.Currency)
+            .Distinct()
+            .ToListAsync(cancellationToken);
         var hasInvestmentData = instrumentIds.Count > 0 || cashFlows.Count > 0;
         var cutoff = DateTime.UtcNow.AddMinutes(-InvestmentAllocationService.AutomaticRefreshMinutes);
         var series = new List<(string Kind, string SeriesKey, DateOnly NeedFrom)>();
@@ -276,12 +284,15 @@ public sealed partial class InvestmentMarketDataService(
                 .Where(value => value.Provider == ProviderId &&
                                 value.ExternalInstrumentId == reference.ExternalId)
                 .MaxAsync(value => (DateTime?)value.FetchedAt, cancellationToken);
-            if (fetchedAt is null || fetchedAt < cutoff) return true;
+            if ((fetchedAt is null || fetchedAt < cutoff)
+                && !await WasSeriesCheckedRecentlyAsync(MarketSeriesKinds.Price, reference.ExternalId, cutoff, cancellationToken))
+                return true;
             series.Add((MarketSeriesKinds.Price, reference.ExternalId,
                 firstTrades.First(value => value.InstrumentId == instrument.Id).TradeDate));
         }
 
         var currencies = instruments.Select(value => value.Currency)
+            .Concat(plannedCurrencies)
             .Concat(cashFlows.Select(value => value.Currency))
             .Concat(cashFlows.Where(value => value.ToCurrency is not null).Select(value => value.ToCurrency!))
             .Concat(appCurrency == "USD" || !hasInvestmentData ? [] : ["USD"])
@@ -294,13 +305,20 @@ public sealed partial class InvestmentMarketDataService(
                                 value.BaseCurrency == currency &&
                                 value.QuoteCurrency == appCurrency)
                 .MaxAsync(value => (DateTime?)value.FetchedAt, cancellationToken);
-            if (fetchedAt is null || fetchedAt < cutoff) return true;
+            if ((fetchedAt is null || fetchedAt < cutoff)
+                && !await WasSeriesCheckedRecentlyAsync(MarketSeriesKinds.Fx, FxSeriesKey(currency, appCurrency), cutoff, cancellationToken))
+                return true;
             series.Add((MarketSeriesKinds.Fx, FxSeriesKey(currency, appCurrency), FxNeedFrom()));
         }
         // Fresh is not enough: a pair another user keeps fresh may still stop short of this
         // user's oldest entry, for example right after they switch their app currency.
         return await AnySeriesNeedsBackfillAsync(series, cancellationToken);
     }
+
+    private Task<bool> WasSeriesCheckedRecentlyAsync(string kind, string key, DateTime cutoff, CancellationToken cancellationToken) =>
+        context.MarketSeriesCoverages.AsNoTracking().AnyAsync(value =>
+            value.Provider == ProviderId && value.Kind == kind && value.SeriesKey == key && value.CheckedAt >= cutoff,
+            cancellationToken);
 
     private static int SecondsUntilNextMinute()
         => Math.Max(1, 60 - DateTime.UtcNow.Second);

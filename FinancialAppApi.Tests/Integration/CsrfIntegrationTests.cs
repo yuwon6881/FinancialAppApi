@@ -143,6 +143,35 @@ public class CsrfIntegrationTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task LockedCookieSessionCanBootstrapCsrfForUnlock()
+    {
+        var token = await SeedUserAndSessionAsync();
+        var client = CreateClient();
+        using var lockRequest = Post("/api/auth/lock", $"auth_token={token}; csrf_token=old", "old");
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(lockRequest)).StatusCode);
+        using var csrfRequest = new HttpRequestMessage(HttpMethod.Get, "/api/auth/csrf");
+        csrfRequest.Headers.TryAddWithoutValidation("Cookie", $"auth_token={token}");
+
+        var response = await client.SendAsync(csrfRequest);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.True(response.Headers.Contains(CsrfHeader));
+    }
+
+    [Fact]
+    public async Task ExpiredCookieAllowsLoginButLiveCookieStillRequiresCsrf()
+    {
+        var token = await SeedUserAndSessionAsync();
+        var client = CreateClient();
+        foreach (var (cookie, status) in new[] { (token, HttpStatusCode.Forbidden), ("old-session", HttpStatusCode.OK) })
+        {
+            using var request = Post("/api/auth/login", $"auth_token={cookie}");
+            request.Content = JsonContent.Create(new { username = "alice", password = "Password123!" });
+            Assert.Equal(status, (await client.SendAsync(request)).StatusCode);
+        }
+    }
+
+    [Fact]
     public async Task NativeLogin_DoesNotIssueBrowserCookies()
     {
         var client = CreateClient();

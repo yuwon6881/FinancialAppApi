@@ -11,8 +11,10 @@ namespace FinancialAppApi.Services;
 /// </summary>
 public sealed class StartupWarmupService(
     IServiceScopeFactory scopeFactory,
-    ILogger<StartupWarmupService> logger) : IHostedService
+    ILogger<StartupWarmupService> logger,
+    IHostApplicationLifetime lifetime) : IHostedService
 {
+    private Task? _warmup;
     // Distinct from every real protector purpose so warming can never produce a payload that
     // some other part of the app would accept as genuine.
     private const string WarmupPurpose = "FinancialAppApi.StartupWarmup";
@@ -23,12 +25,13 @@ public sealed class StartupWarmupService(
         // Deliberately not awaited. The point is to overlap this work with Kestrel binding and
         // with the request that triggered the cold start; awaiting would move the cost earlier
         // rather than hide it, and would delay the port opening that Cloud Run measures.
-        _ = Task.Run(() => WarmAsync(cancellationToken), cancellationToken);
+        _warmup = Task.Run(() => WarmAsync(lifetime.ApplicationStopping));
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StopAsync(CancellationToken cancellationToken) =>
+        _warmup?.WaitAsync(cancellationToken) ?? Task.CompletedTask;
 
     private async Task WarmAsync(CancellationToken cancellationToken)
     {

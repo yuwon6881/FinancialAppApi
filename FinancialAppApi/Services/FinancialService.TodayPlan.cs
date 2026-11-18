@@ -120,7 +120,7 @@ public partial class FinancialService
             // A current/future guide is valid only while its category accepts outflows.
             // Earlier cycles retain their historical guide even if the category later changes
             // flow type or is removed.
-            .Where(guide => string.CompareOrdinal(guide.EffectiveFromCycleKey, currentCycleKey) < 0 ||
+            .Where(guide => string.CompareOrdinal(cycleKey, currentCycleKey) < 0 ||
                 (categoryTypes.TryGetValue(guide.CategoryName, out var type) &&
                  CategoryFlowType.AllowsSpendingGuide(type)))
             .OrderBy(guide => guide.CategoryName)

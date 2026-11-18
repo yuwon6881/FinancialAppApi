@@ -1354,6 +1354,8 @@ namespace FinancialAppApi.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CompletedAt");
+
                     b.HasIndex("UserId", "Status", "UpdatedAt");
 
                     b.ToTable("MarketDataRefreshJobs");
@@ -1473,6 +1475,8 @@ namespace FinancialAppApi.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt");
 
                     b.HasIndex("UserId");
 

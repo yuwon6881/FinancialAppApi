@@ -13,10 +13,10 @@ public partial class DocumentsController
     [HttpGet("overview")]
     public async Task<IActionResult> GetOverview([FromQuery] int? taxYear, CancellationToken ct)
     {
-        if (taxYear.HasValue && !_service.IsTaxYearAllowed(taxYear.Value))
-            return BadRequest(new { message = _service.TaxYearValidationMessage });
-
         var availableYears = await _service.GetAvailableTaxYearsAsync(ct);
+        if (taxYear is { } requestedYear && !_service.IsTaxYearAllowed(requestedYear)
+            && !availableYears.Contains(requestedYear))
+            return BadRequest(new { message = _service.TaxYearValidationMessage });
         var selectedTaxYear = taxYear ?? availableYears.FirstOrDefault();
         var usage = await _service.GetUsageAsync(ct);
         var retention = await _retentionService.GetReviewAsync(ct);
@@ -44,7 +44,7 @@ public partial class DocumentsController
     [HttpGet("relief-categories")]
     public async Task<IActionResult> GetReliefCategories([FromQuery] int taxYear, CancellationToken ct)
     {
-        if (!_service.IsTaxYearAllowed(taxYear))
+        if (!await _service.CanReadTaxYearAsync(taxYear, ct))
             return BadRequest(new { message = "Tax year is invalid." });
 
         return Ok(await _service.GetReliefCategoriesAsync(taxYear, ct));
@@ -90,7 +90,7 @@ public partial class DocumentsController
     {
         // An out-of-range year is a bad request, not a missing resource — the same answer
         // /relief-categories already gives for the same input.
-        if (!_service.IsTaxYearAllowed(taxYear))
+        if (!await _service.CanReadTaxYearAsync(taxYear, ct))
             return BadRequest(new { message = _service.TaxYearValidationMessage });
 
         var summary = await _service.GetTaxYearSummaryAsync(taxYear, ct);

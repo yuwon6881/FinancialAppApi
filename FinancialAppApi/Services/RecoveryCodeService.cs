@@ -68,7 +68,7 @@ public class RecoveryCodeService
 
         foreach (var candidate in candidates)
         {
-            var result = _hasher.VerifyHashedPassword(username, candidate.CodeHash, code.Trim());
+            var result = _hasher.VerifyHashedPassword(username, candidate.CodeHash, code.Trim().ToUpperInvariant());
             if (result != PasswordVerificationResult.Failed)
             {
                 if (_context.Database.IsRelational())

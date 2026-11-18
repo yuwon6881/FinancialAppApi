@@ -134,6 +134,7 @@ public partial class AppDbContext
 
         modelBuilder.Entity<MarketDataRefreshJob>(entity =>
         {
+            entity.HasIndex(e => e.CompletedAt);
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
             entity.Property(e => e.CompletedAt).HasColumnType("timestamp with time zone");

@@ -211,6 +211,7 @@ public sealed partial class PushDispatchService
                                 subscription,
                                 today,
                                 localNow,
+                                clock.UtcNow,
                                 shortfallAmount,
                                 accountName,
                                 cancellationToken);
@@ -263,6 +264,7 @@ public sealed partial class PushDispatchService
         PushSubscription subscription,
         DateOnly today,
         DateTime localNow,
+        DateTime utcNow,
         decimal? shortfallAmount,
         string? accountName,
         CancellationToken cancellationToken)
@@ -320,7 +322,7 @@ public sealed partial class PushDispatchService
                 ActualOffsetDays = offsetDays,
                 SubscriptionId = subscription.Id,
                 Kind = kind,
-                SentAt = DateTime.UtcNow
+                SentAt = utcNow
             })
             .ToList();
         context.PushReminderDeliveries.AddRange(claims);

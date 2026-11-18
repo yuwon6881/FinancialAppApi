@@ -271,6 +271,7 @@ public partial class AppDbContext
         modelBuilder.Entity<PendingTwoFactor>(entity =>
         {
             entity.HasIndex(e => e.UserId);
+            entity.HasIndex(e => e.ExpiresAt);
         });
     }
 }

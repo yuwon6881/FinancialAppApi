@@ -7,7 +7,7 @@ public partial class DocumentVaultService
 {
     public async Task<TaxYearReliefSummary?> GetTaxYearSummaryAsync(int taxYear, CancellationToken ct = default)
     {
-        if (!IsAllowedTaxYear(taxYear)) return null;
+        if (!await CanReadTaxYearAsync(taxYear, ct)) return null;
 
         // Aggregated per category in SQL rather than by pulling every document for the year back and
         // summing in memory. Only Confirmed MYR amounts count towards a relief limit, which is why
@@ -70,7 +70,7 @@ public partial class DocumentVaultService
         int taxYear,
         CancellationToken ct = default)
     {
-        if (!IsAllowedTaxYear(taxYear)) return [];
+        if (!await CanReadTaxYearAsync(taxYear, ct)) return [];
 
         var (rows, isInherited) = await GetEffectiveCategoryRowsAsync(taxYear, ct);
         return rows
@@ -79,6 +79,10 @@ public partial class DocumentVaultService
     }
 
     public bool IsTaxYearAllowed(int taxYear) => IsAllowedTaxYear(taxYear);
+
+    public async Task<bool> CanReadTaxYearAsync(int taxYear, CancellationToken ct = default) =>
+        IsAllowedTaxYear(taxYear)
+        || await _context.VaultDocuments.AsNoTracking().AnyAsync(document => document.TaxYear == taxYear, ct);
 
     /// <summary>The wording every caller uses when a tax year is out of range, so they cannot differ.</summary>
     public string TaxYearValidationMessage => GetTaxYearValidationMessage();

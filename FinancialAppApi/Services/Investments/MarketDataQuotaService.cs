@@ -10,10 +10,10 @@ public sealed class MarketDataQuotaService(AppDbContext context, IMarketDataProv
     private string ProviderId => provider.Descriptor.Id;
     private MarketDataQuotaPolicy Policy => provider.Descriptor.QuotaPolicy;
 
-    public async Task<int> ReserveRefreshAsync(int requested, CancellationToken cancellationToken)
+    public async Task<(int Calls, bool DailyLimitReached)> ReserveRefreshAsync(int requested, CancellationToken cancellationToken)
     {
-        if (requested <= 0) return 0;
-        var result = 0;
+        if (requested <= 0) return (0, false);
+        (int Calls, bool DailyLimitReached) result = default;
         await context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
             var now = DateTime.UtcNow;
@@ -42,7 +42,7 @@ public sealed class MarketDataQuotaService(AppDbContext context, IMarketDataProv
                 await context.SaveChangesAsync(cancellationToken);
             }
             await transaction.CommitAsync(cancellationToken);
-            result = allowed;
+            result = (allowed, day.Used >= Policy.DailyCallCeiling || userDay.Used >= Policy.PerUserDailyCallCeiling);
         });
         return result;
     }

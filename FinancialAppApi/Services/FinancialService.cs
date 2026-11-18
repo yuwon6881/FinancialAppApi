@@ -434,15 +434,20 @@ public partial class FinancialService
         var cycleSummaryInsights = ReportResponseMapper.ObfuscateSummaryInsights(
             ReportMetricsCalculator.BuildSummaryInsights(activeCycleTxs, activeRangeStartDate, activeRangeEndExclusive, _financialClock.Today));
 
-        var recurringAccountShortfalls = summaryOnly
-            ? new List<object>()
-            : RecurringAccountShortfallEvaluator.EvaluateShortfalls(
-                snapshot.RecurringOccurrences,
+        var recurringAccountShortfalls = new List<object>();
+        if (!summaryOnly)
+        {
+            var today = _financialClock.Today;
+            var upcomingOccurrences = await _recurringOccurrenceLedger.GetRangeAsync(
+                allRecurring, today, today.AddDays(31), cancellationToken: cancellationToken);
+            recurringAccountShortfalls = RecurringAccountShortfallEvaluator.EvaluateShortfalls(
+                upcomingOccurrences,
                 allRecurring,
                 snapshot.LedgerAccounts,
                 snapshot.LedgerAccountBalances.Current,
-                _financialClock.Today,
+                today,
                 snapshot.CycleRelevantTransactions);
+        }
 
         var result = new
         {
