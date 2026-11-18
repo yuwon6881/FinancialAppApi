@@ -266,19 +266,11 @@ public partial class StabilityRecoveryService
         var openingReload = await LoadOpeningReloadAsync(
             year, monthIndex, setting.CycleDay, cancellationToken);
         var (cycleStart, cycleEnd, _) = CategoryAttributionService.GetCycleRange(year, monthIndex, setting.CycleDay);
-        var cycleStartUtc = DateTime.SpecifyKind(cycleStart, DateTimeKind.Utc);
-        var cycleEndExclusiveUtc = DateTime.SpecifyKind(cycleEnd.Date.AddDays(1), DateTimeKind.Utc);
-        var cycleEndInclusiveUtc = cycleEndExclusiveUtc.AddTicks(-1);
-        var planAtStart = StabilityPlanRevisionService.At(planRevisions, cycleStartUtc);
-        var cyclePlanPoints = planRevisions
-            .Where(revision => revision.EffectiveAt > cycleStartUtc && revision.EffectiveAt < cycleEndExclusiveUtc)
-            .Select(revision => new ReloadPlanPoint(revision.EffectiveAt, revision.TargetStabilityFund))
-            .Prepend(new ReloadPlanPoint(planAtStart.EffectiveAt, planAtStart.TargetStabilityFund))
-            .ToList();
+        var cycleEndInclusiveUtc = _financialClock.UtcAtStartOfDay(DateOnly.FromDateTime(cycleEnd).AddDays(1)).AddTicks(-1);
         var replay = StabilityReloadLedger.Replay(
             openingReload,
             openingStability,
-            cyclePlanPoints,
+            StabilityPlanRevisionService.PointsForCycle(planRevisions, cycleStart, cycleEnd, _financialClock),
             StabilityReloadLedger.DescribeAll(
                 activeCycleTxs,
                 transaction => StabilityPlanRevisionService.At(

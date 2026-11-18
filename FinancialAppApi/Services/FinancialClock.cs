@@ -49,6 +49,12 @@ public sealed class FinancialClock
 
     public DateOnly Today => DateOnly.FromDateTime(LocalNow);
 
+    internal DateOnly DateOf(DateTime utc) =>
+        DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(utc, TimeZone));
+
+    internal DateTime UtcAtStartOfDay(DateOnly date) =>
+        TimeZoneInfo.ConvertTimeToUtc(date.ToDateTime(TimeOnly.MinValue), TimeZone);
+
     internal static TimeZoneInfo ResolveTimeZone(
         string id,
         Func<string, TimeZoneInfo>? systemResolver = null)

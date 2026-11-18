@@ -213,7 +213,7 @@ public sealed partial class InvestmentPortfolioService(
             currentCycleMonth,
             cycleDay);
         var currentStart = TransactionDate.StartOfDate(DateOnly.FromDateTime(currentRange.start));
-        var snapshotService = new CycleBalanceService(context);
+        var snapshotService = new CycleBalanceService(context, clock: financialClock);
         var openingGrowth = (await snapshotService.GetOpeningBalanceAsync(
             currentCycleYear,
             currentCycleMonth,

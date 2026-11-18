@@ -17,10 +17,10 @@ public sealed record StabilityPlanSnapshot(
 public sealed class StabilityPlanRevisionService
 {
     internal static IEnumerable<ReloadPlanPoint> PointsForCycle(
-        IReadOnlyList<StabilityPlanSnapshot> revisions, DateTime start, DateTime end)
+        IReadOnlyList<StabilityPlanSnapshot> revisions, DateTime start, DateTime end, FinancialClock clock)
     {
-        var startUtc = DateTime.SpecifyKind(start, DateTimeKind.Utc);
-        var endExclusiveUtc = DateTime.SpecifyKind(end.Date.AddDays(1), DateTimeKind.Utc);
+        var startUtc = clock.UtcAtStartOfDay(DateOnly.FromDateTime(start));
+        var endExclusiveUtc = clock.UtcAtStartOfDay(DateOnly.FromDateTime(end).AddDays(1));
         var opening = At(revisions, startUtc);
         return revisions
             .Where(revision => revision.EffectiveAt > startUtc && revision.EffectiveAt < endExclusiveUtc)

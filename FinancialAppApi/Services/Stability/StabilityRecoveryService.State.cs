@@ -119,18 +119,10 @@ public partial class StabilityRecoveryService
         var currentBalance = openingStability + net;
         var openingReload = await LoadOpeningReloadAsync(
             year, monthIndex, setting.CycleDay, cancellationToken, rebuildIncompleteDetail: requireCohortDetail);
-        var cycleStartUtc = DateTime.SpecifyKind(start, DateTimeKind.Utc);
-        var cycleEndExclusiveUtc = DateTime.SpecifyKind(end.Date.AddDays(1), DateTimeKind.Utc);
-        var planAtStart = StabilityPlanRevisionService.At(planRevisions, cycleStartUtc);
-        var cyclePlanPoints = planRevisions
-            .Where(revision => revision.EffectiveAt > cycleStartUtc && revision.EffectiveAt < cycleEndExclusiveUtc)
-            .Select(revision => new ReloadPlanPoint(revision.EffectiveAt, revision.TargetStabilityFund))
-            .Prepend(new ReloadPlanPoint(planAtStart.EffectiveAt, planAtStart.TargetStabilityFund))
-            .ToList();
         var replay = StabilityReloadLedger.Replay(
             openingReload,
             openingStability,
-            cyclePlanPoints,
+            StabilityPlanRevisionService.PointsForCycle(planRevisions, start, end, _financialClock),
             StabilityReloadLedger.DescribeAll(
                 cycleTxs,
                 transaction => StabilityPlanRevisionService.At(
@@ -143,7 +135,7 @@ public partial class StabilityRecoveryService
             currentBalance,
             StabilityPlanRevisionService.At(
                 planRevisions,
-                date.ToDateTime(TimeOnly.MaxValue, DateTimeKind.Utc)).TargetStabilityFund,
+                _financialClock.UtcAtStartOfDay(date.AddDays(1)).AddTicks(-1)).TargetStabilityFund,
             replay);
     }
 

@@ -64,12 +64,13 @@ public partial class FinancialService
         await strategy.ExecuteAsync(async () =>
         {
             await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+            var revisedAt = _financialClock.UtcNow;
             if (targetStabilityFundChanged || stabilityAllocChanged)
             {
                 await _stabilityPlanRevisionService.AppendIfChangedAsync(
                     previousStabilityPlan,
                     setting,
-                    DateTime.UtcNow,
+                    revisedAt,
                     cancellationToken);
             }
             if (cycleDayChanged)
@@ -79,7 +80,7 @@ public partial class FinancialService
             else if (targetStabilityFundChanged || stabilityAllocChanged)
             {
                 var currentCycle = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
-                    _financialClock.Today,
+                    _financialClock.DateOf(revisedAt),
                     setting.CycleDay);
                 await _cycleBalanceService.InvalidateFromAsync(
                     currentCycle.year,

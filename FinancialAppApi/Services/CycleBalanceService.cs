@@ -25,6 +25,7 @@ public class CycleBalanceService
 {
     private readonly AppDbContext _context;
     private readonly StabilityPlanRevisionService _stabilityPlanRevisionService;
+    private readonly FinancialClock _clock;
 
     // Opening balances resolved so far in this request. The service is scoped, so the lifetime is
     // one request -- long enough to matter (a single /api/bootstrap resolves the same cycle twice,
@@ -40,11 +41,13 @@ public class CycleBalanceService
 
     public CycleBalanceService(
         AppDbContext context,
-        StabilityPlanRevisionService? stabilityPlanRevisionService = null)
+        StabilityPlanRevisionService? stabilityPlanRevisionService = null,
+        FinancialClock? clock = null)
     {
         _context = context;
         _stabilityPlanRevisionService = stabilityPlanRevisionService
             ?? new StabilityPlanRevisionService(context);
+        _clock = clock ?? FinancialClock.Utc;
     }
 
     // Ensures a CycleBalance row exists for every cycle from this timeline's start through
@@ -195,7 +198,7 @@ public class CycleBalanceService
                 var reloaded = StabilityReloadLedger.Replay(
                     reloadState,
                     stabilityOpening,
-                    StabilityPlanRevisionService.PointsForCycle(planRevisions, cycleStart, cycleEnd),
+                    StabilityPlanRevisionService.PointsForCycle(planRevisions, cycleStart, cycleEnd, _clock),
                     StabilityReloadLedger.DescribeAll(
                         cycleTxs,
                         transaction => StabilityPlanRevisionService.At(

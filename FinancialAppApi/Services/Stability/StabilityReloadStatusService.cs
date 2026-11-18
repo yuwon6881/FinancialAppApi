@@ -152,7 +152,7 @@ public sealed class StabilityReloadStatusService
         return new StatusReplay(transactions, state);
     }
 
-    private static ReloadState ReplayCycles(
+    private ReloadState ReplayCycles(
         IReadOnlyList<Transaction> transactions,
         IReadOnlyList<StabilityPlanSnapshot> revisions,
         ReplaySeed? seed,
@@ -164,10 +164,12 @@ public sealed class StabilityReloadStatusService
         var history = transactions.GroupBy(transaction => Cycle(transaction.Date))
             .ToDictionary(group => group.Key, group => group.ToArray());
         var cycles = new SortedSet<(int Year, int Month)>(history.Keys);
+        var fromUtc = seed is { } anchor ? _clock.UtcAtStartOfDay(TransactionDate.ToDateOnly(anchor.From)) : DateTime.MinValue;
         foreach (var revision in revisions.Skip(1))
         {
-            if (seed is null || revision.EffectiveAt >= seed.Value.From)
-                cycles.Add(Cycle(revision.EffectiveAt));
+            if (revision.EffectiveAt >= fromUtc)
+                cycles.Add(CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+                    _clock.DateOf(revision.EffectiveAt), cycleDay));
         }
         if (seed is { } boundary) cycles.Add(Cycle(boundary.From));
 
@@ -181,7 +183,7 @@ public sealed class StabilityReloadStatusService
             var (start, end, _) = CategoryAttributionService.GetCycleRange(year, month, cycleDay);
             var items = history.GetValueOrDefault((year, month)) ?? [];
             state = StabilityReloadLedger.Replay(
-                state, balance, StabilityPlanRevisionService.PointsForCycle(revisions, start, end),
+                state, balance, StabilityPlanRevisionService.PointsForCycle(revisions, start, end, _clock),
                 StabilityReloadLedger.DescribeAll(items, transaction =>
                     StabilityPlanRevisionService.At(revisions, transaction.PostedAt).StabilityAlloc));
             balance += items.Sum(transaction => CategoryAttributionService.GetCategoryAmount(transaction, "Stability"));
