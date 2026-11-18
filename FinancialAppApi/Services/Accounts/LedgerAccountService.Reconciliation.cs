@@ -55,9 +55,11 @@ public sealed partial class LedgerAccountService
             .Any(group => group.Count() > 1))
             return new(LedgerAccountMutationStatus.Invalid, "An account cannot appear more than once.");
 
+        await using var poolLease = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var strategy = _context.Database.CreateExecutionStrategy();
-        var result = await strategy.ExecuteAsync(async () =>
+        return await strategy.ExecuteAsync(async () =>
         {
+            _context.ChangeTracker.Clear();
             await using var databaseTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
             try
             {
@@ -95,12 +97,15 @@ public sealed partial class LedgerAccountService
                     if (!NearlyEqual(current, target.ExpectedCurrent))
                         return await ConflictAsync(databaseTransaction, "An account balance changed while this setup was open.");
                     if (target.ExpectedName is not null
-                        && !string.Equals(existing.Name, target.ExpectedName.Trim(), StringComparison.Ordinal))
+                        && !string.Equals(existing.Name, target.ExpectedName.Trim(), StringComparison.Ordinal)
+                        && !string.Equals(existing.Name, target.Name, StringComparison.Ordinal))
                         return await ConflictAsync(databaseTransaction, "An account changed while this setup was open. Refresh and try again.");
                     if (target.ExpectedKind is not null
-                        && !string.Equals(existing.Kind, LedgerAccountKind.Normalize(target.ExpectedKind), StringComparison.Ordinal))
+                        && !string.Equals(existing.Kind, LedgerAccountKind.Normalize(target.ExpectedKind), StringComparison.Ordinal)
+                        && !string.Equals(existing.Kind, target.Kind, StringComparison.Ordinal))
                         return await ConflictAsync(databaseTransaction, "An account changed while this setup was open. Refresh and try again.");
-                    if (target.ExpectedIsArchived.HasValue && existing.IsArchived != target.ExpectedIsArchived.Value)
+                    if (target.ExpectedIsArchived.HasValue && existing.IsArchived != target.ExpectedIsArchived.Value
+                        && existing.IsArchived != target.IsArchived)
                         return await ConflictAsync(databaseTransaction, "An account changed while this setup was open. Refresh and try again.");
                     if (existing.IsArchived && !NearlyEqual(current, target.Target))
                         return await ConflictAsync(databaseTransaction, "Closed accounts cannot receive a new balance. Reopen the account first.");
@@ -212,6 +217,12 @@ public sealed partial class LedgerAccountService
                 }
 
                 await _context.SaveChangesAsync(cancellationToken);
+                if (createdTransactions.Count > 0)
+                {
+                    var (year, month) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
+                        _clock.Today, await GetCycleDayAsync(cancellationToken));
+                    await _cycleBalanceService.InvalidateFromAsync(year, month, cancellationToken);
+                }
                 var finalAccounts = await GetAccountsAsync(cancellationToken);
                 await databaseTransaction.CommitAsync(cancellationToken);
                 return new LedgerAccountReconcileResult(
@@ -226,17 +237,6 @@ public sealed partial class LedgerAccountService
             }
         });
 
-        if (result.Status == LedgerAccountMutationStatus.Success
-            && result.Transactions?.Any(transaction =>
-                !string.Equals(transaction.LedgerCategory, "AccountMove", StringComparison.OrdinalIgnoreCase)) == true)
-        {
-            var (year, month) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
-                _clock.Today,
-                await GetCycleDayAsync(cancellationToken));
-            await _cycleBalanceService.InvalidateFromAsync(year, month, cancellationToken);
-        }
-
-        return result;
     }
 
 }

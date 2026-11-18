@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Documents;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services;
@@ -59,14 +60,7 @@ public partial class TransactionPersistenceService
             RecurringOccurrenceLedgerService.RecomputeOccurrenceStatus(recurringOccurrence, remainingTxs);
         }
 
-        var attachedDocuments = await _context.VaultDocuments
-            .Where(document => document.TransactionId == id)
-            .ToListAsync(cancellationToken);
-        foreach (var document in attachedDocuments)
-        {
-            document.TransactionId = null;
-            document.DetachedFromTransactionId = id;
-        }
+        await TransactionVaultLinks.DetachAsync(_context, id, cancellationToken);
 
         var splits = await _context.Transactions
             .Where(t => t.Id.StartsWith(id + "-split-"))
@@ -156,14 +150,7 @@ public partial class TransactionPersistenceService
                 RecurringOccurrenceLedgerService.RecomputeOccurrenceStatus(recurringOccurrence, remainingTxs);
             }
 
-            var attachedDocuments = await _context.VaultDocuments
-                .Where(document => document.TransactionId == transaction.Id)
-                .ToListAsync(cancellationToken);
-            foreach (var document in attachedDocuments)
-            {
-                document.TransactionId = null;
-                document.DetachedFromTransactionId = transaction.Id;
-            }
+            await TransactionVaultLinks.DetachAsync(_context, transaction.Id, cancellationToken);
 
             var splits = await _context.Transactions
                 .Where(candidate => candidate.Id.StartsWith(transaction.Id + "-split-"))

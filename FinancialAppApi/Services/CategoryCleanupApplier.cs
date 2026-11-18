@@ -23,10 +23,12 @@ public sealed class CategoryCleanupApplier
     internal const int MaxUndoIds = 5000;
 
     private readonly AppDbContext _context;
+    private readonly FinancialClock _clock;
 
-    public CategoryCleanupApplier(AppDbContext context)
+    public CategoryCleanupApplier(AppDbContext context, FinancialClock? clock = null)
     {
         _context = context;
+        _clock = clock ?? FinancialClock.Utc;
     }
 
     internal async Task<CleanupStepResult> ApplySingleCleanupActionAsync(CategoryCleanupAction action, List<CategoryCleanupAction> undoActions)
@@ -57,8 +59,16 @@ public sealed class CategoryCleanupApplier
             return 0;
         }
 
+        var type = CategoryFlowType.Normalize(action.CategoryType);
+        if (action.CycleLimit is <= 0m or > 9_999_999_999.99m
+            || action.CycleLimit.HasValue && !CategoryFlowType.AllowsSpendingGuide(type))
+            return 0;
         var categoryId = string.IsNullOrWhiteSpace(action.CategoryId) ? $"cat-{Guid.NewGuid():N}" : action.CategoryId.Trim();
-        _context.TransactionCategories.Add(new TransactionCategory { Id = categoryId, Name = name });
+        _context.TransactionCategories.Add(new TransactionCategory
+        {
+            Id = categoryId, Name = name, Type = type, CycleLimit = action.CycleLimit,
+        });
+        if (action.CycleLimit.HasValue) await CategorySpendingGuideWriter.UpsertAsync(_context, _clock, name, action.CycleLimit);
         undoActions.Insert(0, new CategoryCleanupAction("deleteByName", Categories: [name]));
         return 1;
     }
@@ -81,8 +91,8 @@ public sealed class CategoryCleanupApplier
                 return CleanupStepResult.Conflict("Category is in use. Choose a replacement category before deleting it.");
             }
 
-            _context.TransactionCategories.Remove(category);
-            undoActions.Insert(0, new CategoryCleanupAction("add", NewCategoryName: category.Name, CategoryId: category.Id));
+            await RemoveCategoryAsync(category);
+            undoActions.Insert(0, RestoreCategory(category));
             applied++;
         }
 
@@ -145,10 +155,10 @@ public sealed class CategoryCleanupApplier
                 recurringPayment.Category = target.Name;
             }
 
-            _context.TransactionCategories.Remove(source);
+            await RemoveCategoryAsync(source);
             undoActions.Insert(0, new CategoryCleanupAction("restoreRecurringPayments", TargetCategory: source.Name, RecurringPaymentIds: recurringPaymentIds));
             undoActions.Insert(0, new CategoryCleanupAction("restoreTransactions", TargetCategory: source.Name, TransactionIds: transactionIds));
-            undoActions.Insert(0, new CategoryCleanupAction("add", NewCategoryName: source.Name, CategoryId: source.Id));
+            undoActions.Insert(0, RestoreCategory(source));
             applied++;
         }
 
@@ -173,12 +183,24 @@ public sealed class CategoryCleanupApplier
                 return CleanupStepResult.Conflict("Undo could not remove a category that is now in use.");
             }
 
-            _context.TransactionCategories.Remove(category);
+            await RemoveCategoryAsync(category);
             applied++;
         }
 
         return CleanupStepResult.Applied(applied);
     }
+
+    private async Task RemoveCategoryAsync(TransactionCategory category)
+    {
+        if (category.CycleLimit.HasValue
+            || await _context.CategorySpendingGuides.AnyAsync(guide => guide.CategoryName == category.Name))
+            await CategorySpendingGuideWriter.UpsertAsync(_context, _clock, category.Name, null);
+
+        _context.TransactionCategories.Remove(category);
+    }
+
+    private static CategoryCleanupAction RestoreCategory(TransactionCategory category) =>
+        new("add", NewCategoryName: category.Name, CategoryId: category.Id, CategoryType: category.Type, CycleLimit: category.CycleLimit);
 
     private async Task<int> ApplyRestoreTransactionsAsync(CategoryCleanupAction action)
     {

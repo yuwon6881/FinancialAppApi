@@ -320,36 +320,8 @@ public class TransactionCategoryService
             string.Equals(name, "Adjustment", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task UpsertCurrentCycleGuideAsync(string categoryName, decimal? limitAmount)
-    {
-        var cycleKey = await GetCurrentCycleKeyAsync();
-        var guide = await _context.CategorySpendingGuides.FirstOrDefaultAsync(item =>
-            item.CategoryName == categoryName && item.EffectiveFromCycleKey == cycleKey);
-        if (guide == null)
-        {
-            _context.CategorySpendingGuides.Add(new CategorySpendingGuide
-            {
-                Id = $"guide-{Guid.NewGuid():N}",
-                CategoryName = categoryName,
-                EffectiveFromCycleKey = cycleKey,
-                LimitAmount = limitAmount
-            });
-        }
-        else
-        {
-            guide.LimitAmount = limitAmount;
-        }
-    }
-
-    private async Task<string> GetCurrentCycleKeyAsync()
-    {
-        var setting = await _context.FinancialSettings.AsNoTracking().FirstOrDefaultAsync();
-        var cycleDay = setting?.CycleDay ?? FinancialConstants.DefaultCycleDay;
-        var (year, monthIndex) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
-            _financialClock.Today,
-            cycleDay);
-        return $"{year:D4}-{monthIndex:D2}";
-    }
+    private Task UpsertCurrentCycleGuideAsync(string categoryName, decimal? limitAmount) =>
+        CategorySpendingGuideWriter.UpsertAsync(_context, _financialClock, categoryName, limitAmount);
 
     private string CacheKey => CacheKeyPrefix + _context.RequireCurrentUserId();
 }

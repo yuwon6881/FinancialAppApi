@@ -453,6 +453,28 @@ public class TransactionPersistenceServiceTests
     }
 
     [Fact]
+    public async Task UpdatingOnePartPaymentCannotDiscardAnOccurrenceWithOtherPayments()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        var date = new DateOnly(2026, 7, 9);
+        var first = NewTransaction("part-first", "Essentials");
+        first.RecurringPaymentId = "bill";
+        first.RecurringOccurrenceDate = date;
+        var second = NewTransaction("part-second", "Essentials");
+        second.RecurringPaymentId = "bill";
+        second.RecurringOccurrenceDate = date;
+        context.Transactions.AddRange(first, second);
+        await context.SaveChangesAsync();
+
+        var result = await NewService(context).UpdateTransactionAsync(
+            first.Id, NewRequest(first.Id, "Discarded", 0m));
+
+        Assert.Equal(TransactionMutationStatus.Conflict, result.Status);
+        Assert.Equal("Essentials", first.LedgerCategory);
+    }
+
+    [Fact]
     public async Task CreateTransactionAsync_CanonicalizesDiscardedLedgerCategory()
     {
         await using var context = TestHelpers.NewInMemoryContext();

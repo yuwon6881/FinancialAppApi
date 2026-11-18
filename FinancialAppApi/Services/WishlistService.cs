@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.Documents;
 using FinancialAppApi.Services.SavingsGoals;
 using Microsoft.EntityFrameworkCore;
 
@@ -239,6 +240,7 @@ public class WishlistService
                 .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
                 .ToListAsync(cancellationToken);
             _context.Transactions.RemoveRange(splits);
+            await TransactionVaultLinks.DetachAsync(_context, transaction.Id, cancellationToken);
             _context.Transactions.Remove(transaction);
         }
 
@@ -381,15 +383,17 @@ public class WishlistService
             {
                 await using var dbTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
-                var nextItem = await _context.WishlistItems
-                    .Where(w => w.Id != item.Id && !w.IsPurchased)
-                    .OrderByDescending(w => w.CreatedAt)
-                    .FirstOrDefaultAsync(cancellationToken);
                 var activeItems = await _context.WishlistItems
-                    .Where(w => w.IsActive && w.Id != item.Id)
+                    .Where(w => w.Id != item.Id && w.IsActive)
+                    .OrderByDescending(w => w.CreatedAt)
                     .ToListAsync(cancellationToken);
-                foreach (var activeItem in activeItems) activeItem.IsActive = false;
-                if (nextItem != null) nextItem.IsActive = true;
+                var focused = activeItems.FirstOrDefault(w => !w.IsPurchased)
+                    ?? await _context.WishlistItems
+                        .Where(w => w.Id != item.Id && !w.IsPurchased)
+                        .OrderByDescending(w => w.CreatedAt)
+                        .FirstOrDefaultAsync(cancellationToken);
+                foreach (var other in activeItems) other.IsActive = other.Id == focused?.Id;
+                if (focused != null) focused.IsActive = true;
 
                 await _context.SaveChangesAsync(cancellationToken);
 
@@ -461,6 +465,7 @@ public class WishlistService
                 .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
                 .ToListAsync(cancellationToken);
             _context.Transactions.RemoveRange(splits);
+            await TransactionVaultLinks.DetachAsync(_context, transaction.Id, cancellationToken);
             _context.Transactions.Remove(transaction);
         }
 

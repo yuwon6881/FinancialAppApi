@@ -393,6 +393,16 @@ public partial class TransactionPersistenceService
         var originalAmount = transaction.Amount;
         var originalRecoveryTopUp = transaction.StabilityRecoveryTopUpAmount;
         var originalReloadIntent = transaction.StabilityReloadIntent;
+        if (ledgerValidation.LedgerCategory == RecurringOccurrenceAmounts.DiscardedLedgerCategory
+            && transaction.RecurringPaymentId is { } paymentId
+            && transaction.RecurringOccurrenceDate is { } occurrenceDate
+            && await _context.Transactions.AnyAsync(candidate =>
+                candidate.RecurringPaymentId == paymentId && candidate.RecurringOccurrenceDate == occurrenceDate
+                && candidate.Id != id && candidate.Amount != 0m, cancellationToken))
+        {
+            return new TransactionMutationResult(TransactionMutationStatus.Conflict, transaction,
+                "This bill has other payments. Remove them before discarding the occurrence.");
+        }
         if (request.RecurringPaymentId != null
             && !string.Equals(request.RecurringPaymentId, transaction.RecurringPaymentId, StringComparison.Ordinal))
         {

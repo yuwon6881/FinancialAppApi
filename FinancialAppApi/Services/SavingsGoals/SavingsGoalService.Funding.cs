@@ -45,14 +45,14 @@ public partial class SavingsGoalService
             .ToListAsync(cancellationToken);
 
         var byId = active.ToDictionary(goal => goal.Id);
-        var previousStates = active.Select(FundingState).ToList();
-        var totalGranted = 0m;
+        var previousStates = new List<FundingGoalState>();
         var waterfall = SavingsGoalPacing.Distribute(active, available, today, cycleDay, cycleKey);
-        totalGranted = waterfall.TotalGranted;
+        var totalGranted = waterfall.TotalGranted;
         foreach (var grant in waterfall.Grants)
         {
             if (grant.Amount <= 0m) continue;
             var goal = byId[grant.GoalId];
+            previousStates.Add(FundingState(goal));
             var next = Math.Min(goal.TargetAmount, goal.EarmarkedAmount + grant.Amount);
             ApplyCycleFunding(goal, next - goal.EarmarkedAmount, cycleKey);
             InvalidateCompletionUndo(goal);
@@ -69,7 +69,7 @@ public partial class SavingsGoalService
                 UserId = _context.RequireCurrentUserId(),
                 FundingBucket = fundingBucket,
                 PreviousStateJson = JsonSerializer.Serialize(previousStates),
-                ResultingStateJson = JsonSerializer.Serialize(active.Select(FundingState)),
+                ResultingStateJson = JsonSerializer.Serialize(previousStates.Select(previous => FundingState(byId[previous.Id]))),
                 CreatedAt = DateTime.UtcNow
             });
         }
@@ -91,10 +91,10 @@ public partial class SavingsGoalService
 
         var rewardsFreeToSpend = fundingBucket == SavingsGoalFundingBucket.Rewards
             ? waterfall.FreeToSpend
-            : 0m;
+            : await GetUnassignedAsync(SavingsGoalFundingBucket.Rewards, cycleDay, cancellationToken);
         var essentialsFreeToSpend = fundingBucket == SavingsGoalFundingBucket.Essentials
             ? waterfall.FreeToSpend
-            : 0m;
+            : await GetUnassignedAsync(SavingsGoalFundingBucket.Essentials, cycleDay, cancellationToken);
 
         return new SavingsGoalFundingResult(
             SavingsGoalMutationStatus.Success,
@@ -120,6 +120,10 @@ public partial class SavingsGoalService
 
         var previous = JsonSerializer.Deserialize<List<FundingGoalState>>(action.PreviousStateJson) ?? [];
         var resulting = JsonSerializer.Deserialize<List<FundingGoalState>>(action.ResultingStateJson) ?? [];
+        // Older actions included unchanged goals. They can be edited without invalidating Undo.
+        var unchanged = previous.Intersect(resulting).Select(state => state.Id).ToHashSet();
+        previous.RemoveAll(state => unchanged.Contains(state.Id));
+        resulting.RemoveAll(state => unchanged.Contains(state.Id));
         var ids = resulting.Select(state => state.Id).ToArray();
         var goals = await _context.SavingsGoals.Where(goal => ids.Contains(goal.Id)).ToListAsync(cancellationToken);
         var currentById = goals.ToDictionary(goal => goal.Id);

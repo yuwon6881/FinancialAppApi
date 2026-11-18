@@ -115,14 +115,17 @@ public class RecurringPaymentService
     private readonly AppDbContext _context;
     private readonly RecurringOccurrenceLedgerService _occurrences;
     private readonly FinancialClock _clock;
+    private readonly IRecurringPaymentMutationLock _paymentLock;
 
     public RecurringPaymentService(
         AppDbContext context,
         RecurringOccurrenceLedgerService? occurrences = null,
-        FinancialClock? clock = null)
+        FinancialClock? clock = null,
+        IRecurringPaymentMutationLock? paymentLock = null)
     {
         _context = context;
         _clock = clock ?? FinancialClock.Utc;
+        _paymentLock = paymentLock ?? new RecurringPaymentMutationLock(context);
         _occurrences = occurrences ?? new RecurringOccurrenceLedgerService(
             context,
             new RecurringOccurrenceService(
@@ -202,6 +205,7 @@ public class RecurringPaymentService
                 : _clock.Today;
             payment.OccurrenceTrackingStartDate = requestedStart > _clock.Today ? requestedStart : _clock.Today;
         }
+        payment.AccountId = payment.AccountId.Trim();
         _context.RecurringPayments.Add(payment);
         await _context.SaveChangesAsync(cancellationToken);
         return new CreateRecurringPaymentResult(CreateRecurringPaymentStatus.Created, payment);
@@ -209,6 +213,7 @@ public class RecurringPaymentService
 
     public async Task<ToggleRecurringPaymentResult> ToggleActiveAsync(string id, bool? active = null, CancellationToken cancellationToken = default)
     {
+        await using var lease = await _paymentLock.AcquireAsync(id, cancellationToken);
         var payment = await _context.RecurringPayments.FindAsync([id], cancellationToken);
         if (payment == null)
         {
@@ -262,6 +267,7 @@ public class RecurringPaymentService
 
     public async Task<UpdateRecurringPaymentResult> UpdateRecurringPaymentAsync(string id, RecurringPayment updated, CancellationToken cancellationToken = default)
     {
+        await using var lease = await _paymentLock.AcquireAsync(id, cancellationToken);
         var existing = await _context.RecurringPayments.FindAsync([id], cancellationToken);
         if (existing == null)
         {
@@ -317,7 +323,10 @@ public class RecurringPaymentService
             }
         }
 
-        await _occurrences.PreserveThroughTodayAndResetFutureAsync(existing, cancellationToken: cancellationToken);
+        var wasActive = existing.Active;
+        await _occurrences.PreserveThroughTodayAndResetFutureAsync(
+            existing, preserveThroughToday: wasActive, cancellationToken: cancellationToken);
+        if (!wasActive && updated.Active) existing.OccurrenceTrackingStartDate = _clock.Today;
 
         existing.Name = updated.Name;
         existing.Amount = updated.Amount;
@@ -357,6 +366,7 @@ public class RecurringPaymentService
         string id,
         CancellationToken cancellationToken = default)
     {
+        await using var lease = await _paymentLock.AcquireAsync(id, cancellationToken);
         var payment = await _context.RecurringPayments.FindAsync([id], cancellationToken);
         if (payment == null)
         {

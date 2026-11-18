@@ -32,7 +32,9 @@ public sealed record CategoryCleanupAction(
     string? NewCategoryName = null,
     IReadOnlyList<string>? TransactionIds = null,
     IReadOnlyList<string>? RecurringPaymentIds = null,
-    string? CategoryId = null);
+    string? CategoryId = null,
+    string? CategoryType = null,
+    decimal? CycleLimit = null);
 
 public sealed record CategoryCleanupApplyResult(int AppliedCount, IReadOnlyList<CategoryCleanupAction> UndoActions);
 

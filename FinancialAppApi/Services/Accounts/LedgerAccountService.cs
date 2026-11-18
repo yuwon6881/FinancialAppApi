@@ -1,5 +1,6 @@
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services.SavingsGoals;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services.Accounts;
@@ -74,17 +75,20 @@ public sealed partial class LedgerAccountService
     private readonly LedgerAccountBalanceService _balanceService;
     private readonly CycleBalanceService _cycleBalanceService;
     private readonly FinancialClock _clock;
+    private readonly ISharedPoolMutationLock _sharedPoolMutationLock;
 
     public LedgerAccountService(
         AppDbContext context,
         LedgerAccountBalanceService balanceService,
         CycleBalanceService cycleBalanceService,
-        FinancialClock? clock = null)
+        FinancialClock? clock = null,
+        ISharedPoolMutationLock? sharedPoolMutationLock = null)
     {
         _context = context;
         _balanceService = balanceService;
         _cycleBalanceService = cycleBalanceService;
         _clock = clock ?? FinancialClock.Utc;
+        _sharedPoolMutationLock = sharedPoolMutationLock ?? new SharedPoolMutationLock(context);
     }
 
     public async Task<IReadOnlyList<LedgerAccount>> GetAccountsAsync(CancellationToken cancellationToken = default) =>
@@ -114,6 +118,10 @@ public sealed partial class LedgerAccountService
     {
         var validation = Validate(mutation);
         if (validation is not null) return Invalid(validation);
+        var openingAmount = RoundMoney(mutation.OpeningAmount);
+        await using var poolLease = openingAmount < 0m
+            ? await _sharedPoolMutationLock.AcquireAsync(cancellationToken)
+            : null;
 
         var id = string.IsNullOrWhiteSpace(mutation.Id)
             ? $"acct-{Guid.NewGuid():N}"
@@ -133,7 +141,8 @@ public sealed partial class LedgerAccountService
                 cancellationToken))
             return Conflict("An account with this name already exists.");
 
-        var now = DateTime.UtcNow;
+        var now = _clock.UtcNow;
+        var today = _clock.Today;
         var account = new LedgerAccount
         {
             Id = id,
@@ -149,17 +158,17 @@ public sealed partial class LedgerAccountService
         };
 
         _context.LedgerAccounts.Add(account);
-        if (mutation.OpeningAmount != 0m)
+        if (openingAmount != 0m)
         {
             _context.Transactions.Add(new Transaction
             {
                 Id = $"{account.Id}-opening",
-                Date = TransactionDate.StartOfDate(_clock.Today),
+                Date = TransactionDate.StartOfDate(today),
                 PostedAt = now,
                 Description = $"Opening Balance — {account.Name}",
                 Category = "Adjustment",
                 LedgerCategory = account.Bucket,
-                Amount = MoneyRounding.RoundMoney(mutation.OpeningAmount),
+                Amount = openingAmount,
                 ExcludeFromAutocomplete = true,
                 IsAccountBalanceAdjustment = true,
                 AccountId = account.Id,
@@ -167,13 +176,31 @@ public sealed partial class LedgerAccountService
             });
         }
 
-        await _context.SaveChangesAsync(cancellationToken);
-        if (mutation.OpeningAmount != 0m)
+        if (openingAmount == 0m)
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        else
         {
             var (year, month) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
-                _clock.Today,
+                today,
                 await GetCycleDayAsync(cancellationToken));
-            await _cycleBalanceService.InvalidateFromAsync(year, month, cancellationToken);
+            if (!_context.Database.IsRelational())
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+                await _cycleBalanceService.InvalidateFromAsync(year, month, cancellationToken);
+                return new LedgerAccountMutationResult(LedgerAccountMutationStatus.Success, account);
+            }
+            await _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+                // Leave pending entities in their original state until the commit succeeds, so the
+                // whole write can be replayed together if the transaction fails.
+                await _context.SaveChangesAsync(acceptAllChangesOnSuccess: false, cancellationToken);
+                await _cycleBalanceService.InvalidateFromAsync(year, month, cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                _context.ChangeTracker.AcceptAllChanges();
+            });
         }
         return new LedgerAccountMutationResult(LedgerAccountMutationStatus.Success, account);
     }
