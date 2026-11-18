@@ -88,13 +88,23 @@ public sealed class AiServerSentEvents : IAiAgentProgressSink, IAsyncDisposable
         {
             // The turn finished or the client left.
         }
+        catch (IOException)
+        {
+            // A disconnected client can also break the response stream while a heartbeat writes.
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
-        await _heartbeatStop.CancelAsync();
-        await _heartbeat;
-        _heartbeatStop.Dispose();
-        _writeLock.Dispose();
+        try
+        {
+            await _heartbeatStop.CancelAsync();
+            await _heartbeat;
+        }
+        finally
+        {
+            _heartbeatStop.Dispose();
+            _writeLock.Dispose();
+        }
     }
 }

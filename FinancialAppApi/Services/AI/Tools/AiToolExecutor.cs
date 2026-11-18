@@ -54,7 +54,10 @@ public sealed class AiToolExecutor
         }
 
         var label = SafeLabel(tool, args);
-        var cacheKey = $"{tool.Name}\n{args.CanonicalJson()}";
+        await context.RefreshSensitiveModeAsync(cancellationToken);
+        var canonicalArgs = args.CanonicalJson();
+        string CacheKey() => $"{context.SensitiveMode}\n{tool.Name}\n{canonicalArgs}";
+        var cacheKey = CacheKey();
         if (_turnCache.TryGetValue(cacheKey, out var cached)) return cached;
         if (!context.Budget.TryReserveCall())
         {
@@ -62,7 +65,6 @@ public sealed class AiToolExecutor
                 "The tool-call budget for this answer is used up. Answer from the results you already have and say what is missing.");
         }
 
-        await context.RefreshSensitiveModeAsync(cancellationToken);
         if (context.SensitiveMode && tool.Sensitivity == AiToolSensitivity.HiddenWhenSensitive)
         {
             return Remember(cacheKey, Failure(tool.Name, label,
@@ -90,6 +92,11 @@ public sealed class AiToolExecutor
         var data = JsonSerializer.SerializeToNode(result.Data, SerializerOptions);
         // Re-read after the tool ran: the setting may have flipped while the query was in flight.
         await context.RefreshSensitiveModeAsync(cancellationToken);
+        if (context.SensitiveMode && tool.Sensitivity == AiToolSensitivity.HiddenWhenSensitive)
+        {
+            return Remember(CacheKey(), Failure(tool.Name, label,
+                "Hidden by sensitive mode. Tell the user to unhide balances to see this."));
+        }
         if (context.SensitiveMode) AiSensitiveMasker.Mask(data, tool.AmountProperties);
 
         var envelope = new JsonObject
@@ -113,7 +120,7 @@ public sealed class AiToolExecutor
                 "That result was too large to use. Narrow the request (a shorter date range, a smaller limit, or a specific search) and try again.");
         }
 
-        return Remember(cacheKey, new AiToolExecution(tool.Name, label, output, true, result.Truncated, result.Approximate));
+        return Remember(CacheKey(), new AiToolExecution(tool.Name, label, output, true, result.Truncated, result.Approximate));
     }
 
     private AiToolExecution Remember(string key, AiToolExecution execution)

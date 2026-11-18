@@ -79,7 +79,7 @@ public sealed partial class AiConversationMemoryService
             conversation.Id,
             conversation.Version,
             messages,
-            DeserializeState(conversation.StateJson),
+            DeserializeState(conversation.StateJson, sensitiveMode),
             historyRedacted,
             pendingBatches);
     }
@@ -159,7 +159,7 @@ public sealed partial class AiConversationMemoryService
                     conversation,
                     clientTurnId,
                     [],
-                    DeserializeState(conversation.StateJson),
+                    DeserializeState(conversation.StateJson, replaySensitiveMode),
                     replaySensitiveMode,
                     Replay: new AiChatResponse(
                         "That request is still being processed. Retry in a moment to collect its result.",
@@ -172,7 +172,7 @@ public sealed partial class AiConversationMemoryService
                 conversation,
                 clientTurnId,
                 [],
-                DeserializeState(conversation.StateJson),
+                DeserializeState(conversation.StateJson, replaySensitiveMode),
                 replaySensitiveMode,
                 Replay: ToReplay(conversation, duplicate, replaySensitiveMode),
                 ClientContractVersion: request.ClientContractVersion);
@@ -181,7 +181,7 @@ public sealed partial class AiConversationMemoryService
         if (request.ConversationId != null && request.ConversationId != conversation.Id)
         {
             return new PreparedConversation(
-                conversation, clientTurnId, [], DeserializeState(conversation.StateJson), true, Conflict: true);
+                conversation, clientTurnId, [], DeserializeState(conversation.StateJson, true), true, Conflict: true);
         }
         // Only a client that already holds this conversation's id can make a claim about its
         // version. A client without one has never been told a version, so its default 0 is not a
@@ -192,7 +192,7 @@ public sealed partial class AiConversationMemoryService
             request.ConversationVersion != conversation.Version)
         {
             return new PreparedConversation(
-                conversation, clientTurnId, [], DeserializeState(conversation.StateJson), true, Conflict: true);
+                conversation, clientTurnId, [], DeserializeState(conversation.StateJson, true), true, Conflict: true);
         }
 
         var sensitiveMode = await ResolveEffectiveSensitiveModeAsync(request.ForceSensitiveMode, cancellationToken);
@@ -232,7 +232,7 @@ public sealed partial class AiConversationMemoryService
                 conversation,
                 clientTurnId,
                 [],
-                DeserializeState(conversation.StateJson),
+                DeserializeState(conversation.StateJson, replaySensitiveMode),
                 replaySensitiveMode,
                 Replay: winner.Status == "Completed"
                     ? ToReplay(conversation, winner, replaySensitiveMode)
@@ -247,7 +247,7 @@ public sealed partial class AiConversationMemoryService
             conversation,
             clientTurnId,
             history,
-            DeserializeState(conversation.StateJson),
+            DeserializeState(conversation.StateJson, sensitiveMode),
             sensitiveMode,
             PendingTurn: pendingTurn,
             ClientContractVersion: request.ClientContractVersion);
@@ -262,7 +262,7 @@ public sealed partial class AiConversationMemoryService
     {
         var conversation = prepared.Conversation!;
         var nextVersion = checked(conversation.Version + 1);
-        var state = AiAssistantService.SanitizeConversationState(response.State);
+        var state = AiAssistantService.SanitizeConversationState(response.State, prepared.SensitiveMode);
         conversation.StateJson = state == null ? null : JsonSerializer.Serialize(state, JsonOptions);
         conversation.Version = nextVersion;
         conversation.UpdatedAt = DateTime.UtcNow;
@@ -419,13 +419,13 @@ public sealed partial class AiConversationMemoryService
         CancellationToken cancellationToken) =>
         forceSensitiveMode || await IsSensitiveModeAsync(cancellationToken);
 
-    private static AiConversationState? DeserializeState(string? json)
+    private static AiConversationState? DeserializeState(string? json, bool sensitiveMode)
     {
         if (string.IsNullOrWhiteSpace(json)) return null;
         try
         {
             return AiAssistantService.SanitizeConversationState(
-                JsonSerializer.Deserialize<AiConversationState>(json, JsonOptions));
+                JsonSerializer.Deserialize<AiConversationState>(json, JsonOptions), sensitiveMode);
         }
         catch (JsonException)
         {

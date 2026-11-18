@@ -178,6 +178,9 @@ public partial class SavingsGoalService
 
         var validation = Validate(goal);
         if (validation != null) return validation;
+        if (goal.EarmarkedAmount > goal.TargetAmount)
+            return new SavingsGoalResult(SavingsGoalMutationStatus.TargetInvalid,
+                Message: "The amount set aside cannot exceed the goal target.");
 
         goal.CreatedAt = DateTime.UtcNow;
         goal.Status = SavingsGoalStatus.Active;

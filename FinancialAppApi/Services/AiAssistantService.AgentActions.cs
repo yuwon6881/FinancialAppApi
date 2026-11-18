@@ -62,6 +62,7 @@ public partial class AiAssistantService
             transactions,
             recurring,
             wishlist,
+            toolContext.Evidence.IdsOf(AiEvidenceLedger.SavingsGoal).ToHashSet(StringComparer.Ordinal),
             new AiLedgerAccountContext(accounts));
     }
 

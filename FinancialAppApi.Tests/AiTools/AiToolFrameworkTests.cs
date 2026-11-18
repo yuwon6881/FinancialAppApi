@@ -145,6 +145,38 @@ public class AiToolFrameworkTests
     }
 
     [Fact]
+    public async Task Executor_DropsHiddenToolResultsWhenTheSettingChanges()
+    {
+        var hidden = false;
+        var runs = 0;
+        var executor = NewExecutor(new FakeTool("portfolio", AiToolSensitivity.HiddenWhenSensitive,
+            (_, _) => AiToolResult.Of(new { value = ++runs })));
+        var context = NewContext(sensitiveSetting: () => hidden);
+
+        Assert.True(Parse(await RunAsync(executor, context, "portfolio")).GetProperty("ok").GetBoolean());
+        hidden = true;
+        Assert.False(Parse(await RunAsync(executor, context, "portfolio")).GetProperty("ok").GetBoolean());
+        Assert.Equal(1, runs);
+    }
+
+    [Fact]
+    public async Task Executor_DropsAHiddenToolResultThatFinishesAfterMasking()
+    {
+        var hidden = false;
+        var executor = NewExecutor(new FakeTool("portfolio", AiToolSensitivity.HiddenWhenSensitive,
+            (_, _) =>
+            {
+                hidden = true;
+                return AiToolResult.Of(new { total = 100m });
+            }));
+
+        var result = Parse(await RunAsync(executor, NewContext(sensitiveSetting: () => hidden), "portfolio"));
+
+        Assert.False(result.GetProperty("ok").GetBoolean());
+        Assert.False(result.TryGetProperty("data", out _));
+    }
+
+    [Fact]
     public void Args_TreatNullAsAbsentAndBoundEveryValue()
     {
         var args = AiToolArgs.Parse("""{"query":null,"limit":5,"sort":"NEWEST","date":"2026-02-30"}""");

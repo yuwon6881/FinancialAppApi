@@ -83,6 +83,8 @@ public partial class AiAssistantService
             return;
         }
 
+        if (!string.Equals(ReadPayloadString(payload, "ledgerCategory"), ledger, StringComparison.OrdinalIgnoreCase))
+            payload.Remove("accountId");
         payload["ledgerCategory"] = ledger;
         payload["ledgerCategorySpecified"] = true;
     }

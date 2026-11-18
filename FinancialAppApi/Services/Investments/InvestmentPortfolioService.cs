@@ -174,9 +174,11 @@ public sealed partial class InvestmentPortfolioService(
     InvestmentAccountingService accounting,
     IMarketDataProvider provider,
     InvestmentAllocationService? allocationService = null,
-    InvestmentSnapshotService? periodSnapshots = null)
+    InvestmentSnapshotService? periodSnapshots = null,
+    FinancialClock? clock = null)
 {
     private readonly MarketDataSeriesResolver seriesResolver = new(provider.Descriptor);
+    private readonly FinancialClock financialClock = clock ?? FinancialClock.Utc;
 
     private async Task<InvestmentPortfolioDto> BuildPortfolioAsync(
         string range, bool includeChart, CancellationToken cancellationToken)
@@ -203,7 +205,7 @@ public sealed partial class InvestmentPortfolioService(
             .OrderByDescending(value => value.Date)
             .ThenByDescending(value => value.CreatedAt)
             .ToListAsync(cancellationToken);
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = financialClock.Today;
         var (currentCycleYear, currentCycleMonth) =
             CategoryAttributionService.GetCycleYearAndMonthIndexForDate(today, cycleDay);
         var currentRange = CategoryAttributionService.GetCycleRange(

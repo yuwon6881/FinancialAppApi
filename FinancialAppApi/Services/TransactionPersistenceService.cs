@@ -494,16 +494,19 @@ public partial class TransactionPersistenceService
             .Where(t => t.Id.StartsWith(transaction.Id + "-split-"))
             .ToListAsync(cancellationToken);
         var preserveHistoricalIncomeSplit = settingForCycle != null
-            && string.Equals(ledgerValidation.LedgerCategory, "Income", StringComparison.OrdinalIgnoreCase)
+            && IsIncomeLedgerCategory(transaction.LedgerCategory)
+            && IsIncomeLedgerCategory(ledgerValidation.LedgerCategory)
             && originalAmount == amount
             && TransactionDate.ToDateOnly(originalDate) == putDate
             && originalTransactionCycle != currentCycle
-            && originalRecoveryTopUp.GetValueOrDefault() == nextRecoveryTopUp.GetValueOrDefault();
+            && originalRecoveryTopUp.GetValueOrDefault() == nextRecoveryTopUp.GetValueOrDefault()
+            && Stability.HistoricalIncomeSplitRows.CanPreserve(transaction, existingSplits);
 
         transaction.Date = TransactionDate.PreserveTimeWhenSameDate(transaction.Date, putDate);
         transaction.Description = request.Description;
         transaction.Category = ledgerValidation.Category;
-        transaction.LedgerCategory = ledgerValidation.LedgerCategory;
+        if (!preserveHistoricalIncomeSplit)
+            transaction.LedgerCategory = ledgerValidation.LedgerCategory;
         transaction.Amount = amount;
         transaction.StabilityRecoveryTopUpAmount = nextRecoveryTopUp;
         transaction.StabilityReloadIntent = request.StabilityReloadIntent == null
@@ -533,10 +536,10 @@ public partial class TransactionPersistenceService
             }
         }
 
-        if (preserveHistoricalIncomeSplit && Stability.HistoricalIncomeSplitRows.CanPreserve(transaction, existingSplits))
+        if (preserveHistoricalIncomeSplit)
         {
             transaction.StabilityRecoveryTopUpAmount = nextRecoveryTopUp ?? 0m;
-            Stability.HistoricalIncomeSplitRows.RefreshMetadata(transaction, existingSplits);
+            Stability.HistoricalIncomeSplitRows.RefreshMetadata(transaction, existingSplits, request.SplitAccountIds!);
         }
         else
         {

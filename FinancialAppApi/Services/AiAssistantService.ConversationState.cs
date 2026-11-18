@@ -28,7 +28,7 @@ public partial class AiAssistantService
 
     // Conversation state may be echoed by a client, so every field is bounded here. Ids are only
     // hints: action validation re-reads each one for this user before it can be targeted.
-    internal static AiConversationState? SanitizeConversationState(AiConversationState? state)
+    internal static AiConversationState? SanitizeConversationState(AiConversationState? state, bool sensitiveMode = false)
     {
         if (state == null) return null;
         static string? Reference(string? value) =>
@@ -48,7 +48,7 @@ public partial class AiAssistantService
             : null;
         // Not clamped to the reference length: it is a whole request, and truncating it would hand
         // back half an instruction for the next turn to carry out.
-        var pending = string.IsNullOrWhiteSpace(state.PendingLedgerRequest)
+        var pending = sensitiveMode || string.IsNullOrWhiteSpace(state.PendingLedgerRequest)
             ? null
             : state.PendingLedgerRequest.Trim() is { Length: <= MaxMessageLength } request ? request : null;
 

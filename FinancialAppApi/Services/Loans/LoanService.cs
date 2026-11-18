@@ -134,7 +134,7 @@ public sealed class LoanService
         if (loan == null) return new LoanResult(LoanMutationStatus.NotFound);
 
         var linkChanged = !string.Equals(updated.RecurringPaymentId, loan.RecurringPaymentId, StringComparison.Ordinal);
-        var termChanged = updated.TermPeriods != loan.TermPeriods;
+        var termChanged = updated.TermPeriods != loan.TermPeriods || updated.TrackingStartDate != loan.TrackingStartDate;
 
         var validation = Validate(updated, validateTerm: !linkChanged);
         if (validation != null) return validation;

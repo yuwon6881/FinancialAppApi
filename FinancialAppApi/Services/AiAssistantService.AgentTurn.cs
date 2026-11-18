@@ -12,6 +12,8 @@ namespace FinancialAppApi.Services;
 public partial class AiAssistantService
 {
     private const int CarriedTransactionIdLimit = 20;
+    internal const string MaskedDuringTurnReply =
+        "Sensitive mode was enabled while I was answering, so I hid that response. Ask again after unhiding balances if you still need it.";
 
 
     private async Task<AiChatOutcome> ChatWithToolsAsync(
@@ -21,7 +23,9 @@ public partial class AiAssistantService
     {
         var agent = _agent;
         var message = (request.Message ?? string.Empty).Trim();
-        var priorState = SanitizeConversationState(request.State);
+        var toolContext = await agent.Contexts.CreateAsync(request.ForceSensitiveMode, cancellationToken);
+        var startedSensitive = toolContext.SensitiveMode;
+        var priorState = SanitizeConversationState(request.State, startedSensitive);
         if (!string.IsNullOrWhiteSpace(message) && IsContextResetRequest(message)) priorState = null;
         if (string.IsNullOrWhiteSpace(message))
             return Ok(new AiChatResponse("Please ask a financial question or tell me what you want to open.", [], State: priorState));
@@ -46,7 +50,6 @@ public partial class AiAssistantService
         var effectiveMessage = CombinePendingLedgerRequest(carriedRequest, strippedMessage);
         var shorthandCount = CountLedgerDraftListRecords(effectiveMessage);
 
-        var toolContext = await agent.Contexts.CreateAsync(request.ForceSensitiveMode, cancellationToken);
         // Only an unmistakable record list is refused up front. Every other change is refused by
         // action validation, so a question that merely mentions "purchase" still gets answered.
         if (toolContext.SensitiveMode && shorthandCount > 0)
@@ -65,6 +68,8 @@ public partial class AiAssistantService
             .ToList();
         var proposer = new AgentActionProposer(this, toolContext, effectiveMessage, constraints, carriedIds, categories, shorthandCount);
         var snapshot = await agent.Snapshot.BuildAsync(toolContext, cancellationToken);
+        if (!startedSensitive && toolContext.SensitiveMode)
+            return new AiChatOutcome(new AiChatResponse(MaskedDuringTurnReply, []), false, SensitiveMode: true);
 
         AiAgentTurnResult turn;
         try
@@ -72,7 +77,8 @@ public partial class AiAssistantService
             turn = await agent.Engine.RunAsync(
                 new AiAgentTurnRequest(
                     strippedMessage,
-                    BuildAgentPriorInput(request.History, snapshot, categories, accountMentions, carriedRequest, invocation, carriedIds),
+                    BuildAgentPriorInput(startedSensitive && string.IsNullOrWhiteSpace(request.ClientTurnId)
+                        ? [] : request.History, snapshot, categories, accountMentions, carriedRequest, invocation, carriedIds),
                     toolContext,
                     proposer,
                     SeededCallsFor(invocation, priorState),
@@ -83,6 +89,13 @@ public partial class AiAssistantService
         catch (AiClientException ex)
         {
             return new AiChatOutcome(new AiChatResponse(ex.Message, []), IsProviderError: true);
+        }
+
+        await toolContext.RefreshSensitiveModeAsync(cancellationToken);
+        if (!startedSensitive && toolContext.SensitiveMode)
+        {
+            if (sink != null) await sink.OnTextResetAsync(cancellationToken);
+            return new AiChatOutcome(new AiChatResponse(MaskedDuringTurnReply, []), false, SensitiveMode: true);
         }
 
         try
@@ -125,9 +138,10 @@ public partial class AiAssistantService
             LastInvestmentRange = priorState?.LastInvestmentRange,
             LastSavingsGoalId = priorState?.LastSavingsGoalId,
             LastReportCycleKey = priorState?.LastReportCycleKey,
-            PendingLedgerRequest = ResolvePendingLedgerRequest(effectiveMessage, response, isLedgerAdd)
+            PendingLedgerRequest = toolContext.SensitiveMode ? null : ResolvePendingLedgerRequest(effectiveMessage, response, isLedgerAdd)
         };
-        return new AiChatOutcome(response with { State = outgoingState }, IsProviderError: false, ToolTrace: turn.Trace);
+        return new AiChatOutcome(response with { State = outgoingState }, IsProviderError: false,
+            ToolTrace: turn.Trace, SensitiveMode: toolContext.SensitiveMode);
     }
 
     // Read from the user's own words and the model's own attempts, never from the reply: the reply

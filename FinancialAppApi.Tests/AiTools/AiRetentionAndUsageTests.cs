@@ -87,6 +87,25 @@ public class AiRetentionAndUsageTests
     }
 
     [Fact]
+    public async Task MemoryHidesPendingLedgerRequestsInSensitiveMode()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { HideSensitive = false });
+        await context.SaveChangesAsync();
+        var memory = new AiConversationMemoryService(context);
+        var first = await memory.PrepareAsync(new AiChatRequest("Record a payment", [], ClientTurnId: "t1"), CancellationToken.None);
+        await memory.CompleteAsync(first, "Record a payment",
+            new AiChatResponse("Which account?", [], State: new AiConversationState(PendingLedgerRequest: "Record a payment of 50")),
+            CancellationToken.None);
+
+        Assert.NotNull((await memory.GetActiveAsync()).State?.PendingLedgerRequest);
+        Assert.Null((await memory.GetActiveAsync(forceSensitiveMode: true)).State?.PendingLedgerRequest);
+        var hidden = await memory.PrepareAsync(
+            new AiChatRequest("Main", [], ClientTurnId: "t2", ForceSensitiveMode: true), CancellationToken.None);
+        Assert.Null(hidden.State?.PendingLedgerRequest);
+    }
+
+    [Fact]
     public async Task UsageMeter_AccumulatesToday()
     {
         await using var context = TestHelpers.NewInMemoryContext();

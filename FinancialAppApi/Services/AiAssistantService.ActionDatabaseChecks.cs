@@ -10,6 +10,7 @@ public partial class AiAssistantService
     private async Task<bool> IsDatabaseActionSafeAsync(
         string type,
         Dictionary<string, object?> payload,
+        AiContext context,
         CancellationToken cancellationToken)
     {
         if (type.Equals("requestPurchaseWishlist", StringComparison.OrdinalIgnoreCase))
@@ -18,9 +19,9 @@ public partial class AiAssistantService
             var wishlistItem = await _context.WishlistItems
                 .AsNoTracking()
                 .Where(item => item.Id == wishlistId)
-                .Select(item => new { item.Price, item.IsPurchased, item.IsActive })
+                .Select(item => new { item.Price, item.IsPurchased })
                 .SingleOrDefaultAsync(cancellationToken);
-            if (wishlistItem == null || wishlistItem.IsPurchased || !wishlistItem.IsActive) return false;
+            if (wishlistItem == null || wishlistItem.IsPurchased) return false;
             var pool = await _savingsGoalService.GetPoolSummaryAsync(cancellationToken);
             return pool.Unassigned >= wishlistItem.Price;
         }
@@ -42,13 +43,15 @@ public partial class AiAssistantService
         if (type.Equals("openWishlist", StringComparison.OrdinalIgnoreCase))
         {
             if (!TryReadInteger(payload, "savingsGoalId", out var goalId)) return true;
-            return goals.Any(goal => goal.Id == goalId && goal.Status == SavingsGoalStatus.Active);
+            return context.SavingsGoalIds.Contains(goalId.ToString(CultureInfo.InvariantCulture))
+                && goals.Any(goal => goal.Id == goalId && goal.Status == SavingsGoalStatus.Active);
         }
         if (type.Equals("openAddSavingsGoalDraft", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
-        if (!TryReadInteger(payload, "id", out var editId)) return false;
+        if (!TryReadInteger(payload, "id", out var editId)
+            || !context.SavingsGoalIds.Contains(editId.ToString(CultureInfo.InvariantCulture))) return false;
         var goal = goals.SingleOrDefault(candidate => candidate.Id == editId);
         return goal != null && goal.Status == SavingsGoalStatus.Active;
     }

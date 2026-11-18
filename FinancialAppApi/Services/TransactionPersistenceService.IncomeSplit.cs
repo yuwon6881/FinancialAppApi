@@ -240,7 +240,7 @@ public partial class TransactionPersistenceService
                 LedgerCategory = $"Transfer:Income->{bucket}",
                 Amount = finalCents[i] / 100m,
                 ExcludeFromAutocomplete = true,
-                AccountId = splitAccountIds![bucket],
+                AccountId = splitAccountIds![bucket].Trim(),
             };
             _context.Transactions.Add(split);
         }

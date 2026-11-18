@@ -251,6 +251,11 @@ public sealed class RecurringOccurrenceSettlementService
                     : RecurringSettlementStatus.Invalid,
                 Message: mutation.Message);
         }
+        if (mutation.Status == TransactionMutationStatus.Existing
+            && (mutation.Transaction?.RecurringPaymentId != payment.Id
+                || mutation.Transaction?.RecurringOccurrenceDate != occurrenceDate))
+            return new RecurringSettlementResult(RecurringSettlementStatus.Conflict,
+                Message: "This payment reference was already used for a different transaction.");
 
         // Recompute occurrence status with the newly added transaction.
         var updatedPaid = paidSoFar + amountToPay;

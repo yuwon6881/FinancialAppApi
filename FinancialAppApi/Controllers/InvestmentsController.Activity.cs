@@ -215,7 +215,8 @@ public partial class InvestmentsController
             Amount = snapshot.Amount,
             ToCurrency = snapshot.ToCurrency?.ToUpperInvariant(),
             ToAmount = snapshot.ToAmount,
-            Date = snapshot.Date
+            Date = snapshot.Date,
+            CreatedAt = snapshot.CreatedAt?.ToUniversalTime() ?? DateTime.UtcNow
         });
         var validation = await historyValidationService.ValidateCashHistoryAsync(HttpContext.RequestAborted);
         if (validation is not null) return Conflict(new { message = validation });

@@ -22,14 +22,19 @@ public static class HistoricalIncomeSplitRows
         return Math.Abs(rows.Sum(row => row.Amount) - parent.Amount) <= 0.005m;
     }
 
-    public static void RefreshMetadata(Transaction parent, IEnumerable<Transaction> rows)
+    public static void RefreshMetadata(
+        Transaction parent,
+        IEnumerable<Transaction> rows,
+        IReadOnlyDictionary<string, string> splitAccountIds)
     {
         const string transferPrefix = "Transfer:Income->";
         foreach (var row in rows)
         {
             row.Date = parent.Date;
             row.PostedAt = parent.PostedAt;
-            row.Description = $"[Split: {row.LedgerCategory[transferPrefix.Length..]}] {parent.Description}";
+            var bucket = row.LedgerCategory[transferPrefix.Length..];
+            row.Description = $"[Split: {bucket}] {parent.Description}";
+            if (splitAccountIds.TryGetValue(bucket, out var accountId)) row.AccountId = accountId.Trim();
         }
     }
 }

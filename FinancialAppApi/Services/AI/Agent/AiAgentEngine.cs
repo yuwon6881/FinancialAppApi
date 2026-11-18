@@ -42,6 +42,7 @@ public sealed class AiAgentEngine
         var anyApproximate = false;
         var analysisCalls = 0;
         var streamSink = request.Sink == null ? null : new StreamRelay(request.Sink);
+        var startedSensitive = request.ToolContext.SensitiveMode;
 
         if (request.SeededCalls is { Count: > 0 } seeded)
         {
@@ -58,6 +59,12 @@ public sealed class AiAgentEngine
 
         for (var round = 1; ; round++)
         {
+            // The accumulated provider input contains earlier tool results. End this turn before
+            // resending that input if the user hid their balances while we were looking them up.
+            await request.ToolContext.RefreshSensitiveModeAsync(cancellationToken);
+            if (!startedSensitive && request.ToolContext.SensitiveMode)
+                return new AiAgentTurnResult(AiAssistantService.MaskedDuringTurnReply, [], trace, usage,
+                    round - 1, anyApproximate, false);
             var atLimit = round > MaxToolRounds || request.ToolContext.Budget.RemainingToolCalls <= 0;
             if (atLimit) input.Add(AiInputItems.Message("developer", AiAgentPrompt.ToolLimitNote));
             var toolChoice = atLimit ? "none" : round == 1 && request.ForcedFirstTool != null ? request.ForcedFirstTool : "auto";

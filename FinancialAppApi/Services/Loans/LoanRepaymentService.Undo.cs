@@ -11,23 +11,18 @@ public partial class LoanRepaymentService
         string actionId,
         CancellationToken cancellationToken = default)
     {
-        var loanId = await _context.LoanRepaymentActions
-            .Where(a => a.Id == actionId)
-            .Select(a => a.LoanId)
-            .FirstOrDefaultAsync(cancellationToken);
-        if (loanId == null) return new LoanRepaymentActionResult(LoanRepaymentStatus.NotFound);
-
-        var paymentId = await _context.LoanRepaymentActions
+        var repayment = await _context.LoanRepaymentActions
             .Where(action => action.Id == actionId)
-            .Select(action => action.RecurringPaymentId)
-            .FirstAsync(cancellationToken);
-        await using var paymentLease = await _paymentLock.AcquireAsync(paymentId, cancellationToken);
+            .Select(action => new { action.LoanId, action.RecurringPaymentId })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (repayment == null) return new LoanRepaymentActionResult(LoanRepaymentStatus.NotFound);
+        await using var paymentLease = await _paymentLock.AcquireAsync(repayment.RecurringPaymentId, cancellationToken);
 
         var outcome = await InTransactionAsync(
             () => UndoRepaymentActionCoreAsync(actionId, cancellationToken),
             cancellationToken);
         if (outcome.Status != LoanRepaymentStatus.Success) return outcome;
-        return outcome with { LoanView = await _loanService.GetLoanAsync(loanId, cancellationToken) };
+        return outcome with { LoanView = await _loanService.GetLoanAsync(repayment.LoanId, cancellationToken) };
     }
 
     private async Task<LoanRepaymentActionResult> UndoRepaymentActionCoreAsync(
@@ -45,6 +40,10 @@ public partial class LoanRepaymentService
             var payment = await _context.RecurringPayments.FirstOrDefaultAsync(p => p.Id == action.RecurringPaymentId, cancellationToken);
             if (payment != null)
             {
+                if (action.PriorPaymentActive && !await _context.LedgerAccounts
+                    .AnyAsync(account => account.Id == payment.AccountId && !account.IsArchived, cancellationToken))
+                    return new LoanRepaymentActionResult(LoanRepaymentStatus.Conflict,
+                        Message: "Reopen the bill's account or assign an open account before undoing the payoff.");
                 payment.Active = action.PriorPaymentActive;
                 payment.EndDate = action.PriorPaymentEndDate;
             }

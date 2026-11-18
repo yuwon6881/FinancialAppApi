@@ -51,7 +51,7 @@ public partial class AiAssistantService
         }
         if (!IsActionSafe(type, payload, context))
             return (null, "The payload is invalid, or it names a record id, category, or account that no tool returned in this turn. Look the record up first and copy its exact id.");
-        if (!await IsDatabaseActionSafeAsync(type, payload, cancellationToken))
+        if (!await IsDatabaseActionSafeAsync(type, payload, context, cancellationToken))
             return (null, "The app would refuse this change (for example a loan-linked bill, an unaffordable or already-claimed reward, or an inactive goal).");
         if (IsMutationAction(type) &&
             !type.Equals("openAddLedgerDraft", StringComparison.OrdinalIgnoreCase))

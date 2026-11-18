@@ -29,6 +29,8 @@ public sealed class AiBaselineSnapshotBuilder
 
     public async Task<JsonObject> BuildAsync(AiToolContext context, CancellationToken cancellationToken)
     {
+        await context.RefreshSensitiveModeAsync(cancellationToken);
+        var startedHidden = context.SensitiveMode;
         var current = AiCycleResolver.Current(context.Today, context.CycleDay);
         var snapshot = new JsonObject
         {
@@ -82,7 +84,11 @@ public sealed class AiBaselineSnapshotBuilder
             .ToArray();
         if (attention is { Length: > 0 }) snapshot["categoryLimitsNeedingAttention"] = new JsonArray(attention);
 
-        return snapshot;
+        await context.RefreshSensitiveModeAsync(cancellationToken);
+        // A part built before masking may contain balances. Rebuild it with the now-sticky mode.
+        return !startedHidden && context.SensitiveMode
+            ? await BuildAsync(context, cancellationToken)
+            : snapshot;
     }
 
     private async Task<JsonNode?> ToolPartAsync(string name, string arguments, AiToolContext context, CancellationToken cancellationToken) =>
@@ -90,8 +96,11 @@ public sealed class AiBaselineSnapshotBuilder
         {
             var tool = _tools.Find(name);
             if (tool == null) return null;
+            await context.RefreshSensitiveModeAsync(cancellationToken);
             if (context.SensitiveMode && tool.Sensitivity == AiToolSensitivity.HiddenWhenSensitive) return null;
             var result = await tool.ExecuteAsync(AiToolArgs.Parse(arguments), context, cancellationToken);
+            await context.RefreshSensitiveModeAsync(cancellationToken);
+            if (context.SensitiveMode && tool.Sensitivity == AiToolSensitivity.HiddenWhenSensitive) return null;
             var node = JsonSerializer.SerializeToNode(result.Data, AiToolExecutor.SerializerOptions);
             if (context.SensitiveMode) AiSensitiveMasker.Mask(node, tool.AmountProperties);
             return node;

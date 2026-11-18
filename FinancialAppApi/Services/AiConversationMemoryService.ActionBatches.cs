@@ -46,7 +46,7 @@ public sealed partial class AiConversationMemoryService
             turn.AssistantReply,
             actions,
             turn.CloseChat,
-            DeserializeState(conversation.StateJson),
+            DeserializeState(conversation.StateJson, sensitiveMode),
             conversation.Id,
             conversation.Version,
             turn.SensitiveMode == false && sensitiveMode,

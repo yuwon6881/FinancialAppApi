@@ -37,7 +37,7 @@ public sealed class FcmHttpV1PushSender : IFcmPushSender
         {
             accessToken = await GetAccessTokenAsync(cancellationToken);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(ex, "Could not obtain Application Default Credentials for FCM.");
             return new FcmSendResult(FcmSendStatus.TransientFailure, "ADC token acquisition failed.");
@@ -54,22 +54,12 @@ public sealed class FcmHttpV1PushSender : IFcmPushSender
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        HttpResponseMessage response;
         try
         {
             // Never log the token or the notification content here — only the outcome. A
             // network-level failure (timeout, DNS, connection reset) must fail this single
             // device closed rather than throw and take the whole dispatch run down with it.
-            response = await _httpClient.SendAsync(request, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "FCM send threw before a response was received.");
-            return new FcmSendResult(FcmSendStatus.TransientFailure, "FCM request failed before a response was received.");
-        }
-
-        using (response)
-        {
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
             if (response.IsSuccessStatusCode)
             {
                 return new FcmSendResult(FcmSendStatus.Sent);
@@ -83,6 +73,11 @@ public sealed class FcmHttpV1PushSender : IFcmPushSender
 
             _logger.LogWarning("FCM send failed with status {StatusCode}.", response.StatusCode);
             return new FcmSendResult(FcmSendStatus.TransientFailure, $"FCM responded {(int)response.StatusCode}.");
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "FCM send failed before a delivery result could be read.");
+            return new FcmSendResult(FcmSendStatus.TransientFailure, "FCM delivery could not be confirmed.");
         }
     }
 

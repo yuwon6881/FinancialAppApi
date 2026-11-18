@@ -506,7 +506,7 @@ public sealed class CategoryLimitAlertProcessor
             return (
                 "Spending guides need attention",
                 $"{crossings.Count} categories reached a point you asked to be told about.",
-                $"category-limits:{cycleKey}",
+                $"category-limit-{cycleKey}",
                 null);
         }
 
@@ -521,7 +521,7 @@ public sealed class CategoryLimitAlertProcessor
             body,
             // Same cycle-only tag as the multi-category case (and as the client's
             // buildNotificationTag): later alerts replace earlier ones rather than stacking.
-            $"category-limits:{cycleKey}",
+            $"category-limit-{cycleKey}",
             crossing.CategoryName);
     }
 

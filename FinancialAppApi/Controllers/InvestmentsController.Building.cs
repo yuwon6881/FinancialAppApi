@@ -89,8 +89,13 @@ public partial class InvestmentsController
         }
         if (type == "Dividend" && cash is not > 0)
             return (null, "Enter a positive gross dividend.");
-        if (type == "FeeTax" && (cash ?? 0) + dto.Fees + dto.Taxes <= 0)
+        if (type == "FeeTax" && (cash is < 0 || (cash ?? 0) + dto.Fees + dto.Taxes <= 0))
             return (null, "Enter a positive fee or tax charge.");
+        if (type is "Dividend" or "FeeTax")
+        {
+            units = 0;
+            unitPrice = null;
+        }
         var value = existing ?? new InvestmentTransaction();
         if (existing is null && dto.CreatedAt.HasValue) value.CreatedAt = dto.CreatedAt.Value.ToUniversalTime();
         value.AccountId = dto.AccountId;

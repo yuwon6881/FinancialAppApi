@@ -20,7 +20,7 @@ public partial class InvestmentPortfolioService
         IReadOnlyList<InvestmentPeriodSnapshot> settled)
     {
         if (transactions.Count == 0 && cashFlows.Count == 0) return [];
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = financialClock.Today;
         var from = InvestmentChartRange.StartFor(range, today)
             ?? transactions.Select(value => value.TradeDate)
                 .Concat(cashFlows.Select(value => value.Date))

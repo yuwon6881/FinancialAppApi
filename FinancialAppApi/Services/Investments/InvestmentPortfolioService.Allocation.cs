@@ -23,7 +23,7 @@ public sealed partial class InvestmentPortfolioService
         CancellationToken cancellationToken)
     {
         if (!includeChart) return [];
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = financialClock.Today;
         var first = transactions.Select(value => (DateOnly?)value.TradeDate)
             .Concat(cashFlows.Select(value => (DateOnly?)value.Date))
             .Min();

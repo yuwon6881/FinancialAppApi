@@ -42,6 +42,7 @@ public partial class AiAssistantService
         IReadOnlyList<AiTransactionRow> RecentTransactions,
         IReadOnlyList<AiRecurringRow> RecurringPayments,
         IReadOnlyList<AiWishlistRow> WishlistItems,
+        IReadOnlySet<string> SavingsGoalIds,
         AiLedgerAccountContext? LedgerAccountContext);
 
     private static AiTransactionRow ToAiTransactionRow(AiTransactionDbRow row) => new(

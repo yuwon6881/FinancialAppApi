@@ -78,7 +78,8 @@ public sealed record AiChatOutcome(
     AiChatResponse Response,
     bool IsProviderError,
     bool IsConflict = false,
-    IReadOnlyList<AI.Agent.AiToolTrace>? ToolTrace = null);
+    IReadOnlyList<AI.Agent.AiToolTrace>? ToolTrace = null,
+    bool SensitiveMode = false);
 
 public partial class AiAssistantService
 {
@@ -189,7 +190,8 @@ public partial class AiAssistantService
         var serverRequest = request with
         {
             History = prepared.History,
-            State = prepared.State
+            State = prepared.State,
+            ForceSensitiveMode = prepared.SensitiveMode
         };
         AiChatOutcome outcome;
         try
@@ -214,7 +216,7 @@ public partial class AiAssistantService
             };
         }
 
-        var effectiveSensitiveMode = await _conversationMemory.ResolveEffectiveSensitiveModeAsync(
+        var effectiveSensitiveMode = outcome.SensitiveMode || await _conversationMemory.ResolveEffectiveSensitiveModeAsync(
             request.ForceSensitiveMode,
             cancellationToken);
         if (effectiveSensitiveMode && !prepared.SensitiveMode)
@@ -223,9 +225,9 @@ public partial class AiAssistantService
             outcome = outcome with
             {
                 Response = new AiChatResponse(
-                    "Sensitive mode was enabled while I was answering, so I hid that response. Ask again after unhiding balances if you still need it.",
+                    MaskedDuringTurnReply,
                     [],
-                    State: outcome.Response.State)
+                    State: SanitizeConversationState(outcome.Response.State, sensitiveMode: true))
             };
         }
 
