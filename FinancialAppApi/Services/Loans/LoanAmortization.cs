@@ -7,7 +7,10 @@ public sealed record LoanPaymentInput(
     DateTime PostedAt,
     decimal Amount,
     bool IsDiscarded = false,
-    string? TransactionId = null);
+    string? TransactionId = null,
+    // What the linked bill expects for this occurrence. The bill decides when an occurrence is
+    // paid, so when known it is the completion threshold instead of the loan's own instalment.
+    decimal? BillScheduledAmount = null);
 
 public sealed record LoanPaymentSplit(
     DateOnly OccurrenceDate,

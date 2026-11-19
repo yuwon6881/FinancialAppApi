@@ -255,6 +255,17 @@ public sealed class LoanService
                     || transaction.RecurringOccurrenceDate >= earliestTrackingStart))
             .ToListAsync(cancellationToken);
 
+        // What each occurrence's bill expects, the same figure the bill settles against. One
+        // batched read over the same payments and window as the transactions above.
+        var scheduledAmounts = (await _context.RecurringPaymentOccurrences
+                .AsNoTracking()
+                .Where(occurrence => paymentIds.Contains(occurrence.RecurringPaymentId)
+                    && occurrence.OccurrenceDate >= earliestTrackingStart
+                    && occurrence.ScheduledAmount != null)
+                .Select(occurrence => new { occurrence.RecurringPaymentId, occurrence.OccurrenceDate, occurrence.ScheduledAmount })
+                .ToListAsync(cancellationToken))
+            .ToDictionary(row => (row.RecurringPaymentId, row.OccurrenceDate), row => row.ScheduledAmount!.Value);
+
         var transactionsByPayment = transactions
             .GroupBy(transaction => transaction.RecurringPaymentId!, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
@@ -284,6 +295,7 @@ public sealed class LoanService
         return loans.Select(loan =>
         {
             var loanTransactions = transactionsByPayment.GetValueOrDefault(loan.RecurringPaymentId) ?? [];
+            payments.TryGetValue(loan.RecurringPaymentId, out var payment);
             var inputs = loanTransactions
                 .Where(transaction => transaction.RecurringOccurrenceDate != null)
                 .Select(transaction => new LoanPaymentInput(
@@ -291,10 +303,12 @@ public sealed class LoanService
                     transaction.PostedAt,
                     transaction.Amount,
                     string.Equals(transaction.LedgerCategory, "Discarded", StringComparison.OrdinalIgnoreCase),
-                    transaction.Id))
+                    transaction.Id,
+                    scheduledAmounts.TryGetValue((loan.RecurringPaymentId, transaction.RecurringOccurrenceDate!.Value), out var scheduled)
+                        ? scheduled
+                        : payment?.Amount))
                 .ToList();
 
-            payments.TryGetValue(loan.RecurringPaymentId, out var payment);
             var hasLegacyHistory = loanTransactions.Any(transaction => transaction.RecurringOccurrenceDate == null);
             if (payment == null || hasLegacyHistory)
             {

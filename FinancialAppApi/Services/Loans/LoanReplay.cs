@@ -102,6 +102,13 @@ public static class LoanReplay
                 _ => LoanAmortization.RoundMoney(balance * LoanAmortization.AnnualRate(loan.AnnualRatePercent) / LoanAmortization.PeriodsPerYear(frequency))
             };
 
+            // The bill's rule decides whether this occurrence is settled; using the loan's own
+            // instalment here offered a date again that the bill had already closed.
+            var billAmount = groupInputs
+                .Select(input => Math.Abs(input.BillScheduledAmount ?? 0m))
+                .FirstOrDefault(amount => amount > 0m);
+            var completionTarget = billAmount > 0m ? billAmount : scheduledPayment;
+
             var remainingInterestForPeriod = periodInterestDue;
             var totalPaidForPeriod = 0m;
 
@@ -138,7 +145,7 @@ public static class LoanReplay
             unpaidDailyInterest = loan.InterestMethod == LoanInterestMethod.ReducingBalanceDaily
                 ? remainingInterestForPeriod
                 : 0m;
-            if (totalPaidForPeriod >= scheduledPayment || balance <= 0m)
+            if (totalPaidForPeriod >= completionTarget || balance <= 0m)
             {
                 paymentNumber++;
                 lastOccurrenceComplete = true;
@@ -148,7 +155,7 @@ public static class LoanReplay
             else
             {
                 lastOccurrenceComplete = false;
-                lastOccurrenceRemainder = LoanAmortization.RoundMoney(scheduledPayment - totalPaidForPeriod);
+                lastOccurrenceRemainder = LoanAmortization.RoundMoney(completionTarget - totalPaidForPeriod);
                 lastOccurrenceRemainingInterest = remainingInterestForPeriod;
             }
         }

@@ -247,6 +247,80 @@
         "firstFutureOccurrenceDate": "2026-02-01",
         "firstFuturePayment": 50
       }
+    },
+    {
+      "id": "bill-amount-below-instalment-closes-the-occurrence",
+      "why": "The linked bill decides when an occurrence is paid: 90 settles a bill of 90 even though the loan instalment is 100, so the loan moves on instead of offering a date the bill already closed.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 600.0,
+          "annualRatePercent": 0.0,
+          "termPeriods": 6,
+          "interestMethod": "ReducingBalance",
+          "trackingStartDate": "2026-08-01",
+          "scheduleFrequency": "Monthly",
+          "scheduleDueDay": 1,
+          "scheduleStartDate": "2026-08-01",
+          "scheduleStatus": "Complete"
+        },
+        "inputs": [
+          {
+            "occurrenceDate": "2026-08-01",
+            "amount": 90.0,
+            "isDiscarded": false,
+            "billScheduledAmount": 90.0
+          }
+        ]
+      },
+      "expected": {
+        "outstandingBalance": 510.0,
+        "scheduledPayment": 100.0,
+        "totalScheduledInterest": 0.0,
+        "totalInterestPaid": 0.0,
+        "payoffDate": "2027-02-01",
+        "lastOccurrenceDate": "2026-08-01",
+        "paymentCount": 1,
+        "futureScheduleCount": 6,
+        "firstFutureOccurrenceDate": "2026-09-01",
+        "firstFuturePayment": 100.0
+      }
+    },
+    {
+      "id": "bill-amount-above-instalment-keeps-the-occurrence-open",
+      "why": "A bill of 120 is still owed 20 after a full 100 instalment, so the loan keeps that date open for the remainder, as the bill does.",
+      "input": {
+        "loan": {
+          "openingPrincipal": 600.0,
+          "annualRatePercent": 0.0,
+          "termPeriods": 6,
+          "interestMethod": "ReducingBalance",
+          "trackingStartDate": "2026-08-01",
+          "scheduleFrequency": "Monthly",
+          "scheduleDueDay": 1,
+          "scheduleStartDate": "2026-08-01",
+          "scheduleStatus": "Complete"
+        },
+        "inputs": [
+          {
+            "occurrenceDate": "2026-08-01",
+            "amount": 100.0,
+            "isDiscarded": false,
+            "billScheduledAmount": 120.0
+          }
+        ]
+      },
+      "expected": {
+        "outstandingBalance": 500.0,
+        "scheduledPayment": 100.0,
+        "totalScheduledInterest": 0.0,
+        "totalInterestPaid": 0.0,
+        "payoffDate": "2027-01-01",
+        "lastOccurrenceDate": "2026-08-01",
+        "paymentCount": 1,
+        "futureScheduleCount": 6,
+        "firstFutureOccurrenceDate": "2026-08-01",
+        "firstFuturePayment": 20.0
+      }
     }
   ]
 }

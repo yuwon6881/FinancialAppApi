@@ -41,7 +41,10 @@ public sealed class LoanReplayParityTests
             OccurrenceDate: DateOnly.Parse(p.GetProperty("occurrenceDate").GetString()!),
             PostedAt: DateTime.UtcNow,
             Amount: p.GetProperty("amount").GetDecimal(),
-            IsDiscarded: p.GetProperty("isDiscarded").GetBoolean()
+            IsDiscarded: p.GetProperty("isDiscarded").GetBoolean(),
+            BillScheduledAmount: p.TryGetProperty("billScheduledAmount", out var bill) && bill.ValueKind == JsonValueKind.Number
+                ? bill.GetDecimal()
+                : null
         )).ToList();
 
         var result = LoanReplay.Replay(loan, paymentInputs);

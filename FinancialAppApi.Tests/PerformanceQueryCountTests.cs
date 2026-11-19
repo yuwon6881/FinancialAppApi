@@ -266,7 +266,7 @@ public sealed class PerformanceQueryCountTests
     [Theory]
     [InlineData(1)]
     [InlineData(50)]
-    public async Task LoanList_ReplayUsesFourQueriesAtAnyListSize(int loanCount)
+    public async Task LoanList_ReplayUsesFiveQueriesAtAnyListSize(int loanCount)
     {
         await using var fixture = await SqliteFixture.CreateAsync();
         for (var index = 0; index < loanCount; index++)
@@ -313,8 +313,10 @@ public sealed class PerformanceQueryCountTests
         // settlement read used to be skipped whenever every linked bill was active, but that flag is
         // the user's pause switch and says nothing about whether a payoff stands — so a resumed bill
         // silently un-settled its loan. It is a constant, indexed read bounded by the number of
-        // loans, not by the age of the account, which is the cost rule that matters here.
-        Assert.Equal(4, fixture.Counter.CommandCount);
+        // loans, not by the age of the account, which is the cost rule that matters here. The fifth
+        // reads each occurrence's scheduled amount, the figure the bill settles against, so the loan
+        // agrees with its bill about which instalments are paid.
+        Assert.Equal(5, fixture.Counter.CommandCount);
     }
 
     [Theory]
