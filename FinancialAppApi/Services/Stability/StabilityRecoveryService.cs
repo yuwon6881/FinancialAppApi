@@ -8,9 +8,7 @@ namespace FinancialAppApi.Services.Stability;
 public sealed record StabilityRecoveryDrawDto(string Bucket, decimal Share);
 
 /// <summary>
-/// One still-owing drawdown carried into this cycle, so the client's optimistic replay can start
-/// from the same queue the server did. Without the identities the client seeds one anonymous entry
-/// and cannot tell a partly-repaid drawdown from one already put back in full.
+/// One carried drawdown. A zero balance retains the paid schedule's credit for optimistic pacing.
 /// </summary>
 public sealed record StabilityReloadObligationDto(
     string TransactionId,
@@ -263,7 +261,7 @@ public partial class StabilityRecoveryService
         // table would silently forget an older obligation.
         await _cycleBalanceService.EnsureComputedThroughAsync(year, monthIndex, setting.CycleDay, cancellationToken);
 
-        // The immediately preceding snapshot carries every still-open FIFO identity and date. If a
+        // The preceding snapshot carries the open FIFO identities and unexpired credits. If a
         // legacy or malformed row lacks that detail, LoadOpeningReloadAsync replaces the derived
         // snapshots from authoritative history before any cohort deadline is calculated.
         var openingReload = await LoadOpeningReloadAsync(
@@ -316,7 +314,6 @@ public partial class StabilityRecoveryService
             ObfuscationHelper.Obfuscate(openingReload.Outstanding),
             openingReload.OldestOutstandingDate?.ToString("yyyy-MM-dd"),
             (openingReload.Obligations ?? [])
-                .Where(obligation => obligation.RemainingAmount > 0m)
                 .Select(obligation => new StabilityReloadObligationDto(
                     obligation.TransactionId,
                     ObfuscationHelper.Obfuscate(obligation.OriginalAmount),

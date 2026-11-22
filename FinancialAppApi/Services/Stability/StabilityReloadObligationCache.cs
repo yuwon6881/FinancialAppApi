@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace FinancialAppApi.Services.Stability;
 
 /// <summary>
-/// Serializes the reload queue's still-owing entries for the <c>CycleBalance</c> cache.
+/// Serializes open obligations and unexpired schedules paid in full for the <c>CycleBalance</c> cache.
 /// <para>
 /// The cached aggregate (outstanding plus oldest date) cannot say which drawdown a carried
 /// obligation came from, so a replay seeded from it alone falls back to one anonymous queue entry
@@ -12,9 +12,7 @@ namespace FinancialAppApi.Services.Stability;
 /// identities is what lets every reported total count only what is still owed.
 /// </para>
 /// <para>
-/// Only entries with money still owing are persisted: a discharged obligation has nothing left to
-/// carry forward. <see cref="StabilityReloadStatusService"/> uses absence from a usable latest
-/// snapshot to classify an older requested withdrawal as complete, then replays only the tail.
+/// Paid schedules can still offset other installments until their own term ends.
 /// </para>
 /// </summary>
 public static class StabilityReloadObligationCache
@@ -32,11 +30,11 @@ public static class StabilityReloadObligationCache
         string? Date,
         int? RepaymentCycles);
 
-    /// <summary>Returns null when nothing is owed, so an empty queue stores an empty column.</summary>
+    /// <summary>Returns null when no obligations or schedule credits carry forward.</summary>
     public static string? Serialize(IReadOnlyList<ReloadObligation>? obligations)
     {
         var open = (obligations ?? [])
-            .Where(obligation => obligation.RemainingAmount > 0m)
+            .Where(obligation => obligation.RemainingAmount > 0m || obligation.PaidInFull)
             .Select(obligation => new CachedObligation(
                 obligation.TransactionId,
                 obligation.OriginalAmount,
@@ -68,7 +66,8 @@ public static class StabilityReloadObligationCache
 
         if (parsed.Any(obligation => string.IsNullOrEmpty(obligation.TransactionId)
                 || obligation.OriginalAmount < obligation.RemainingAmount
-                || obligation.RemainingAmount <= 0m)
+                || obligation.OriginalAmount <= 0m || obligation.RemainingAmount < 0m
+                || (obligation.RemainingAmount == 0m && !DateOnly.TryParse(obligation.Date, out _)))
             || parsed.Select(obligation => obligation.TransactionId)
                 .Distinct(StringComparer.Ordinal).Count() != parsed.Count)
         {
@@ -80,7 +79,8 @@ public static class StabilityReloadObligationCache
                 obligation.OriginalAmount,
                 obligation.RemainingAmount,
                 DateOnly.TryParse(obligation.Date, out var date) ? date : null,
-                obligation.RepaymentCycles))
+                obligation.RepaymentCycles,
+                PaidInFull: obligation.RemainingAmount == 0m))
             .ToList();
     }
 

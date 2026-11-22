@@ -59,8 +59,7 @@ public partial class StabilityRecoveryService
             ?? new Dictionary<string, decimal>(StringComparer.Ordinal);
         return (replay.Obligations ?? [])
             .Where(obligation => obligation.Date.HasValue
-                && (obligation.RemainingAmount > 0m
-                    || repaidByObligation.GetValueOrDefault(obligation.TransactionId) > 0m))
+                && (obligation.RemainingAmount > 0m || obligation.PaidInFull))
             .Select(obligation =>
             {
                 var date = obligation.Date!.Value;
@@ -75,6 +74,15 @@ public partial class StabilityRecoveryService
                     obligation.OriginalAmount);
             })
             .ToList();
+    }
+
+    internal static bool CarriesIntoNextCycle(ReloadObligation obligation, int year, int monthIndex, int cycleDay)
+    {
+        if (obligation.RemainingAmount > 0m) return true;
+        if (!obligation.PaidInFull || obligation.Date is not { } date) return false;
+        var (originYear, originMonth) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(date, cycleDay);
+        var elapsed = (year - originYear) * 12 + monthIndex - originMonth;
+        return elapsed < (obligation.RepaymentCycles ?? FinancialConstants.StabilityRecoveryCycles);
     }
 
     private sealed record CycleReplay(int Year, int MonthIndex, decimal CurrentBalance, decimal Target, ReloadState Replay);

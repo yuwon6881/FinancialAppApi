@@ -8,6 +8,7 @@ public sealed class StabilityRecoveryPacingParityTests
     public static IEnumerable<object[]> Cases()
     {
         using var document = JsonDocument.Parse(File.ReadAllText(FixturePath));
+        Assert.Equal(4, document.RootElement.GetProperty("version").GetInt32());
         foreach (var item in document.RootElement.GetProperty("cases").EnumerateArray())
         {
             yield return [item.Clone()];

@@ -770,6 +770,64 @@
           }
         ]
       }
+    },
+    {
+      "id": "settled-withdrawal-keeps-pooled-credit",
+      "why": "Paying an older six-cycle plan in full keeps its unused schedule credit available after rollover.",
+      "input": {
+        "currentCycleKey": "2026-04",
+        "horizon": 3,
+        "outstandingShortfall": 300,
+        "toppedUpThisCycle": 0,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-01",
+            "fromDate": "2026-01-04",
+            "transactionCount": 1,
+            "remainingShortfall": 0,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 6,
+            "originalAmount": 300
+          },
+          {
+            "originCycleKey": "2026-02",
+            "fromDate": "2026-02-04",
+            "transactionCount": 1,
+            "remainingShortfall": 300,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 3,
+            "originalAmount": 300
+          }
+        ]
+      },
+      "expected": {
+        "cyclesRemaining": 2,
+        "requiredThisCycle": 50,
+        "outstandingThisCycle": 50,
+        "carriedThisCycle": 0,
+        "isOverdue": false,
+        "isDeferred": false,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-01",
+            "transactionCount": 1,
+            "requiredThisCycle": 0,
+            "cyclesRemaining": 4,
+            "repaymentCycles": 6,
+            "isOverdue": false,
+            "isDeferred": false
+          },
+          {
+            "originCycleKey": "2026-02",
+            "transactionCount": 1,
+            "requiredThisCycle": 50,
+            "cyclesRemaining": 2,
+            "repaymentCycles": 3,
+            "isOverdue": false,
+            "isDeferred": false
+          }
+        ]
+      }
     }
   ]
 }

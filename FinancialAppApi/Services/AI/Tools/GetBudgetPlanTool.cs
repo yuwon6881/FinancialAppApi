@@ -48,7 +48,7 @@ public sealed class GetBudgetPlanTool : IAiTool
     public IReadOnlySet<string> AmountProperties { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         "currentBalance", "targetStabilityFund", "percentReached", "stillNeeded", "owedBackFromDrawdowns",
-        "dueThisCycle", "putBackSoFar", "stillToPutBack", "stillOwed", "putBack", "stillOwedAfter",
+        "dueThisCycle", "putBackSoFar", "stillToPutBack", "stillOwed", "putBack", "stillOwedAfter", "carriedThisCycle",
         "extraWithdrawal", "fundBalanceAfter", "changeFromCurrentPlan"
     };
 

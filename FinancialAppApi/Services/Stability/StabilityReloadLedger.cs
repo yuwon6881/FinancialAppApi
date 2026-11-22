@@ -17,7 +17,8 @@ public sealed record ReloadObligation(
     decimal OriginalAmount,
     decimal RemainingAmount,
     DateOnly? Date = null,
-    int? RepaymentCycles = null);
+    int? RepaymentCycles = null,
+    bool PaidInFull = false);
 
 public sealed record ReloadPlanPoint(DateTime EffectiveAt, decimal TargetStabilityFund);
 
@@ -75,14 +76,18 @@ public static class StabilityReloadLedger
         var queue = new LinkedList<ReloadQueueEntry>();
         var obligations = new Dictionary<string, ReloadObligation>(StringComparer.Ordinal);
         var obligationOrder = new List<string>();
+        var paidInFull = new HashSet<string>(StringComparer.Ordinal);
         if (opening.Obligations is { Count: > 0 })
         {
-            foreach (var obligation in opening.Obligations.Where(item => item.RemainingAmount > 0m))
+            foreach (var obligation in opening.Obligations)
             {
-                queue.AddLast(new ReloadQueueEntry(
-                    obligation.TransactionId,
-                    obligation.Date,
-                    obligation.RemainingAmount));
+                if (obligation.RemainingAmount <= 0m && !obligation.PaidInFull) continue;
+                if (obligation.RemainingAmount > 0m)
+                    queue.AddLast(new ReloadQueueEntry(
+                        obligation.TransactionId,
+                        obligation.Date,
+                        obligation.RemainingAmount));
+                else paidInFull.Add(obligation.TransactionId);
                 obligations[obligation.TransactionId] = obligation;
                 obligationOrder.Add(obligation.TransactionId);
             }
@@ -121,6 +126,9 @@ public static class StabilityReloadLedger
                 }
             }
             queue.Clear();
+            foreach (var id in paidInFull)
+                obligations[id] = obligations[id] with { PaidInFull = false };
+            paidInFull.Clear();
             // Attainment settles everything: nothing is owed, so nothing is reported as owed. Only
             // MarkedThisRun survives, as an audit total of what left the fund during this run.
             repaidThisRun = 0m;
@@ -182,10 +190,12 @@ public static class StabilityReloadLedger
                 {
                     obligations[oldest.TransactionId] = obligation with
                     {
-                        RemainingAmount = Math.Max(0m, obligation.RemainingAmount - discharged)
+                        RemainingAmount = Math.Max(0m, obligation.RemainingAmount - discharged),
+                        PaidInFull = left == 0m
                     };
                     repaidByObligationThisRun[oldest.TransactionId] =
                         repaidByObligationThisRun.GetValueOrDefault(oldest.TransactionId) + discharged;
+                    if (left == 0m) paidInFull.Add(oldest.TransactionId);
                 }
                 if (left > 0m)
                 {

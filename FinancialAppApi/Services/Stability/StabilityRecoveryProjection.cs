@@ -25,7 +25,7 @@ public static class StabilityRecoveryProjection
         }).ToList();
         var schedule = new List<RecoveryProjectionCycle>();
         var cycleKey = firstCycleKey;
-        while (schedule.Count < maxCycles && open.Count > 0)
+        while (schedule.Count < maxCycles && open.Any(cohort => cohort.RemainingShortfall > 0m))
         {
             var owed = open.Sum(cohort => cohort.RemainingShortfall);
             var plan = StabilityRecoveryPlanner.ComputeCohortPlan(open, cycleKey, horizon, owed, 0m);
@@ -46,8 +46,7 @@ public static class StabilityRecoveryProjection
         {
             var applied = Math.Min(cohort.RemainingShortfall, left);
             left -= applied;
-            if (cohort.RemainingShortfall - applied > 0m)
-                result.Add(cohort with
+            result.Add(cohort with
                 {
                     OriginalAmount = cohort.OriginalAmount ?? cohort.RemainingShortfall + cohort.RepaidThisCycle,
                     RemainingShortfall = cohort.RemainingShortfall - applied
@@ -67,6 +66,5 @@ public static class StabilityRecoveryProjection
 
     private static IEnumerable<RecoveryCohortInput> Ordered(IEnumerable<RecoveryCohortInput> cohorts) =>
         cohorts
-            .Where(cohort => cohort.RemainingShortfall > 0m)
             .OrderBy(cohort => cohort.OriginCycleKey, StringComparer.Ordinal);
 }

@@ -204,18 +204,15 @@ public class CycleBalanceService
                         transaction => StabilityPlanRevisionService.At(
                             planRevisions,
                             transaction.PostedAt).StabilityAlloc));
-                // Carry only the still-owing entries. A discharged obligation has nothing left to
-                // hand to the next cycle, and keeping them would grow the dictionary for the whole
-                // walk. This is the same set the row below persists.
-                var openObligations = (reloaded.Obligations ?? [])
-                    .Where(obligation => obligation.RemainingAmount > 0m)
+                var carriedObligations = (reloaded.Obligations ?? [])
+                    .Where(obligation => StabilityRecoveryService.CarriesIntoNextCycle(obligation, y, m, cycleDay))
                     .ToList();
                 reloadState = new ReloadState(
                     reloaded.Outstanding,
                     reloaded.OldestOutstandingDate,
                     0m,
                     0m,
-                    openObligations);
+                    carriedObligations);
 
                 // One pass for all four buckets rather than four passes over the same slice, and the
                 // per-account placement of each leg is taken from the same pass.
@@ -241,7 +238,7 @@ public class CycleBalanceService
                     StabilityBalance = stability,
                     StabilityReloadOutstanding = reloaded.Outstanding,
                     StabilityReloadOldestDate = reloaded.OldestOutstandingDate,
-                    StabilityReloadObligations = StabilityReloadObligationCache.Serialize(openObligations),
+                    StabilityReloadObligations = StabilityReloadObligationCache.Serialize(carriedObligations),
                     RewardsBalance = rewards,
                     AccountBalances = LedgerAccountBalanceCache.Serialize(accountBalances)
                 };

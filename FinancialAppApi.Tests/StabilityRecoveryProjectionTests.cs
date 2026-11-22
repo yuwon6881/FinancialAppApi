@@ -10,6 +10,20 @@ namespace FinancialAppApi.Tests;
 public class StabilityRecoveryProjectionTests
 {
     [Fact]
+    public void AWithdrawalPaidAheadStillContributesCreditAfterTheCycleCloses()
+    {
+        var cohorts = new[]
+        {
+            new RecoveryCohortInput("2026-01", new DateOnly(2026, 1, 5), 1, 300m, 0m, 6),
+            new RecoveryCohortInput("2026-02", new DateOnly(2026, 2, 5), 1, 300m, 0m, 3)
+        };
+        var schedule = StabilityRecoveryProjection.Project(
+            StabilityRecoveryProjection.Discharge(cohorts, 300m), "2026-03", 3, 12);
+
+        Assert.Equal([0m, 50m, 150m, 50m, 50m], schedule.Select(cycle => cycle.PutBack));
+    }
+
+    [Fact]
     public void OneWithdrawalIsSpreadOverTheThreeCyclesAfterItLeft()
     {
         var schedule = StabilityRecoveryProjection.Project(
@@ -80,7 +94,7 @@ public class StabilityRecoveryProjectionTests
     }
 
     [Fact]
-    public void DischargeRepaysTheOldestCohortFirstAndDropsSettledOnes()
+    public void DischargeRepaysTheOldestCohortFirstAndKeepsItsSchedule()
     {
         var left = StabilityRecoveryProjection.Discharge(
         [
@@ -88,7 +102,8 @@ public class StabilityRecoveryProjectionTests
             new RecoveryCohortInput("2026-08", new DateOnly(2026, 8, 28), 1, 50m, 0m)
         ], 80m);
 
-        var remaining = Assert.Single(left);
+        Assert.Equal(0m, left[0].RemainingShortfall);
+        var remaining = left[1];
         Assert.Equal("2026-09", remaining.OriginCycleKey);
         Assert.Equal(70m, remaining.RemainingShortfall);
     }

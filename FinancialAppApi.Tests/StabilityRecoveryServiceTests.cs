@@ -16,6 +16,26 @@ public class StabilityRecoveryServiceTests
     private const int CycleDay = 1;
 
     [Fact]
+    public async Task BuildAsync_PreservesPooledCreditForAWithdrawalRepaidBeforeItsTermEnds()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, 10000m);
+        Add(context, "fund", new DateTime(2026, 1, 1), "Stability", 3000m);
+        Add(context, "older", new DateTime(2026, 1, 4), "Stability", -300m).StabilityRepaymentCycles = 6;
+        Add(context, "newer", new DateTime(2026, 2, 4), "Stability", -300m).StabilityRepaymentCycles = 3;
+        Add(context, "repay", new DateTime(2026, 2, 8), "Stability", 300m, "Reimbursement");
+        await context.SaveChangesAsync();
+
+        var march = await Build(context, setting, 2026, 3, 2700m, 2700m);
+        Assert.Equal(300m, Money(march.OutstandingShortfall));
+        Assert.Equal(0m, Money(march.RequiredThisCycle));
+        Assert.Contains(march.OpeningObligations, item => item.TransactionId == "older" && Money(item.RemainingAmount) == 0m);
+
+        var april = await Build(context, setting, 2026, 4, 2700m, 2700m);
+        Assert.Equal(50m, Money(april.RequiredThisCycle));
+    }
+
+    [Fact]
     public async Task BuildAsync_GivesASecondCycleDrawdownItsOwnRecoveryCohort()
     {
         await using var context = NewContext();

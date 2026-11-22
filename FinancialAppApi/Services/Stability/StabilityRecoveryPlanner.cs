@@ -171,7 +171,8 @@ public static class StabilityRecoveryPlanner
         decimal toppedUpThisCycle)
     {
         var groups = cohorts
-            .Where(cohort => cohort.RemainingShortfall > 0m || cohort.RepaidThisCycle > 0m)
+            .Where(cohort => cohort.RemainingShortfall > 0m || cohort.RepaidThisCycle > 0m
+                || CyclesRemaining(cohort.OriginCycleKey, currentCycleKey, cohort.RepaymentCycles ?? horizon) > 0)
             .GroupBy(cohort => (cohort.OriginCycleKey, RepaymentCycles: cohort.RepaymentCycles ?? horizon))
             .Select(group =>
             {
