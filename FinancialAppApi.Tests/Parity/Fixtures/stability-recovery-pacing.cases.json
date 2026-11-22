@@ -1,6 +1,6 @@
 {
   "domain": "stability-recovery-pacing",
-  "version": 2,
+  "version": 4,
   "cases": [
     {
       "id": "different-terms-in-one-spending-cycle",
@@ -17,7 +17,8 @@
             "transactionCount": 1,
             "remainingShortfall": 40,
             "repaidThisCycle": 10,
-            "repaymentCycles": 1
+            "repaymentCycles": 1,
+            "originalAmount": 50
           },
           {
             "originCycleKey": "2026-12",
@@ -25,7 +26,8 @@
             "transactionCount": 1,
             "remainingShortfall": 360,
             "repaidThisCycle": 0,
-            "repaymentCycles": 24
+            "repaymentCycles": 24,
+            "originalAmount": 360
           }
         ]
       },
@@ -33,6 +35,7 @@
         "cyclesRemaining": 1,
         "requiredThisCycle": 65,
         "outstandingThisCycle": 55,
+        "carriedThisCycle": 0,
         "isOverdue": false,
         "isDeferred": false,
         "cohorts": [
@@ -66,18 +69,40 @@
         "outstandingShortfall": 100,
         "toppedUpThisCycle": 0,
         "cohorts": [
-          { "originCycleKey": "2026-07", "fromDate": "2026-07-03", "transactionCount": 1, "remainingShortfall": 40, "repaidThisCycle": 0 },
-          { "originCycleKey": "2026-07", "fromDate": "2026-07-09", "transactionCount": 1, "remainingShortfall": 60, "repaidThisCycle": 0 }
+          {
+            "originCycleKey": "2026-07",
+            "fromDate": "2026-07-03",
+            "transactionCount": 1,
+            "remainingShortfall": 40,
+            "repaidThisCycle": 0,
+            "originalAmount": 40
+          },
+          {
+            "originCycleKey": "2026-07",
+            "fromDate": "2026-07-09",
+            "transactionCount": 1,
+            "remainingShortfall": 60,
+            "repaidThisCycle": 0,
+            "originalAmount": 60
+          }
         ]
       },
       "expected": {
         "cyclesRemaining": 3,
         "requiredThisCycle": 0,
         "outstandingThisCycle": 0,
+        "carriedThisCycle": 0,
         "isOverdue": false,
         "isDeferred": true,
         "cohorts": [
-          { "originCycleKey": "2026-07", "transactionCount": 2, "cyclesRemaining": 3, "requiredThisCycle": 0, "isOverdue": false, "isDeferred": true }
+          {
+            "originCycleKey": "2026-07",
+            "transactionCount": 2,
+            "cyclesRemaining": 3,
+            "requiredThisCycle": 0,
+            "isOverdue": false,
+            "isDeferred": true
+          }
         ]
       }
     },
@@ -90,18 +115,40 @@
         "outstandingShortfall": 100,
         "toppedUpThisCycle": 0,
         "cohorts": [
-          { "originCycleKey": "2026-07", "fromDate": "2026-07-03", "transactionCount": 1, "remainingShortfall": 40, "repaidThisCycle": 0 },
-          { "originCycleKey": "2026-07", "fromDate": "2026-07-09", "transactionCount": 1, "remainingShortfall": 60, "repaidThisCycle": 0 }
+          {
+            "originCycleKey": "2026-07",
+            "fromDate": "2026-07-03",
+            "transactionCount": 1,
+            "remainingShortfall": 40,
+            "repaidThisCycle": 0,
+            "originalAmount": 40
+          },
+          {
+            "originCycleKey": "2026-07",
+            "fromDate": "2026-07-09",
+            "transactionCount": 1,
+            "remainingShortfall": 60,
+            "repaidThisCycle": 0,
+            "originalAmount": 60
+          }
         ]
       },
       "expected": {
         "cyclesRemaining": 3,
         "requiredThisCycle": 33.34,
         "outstandingThisCycle": 33.34,
+        "carriedThisCycle": 0,
         "isOverdue": false,
         "isDeferred": false,
         "cohorts": [
-          { "originCycleKey": "2026-07", "transactionCount": 2, "cyclesRemaining": 3, "requiredThisCycle": 33.34, "isOverdue": false, "isDeferred": false }
+          {
+            "originCycleKey": "2026-07",
+            "transactionCount": 2,
+            "cyclesRemaining": 3,
+            "requiredThisCycle": 33.34,
+            "isOverdue": false,
+            "isDeferred": false
+          }
         ]
       }
     },
@@ -114,17 +161,32 @@
         "outstandingShortfall": 60,
         "toppedUpThisCycle": 40,
         "cohorts": [
-          { "originCycleKey": "2026-07", "fromDate": "2026-07-03", "transactionCount": 1, "remainingShortfall": 60, "repaidThisCycle": 40 }
+          {
+            "originCycleKey": "2026-07",
+            "fromDate": "2026-07-03",
+            "transactionCount": 1,
+            "remainingShortfall": 60,
+            "repaidThisCycle": 40,
+            "originalAmount": 100
+          }
         ]
       },
       "expected": {
         "cyclesRemaining": 3,
         "requiredThisCycle": 0,
         "outstandingThisCycle": 0,
+        "carriedThisCycle": 0,
         "isOverdue": false,
         "isDeferred": true,
         "cohorts": [
-          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 0, "isOverdue": false, "isDeferred": true }
+          {
+            "originCycleKey": "2026-07",
+            "transactionCount": 1,
+            "cyclesRemaining": 3,
+            "requiredThisCycle": 0,
+            "isOverdue": false,
+            "isDeferred": true
+          }
         ]
       }
     },
@@ -137,19 +199,48 @@
         "outstandingShortfall": 900,
         "toppedUpThisCycle": 0,
         "cohorts": [
-          { "originCycleKey": "2026-06", "fromDate": "2026-06-04", "transactionCount": 1, "remainingShortfall": 600, "repaidThisCycle": 0 },
-          { "originCycleKey": "2026-07", "fromDate": "2026-07-04", "transactionCount": 1, "remainingShortfall": 300, "repaidThisCycle": 0 }
+          {
+            "originCycleKey": "2026-06",
+            "fromDate": "2026-06-04",
+            "transactionCount": 1,
+            "remainingShortfall": 600,
+            "repaidThisCycle": 0,
+            "originalAmount": 600
+          },
+          {
+            "originCycleKey": "2026-07",
+            "fromDate": "2026-07-04",
+            "transactionCount": 1,
+            "remainingShortfall": 300,
+            "repaidThisCycle": 0,
+            "originalAmount": 300
+          }
         ]
       },
       "expected": {
         "cyclesRemaining": 3,
         "requiredThisCycle": 200,
         "outstandingThisCycle": 200,
+        "carriedThisCycle": 0,
         "isOverdue": false,
         "isDeferred": false,
         "cohorts": [
-          { "originCycleKey": "2026-06", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 200, "isOverdue": false, "isDeferred": false },
-          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 0, "isOverdue": false, "isDeferred": true }
+          {
+            "originCycleKey": "2026-06",
+            "transactionCount": 1,
+            "cyclesRemaining": 3,
+            "requiredThisCycle": 200,
+            "isOverdue": false,
+            "isDeferred": false
+          },
+          {
+            "originCycleKey": "2026-07",
+            "transactionCount": 1,
+            "cyclesRemaining": 3,
+            "requiredThisCycle": 0,
+            "isOverdue": false,
+            "isDeferred": true
+          }
         ]
       }
     },
@@ -162,19 +253,48 @@
         "outstandingShortfall": 800,
         "toppedUpThisCycle": 100,
         "cohorts": [
-          { "originCycleKey": "2026-06", "fromDate": "2026-06-04", "transactionCount": 1, "remainingShortfall": 500, "repaidThisCycle": 100 },
-          { "originCycleKey": "2026-07", "fromDate": "2026-07-04", "transactionCount": 1, "remainingShortfall": 300, "repaidThisCycle": 0 }
+          {
+            "originCycleKey": "2026-06",
+            "fromDate": "2026-06-04",
+            "transactionCount": 1,
+            "remainingShortfall": 500,
+            "repaidThisCycle": 100,
+            "originalAmount": 600
+          },
+          {
+            "originCycleKey": "2026-07",
+            "fromDate": "2026-07-04",
+            "transactionCount": 1,
+            "remainingShortfall": 300,
+            "repaidThisCycle": 0,
+            "originalAmount": 300
+          }
         ]
       },
       "expected": {
         "cyclesRemaining": 3,
         "requiredThisCycle": 200,
         "outstandingThisCycle": 100,
+        "carriedThisCycle": 0,
         "isOverdue": false,
         "isDeferred": false,
         "cohorts": [
-          { "originCycleKey": "2026-06", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 200, "isOverdue": false, "isDeferred": false },
-          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 0, "isOverdue": false, "isDeferred": true }
+          {
+            "originCycleKey": "2026-06",
+            "transactionCount": 1,
+            "cyclesRemaining": 3,
+            "requiredThisCycle": 200,
+            "isOverdue": false,
+            "isDeferred": false
+          },
+          {
+            "originCycleKey": "2026-07",
+            "transactionCount": 1,
+            "cyclesRemaining": 3,
+            "requiredThisCycle": 0,
+            "isOverdue": false,
+            "isDeferred": true
+          }
         ]
       }
     },
@@ -187,17 +307,32 @@
         "outstandingShortfall": 900,
         "toppedUpThisCycle": 0,
         "cohorts": [
-          { "originCycleKey": "2026-06", "fromDate": "2026-06-04", "transactionCount": 1, "remainingShortfall": 900, "repaidThisCycle": 0 }
+          {
+            "originCycleKey": "2026-06",
+            "fromDate": "2026-06-04",
+            "transactionCount": 1,
+            "remainingShortfall": 900,
+            "repaidThisCycle": 0,
+            "originalAmount": 900
+          }
         ]
       },
       "expected": {
         "cyclesRemaining": 1,
         "requiredThisCycle": 900,
         "outstandingThisCycle": 900,
+        "carriedThisCycle": 600,
         "isOverdue": false,
         "isDeferred": false,
         "cohorts": [
-          { "originCycleKey": "2026-06", "transactionCount": 1, "cyclesRemaining": 1, "requiredThisCycle": 900, "isOverdue": false, "isDeferred": false }
+          {
+            "originCycleKey": "2026-06",
+            "transactionCount": 1,
+            "cyclesRemaining": 1,
+            "requiredThisCycle": 900,
+            "isOverdue": false,
+            "isDeferred": false
+          }
         ]
       }
     },
@@ -210,19 +345,48 @@
         "outstandingShortfall": 120,
         "toppedUpThisCycle": 0,
         "cohorts": [
-          { "originCycleKey": "2026-04", "fromDate": "2026-04-01", "transactionCount": 1, "remainingShortfall": 20, "repaidThisCycle": 0 },
-          { "originCycleKey": "2026-07", "fromDate": "2026-07-01", "transactionCount": 1, "remainingShortfall": 100, "repaidThisCycle": 0 }
+          {
+            "originCycleKey": "2026-04",
+            "fromDate": "2026-04-01",
+            "transactionCount": 1,
+            "remainingShortfall": 20,
+            "repaidThisCycle": 0,
+            "originalAmount": 20
+          },
+          {
+            "originCycleKey": "2026-07",
+            "fromDate": "2026-07-01",
+            "transactionCount": 1,
+            "remainingShortfall": 100,
+            "repaidThisCycle": 0,
+            "originalAmount": 100
+          }
         ]
       },
       "expected": {
         "cyclesRemaining": 1,
         "requiredThisCycle": 53.34,
         "outstandingThisCycle": 53.34,
+        "carriedThisCycle": 20,
         "isOverdue": true,
         "isDeferred": false,
         "cohorts": [
-          { "originCycleKey": "2026-04", "transactionCount": 1, "cyclesRemaining": 1, "requiredThisCycle": 20, "isOverdue": true, "isDeferred": false },
-          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 33.34, "isOverdue": false, "isDeferred": false }
+          {
+            "originCycleKey": "2026-04",
+            "transactionCount": 1,
+            "cyclesRemaining": 1,
+            "requiredThisCycle": 20,
+            "isOverdue": true,
+            "isDeferred": false
+          },
+          {
+            "originCycleKey": "2026-07",
+            "transactionCount": 1,
+            "cyclesRemaining": 3,
+            "requiredThisCycle": 33.34,
+            "isOverdue": false,
+            "isDeferred": false
+          }
         ]
       }
     },
@@ -235,17 +399,375 @@
         "outstandingShortfall": 35,
         "toppedUpThisCycle": 80,
         "cohorts": [
-          { "originCycleKey": "2026-07", "fromDate": "2026-07-01", "transactionCount": 1, "remainingShortfall": 35, "repaidThisCycle": 80 }
+          {
+            "originCycleKey": "2026-07",
+            "fromDate": "2026-07-01",
+            "transactionCount": 1,
+            "remainingShortfall": 35,
+            "repaidThisCycle": 80,
+            "originalAmount": 115
+          }
         ]
       },
       "expected": {
         "cyclesRemaining": 3,
         "requiredThisCycle": 38.34,
         "outstandingThisCycle": 0,
+        "carriedThisCycle": 0,
         "isOverdue": false,
         "isDeferred": false,
         "cohorts": [
-          { "originCycleKey": "2026-07", "transactionCount": 1, "cyclesRemaining": 3, "requiredThisCycle": 38.34, "isOverdue": false, "isDeferred": false }
+          {
+            "originCycleKey": "2026-07",
+            "transactionCount": 1,
+            "cyclesRemaining": 3,
+            "requiredThisCycle": 38.34,
+            "isOverdue": false,
+            "isDeferred": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "partial-payment-rolls-forward-with-overlapping-installment",
+      "why": "A 100 installment paid only 40 leaves 60 due alongside the next 100 and a new plan installment of 50. The current 25 payment is credited once.",
+      "input": {
+        "currentCycleKey": "2027-01",
+        "horizon": 3,
+        "outstandingShortfall": 385,
+        "toppedUpThisCycle": 25,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-11",
+            "fromDate": "2026-11-03",
+            "transactionCount": 1,
+            "originalAmount": 300,
+            "remainingShortfall": 235,
+            "repaidThisCycle": 25,
+            "repaymentCycles": 3
+          },
+          {
+            "originCycleKey": "2026-12",
+            "fromDate": "2026-12-03",
+            "transactionCount": 1,
+            "originalAmount": 150,
+            "remainingShortfall": 150,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 3
+          }
+        ]
+      },
+      "expected": {
+        "cyclesRemaining": 2,
+        "requiredThisCycle": 210,
+        "outstandingThisCycle": 185,
+        "carriedThisCycle": 60,
+        "isOverdue": false,
+        "isDeferred": false,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-11",
+            "transactionCount": 1,
+            "repaymentCycles": 3,
+            "cyclesRemaining": 2,
+            "requiredThisCycle": 160,
+            "isOverdue": false,
+            "isDeferred": false
+          },
+          {
+            "originCycleKey": "2026-12",
+            "transactionCount": 1,
+            "repaymentCycles": 3,
+            "cyclesRemaining": 3,
+            "requiredThisCycle": 50,
+            "isOverdue": false,
+            "isDeferred": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "missed-one-month-term-stays-due-with-newer-installment",
+      "why": "The remainder after the only scheduled installment stays due in full. The next plan adds its own installment.",
+      "input": {
+        "currentCycleKey": "2027-01",
+        "horizon": 3,
+        "outstandingShortfall": 220,
+        "toppedUpThisCycle": 0,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-11",
+            "fromDate": "2026-11-03",
+            "transactionCount": 1,
+            "originalAmount": 100,
+            "remainingShortfall": 70,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 1
+          },
+          {
+            "originCycleKey": "2026-12",
+            "fromDate": "2026-12-03",
+            "transactionCount": 1,
+            "originalAmount": 150,
+            "remainingShortfall": 150,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 3
+          }
+        ]
+      },
+      "expected": {
+        "cyclesRemaining": 1,
+        "requiredThisCycle": 120,
+        "outstandingThisCycle": 120,
+        "carriedThisCycle": 70,
+        "isOverdue": true,
+        "isDeferred": false,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-11",
+            "transactionCount": 1,
+            "repaymentCycles": 1,
+            "cyclesRemaining": 1,
+            "requiredThisCycle": 70,
+            "isOverdue": true,
+            "isDeferred": false
+          },
+          {
+            "originCycleKey": "2026-12",
+            "transactionCount": 1,
+            "repaymentCycles": 3,
+            "cyclesRemaining": 3,
+            "requiredThisCycle": 50,
+            "isOverdue": false,
+            "isDeferred": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "on-track-rounding-keeps-the-total-exact",
+      "why": "The last installment consumes the exact remaining cents.",
+      "input": {
+        "currentCycleKey": "2026-10",
+        "horizon": 3,
+        "outstandingShortfall": 33.33,
+        "toppedUpThisCycle": 0,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-07",
+            "fromDate": "2026-07-03",
+            "transactionCount": 1,
+            "originalAmount": 100,
+            "remainingShortfall": 33.33,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 3
+          }
+        ]
+      },
+      "expected": {
+        "cyclesRemaining": 1,
+        "requiredThisCycle": 33.33,
+        "outstandingThisCycle": 33.33,
+        "carriedThisCycle": 0,
+        "isOverdue": false,
+        "isDeferred": false,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-07",
+            "transactionCount": 1,
+            "repaymentCycles": 3,
+            "cyclesRemaining": 1,
+            "requiredThisCycle": 33.33,
+            "isOverdue": false,
+            "isDeferred": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "early-payment-covers-the-first-installment",
+      "why": "A prepayment made during the spending cycle is credited to the original schedule.",
+      "input": {
+        "currentCycleKey": "2026-08",
+        "horizon": 3,
+        "outstandingShortfall": 60,
+        "toppedUpThisCycle": 0,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-07",
+            "fromDate": "2026-07-03",
+            "transactionCount": 1,
+            "originalAmount": 100,
+            "remainingShortfall": 60,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 3
+          }
+        ]
+      },
+      "expected": {
+        "cyclesRemaining": 3,
+        "requiredThisCycle": 0,
+        "outstandingThisCycle": 0,
+        "carriedThisCycle": 0,
+        "isOverdue": false,
+        "isDeferred": false,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-07",
+            "transactionCount": 1,
+            "repaymentCycles": 3,
+            "cyclesRemaining": 3,
+            "requiredThisCycle": 0,
+            "isOverdue": false,
+            "isDeferred": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "paying-the-exact-ask-keeps-a-short-plan-on-schedule",
+      "why": "FIFO repayment sent every payment to the older six-cycle plan, but the money still counts: three cycles of exact asks leave the one-cycle plan due as part of one pooled ask, never overdue.",
+      "input": {
+        "currentCycleKey": "2026-04",
+        "horizon": 3,
+        "outstandingShortfall": 400,
+        "toppedUpThisCycle": 0,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-01",
+            "fromDate": "2026-01-05",
+            "transactionCount": 1,
+            "originalAmount": 600,
+            "remainingShortfall": 300,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 6
+          },
+          {
+            "originCycleKey": "2026-02",
+            "fromDate": "2026-02-05",
+            "transactionCount": 1,
+            "originalAmount": 100,
+            "remainingShortfall": 100,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 1
+          }
+        ]
+      },
+      "expected": {
+        "cyclesRemaining": 1,
+        "requiredThisCycle": 100,
+        "outstandingThisCycle": 100,
+        "carriedThisCycle": 0,
+        "isOverdue": false,
+        "isDeferred": false,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-01",
+            "transactionCount": 1,
+            "repaymentCycles": 6,
+            "cyclesRemaining": 4,
+            "requiredThisCycle": 0,
+            "isOverdue": false,
+            "isDeferred": false
+          },
+          {
+            "originCycleKey": "2026-02",
+            "transactionCount": 1,
+            "repaymentCycles": 1,
+            "cyclesRemaining": 1,
+            "requiredThisCycle": 100,
+            "isOverdue": false,
+            "isDeferred": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "surplus-on-one-plan-offsets-another-plans-installment",
+      "why": "Two same-origin plans; 250 went back against a 200 ask and FIFO put it all on the first plan. The extra 50 still reduces the combined ask (400 scheduled - 250 paid = 150) instead of being stranded.",
+      "input": {
+        "currentCycleKey": "2026-03",
+        "horizon": 3,
+        "outstandingShortfall": 350,
+        "toppedUpThisCycle": 0,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-01",
+            "fromDate": "2026-01-05",
+            "transactionCount": 1,
+            "originalAmount": 300,
+            "remainingShortfall": 50,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 3
+          },
+          {
+            "originCycleKey": "2026-01",
+            "fromDate": "2026-01-06",
+            "transactionCount": 1,
+            "originalAmount": 300,
+            "remainingShortfall": 300,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 3
+          }
+        ]
+      },
+      "expected": {
+        "cyclesRemaining": 2,
+        "requiredThisCycle": 150,
+        "outstandingThisCycle": 150,
+        "carriedThisCycle": 0,
+        "isOverdue": false,
+        "isDeferred": false,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-01",
+            "transactionCount": 2,
+            "repaymentCycles": 3,
+            "cyclesRemaining": 2,
+            "requiredThisCycle": 150,
+            "isOverdue": false,
+            "isDeferred": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "missed-installment-is-reported-as-carried",
+      "why": "A 100 installment paid only 40 leaves 60 carried into this cycle on top of this cycle's own 100 installment: 160 due, 60 of it carried.",
+      "input": {
+        "currentCycleKey": "2027-01",
+        "horizon": 3,
+        "outstandingShortfall": 260,
+        "toppedUpThisCycle": 0,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-11",
+            "fromDate": "2026-11-05",
+            "transactionCount": 1,
+            "originalAmount": 300,
+            "remainingShortfall": 260,
+            "repaidThisCycle": 0,
+            "repaymentCycles": 3
+          }
+        ]
+      },
+      "expected": {
+        "cyclesRemaining": 2,
+        "requiredThisCycle": 160,
+        "outstandingThisCycle": 160,
+        "carriedThisCycle": 60,
+        "isOverdue": false,
+        "isDeferred": false,
+        "cohorts": [
+          {
+            "originCycleKey": "2026-11",
+            "transactionCount": 1,
+            "repaymentCycles": 3,
+            "cyclesRemaining": 2,
+            "requiredThisCycle": 160,
+            "isOverdue": false,
+            "isDeferred": false
+          }
         ]
       }
     }

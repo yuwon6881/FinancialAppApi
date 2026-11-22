@@ -26,7 +26,8 @@ public sealed class StabilityRecoveryPacingParityTests
                 cohort.GetProperty("transactionCount").GetInt32(),
                 cohort.GetProperty("remainingShortfall").GetDecimal(),
                 cohort.GetProperty("repaidThisCycle").GetDecimal(),
-                cohort.TryGetProperty("repaymentCycles", out var term) ? term.GetInt32() : null))
+                cohort.TryGetProperty("repaymentCycles", out var term) ? term.GetInt32() : null,
+                cohort.GetProperty("originalAmount").GetDecimal()))
             .ToList();
 
         var actual = StabilityRecoveryPlanner.ComputeCohortPlan(
@@ -40,6 +41,7 @@ public sealed class StabilityRecoveryPacingParityTests
         Assert.Equal(expected.GetProperty("cyclesRemaining").GetInt32(), actual.Aggregate.CyclesRemaining);
         Assert.Equal(expected.GetProperty("requiredThisCycle").GetDecimal(), actual.Aggregate.RequiredThisCycle);
         Assert.Equal(expected.GetProperty("outstandingThisCycle").GetDecimal(), actual.Aggregate.OutstandingThisCycle);
+        Assert.Equal(expected.GetProperty("carriedThisCycle").GetDecimal(), actual.Aggregate.CarriedThisCycle);
         Assert.Equal(expected.GetProperty("isOverdue").GetBoolean(), actual.Aggregate.IsOverdue);
         Assert.Equal(expected.GetProperty("isDeferred").GetBoolean(), actual.Aggregate.IsDeferred);
 

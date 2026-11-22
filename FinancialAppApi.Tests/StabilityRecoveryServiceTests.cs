@@ -39,18 +39,41 @@ public class StabilityRecoveryServiceTests
             currentRepayment);
 
         Assert.Equal(800m, Money(recovery.OutstandingShortfall));
-        // June's plan is on its first instalment: a third of the 600 it still owed before this
-        // cycle's 100 went back. July's own plan opens next cycle and asks for nothing yet.
-        Assert.Equal(200m, Money(recovery.RequiredThisCycle));
+        // June's early 300 already covered its first installment. July's plan has yet to start.
+        Assert.Equal(0m, Money(recovery.RequiredThisCycle));
         Assert.Equal(100m, Money(recovery.ToppedUpThisCycle));
-        Assert.Equal(100m, Money(recovery.OutstandingThisCycle));
+        Assert.Equal(0m, Money(recovery.OutstandingThisCycle));
         Assert.Equal(["2026-06", "2026-07"], recovery.RecoveryCohorts.Select(cohort => cohort.OriginCycleKey));
         Assert.Equal([3, 3], recovery.RecoveryCohorts.Select(cohort => cohort.CyclesRemaining));
         Assert.Equal([false, true], recovery.RecoveryCohorts.Select(cohort => cohort.IsDeferred));
         Assert.Equal(
-            [200m, 0m],
+            [0m, 0m],
             recovery.RecoveryCohorts.Select(cohort => Money(cohort.RequiredThisCycle)));
         Assert.False(recovery.IsDeferred);
+    }
+
+    [Fact]
+    public async Task BuildAsync_CarriesUnpaidInstallmentAcrossTheYearAndAddsOverlappingPlan()
+    {
+        await using var context = NewContext();
+        var setting = SeedSetting(context, target: 10000m);
+        Add(context, "opening", new DateTime(2026, 10, 4), "Stability", 3000m);
+        var first = Add(context, "first", new DateTime(2026, 11, 4), "Stability", -300m);
+        first.StabilityRepaymentCycles = 3;
+        Add(context, "partial", new DateTime(2026, 12, 8), "Stability", 40m, "Reimbursement");
+        var second = Add(context, "second", new DateTime(2026, 12, 14), "Stability", -100m);
+        second.StabilityRepaymentCycles = 2;
+        var currentRepayment = Add(context, "current", new DateTime(2027, 1, 18), "Stability", 25m, "Reimbursement");
+        await context.SaveChangesAsync();
+
+        var recovery = await Build(context, setting, 2027, 1, 2640m, 2665m, currentRepayment);
+
+        Assert.Equal([160m, 50m], recovery.RecoveryCohorts.Select(cohort => Money(cohort.RequiredThisCycle)));
+        Assert.Equal(210m, Money(recovery.RequiredThisCycle));
+        // The unpaid 60 of December's installment rides along with January's own 100 and the new plan's 50.
+        Assert.Equal(60m, Money(recovery.CarriedThisCycle));
+        Assert.Equal(185m, Money(recovery.OutstandingThisCycle));
+        Assert.Equal(335m, Money(recovery.OutstandingShortfall));
     }
 
     [Fact]

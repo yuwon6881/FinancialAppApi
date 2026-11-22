@@ -71,7 +71,8 @@ public partial class StabilityRecoveryService
                     1,
                     obligation.RemainingAmount,
                     repaidByObligation.GetValueOrDefault(obligation.TransactionId),
-                    obligation.RepaymentCycles);
+                    obligation.RepaymentCycles,
+                    obligation.OriginalAmount);
             })
             .ToList();
     }

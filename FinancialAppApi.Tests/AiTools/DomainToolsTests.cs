@@ -120,14 +120,14 @@ public class DomainToolsTests
         var cohorts = plan.GetProperty("byWithdrawalCycle").EnumerateArray().ToList();
         Assert.Equal(["2026-08", "2026-09"], cohorts.Select(cohort => cohort.GetProperty("tookOutInCycle").GetString()));
         Assert.True(cohorts[1].GetProperty("startsNextCycle").GetBoolean());
-        Assert.Equal([133.34m, 116.66m, 50m], PutBacks(plan.GetProperty("upcoming")));
+        Assert.Equal([133.34m, 133.33m, 33.33m], PutBacks(plan.GetProperty("upcoming")));
         Assert.Equal("2026-10-25", plan.GetProperty("upcoming")[0].GetProperty("cycle").GetProperty("from").GetString());
 
         var whatIf = data.GetProperty("whatIf");
         Assert.True(whatIf.GetProperty("createsObligation").GetBoolean());
         Assert.Equal(100m, whatIf.GetProperty("dueThisCycle").GetDecimal());
-        Assert.Equal([200m, 150m, 150m], PutBacks(whatIf.GetProperty("upcoming")));
-        Assert.Equal(66.66m, whatIf.GetProperty("upcoming")[0].GetProperty("changeFromCurrentPlan").GetDecimal());
+        Assert.Equal([200.01m, 200m, 99.99m], PutBacks(whatIf.GetProperty("upcoming")));
+        Assert.Equal(66.67m, whatIf.GetProperty("upcoming")[0].GetProperty("changeFromCurrentPlan").GetDecimal());
 
         var hidden = Parse(await RunAsync(NewExecutor(tool), NewContext(sensitive: true), "get_budget_plan", """{"extraWithdrawal":200}""")).GetProperty("data");
         Assert.False(hidden.TryGetProperty("reloadPlan", out _));

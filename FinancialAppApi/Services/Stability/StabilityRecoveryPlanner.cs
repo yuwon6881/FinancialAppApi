@@ -24,7 +24,9 @@ public sealed record RecoveryPace(
     decimal ToppedUpThisCycle,
     decimal OutstandingThisCycle,
     bool IsOverdue,
-    bool IsDeferred = false);
+    bool IsDeferred = false,
+    // The part of RequiredThisCycle that is earlier installments not yet put back.
+    decimal CarriedThisCycle = 0m);
 
 public sealed record RecoveryCohortInput(
     string OriginCycleKey,
@@ -32,7 +34,10 @@ public sealed record RecoveryCohortInput(
     int TransactionCount,
     decimal RemainingShortfall,
     decimal RepaidThisCycle,
-    int? RepaymentCycles = null);
+    int? RepaymentCycles = null,
+    // What the withdrawal was before anything went back; the installment schedule is fixed against
+    // it. Null only for a withdrawal nothing has been put back against yet.
+    decimal? OriginalAmount = null);
 
 public sealed record RecoveryCohortPace(
     string OriginCycleKey,
@@ -144,9 +149,19 @@ public static class StabilityRecoveryPlanner
     }
 
     /// <summary>
-    /// Groups withdrawals with the same origin cycle and repayment term while retaining one combined amount to ask
-    /// from income. A cohort's anchor is its live remainder plus money applied to that cohort during
-    /// this cycle, so its quoted share does not shrink while the user funds it.
+    /// Prices every open withdrawal against its own fixed cumulative installments and returns one
+    /// <em>pooled</em> ask: what has fallen due across all plans, less everything already put back
+    /// against any of them.
+    /// <para>
+    /// Ledger completion is FIFO, so a payment often lands on an older plan than the one that needed
+    /// it. Judging each plan alone stranded that surplus and left a newer plan overdue while its owner
+    /// paid every ask in full. Money is fungible across plans here; the per-plan figures are the
+    /// pooled ask allocated oldest first, so they still add up to the aggregate.
+    /// </para>
+    /// <para>
+    /// <c>CarriedThisCycle</c> is the part of the ask that is earlier installments rather than this
+    /// cycle's own. Withdrawals with the same origin cycle and term are reported as one cohort.
+    /// </para>
     /// </summary>
     public static RecoveryCohortPlan ComputeCohortPlan(
         IEnumerable<RecoveryCohortInput> cohorts,
@@ -155,56 +170,86 @@ public static class StabilityRecoveryPlanner
         decimal outstandingShortfall,
         decimal toppedUpThisCycle)
     {
-        var paces = cohorts
+        var groups = cohorts
             .Where(cohort => cohort.RemainingShortfall > 0m || cohort.RepaidThisCycle > 0m)
             .GroupBy(cohort => (cohort.OriginCycleKey, RepaymentCycles: cohort.RepaymentCycles ?? horizon))
-            .Select(group => new RecoveryCohortInput(
-                group.Key.OriginCycleKey,
-                group.Min(cohort => cohort.FromDate),
-                group.Sum(cohort => Math.Max(1, cohort.TransactionCount)),
-                group.Sum(cohort => Math.Max(0m, cohort.RemainingShortfall)),
-                group.Sum(cohort => Math.Max(0m, cohort.RepaidThisCycle)),
-                group.Key.RepaymentCycles))
-            .Select(cohort =>
+            .Select(group =>
             {
-                var rawCyclesRemaining = CyclesRemaining(
-                    cohort.OriginCycleKey,
-                    currentCycleKey,
-                    cohort.RepaymentCycles ?? horizon);
-                var cyclesRemaining = Math.Max(1, rawCyclesRemaining);
-                var isDeferred = IsDeferred(cohort.OriginCycleKey, currentCycleKey);
-                var anchor = Math.Max(0m, cohort.RemainingShortfall)
-                    + Math.Max(0m, cohort.RepaidThisCycle);
-                var required = isDeferred
-                    ? 0m
-                    : cyclesRemaining <= 1
-                        ? anchor
-                        : RoundUpToCent(anchor / cyclesRemaining);
-                return new RecoveryCohortPace(
-                    cohort.OriginCycleKey,
-                    cohort.FromDate,
-                    Math.Max(1, cohort.TransactionCount),
-                    Math.Max(0m, cohort.RemainingShortfall),
-                    cyclesRemaining,
-                    required,
-                    rawCyclesRemaining <= 0 && cohort.RemainingShortfall > 0m,
-                    isDeferred,
-                    cohort.RepaymentCycles);
+                var (originCycleKey, term) = group.Key;
+                var rawCyclesRemaining = CyclesRemaining(originCycleKey, currentCycleKey, term);
+                var isDeferred = IsDeferred(originCycleKey, currentCycleKey);
+                var isPastTerm = rawCyclesRemaining <= 0;
+                var installments = isDeferred ? 0 : Math.Min(term, term - rawCyclesRemaining + 1);
+                var previousInstallments = isDeferred ? 0 : isPastTerm ? term : installments - 1;
+                var members = group.Select(cohort =>
+                {
+                    var remaining = Math.Max(0m, cohort.RemainingShortfall);
+                    var opening = remaining + Math.Max(0m, cohort.RepaidThisCycle);
+                    // Null only for a withdrawal nothing has been put back against yet.
+                    var original = Math.Max(opening, cohort.OriginalAmount ?? 0m);
+                    return (Remaining: remaining, Opening: opening, Original: original);
+                }).ToList();
+                return new CohortGroup(
+                    originCycleKey,
+                    group.Min(cohort => cohort.FromDate),
+                    term,
+                    group.Sum(cohort => Math.Max(1, cohort.TransactionCount)),
+                    members.Sum(member => member.Remaining),
+                    members.Sum(member => member.Original),
+                    members.Sum(member => ScheduledThrough(member.Original, installments, term)),
+                    members.Sum(member => ScheduledThrough(member.Original, previousInstallments, term)),
+                    members.Sum(member => member.Original - member.Opening),
+                    Math.Max(1, rawCyclesRemaining),
+                    isPastTerm,
+                    isDeferred);
             })
-            .OrderBy(cohort => cohort.OriginCycleKey, StringComparer.Ordinal)
-            .ThenBy(cohort => cohort.FromDate)
-            .ThenBy(cohort => cohort.RepaymentCycles)
+            .OrderBy(group => group.OriginCycleKey, StringComparer.Ordinal)
+            .ThenBy(group => group.FromDate)
+            .ThenBy(group => group.RepaymentCycles)
+            .ToList();
+
+        // Surplus on any plan offsets what another plan is short, oldest plan first.
+        var credit = groups.Sum(group => Math.Max(0m, group.PaidBefore - group.Scheduled));
+        var dueByGroup = new List<decimal>(groups.Count);
+        foreach (var group in groups)
+        {
+            var shortBy = Math.Max(0m, group.Scheduled - group.PaidBefore);
+            var offset = Math.Min(shortBy, credit);
+            credit -= offset;
+            dueByGroup.Add(shortBy - offset);
+        }
+
+        var requiredThisCycle = dueByGroup.Sum();
+        var carried = Math.Min(
+            requiredThisCycle,
+            Math.Max(0m, groups.Sum(group => group.PreviousScheduled) - groups.Sum(group => group.PaidBefore)));
+
+        // Past-term originals against everything put back so far, this cycle included: overdue only
+        // when the money that has gone back cannot cover what the elapsed plans were meant to settle.
+        var pastTermOriginal = groups.Where(group => group.IsPastTerm).Sum(group => group.Original);
+        var paidSoFar = groups.Sum(group => group.Original - group.Remaining);
+        var isOverdue = pastTermOriginal > paidSoFar;
+
+        var paces = groups
+            .Select((group, index) => new RecoveryCohortPace(
+                group.OriginCycleKey,
+                group.FromDate,
+                group.TransactionCount,
+                group.Remaining,
+                group.CyclesRemaining,
+                dueByGroup[index],
+                isOverdue && group.IsPastTerm && group.Remaining > 0m,
+                group.IsDeferred,
+                group.RepaymentCycles))
             .ToList();
 
         var shortfall = Math.Max(0m, outstandingShortfall);
         var funded = Math.Max(0m, toppedUpThisCycle);
-        var requiredThisCycle = paces.Sum(cohort => cohort.RequiredThisCycle);
         var outstandingThisCycle = Math.Clamp(requiredThisCycle - funded, 0m, shortfall);
         var open = paces.Where(cohort => cohort.RemainingShortfall > 0m).ToList();
         var urgentCyclesRemaining = open.Count == 0
             ? Math.Max(1, horizon)
             : open.Min(cohort => cohort.CyclesRemaining);
-        var isOverdue = open.Any(cohort => cohort.IsOverdue);
         // Only when *every* plan that still owes money starts later. One older cohort still due keeps
         // a combined ask, and the card should talk about that ask rather than about the newest
         // withdrawal's grace cycle.
@@ -218,11 +263,40 @@ public static class StabilityRecoveryPlanner
                 funded,
                 outstandingThisCycle,
                 isOverdue,
-                isDeferred),
+                isDeferred,
+                carried),
             paces);
     }
 
     public static string CycleKey(int year, int monthIndex) => $"{year:0000}-{monthIndex:00}";
+
+    private sealed record CohortGroup(
+        string OriginCycleKey,
+        DateOnly FromDate,
+        int RepaymentCycles,
+        int TransactionCount,
+        decimal Remaining,
+        decimal Original,
+        // Installments fallen due through this cycle, and through the one before it.
+        decimal Scheduled,
+        decimal PreviousScheduled,
+        // Put back before this cycle began; this cycle's own repayment is credited separately.
+        decimal PaidBefore,
+        int CyclesRemaining,
+        bool IsPastTerm,
+        bool IsDeferred);
+
+    /// <summary>
+    /// Cumulative amount scheduled once <paramref name="installments"/> of <paramref name="term"/> have
+    /// fallen due. Rounded up once, so installments differ by a cent at most and the last one settles
+    /// the exact original amount.
+    /// </summary>
+    private static decimal ScheduledThrough(decimal original, int installments, int term)
+    {
+        if (installments <= 0) return 0m;
+        if (installments >= term) return original;
+        return RoundUpToCent(original * installments / term);
+    }
 
     private static bool TryParseCycleKey(string? key, out int year, out int monthIndex)
     {

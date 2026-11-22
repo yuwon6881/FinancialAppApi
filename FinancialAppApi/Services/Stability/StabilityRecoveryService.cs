@@ -58,6 +58,9 @@ public sealed record StabilityRecoveryDto(
     string RequiredThisCycle,
     string ToppedUpThisCycle,
     string OutstandingThisCycle,
+    // The part of RequiredThisCycle that is earlier installments not yet put back, so the client can
+    // say why the ask is more than one installment.
+    string CarriedThisCycle,
     bool IsOverdue,
     // Every plan that still owes money opens in a later cycle, so nothing is due now. Distinct from
     // being ahead of the plan, which the amounts on their own cannot tell it apart from.
@@ -337,6 +340,7 @@ public partial class StabilityRecoveryService
             ObfuscationHelper.Obfuscate(pace.RequiredThisCycle),
             ObfuscationHelper.Obfuscate(pace.ToppedUpThisCycle),
             ObfuscationHelper.Obfuscate(pace.OutstandingThisCycle),
+            ObfuscationHelper.Obfuscate(pace.CarriedThisCycle),
             pace.IsOverdue,
             pace.IsDeferred,
             lastDrawdownCycleKey,

@@ -18,7 +18,11 @@ public static class StabilityRecoveryProjection
         int maxCycles)
     {
         // Each projected cycle starts fresh: nothing has been put back in it yet.
-        var open = Ordered(cohorts).Select(cohort => cohort with { RepaidThisCycle = 0m }).ToList();
+        var open = Ordered(cohorts).Select(cohort => cohort with
+        {
+            OriginalAmount = cohort.OriginalAmount ?? cohort.RemainingShortfall + cohort.RepaidThisCycle,
+            RepaidThisCycle = 0m
+        }).ToList();
         var schedule = new List<RecoveryProjectionCycle>();
         var cycleKey = firstCycleKey;
         while (schedule.Count < maxCycles && open.Count > 0)
@@ -43,7 +47,11 @@ public static class StabilityRecoveryProjection
             var applied = Math.Min(cohort.RemainingShortfall, left);
             left -= applied;
             if (cohort.RemainingShortfall - applied > 0m)
-                result.Add(cohort with { RemainingShortfall = cohort.RemainingShortfall - applied });
+                result.Add(cohort with
+                {
+                    OriginalAmount = cohort.OriginalAmount ?? cohort.RemainingShortfall + cohort.RepaidThisCycle,
+                    RemainingShortfall = cohort.RemainingShortfall - applied
+                });
         }
         return result;
     }
