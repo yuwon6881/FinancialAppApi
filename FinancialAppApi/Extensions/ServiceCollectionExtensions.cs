@@ -566,6 +566,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<RecurringPaymentService>();
         services.AddScoped<RecurringOccurrenceSettlementService>();
         services.AddScoped<RecurringPaymentPayEarlyService>();
+        services.AddScoped<Services.Forecast.CashFlowForecastService>();
         services.AddScoped<IRecurringPaymentMutationLock, RecurringPaymentMutationLock>();
         services.AddScoped<TransactionCategoryService>();
         services.AddScoped<WishlistService>();
