@@ -3,6 +3,7 @@ using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Services;
+using FinancialAppApi.Services.Stability;
 using FinancialAppApi.Contracts;
 
 namespace FinancialAppApi.Controllers;
@@ -205,25 +206,23 @@ public class TransactionsController : ControllerBase
         {
             return Conflict(new { message = result.Message });
         }
-        if (result.Status == TransactionMutationStatus.Existing)
+        var transaction = result.Transaction!;
+        string? status = null;
+        if (StabilityReloadLedger.CanCarryReloadStatus(transaction))
         {
             var statusMap = await _transactionQueryService.GetStabilityReloadStatusMapAsync(
-                HttpContext.RequestAborted);
-            return Ok(MapToDto(
-                result.Transaction!,
-                statusMap.TryGetValue(result.Transaction!.Id, out var status) ? status : null));
+                HttpContext.RequestAborted,
+                [transaction.Id]);
+            statusMap.TryGetValue(transaction.Id, out status);
         }
 
-        var createdStatuses = await _transactionQueryService.GetStabilityReloadStatusMapAsync(
-            HttpContext.RequestAborted);
+        var response = MapToDto(transaction, status);
+        if (result.Status == TransactionMutationStatus.Existing) return Ok(response);
+
         return CreatedAtAction(
             nameof(GetTransactions),
-            new { id = result.Transaction!.Id },
-            MapToDto(
-                result.Transaction,
-                createdStatuses.TryGetValue(result.Transaction.Id, out var createdStatus)
-                    ? createdStatus
-                    : null));
+            new { id = transaction.Id },
+            response);
     }
 
     [HttpPost("bulk-create")]

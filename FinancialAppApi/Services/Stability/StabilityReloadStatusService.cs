@@ -175,7 +175,7 @@ public sealed class StabilityReloadStatusService
 
         var state = seed?.Opening ?? new ReloadState(0m, null, 0m, 0m);
         var balance = seed?.OpeningBalance ?? 0m;
-        var settled = new List<ReloadObligation>();
+        var obligationsById = new Dictionary<string, ReloadObligation>(StringComparer.Ordinal);
         // Financial dates decide which cycle owns each row, matching the cache. The replay
         // itself still preserves posting order within the cycle.
         foreach (var (year, month) in cycles)
@@ -187,13 +187,16 @@ public sealed class StabilityReloadStatusService
                 StabilityReloadLedger.DescribeAll(items, transaction =>
                     StabilityPlanRevisionService.At(revisions, transaction.PostedAt).StabilityAlloc));
             balance += items.Sum(transaction => CategoryAttributionService.GetCategoryAmount(transaction, "Stability"));
-            settled.AddRange((state.Obligations ?? []).Where(obligation => obligation.RemainingAmount <= 0m));
+            // Paid schedules can carry forward across cycles. Record the same withdrawal once
+            // for Ledger status while leaving its schedule credit in the FIFO replay state.
+            foreach (var obligation in (state.Obligations ?? []).Where(obligation => obligation.RemainingAmount <= 0m))
+                obligationsById[obligation.TransactionId] = obligation;
         }
 
-        return state with
-        {
-            Obligations = [.. settled, ..(state.Obligations ?? []).Where(obligation => obligation.RemainingAmount > 0m)]
-        };
+        foreach (var obligation in state.Obligations ?? [])
+            obligationsById[obligation.TransactionId] = obligation;
+
+        return state with { Obligations = obligationsById.Values.ToArray() };
     }
 
     /// <summary>

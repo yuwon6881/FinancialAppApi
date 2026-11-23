@@ -45,6 +45,35 @@ public sealed class StabilityReloadStatusServiceTests
         Assert.Equal(StabilityReloadStatus.Outstanding, statuses["untouched"]);
     }
 
+    // A fully repaid withdrawal is carried across cycle boundaries; it must still appear once in
+    // the status map (a duplicate key used to crash transaction create with HTTP 500).
+    [Fact]
+    public async Task RepaidWithdrawalCarriedAcrossCyclesAppearsOnceInTheStatusMap()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedSetting(context, target: 0m);
+        Add(context, "repaid", new DateTime(2026, 7, 1), -100m, StabilityReloadIntent.Required);
+        Add(context, "repayment", new DateTime(2026, 7, 2), 100m, StabilityReloadIntent.Unanswered,
+            ledgerCategory: "Transfer:Growth->Stability");
+        Add(context, "partly", new DateTime(2026, 8, 1), -80m, StabilityReloadIntent.Required);
+        Add(context, "partial-repayment", new DateTime(2026, 9, 1), 30m, StabilityReloadIntent.Unanswered,
+            ledgerCategory: "Transfer:Growth->Stability");
+        await context.SaveChangesAsync();
+
+        var clock = ClockAt(new DateTimeOffset(2026, 9, 15, 0, 0, 0, TimeSpan.Zero));
+        var service = new StabilityReloadStatusService(context, clock: clock);
+        var full = await service.GetStatusMapAsync();
+        Assert.Equal(StabilityReloadStatus.Complete, full["repaid"]);
+        Assert.Equal(StabilityReloadStatus.PartlyRepaid, full["partly"]);
+
+        await new CycleBalanceService(context, clock: clock).EnsureComputedThroughAsync(2026, 8, cycleDay: 1);
+        var seeded = await service.GetStatusMapAsync(forTransactionIds: ["repaid", "partly"]);
+        Assert.Equal(full["repaid"], seeded["repaid"]);
+        Assert.Equal(full["partly"], seeded["partly"]);
+        var open = await service.GetOpenStatusMapAsync();
+        Assert.Equal(StabilityReloadStatus.PartlyRepaid, Assert.Single(open).Value);
+    }
+
     // Seeding the replay from a cached cycle boundary must reach the same verdict as replaying from
     // the beginning of time. The drawdown here opens several cycles before the repayment that
     // partly discharges it, so a seeded replay only agrees if the carried FIFO queue (STAB-10) is
