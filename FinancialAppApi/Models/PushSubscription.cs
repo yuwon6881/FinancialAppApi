@@ -16,6 +16,9 @@ public class PushSubscription : IUserOwnedEntity
     [StringLength(200)]
     public string DeviceId { get; set; } = string.Empty;
 
+    [MaxLength(80)]
+    public string? DeviceLabel { get; set; }
+
     [Required]
     [StringLength(4096)]
     public string FcmToken { get; set; } = string.Empty;

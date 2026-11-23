@@ -35,10 +35,10 @@ public sealed class InvestmentAllocationServiceTests
         await context.SaveChangesAsync();
         var service = new InvestmentAllocationService(context);
 
-        var plan = await service.UpdatePlanAsync(
+        var (plan, error) = await service.UpdatePlanAsync(
             new InvestmentPlanMutationDto(60, 15, 25, 4, 7),
             CancellationToken.None);
-        var sleeveUpdated = await service.UpdateAllocationSleeveAsync(
+        var (sleeveFound, sleeveValid) = await service.UpdateAllocationSleeveAsync(
             first.Id,
             "usequity",
             CancellationToken.None);
@@ -46,8 +46,9 @@ public sealed class InvestmentAllocationServiceTests
             [second.Id, first.Id],
             CancellationToken.None);
 
-        Assert.Equal(60, plan.UsEquityTarget);
-        Assert.True(sleeveUpdated);
+        Assert.Null(error);
+        Assert.Equal(60, plan!.UsEquityTarget);
+        Assert.True(sleeveFound && sleeveValid);
         Assert.True(orderUpdated);
         Assert.Equal("USEquity", first.AllocationSleeve);
         Assert.Equal(1, first.AllocationOrder);

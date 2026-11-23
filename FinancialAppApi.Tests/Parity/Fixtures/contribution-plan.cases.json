@@ -62,6 +62,48 @@
         "isEstimated": false,
         "sleeves": { "USEquity": 60, "InternationalExUS": 30, "Bonds": 10 }
       }
+    },
+    {
+      "id": "custom-groups-with-cash",
+      "why": "Custom portfolio groups participate in the same contribution split as built-in groups.",
+      "input": {
+        "appCurrency": "USD",
+        "investedValue": 1000,
+        "values": { "USEquity": 600, "a1111111111111111111111111111111": 300, "Bonds": 100 },
+        "targets": { "USEquity": 60, "a1111111111111111111111111111111": 30, "Bonds": 10 },
+        "minimumNewMoney": 0,
+        "restoreTarget": false,
+        "routineContribution": 25,
+        "cyclesObserved": 3,
+        "availableCash": 75
+      },
+      "expected": {
+        "amount": 100,
+        "routineContribution": 25,
+        "isEstimated": false,
+        "sleeves": { "USEquity": 60, "a1111111111111111111111111111111": 30, "Bonds": 10 }
+      }
+    },
+    {
+      "id": "small-deposit-across-four-groups",
+      "why": "Cent correction cannot make a group allocation negative.",
+      "input": {
+        "appCurrency": "USD",
+        "investedValue": 0,
+        "values": { "USEquity": 0, "InternationalExUS": 0, "Bonds": 0, "a1111111111111111111111111111111": 0 },
+        "targets": { "USEquity": 25, "InternationalExUS": 25, "Bonds": 25, "a1111111111111111111111111111111": 25 },
+        "minimumNewMoney": 0,
+        "restoreTarget": false,
+        "routineContribution": 0.02,
+        "cyclesObserved": 1,
+        "availableCash": 0
+      },
+      "expected": {
+        "amount": 0.02,
+        "routineContribution": 0.02,
+        "isEstimated": false,
+        "sleeves": { "USEquity": 0, "InternationalExUS": 0, "Bonds": 0.01, "a1111111111111111111111111111111": 0.01 }
+      }
     }
   ]
 }

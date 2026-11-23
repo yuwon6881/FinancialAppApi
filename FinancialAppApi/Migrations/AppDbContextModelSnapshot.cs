@@ -815,7 +815,7 @@ namespace FinancialAppApi.Migrations
 
                     b.ToTable("InvestmentInstruments", t =>
                         {
-                            t.HasCheckConstraint("ck_investmentinstruments_allocationsleeve", "\"AllocationSleeve\" IS NULL OR \"AllocationSleeve\" IN ('USEquity', 'InternationalExUS', 'Bonds')");
+                            t.HasCheckConstraint("ck_investmentinstruments_allocationsleeve", "\"AllocationSleeve\" IS NULL OR \"AllocationSleeve\" IN ('USEquity', 'InternationalExUS', 'Bonds') OR (length(\"AllocationSleeve\") = 32 AND ltrim(\"AllocationSleeve\", '0123456789abcdef') = '')");
                         });
                 });
 
@@ -963,6 +963,9 @@ namespace FinancialAppApi.Migrations
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("GroupsJson")
+                        .HasColumnType("jsonb");
 
                     b.Property<decimal>("InternationalExUsTarget")
                         .HasColumnType("numeric(5,2)");
@@ -1554,6 +1557,10 @@ namespace FinancialAppApi.Migrations
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
+
+                    b.Property<string>("DeviceLabel")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
 
                     b.Property<bool>("Enabled")
                         .HasColumnType("boolean");

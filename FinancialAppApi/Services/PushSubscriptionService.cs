@@ -42,6 +42,7 @@ public sealed record PushStatusResult(
 
 public sealed record PushDeviceSummary(
     string Id,
+    string? DeviceLabel,
     bool IsCurrent,
     bool BillReminders,
     bool CategoryAlerts,
@@ -119,12 +120,13 @@ public class PushSubscriptionService
             .Where(s => s.Enabled)
             .OrderByDescending(s => s.UpdatedAt)
             .ThenBy(s => s.Id)
-            .Select(s => new { s.Id, s.DeviceId, s.BillRemindersEnabled, s.CategoryAlertsEnabled, s.CreatedAt, s.UpdatedAt })
+            .Select(s => new { s.Id, s.DeviceId, s.DeviceLabel, s.Platform, s.BillRemindersEnabled, s.CategoryAlertsEnabled, s.CreatedAt, s.UpdatedAt })
             .ToListAsync(cancellationToken);
 
         return rows
             .Select(row => new PushDeviceSummary(
                 row.Id,
+                row.DeviceLabel ?? (row.Platform == PushPlatform.Android ? "Android app" : row.Platform == PushPlatform.Ios ? "iOS app" : null),
                 !string.IsNullOrWhiteSpace(currentDeviceId) && row.DeviceId == currentDeviceId,
                 row.BillRemindersEnabled,
                 row.CategoryAlertsEnabled,
@@ -149,10 +151,12 @@ public class PushSubscriptionService
         bool? billReminders = null,
         bool? categoryAlerts = null,
         CancellationToken cancellationToken = default,
-        string platform = PushPlatform.Web)
+        string platform = PushPlatform.Web,
+        string? deviceLabel = null)
     {
         var now = _timeProvider.GetUtcNow().UtcDateTime;
         var normalizedPlatform = PushPlatform.Normalize(platform);
+        var label = string.IsNullOrWhiteSpace(deviceLabel) ? null : deviceLabel.Trim();
 
         // Re-registering an existing device replaces its token/enabled state in place rather
         // than accumulating a duplicate row (also enforced by the unique user+device index).
@@ -169,6 +173,7 @@ public class PushSubscriptionService
 
             existing.FcmToken = fcmToken;
             existing.Platform = normalizedPlatform;
+            existing.DeviceLabel = label ?? existing.DeviceLabel;
             existing.Enabled = true;
             existing.BillRemindersEnabled = wantsBills;
             existing.CategoryAlertsEnabled = wantsAlerts;
@@ -191,6 +196,7 @@ public class PushSubscriptionService
             DeviceId = deviceId,
             FcmToken = fcmToken,
             Platform = normalizedPlatform,
+            DeviceLabel = label,
             Enabled = true,
             BillRemindersEnabled = newBills,
             CategoryAlertsEnabled = newAlerts,
@@ -215,6 +221,7 @@ public class PushSubscriptionService
                 .FirstAsync(s => s.DeviceId == deviceId, cancellationToken);
             winner.FcmToken = fcmToken;
             winner.Platform = normalizedPlatform;
+            winner.DeviceLabel = label ?? winner.DeviceLabel;
             winner.Enabled = true;
             winner.BillRemindersEnabled = newBills || winner.BillRemindersEnabled;
             winner.CategoryAlertsEnabled = newAlerts || winner.CategoryAlertsEnabled;

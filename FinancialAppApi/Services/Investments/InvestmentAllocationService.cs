@@ -1,5 +1,4 @@
 using FinancialAppApi.Database;
-using FinancialAppApi.Models;
 using Microsoft.EntityFrameworkCore;
 
 namespace FinancialAppApi.Services.Investments;
@@ -11,7 +10,8 @@ public sealed record InvestmentPlanDto(
     decimal BondsTarget,
     decimal WatchDrift,
     decimal AlertDrift,
-    DateTime? UpdatedAt);
+    DateTime? UpdatedAt,
+    IReadOnlyList<InvestmentGroup> Groups);
 
 public sealed record InvestmentAllocationAssignmentDto(
     Guid InstrumentId,
@@ -85,13 +85,6 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
 {
     public const int AutomaticRefreshMinutes = 60;
 
-    private static readonly (string Key, string Label)[] SleeveDefinitions =
-    [
-        ("USEquity", "US Equity"),
-        ("InternationalExUS", "International ex-US"),
-        ("Bonds", "Bonds")
-    ];
-
     public async Task<InvestmentAllocationOverviewDto> BuildAsync(
         string appCurrency,
         IReadOnlyList<InvestmentHoldingDto> holdings,
@@ -104,6 +97,8 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
         var planEntity = await context.InvestmentPlans.AsNoTracking()
             .SingleOrDefaultAsync(cancellationToken);
         var plan = ToDto(planEntity);
+        var targets = Targets(plan);
+        var labels = plan.Groups.ToDictionary(group => group.Key, group => group.Label);
         var assignments = instruments.Select(value => new InvestmentAllocationAssignmentDto(
                 value.Id, value.Symbol, value.Name, value.AllocationSleeve, value.AllocationOrder))
             .OrderBy(value => value.Order)
@@ -115,8 +110,8 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
         foreach (var holding in holdings)
         {
             var assignment = instruments.FirstOrDefault(value => value.Id == holding.InstrumentId);
-            if (assignment?.AllocationSleeve is null)
-                reasons.Add($"{holding.Symbol} must be assigned to an investment-plan sleeve.");
+            if (assignment?.AllocationSleeve is not { } key || !targets.ContainsKey(key))
+                reasons.Add($"{holding.Symbol} must be assigned to a portfolio group.");
             if (holding.LatestPriceNative is null)
                 reasons.Add($"{holding.Symbol} does not have a current price.");
             if (holding.ValueApp is null)
@@ -158,14 +153,14 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
 
         if (holdings.Count == 0)
         {
-            var emptyValues = SleeveDefinitions.ToDictionary(value => value.Key, _ => 0m);
+            var emptyValues = targets.Keys.ToDictionary(key => key, _ => 0m);
             return new InvestmentAllocationOverviewDto(
                 "NotStarted", appCurrency, plan, assignments,
                 EmptySleeves(plan), [], cashReasons, freshness, 0, availableCash,
                 availableCash is null ? null : 0,
                 availableCash is null ? null : BuildContributionPlan(
-                    appCurrency, 0, emptyValues, Targets(plan), 0, false,
-                    usualGrowthDeposit, cyclesObserved, availableCash.Value));
+                    appCurrency, 0, emptyValues, targets, 0, false,
+                    usualGrowthDeposit, cyclesObserved, availableCash.Value, labels));
         }
 
         var incompleteReasons = reasons.Concat(cashReasons).Distinct().ToList();
@@ -187,8 +182,7 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
                 availableCash is null ? null : 0);
         }
 
-        var targets = Targets(plan);
-        var values = SleeveDefinitions.ToDictionary(
+        var values = plan.Groups.ToDictionary(
             definition => definition.Key,
             definition => holdings.Where(holding =>
                     instruments.First(instrument => instrument.Id == holding.InstrumentId)
@@ -198,7 +192,7 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
         var status = sleeves.Any(value => value.Status == "Alert")
             ? "Alert"
             : sleeves.Any(value => value.Status == "Watch") ? "Watch" : "OnTrack";
-        var minimumNewMoney = SleeveDefinitions.Max(definition =>
+        var minimumNewMoney = plan.Groups.Max(definition =>
             values[definition.Key] / (targets[definition.Key] / 100m) - investedValue);
         minimumNewMoney = Math.Max(0, minimumNewMoney);
 
@@ -206,7 +200,7 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
             ? new List<InvestmentAllocationRecommendationDto>()
             : BuildRecommendations(
                 appCurrency, investedValue, values, targets, availableCash.Value, usualGrowthDeposit,
-                plan.WatchDrift);
+                plan.WatchDrift, labels);
 
         return new InvestmentAllocationOverviewDto(
             status, appCurrency, plan, assignments, sleeves, recommendations, incompleteReasons,
@@ -214,91 +208,15 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
             availableCash is null ? null : RoundMoney(Math.Max(0, minimumNewMoney - availableCash.Value - (usualGrowthDeposit ?? 0))),
             availableCash is null ? null : BuildContributionPlan(
                 appCurrency, investedValue, values, targets, minimumNewMoney, status != "OnTrack",
-                usualGrowthDeposit, cyclesObserved, availableCash.Value));
-    }
-
-    public static string? ValidatePlan(InvestmentPlanMutationDto value)
-    {
-        if (value.UsEquityTarget <= 0 || value.InternationalExUsTarget <= 0 || value.BondsTarget <= 0)
-            return "Every sleeve target must be greater than zero.";
-        if (value.UsEquityTarget + value.InternationalExUsTarget + value.BondsTarget != 100)
-            return "Investment-plan targets must total exactly 100%.";
-        if (value.WatchDrift <= 0 || value.AlertDrift <= value.WatchDrift || value.AlertDrift > 100)
-            return "Alert drift must be greater than Watch drift, and both bands must be valid.";
-        return null;
-    }
-
-    public async Task<InvestmentPlanDto> UpdatePlanAsync(
-        InvestmentPlanMutationDto value,
-        CancellationToken cancellationToken)
-    {
-        var plan = await context.InvestmentPlans.SingleOrDefaultAsync(cancellationToken);
-        if (plan is null)
-        {
-            plan = new InvestmentPlan();
-            context.InvestmentPlans.Add(plan);
-        }
-
-        plan.UsEquityTarget = value.UsEquityTarget;
-        plan.InternationalExUsTarget = value.InternationalExUsTarget;
-        plan.BondsTarget = value.BondsTarget;
-        plan.WatchDrift = value.WatchDrift;
-        plan.AlertDrift = value.AlertDrift;
-        plan.UpdatedAt = DateTime.UtcNow;
-        await context.SaveChangesAsync(cancellationToken);
-        return ToDto(plan);
-    }
-
-    public async Task<bool> UpdateAllocationSleeveAsync(
-        Guid instrumentId,
-        string? sleeve,
-        CancellationToken cancellationToken)
-    {
-        var instrument = await context.InvestmentInstruments
-            .SingleOrDefaultAsync(value => value.Id == instrumentId, cancellationToken);
-        if (instrument is null) return false;
-
-        instrument.AllocationSleeve = sleeve is null
-            ? null
-            : InvestmentKinds.AllocationSleeves.Single(value =>
-                value.Equals(sleeve, StringComparison.OrdinalIgnoreCase));
-        instrument.UpdatedAt = DateTime.UtcNow;
-        await context.SaveChangesAsync(cancellationToken);
-        return true;
-    }
-
-    public async Task<bool> UpdateAllocationOrderAsync(
-        IReadOnlyList<Guid> instrumentIds,
-        CancellationToken cancellationToken)
-    {
-        var instruments = await context.InvestmentInstruments
-            .ToDictionaryAsync(value => value.Id, cancellationToken);
-        if (instruments.Count != instrumentIds.Count || instrumentIds.Any(id => !instruments.ContainsKey(id)))
-            return false;
-
-        for (var index = 0; index < instrumentIds.Count; index++)
-        {
-            var instrument = instruments[instrumentIds[index]];
-            instrument.AllocationOrder = index;
-            instrument.UpdatedAt = DateTime.UtcNow;
-        }
-
-        await context.SaveChangesAsync(cancellationToken);
-        return true;
+                usualGrowthDeposit, cyclesObserved, availableCash.Value, labels));
     }
 
     internal static string ClassifyDrift(decimal absoluteDrift, decimal watchDrift, decimal alertDrift)
         => absoluteDrift >= alertDrift ? "Alert" : absoluteDrift >= watchDrift ? "Watch" : "OnTrack";
 
-    public static InvestmentPlanDto ToDto(InvestmentPlan? value) => value is null
-        ? new InvestmentPlanDto(null, 66, 10, 24, 3, 5, null)
-        : new InvestmentPlanDto(
-            value.Id, value.UsEquityTarget, value.InternationalExUsTarget, value.BondsTarget,
-            value.WatchDrift, value.AlertDrift, value.UpdatedAt);
-
     private static IReadOnlyList<InvestmentSleeveAllocationDto> EmptySleeves(InvestmentPlanDto plan)
-        => SleeveDefinitions.Select(value => new InvestmentSleeveAllocationDto(
-            value.Key, value.Label, Targets(plan)[value.Key], null, 0, null, null, "NotStarted")).ToList();
+        => plan.Groups.Select(value => new InvestmentSleeveAllocationDto(
+            value.Key, value.Label, value.TargetPercentage, null, 0, null, null, "NotStarted")).ToList();
 
     private static IReadOnlyList<InvestmentSleeveAllocationDto> IncompleteSleeves(
         InvestmentPlanDto plan,
@@ -307,7 +225,7 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
     {
         var targets = Targets(plan);
         var assignments = instruments.ToDictionary(instrument => instrument.Id, instrument => instrument.AllocationSleeve);
-        return SleeveDefinitions.Select(definition =>
+        return plan.Groups.Select(definition =>
         {
             var members = holdings.Where(holding => assignments.GetValueOrDefault(holding.InstrumentId) == definition.Key).ToList();
             var value = members.Any(holding => holding.ValueApp is null)
@@ -324,7 +242,7 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
         IReadOnlyDictionary<string, decimal> values)
     {
         var targets = Targets(plan);
-        return SleeveDefinitions.Select(definition =>
+        return plan.Groups.Select(definition =>
         {
             var percentage = values[definition.Key] / total * 100m;
             var drift = percentage - targets[definition.Key];
@@ -337,128 +255,8 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
         }).ToList();
     }
 
-    /// <summary>
-    /// Splits one routine deposit across the sleeves by cash-flow rebalancing: new money fills
-    /// the gap to each sleeve's target first, and only what is left over is split by target
-    /// weight. Two properties make this the right formula for the routine case:
-    ///
-    /// * On a perfectly balanced portfolio every gap equals target% x contribution, so the split
-    ///   collapses to the plain target split — deposit 1000 against 33/33/34 and you are told to
-    ///   buy 330/330/340.
-    /// * When the mix has drifted, the same deposit leans toward whatever is underweight, so the
-    ///   portfolio converges on target without selling anything (and without triggering tax).
-    ///
-    /// A routine on-track amount may be too small to close every gap, so its gaps are scaled
-    /// proportionally. An off-track plan instead raises the amount to the exact no-sale total.
-    /// </summary>
-    internal static InvestmentContributionPlanDto? BuildContributionPlan(
-        string appCurrency,
-        decimal investedValue,
-        IReadOnlyDictionary<string, decimal> values,
-        IReadOnlyDictionary<string, decimal> targets,
-        decimal minimumNewMoney,
-        bool restoreTarget,
-        decimal? usualGrowthDeposit,
-        int cyclesObserved,
-        decimal availableCash)
-    {
-        // Cash already inside brokerage accounts participates in every plan. When the normal
-        // cash plus deposit rhythm cannot restore the target, raise the total to the exact
-        // no-sale amount instead of falling back to a separate sell-and-rebuy checklist.
-        var routineNewMoney = usualGrowthDeposit is > 0 ? usualGrowthDeposit.Value : 0;
-        var readyToInvest = availableCash + routineNewMoney;
-        var amount = restoreTarget ? Math.Max(readyToInvest, minimumNewMoney) : readyToInvest;
-        if (amount <= 0.005m) return null;
-        var isEstimated = usualGrowthDeposit is not > 0;
-
-        var projectedTotal = investedValue + amount;
-        var gaps = SleeveDefinitions.ToDictionary(
-            definition => definition.Key,
-            definition => Math.Max(0, projectedTotal * targets[definition.Key] / 100m - values[definition.Key]));
-        var totalGap = gaps.Values.Sum();
-
-        var allocations = SleeveDefinitions.ToDictionary(definition => definition.Key, _ => 0m);
-        if (totalGap <= 0.005m)
-        {
-            // Every sleeve is at or above its target share of the larger portfolio, which can only
-            // happen from rounding. Fall back to the plain target split.
-            foreach (var definition in SleeveDefinitions)
-                allocations[definition.Key] = amount * targets[definition.Key] / 100m;
-        }
-        else if (totalGap >= amount)
-        {
-            foreach (var definition in SleeveDefinitions)
-                allocations[definition.Key] = amount * gaps[definition.Key] / totalGap;
-        }
-        else
-        {
-            var leftover = amount - totalGap;
-            foreach (var definition in SleeveDefinitions)
-                allocations[definition.Key] = gaps[definition.Key] + leftover * targets[definition.Key] / 100m;
-        }
-
-        // Rounding to cents must not invent or lose money: the largest allocation absorbs the
-        // difference so the parts always add back up to the deposit the user is being told to make.
-        var rounded = SleeveDefinitions.ToDictionary(
-            definition => definition.Key,
-            definition => RoundMoney(allocations[definition.Key]));
-        var drift = RoundMoney(amount) - rounded.Values.Sum();
-        if (drift != 0)
-        {
-            var largest = SleeveDefinitions
-                .OrderByDescending(definition => rounded[definition.Key])
-                .First().Key;
-            rounded[largest] += drift;
-        }
-
-        var sleeves = SleeveDefinitions.Select(definition =>
-        {
-            var projectedValue = values[definition.Key] + rounded[definition.Key];
-            var projectedPercentage = projectedTotal <= 0 ? 0 : projectedValue / projectedTotal * 100m;
-            return new InvestmentContributionSleeveDto(
-                definition.Key,
-                definition.Label,
-                rounded[definition.Key],
-                RoundMoney(amount) <= 0 ? 0 : Math.Round(rounded[definition.Key] / RoundMoney(amount) * 100m, 1),
-                Math.Round(projectedPercentage, 2),
-                Math.Round(projectedPercentage - targets[definition.Key], 2));
-        }).ToList();
-
-        var depositBasis = cyclesObserved == 1
-            ? "your Growth deposit from the last completed cycle"
-            : $"the median of your Growth deposits across {cyclesObserved} completed cycles";
-        string basis;
-        if (restoreTarget && minimumNewMoney > readyToInvest + 0.005m)
-        {
-            var newMoney = Math.Max(0, amount - availableCash);
-            basis = availableCash > 0
-                ? $"The total needed to restore your target without selling. It includes {Format(availableCash, appCurrency)} of uninvested cash already in your brokerage accounts; the remaining {Format(newMoney, appCurrency)} is new money."
-                : "The total new money needed to restore your target without selling.";
-        }
-        else if (availableCash > 0 && usualGrowthDeposit is > 0)
-        {
-            basis = $"Includes {Format(availableCash, appCurrency)} of uninvested cash already in your brokerage accounts plus {depositBasis}.";
-        }
-        else if (availableCash > 0)
-        {
-            basis = "Uninvested cash already in your brokerage accounts.";
-        }
-        else
-        {
-            basis = char.ToUpperInvariant(depositBasis[0]) + depositBasis[1..] + ".";
-        }
-
-        return new InvestmentContributionPlanDto(
-            RoundMoney(amount), usualGrowthDeposit is > 0 ? RoundMoney(usualGrowthDeposit.Value) : null,
-            basis, cyclesObserved, isEstimated, sleeves);
-    }
-
-    private static Dictionary<string, decimal> Targets(InvestmentPlanDto plan) => new()
-    {
-        ["USEquity"] = plan.UsEquityTarget,
-        ["InternationalExUS"] = plan.InternationalExUsTarget,
-        ["Bonds"] = plan.BondsTarget
-    };
+    private static Dictionary<string, decimal> Targets(InvestmentPlanDto plan)
+        => plan.Groups.ToDictionary(group => group.Key, group => group.TargetPercentage);
 
     private static decimal? PositiveCash(IReadOnlyList<InvestmentCashBalanceDto> balances)
         => balances.Any(value => value.Amount > 0 && value.AmountApp is null)
@@ -476,6 +274,7 @@ public sealed record InvestmentPlanMutationDto(
     decimal InternationalExUsTarget,
     decimal BondsTarget,
     decimal WatchDrift,
-    decimal AlertDrift);
+    decimal AlertDrift,
+    IReadOnlyList<InvestmentGroup>? Groups = null);
 
 public sealed record AllocationSleeveMutationDto(string? Sleeve);

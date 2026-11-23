@@ -136,6 +136,22 @@ public class PushSubscriptionServiceTests
     }
 
     [Fact]
+    public async Task GetDevicesAsync_ShowsLabelAfterExistingDeviceRefreshAndKeepsItForOlderClients()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = new PushSubscriptionService(context);
+        await service.SubscribeAsync("phone", "token");
+        await service.SubscribeAsync("phone", "fresh-token", deviceLabel: "Chrome on Android");
+        await service.SubscribeAsync("phone", "newer-token");
+
+        var device = Assert.Single(await service.GetDevicesAsync("different-device"));
+        Assert.False(device.IsCurrent);
+        Assert.Equal("Chrome on Android", device.DeviceLabel);
+        Assert.True(device.BillReminders);
+        Assert.False(device.CategoryAlerts);
+    }
+
+    [Fact]
     public async Task SubscribeAsync_TurningOnOneChannelLeavesTheOtherAlone()
     {
         await using var context = TestHelpers.NewInMemoryContext();

@@ -82,6 +82,7 @@ public sealed class InvestmentPlan : IUserOwnedEntity
     public decimal UsEquityTarget { get; set; } = 66;
     public decimal InternationalExUsTarget { get; set; } = 10;
     public decimal BondsTarget { get; set; } = 24;
+    public string? GroupsJson { get; set; }
     public decimal WatchDrift { get; set; } = 3;
     public decimal AlertDrift { get; set; } = 5;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

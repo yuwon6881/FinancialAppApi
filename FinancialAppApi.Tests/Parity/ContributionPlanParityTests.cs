@@ -30,7 +30,8 @@ public sealed class ContributionPlanParityTests
                 ? null
                 : input.GetProperty("routineContribution").GetDecimal(),
             input.GetProperty("cyclesObserved").GetInt32(),
-            input.GetProperty("availableCash").GetDecimal());
+            input.GetProperty("availableCash").GetDecimal(),
+            targets.Keys.ToDictionary(key => key, key => key));
 
         var expected = item.GetProperty("expected");
         Assert.NotNull(plan);

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using System.ComponentModel.DataAnnotations;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
@@ -52,6 +53,7 @@ public class PushController : ControllerBase
         return Ok(devices.Select(device => new PushDeviceDto
         {
             Id = device.Id,
+            DeviceLabel = device.DeviceLabel,
             IsCurrent = device.IsCurrent,
             BillRemindersEnabled = device.BillReminders,
             CategoryAlertsEnabled = device.CategoryAlerts,
@@ -114,7 +116,8 @@ public class PushController : ControllerBase
             dto.BillReminders,
             dto.CategoryAlerts,
             HttpContext.RequestAborted,
-            PushPlatform.Normalize(dto.Platform));
+            PushPlatform.Normalize(dto.Platform),
+            dto.DeviceLabel);
 
         // Keyed on what this device now RECEIVES, not on whether this particular request asked to
         // turn the channel on. The client re-registers its rotated token on every launch and omits
@@ -187,6 +190,7 @@ public class PushStatusDto
 public class PushDeviceDto
 {
     public string Id { get; set; } = string.Empty;
+    public string? DeviceLabel { get; set; }
     public bool IsCurrent { get; set; }
     public bool BillRemindersEnabled { get; set; }
     public bool CategoryAlertsEnabled { get; set; }
@@ -197,6 +201,7 @@ public class PushDeviceDto
 public class PushSubscribeDto
 {
     public string DeviceId { get; set; } = string.Empty;
+    [StringLength(80)] public string? DeviceLabel { get; set; }
     public string FcmToken { get; set; } = string.Empty;
     public string Platform { get; set; } = PushPlatform.Web;
     public bool? BillReminders { get; set; }

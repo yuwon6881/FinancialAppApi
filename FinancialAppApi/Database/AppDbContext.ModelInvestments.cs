@@ -22,7 +22,7 @@ public partial class AppDbContext
             entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
             entity.ToTable(t => t.HasCheckConstraint(
                 "ck_investmentinstruments_allocationsleeve",
-                "\"AllocationSleeve\" IS NULL OR \"AllocationSleeve\" IN ('USEquity', 'InternationalExUS', 'Bonds')"));
+                "\"AllocationSleeve\" IS NULL OR \"AllocationSleeve\" IN ('USEquity', 'InternationalExUS', 'Bonds') OR (length(\"AllocationSleeve\") = 32 AND ltrim(\"AllocationSleeve\", '0123456789abcdef') = '')"));
         });
 
         modelBuilder.Entity<InvestmentInstrumentMarketMapping>(entity =>
@@ -42,6 +42,7 @@ public partial class AppDbContext
             entity.Property(e => e.UsEquityTarget).HasColumnType("numeric(5,2)");
             entity.Property(e => e.InternationalExUsTarget).HasColumnType("numeric(5,2)");
             entity.Property(e => e.BondsTarget).HasColumnType("numeric(5,2)");
+            entity.Property(e => e.GroupsJson).HasColumnType("jsonb");
             entity.Property(e => e.WatchDrift).HasColumnType("numeric(5,2)");
             entity.Property(e => e.AlertDrift).HasColumnType("numeric(5,2)");
             entity.Property(e => e.CreatedAt).HasColumnType("timestamp with time zone");

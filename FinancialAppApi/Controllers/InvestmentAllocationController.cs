@@ -1,5 +1,4 @@
 using FinancialAppApi.Filters;
-using FinancialAppApi.Models;
 using FinancialAppApi.Services.Investments;
 using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Contracts;
@@ -21,20 +20,17 @@ public sealed class InvestmentAllocationController(
     [HttpPut("allocation/plan")]
     public async Task<ActionResult<InvestmentPlanDto>> UpdatePlan(InvestmentPlanMutationDto dto)
     {
-        var error = InvestmentAllocationService.ValidatePlan(dto);
+        var (plan, error) = await allocationService.UpdatePlanAsync(dto, HttpContext.RequestAborted);
         if (error is not null) return BadRequest(new { message = error });
-
-        return Ok(await allocationService.UpdatePlanAsync(dto, HttpContext.RequestAborted));
+        return Ok(plan);
     }
 
     [HttpPut("instruments/{id:guid}/allocation-sleeve")]
     public async Task<IActionResult> UpdateAllocationSleeve(Guid id, AllocationSleeveMutationDto dto)
     {
-        if (dto.Sleeve is not null && !InvestmentKinds.AllocationSleeves.Contains(dto.Sleeve))
-            return BadRequest(new { message = "Sleeve must be US Equity, International ex-US, Bonds, or unassigned." });
-        return await allocationService.UpdateAllocationSleeveAsync(id, dto.Sleeve, HttpContext.RequestAborted)
-            ? NoContent()
-            : NotFound();
+        var (found, validGroup) = await allocationService.UpdateAllocationSleeveAsync(id, dto.Sleeve, HttpContext.RequestAborted);
+        if (!validGroup) return BadRequest(new { message = "Choose an existing portfolio group or leave the investment unassigned." });
+        return found ? NoContent() : NotFound();
     }
 
     [HttpPut("allocation/order")]

@@ -42,6 +42,33 @@ public sealed class InvestmentAllocationControllerTests
     }
 
     [Fact]
+    public async Task CustomGroupsAreUsedForAllocationAndCannotBeRemovedWhileAssigned()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var fund = new InvestmentInstrument { Symbol = "VNQ", Name = "Real estate fund", Type = "ETF", Currency = "USD" };
+        context.InvestmentInstruments.Add(fund);
+        await context.SaveChangesAsync();
+        var controller = NewController(context);
+        const string groupKey = "a1111111111111111111111111111111";
+        var custom = new InvestmentGroup(groupKey, "Real estate", 30, null);
+        var shares = new InvestmentGroup("USEquity", "US Equity", 70, "USEquity");
+        var plan = new InvestmentPlanMutationDto(66, 10, 24, 5, 10, [shares, custom]);
+        var reducedPlan = plan with { Groups = [shares with { TargetPercentage = 100 }] };
+
+        Assert.IsType<OkObjectResult>((await controller.UpdatePlan(plan)).Result);
+        Assert.IsType<NoContentResult>(await controller.UpdateAllocationSleeve(fund.Id, new(groupKey)));
+        var allocation = Assert.IsType<InvestmentAllocationOverviewDto>(
+            Assert.IsType<OkObjectResult>((await controller.GetAllocation()).Result).Value);
+        Assert.Equal(new[] { "US Equity", "Real estate" }, allocation.Sleeves.Select(group => group.Label));
+        Assert.Equal(groupKey, Assert.Single(allocation.Assignments).Sleeve);
+        Assert.IsType<BadRequestObjectResult>((await controller.UpdatePlan(reducedPlan)).Result);
+
+        Assert.IsType<NoContentResult>(await controller.UpdateAllocationSleeve(fund.Id, new("USEquity")));
+        Assert.IsType<OkObjectResult>((await controller.UpdatePlan(reducedPlan)).Result);
+        Assert.IsType<BadRequestObjectResult>(await controller.UpdateAllocationSleeve(fund.Id, new(groupKey)));
+    }
+
+    [Fact]
     public async Task ClassificationRoutesAreTenantScoped()
     {
         await using var context = TestHelpers.NewInMemoryContext("alice");

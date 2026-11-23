@@ -9,7 +9,8 @@ public sealed partial class InvestmentAllocationService
         IReadOnlyDictionary<string, decimal> targets,
         decimal cash,
         decimal? usualGrowthDeposit,
-        decimal watchDrift)
+        decimal watchDrift,
+        IReadOnlyDictionary<string, string> labels)
     {
         var recommendations = new List<InvestmentAllocationRecommendationDto>();
         var expectedGrowthDeposit = usualGrowthDeposit ?? 0;
@@ -34,13 +35,13 @@ public sealed partial class InvestmentAllocationService
         var projectedTotal = investedValue + funding;
         var projected = values.ToDictionary(value => value.Key, value => value.Value);
         var remainingFunding = funding;
-        var deficits = SleeveDefinitions
-            .Select(definition => new
+        var deficits = targets.Keys
+            .Select(key => new
             {
-                definition.Key,
-                definition.Label,
-                Amount = Math.Max(0, projectedTotal * targets[definition.Key] / 100m - projected[definition.Key]),
-                Drift = projected[definition.Key] / projectedTotal * 100m - targets[definition.Key]
+                Key = key,
+                Label = labels[key],
+                Amount = Math.Max(0, projectedTotal * targets[key] / 100m - projected[key]),
+                Drift = projected[key] / projectedTotal * 100m - targets[key]
             })
             .Where(value => value.Amount > 0.005m)
             .OrderBy(value => value.Drift)
@@ -57,15 +58,15 @@ public sealed partial class InvestmentAllocationService
                 $"Buy {Format(amount, currency)} of {deficit.Label} with new money."));
         }
 
-        var stillOutsideBand = SleeveDefinitions.Any(definition =>
-            Math.Abs(projected[definition.Key] / projectedTotal * 100m - targets[definition.Key]) >= watchDrift);
+        var stillOutsideBand = targets.Keys.Any(key =>
+            Math.Abs(projected[key] / projectedTotal * 100m - targets[key]) >= watchDrift);
         if (!stillOutsideBand) return recommendations;
 
-        var saleAmounts = SleeveDefinitions.Select(definition => new
+        var saleAmounts = targets.Keys.Select(key => new
         {
-            definition.Key,
-            definition.Label,
-            Amount = Math.Max(0, projected[definition.Key] - projectedTotal * targets[definition.Key] / 100m)
+            Key = key,
+            Label = labels[key],
+            Amount = Math.Max(0, projected[key] - projectedTotal * targets[key] / 100m)
         }).Where(value => value.Amount > 0.005m).ToList();
         foreach (var sale in saleAmounts)
         {
@@ -73,13 +74,13 @@ public sealed partial class InvestmentAllocationService
                 priority++, "Sell", sale.Key, RoundMoney(sale.Amount),
                 $"Only after investing new money, sell {Format(sale.Amount, currency)} of {sale.Label}."));
         }
-        foreach (var definition in SleeveDefinitions)
+        foreach (var key in targets.Keys)
         {
-            var difference = projectedTotal * targets[definition.Key] / 100m - projected[definition.Key];
+            var difference = projectedTotal * targets[key] / 100m - projected[key];
             if (difference <= 0.005m) continue;
             recommendations.Add(new InvestmentAllocationRecommendationDto(
-                priority++, "TransferBuy", definition.Key, RoundMoney(difference),
-                $"Reinvest {Format(difference, currency)} of sale proceeds into {definition.Label}."));
+                priority++, "TransferBuy", key, RoundMoney(difference),
+                $"Reinvest {Format(difference, currency)} of sale proceeds into {labels[key]}."));
         }
         return recommendations;
     }
