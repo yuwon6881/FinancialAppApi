@@ -88,7 +88,7 @@ public sealed class CashFlowForecastService(
                 .Where(account => string.Equals(account.Bucket, bucket, StringComparison.OrdinalIgnoreCase))
                 .Sum(account => balances.GetValueOrDefault(account.Id)));
 
-        var bills = await LoadBillsAsync(ledgerAccounts, periods[0].Start, today, horizonEnd, setting.CycleDay, ct);
+        var bills = await LoadBillsAsync(ledgerAccounts, today, horizonEnd, setting.CycleDay, ct);
         var skipped = scenario.SkippedBills.ToHashSet(StringComparer.Ordinal);
         var skippedBills = bills.Where(bill => bill.SourceId is not null && skipped.Contains(bill.SourceId)).ToList();
         var items = bills
@@ -130,50 +130,51 @@ public sealed class CashFlowForecastService(
     /// <summary>
     /// Every bill still to be paid between today and the horizon. Tracked occurrences supply what
     /// is still owed (a partial owes only its remainder; a resolved one owes nothing, and an
-    /// overdue unpaid one this cycle is still owed); dates beyond what is tracked come from the
+    /// overdue unresolved occurrence remains due across cycle boundaries). Untracked future dates come from the
     /// schedule at the bill's current amount. Paused bills are left out, as in committed totals.
     /// </summary>
     private async Task<List<ForecastItem>> LoadBillsAsync(
         IReadOnlyList<LedgerAccount> ledgerAccounts,
-        DateOnly cycleStart,
         DateOnly today,
         DateOnly horizonEnd,
         int cycleDay,
         CancellationToken ct)
     {
-        var currentCycleStart = AI.AiCycleResolver.Range(AI.AiCycleResolver.Current(today, cycleDay), cycleDay).FirstDate;
         var payments = await context.RecurringPayments.AsNoTracking().Where(payment => payment.Active).ToListAsync(ct);
         if (payments.Count == 0) return [];
 
-        var tracked = await context.RecurringPaymentOccurrences.AsNoTracking()
-            .Where(occurrence => occurrence.OccurrenceDate >= currentCycleStart && occurrence.OccurrenceDate <= horizonEnd)
-            .ToListAsync(ct);
-        var partialKeys = tracked
-            .Where(occurrence => occurrence.Status == RecurringOccurrenceStatus.PartiallyPaid)
-            .Select(occurrence => occurrence.RecurringPaymentId)
-            .ToHashSet(StringComparer.Ordinal);
-        var paidRows = partialKeys.Count == 0
+        var activeIds = payments.Select(payment => payment.Id).ToArray();
+        var trackedQuery = context.RecurringPaymentOccurrences.AsNoTracking()
+            .Where(occurrence => activeIds.Contains(occurrence.RecurringPaymentId)
+                && occurrence.OccurrenceDate <= horizonEnd);
+        // Older resolved rows can't affect the projection. Query overdue rows by unresolved status.
+        var tracked = await trackedQuery.Where(occurrence => occurrence.OccurrenceDate >= today
+            || occurrence.Status == RecurringOccurrenceStatus.Pending
+            || occurrence.Status == RecurringOccurrenceStatus.PartiallyPaid).ToListAsync(ct);
+        var paidRows = !tracked.Any(occurrence => occurrence.Status == RecurringOccurrenceStatus.PartiallyPaid)
             ? []
-            : await context.Transactions.AsNoTracking()
-                .Where(transaction => transaction.RecurringPaymentId != null
-                    && partialKeys.Contains(transaction.RecurringPaymentId)
-                    && transaction.RecurringOccurrenceDate >= currentCycleStart
-                    && transaction.RecurringOccurrenceDate <= horizonEnd)
-                .ToListAsync(ct);
+            : await (
+                from occurrence in trackedQuery
+                where occurrence.Status == RecurringOccurrenceStatus.PartiallyPaid
+                join transaction in context.Transactions.AsNoTracking()
+                    on new { PaymentId = occurrence.RecurringPaymentId, Date = (DateOnly?)occurrence.OccurrenceDate }
+                    equals new { PaymentId = transaction.RecurringPaymentId, Date = transaction.RecurringOccurrenceDate }
+                select transaction).ToListAsync(ct);
         var paidByOccurrence = RecurringOccurrenceAmounts.PaidByOccurrence(paidRows);
 
         var bucketByAccount = ledgerAccounts.ToDictionary(account => account.Id, account => account.Bucket, StringComparer.Ordinal);
         var trackedByKey = tracked
             .GroupBy(occurrence => (occurrence.RecurringPaymentId, occurrence.OccurrenceDate))
             .ToDictionary(group => group.Key, group => group.First());
+        var trackedDates = tracked.ToLookup(occurrence => occurrence.RecurringPaymentId, occurrence => occurrence.OccurrenceDate);
 
         var items = new List<ForecastItem>();
         foreach (var payment in payments)
         {
             var dates = occurrences
-                .GetOccurrencesInRange(payment, currentCycleStart.ToDateTime(TimeOnly.MinValue), horizonEnd.ToDateTime(TimeOnly.MinValue), cycleDay)
+                .GetOccurrencesInRange(payment, today.ToDateTime(TimeOnly.MinValue), horizonEnd.ToDateTime(TimeOnly.MinValue), cycleDay)
                 .Select(DateOnly.FromDateTime)
-                .Concat(tracked.Where(occurrence => occurrence.RecurringPaymentId == payment.Id).Select(occurrence => occurrence.OccurrenceDate))
+                .Concat(trackedDates[payment.Id])
                 .Distinct()
                 .OrderBy(date => date);
             foreach (var date in dates)
@@ -187,8 +188,7 @@ public sealed class CashFlowForecastService(
                 }
                 else
                 {
-                    // Untracked past dates were never billed, so only today onwards is owed.
-                    owed = date < today ? 0m : Math.Abs(payment.Amount);
+                    owed = Math.Abs(payment.Amount);
                 }
                 if (owed <= 0m) continue;
 
@@ -199,7 +199,7 @@ public sealed class CashFlowForecastService(
 
                 // An overdue bill is still owed now, so it lands on the first forecast day.
                 items.Add(new ForecastItem(
-                    date < cycleStart ? cycleStart : date,
+                    date < today ? today : date,
                     -owed,
                     bucket,
                     payment.Name,

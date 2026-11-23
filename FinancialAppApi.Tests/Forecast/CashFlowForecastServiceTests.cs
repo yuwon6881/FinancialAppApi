@@ -140,6 +140,45 @@ public sealed class CashFlowForecastServiceTests
     }
 
     [Fact]
+    public async Task AnOverduePartialFromAPreviousCycle_ProjectsItsRemainderToday()
+    {
+        await using var context = Seed();
+        var due = new DateOnly(2026, 10, 5);
+        context.RecurringPaymentOccurrences.Add(new RecurringPaymentOccurrence
+        {
+            Id = "occ-oct",
+            UserId = TestHelpers.DefaultUserId,
+            RecurringPaymentId = "gym",
+            OccurrenceDate = due,
+            Name = "Gym",
+            ScheduledAmount = 200m,
+            Status = RecurringOccurrenceStatus.PartiallyPaid,
+        });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "gym-partial",
+            UserId = TestHelpers.DefaultUserId,
+            Date = due.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc),
+            PostedAt = due.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc),
+            Description = "Partial payment",
+            Category = "Health",
+            LedgerCategory = "Essentials",
+            Amount = -50m,
+            AccountId = TestHelpers.AccountIdFor("Essentials"),
+            RecurringPaymentId = "gym",
+            RecurringOccurrenceDate = due,
+        });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context).ForecastAsync(Scenario(), CancellationToken.None);
+
+        var overdue = Assert.Single(response.Forecast.Cycles[0].Lines);
+        Assert.Equal(Today, overdue.Date);
+        Assert.Equal(-150m, overdue.Amount);
+        Assert.Equal(CashFlowForecastService.BillKey("gym", due), overdue.SourceId);
+    }
+
+    [Fact]
     public async Task ScenarioItems_AreEvaluated_WithoutWritingAnything()
     {
         await using var context = Seed();

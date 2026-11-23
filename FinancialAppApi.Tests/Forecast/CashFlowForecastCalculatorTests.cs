@@ -53,6 +53,16 @@ public sealed class CashFlowForecastCalculatorTests
     }
 
     [Fact]
+    public void ExplicitZero_IsKnownWithoutAddingAnyMovements()
+    {
+        var result = CashFlowForecastCalculator.Project(Input(income: 0m, everyday: 0m));
+
+        Assert.True(result.IncomeKnown);
+        Assert.True(result.EverydaySpendingIncluded);
+        Assert.All(result.Cycles, cycle => Assert.Empty(cycle.Lines));
+    }
+
+    [Fact]
     public void StabilityReachingItsTarget_RedirectsTheSurplus_AndRecordsWhen()
     {
         // 9,500 + 720 would pass the 10,000 target, so only 500 goes to Stability in December

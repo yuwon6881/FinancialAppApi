@@ -191,8 +191,8 @@ public static class CashFlowForecastCalculator
 
         return new CashFlowForecastResult(
             cycles,
-            input.IncomePerCycle is > 0m,
-            input.EverydaySpendingPerCycle is > 0m,
+            input.IncomePerCycle.HasValue,
+            input.EverydaySpendingPerCycle.HasValue,
             reachedOn);
     }
 
