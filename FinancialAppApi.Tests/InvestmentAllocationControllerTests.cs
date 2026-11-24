@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using FinancialAppApi.Controllers;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services.Investments;
@@ -41,10 +42,65 @@ public sealed class InvestmentAllocationControllerTests
 
         Assert.IsType<OkObjectResult>((await controller.UpdatePlan(plan with { TargetsEnabled = true })).Result);
         Assert.Equal(100, Assert.Single((await Read()).Sleeves).TargetPercentage);
-        Assert.IsType<BadRequestObjectResult>((await controller.UpdatePlan(plan with { Groups = [] })).Result);
-        Assert.IsType<NoContentResult>(await controller.UpdateAllocationSleeve(fund.Id, new(null)));
         Assert.IsType<OkObjectResult>((await controller.UpdatePlan(plan with { Groups = [] })).Result);
-        Assert.Empty((await Read()).Plan.Groups);
+        var emptied = await Read();
+        Assert.Empty(emptied.Plan.Groups);
+        Assert.Null(Assert.Single(emptied.Assignments).Sleeve);
+    }
+
+    [Fact]
+    public async Task RemovingAGroupReleasesItsInvestmentsAndUndoPutsThemBack()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.InvestmentPlans.Add(InvestmentAllocationServiceTests.MigratedPlan());
+        var us = new InvestmentInstrument { Symbol = "VOO", Name = "US", Type = "ETF", AllocationSleeve = "USEquity" };
+        var bonds = new InvestmentInstrument { Symbol = "BND", Name = "Bonds", Type = "ETF", AllocationSleeve = "Bonds" };
+        context.InvestmentInstruments.AddRange(us, bonds);
+        await context.SaveChangesAsync();
+        var controller = NewController(context);
+        var original = InvestmentAllocationService.ToDto(await context.InvestmentPlans.SingleAsync()).Groups;
+        var withoutBonds = new[]
+        {
+            original[0] with { TargetPercentage = 80 },
+            original[1] with { TargetPercentage = 20 }
+        };
+
+        Assert.IsType<OkObjectResult>((await controller.UpdatePlan(
+            new InvestmentPlanMutationDto(null, null, null, 3, 5, withoutBonds))).Result);
+        Assert.Equal("USEquity", us.AllocationSleeve);
+        Assert.Null(bonds.AllocationSleeve);
+
+        // A restore naming a group the plan does not contain is ignored rather than reviving it.
+        Assert.IsType<OkObjectResult>((await controller.UpdatePlan(new InvestmentPlanMutationDto(
+            null, null, null, 3, 5, original,
+            RestoreAssignments: [new(bonds.Id, "Bonds"), new(us.Id, "Missing")]))).Result);
+        Assert.Equal("Bonds", bonds.AllocationSleeve);
+        Assert.Equal("USEquity", us.AllocationSleeve);
+    }
+
+    [Fact]
+    public async Task GroupsMayHoldZeroTargetsOnlyWhileTargetsAreOff()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var controller = NewController(context);
+        InvestmentGroup[] groups =
+        [
+            new("a1111111111111111111111111111111", "Growth", 0, null),
+            new("b2222222222222222222222222222222", "Income", 0, null)
+        ];
+        var off = new InvestmentPlanMutationDto(null, null, null, 3, 5, groups, true, false);
+
+        Assert.IsType<OkObjectResult>((await controller.UpdatePlan(off)).Result);
+        Assert.IsType<BadRequestObjectResult>((await controller.UpdatePlan(off with { TargetsEnabled = true })).Result);
+        Assert.IsType<OkObjectResult>((await controller.UpdatePlan(off with
+        {
+            TargetsEnabled = true,
+            Groups = [groups[0] with { TargetPercentage = 60 }, groups[1] with { TargetPercentage = 40 }]
+        })).Result);
+        Assert.IsType<BadRequestObjectResult>((await controller.UpdatePlan(off with
+        {
+            Groups = [groups[0] with { TargetPercentage = -1 }, groups[1]]
+        })).Result);
     }
 
     [Fact]
@@ -82,7 +138,7 @@ public sealed class InvestmentAllocationControllerTests
     }
 
     [Fact]
-    public async Task CustomGroupsAreUsedForAllocationAndCannotBeRemovedWhileAssigned()
+    public async Task CustomGroupsAreUsedForAllocationAndRemovingOneReleasesItsInvestments()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         var fund = new InvestmentInstrument { Symbol = "VNQ", Name = "Real estate fund", Type = "ETF", Currency = "USD" };
@@ -102,11 +158,10 @@ public sealed class InvestmentAllocationControllerTests
             Assert.IsType<OkObjectResult>((await controller.GetAllocation()).Result).Value);
         Assert.Equal(new[] { "US Equity", "Real estate" }, allocation.Sleeves.Select(group => group.Label));
         Assert.Equal(groupKey, Assert.Single(allocation.Assignments).Sleeve);
-        Assert.IsType<BadRequestObjectResult>((await controller.UpdatePlan(reducedPlan)).Result);
-
-        Assert.IsType<NoContentResult>(await controller.UpdateAllocationSleeve(fund.Id, new("USEquity")));
         Assert.IsType<OkObjectResult>((await controller.UpdatePlan(reducedPlan)).Result);
+        Assert.Null(fund.AllocationSleeve);
         Assert.IsType<BadRequestObjectResult>(await controller.UpdateAllocationSleeve(fund.Id, new(groupKey)));
+        Assert.IsType<NoContentResult>(await controller.UpdateAllocationSleeve(fund.Id, new("USEquity")));
     }
 
     [Fact]

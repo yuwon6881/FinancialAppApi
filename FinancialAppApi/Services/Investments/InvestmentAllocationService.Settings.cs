@@ -8,7 +8,12 @@ public sealed record InvestmentGroup(string Key, string Label, decimal TargetPer
 
 public sealed partial class InvestmentAllocationService
 {
-    internal static string? ValidatePlan(InvestmentPlanMutationDto value, IReadOnlyList<InvestmentGroup> groups)
+    /// <summary>
+    /// Targets are checked only while they are in use. A group added while targets are off carries
+    /// no meaningful share yet, so it may hold zero until the person turns targets on and sets a mix.
+    /// </summary>
+    internal static string? ValidatePlan(
+        InvestmentPlanMutationDto value, IReadOnlyList<InvestmentGroup> groups, bool targetsActive = true)
     {
         if (groups.Count > 20)
             return "Use at most 20 portfolio groups.";
@@ -19,8 +24,10 @@ public sealed partial class InvestmentAllocationService
         if (groups.Select(group => group.Key).Distinct(StringComparer.OrdinalIgnoreCase).Count() != groups.Count
             || groups.Select(group => group.Label.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).Count() != groups.Count)
             return "Each group must have a different name and identifier.";
-        if (groups.Any(group => group.TargetPercentage is <= 0 or > 100 || decimal.Round(group.TargetPercentage, 2) != group.TargetPercentage)
-            || (groups.Count > 0 && groups.Sum(group => group.TargetPercentage) != 100))
+        if (groups.Any(group => group.TargetPercentage is < 0 or > 100 || decimal.Round(group.TargetPercentage, 2) != group.TargetPercentage))
+            return "Group targets must be between 0% and 100%.";
+        if (targetsActive && groups.Count > 0
+            && (groups.Any(group => group.TargetPercentage <= 0) || groups.Sum(group => group.TargetPercentage) != 100))
             return "Group targets must be positive and total exactly 100%.";
         if (value.WatchDrift <= 0 || value.AlertDrift <= value.WatchDrift || value.AlertDrift > 100
             || decimal.Round(value.WatchDrift, 2) != value.WatchDrift || decimal.Round(value.AlertDrift, 2) != value.AlertDrift)
@@ -38,10 +45,15 @@ public sealed partial class InvestmentAllocationService
         var requested = value.Groups ?? ApplyLegacyTargets(value, previous.Groups);
         if (requested is null)
             return (null, "Reload the app to edit this investment plan.");
-        var error = ValidatePlan(value, requested);
+        var groupingEnabled = value.GroupingEnabled ?? previous.GroupingEnabled;
+        var targetsEnabled = value.TargetsEnabled ?? previous.TargetsEnabled;
+        var error = ValidatePlan(value, requested, groupingEnabled && targetsEnabled);
         if (error is not null) return (null, error);
         var existingKeys = previous.Groups.Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
-        if (requested.Any(group => !existingKeys.Contains(group.Key) && !Guid.TryParseExact(group.Key, "N", out _)))
+        // New groups get generated keys; the original standard keys may also return, so undoing the
+        // removal of a migrated group restores the same key its investments and history still use.
+        if (requested.Any(group => !existingKeys.Contains(group.Key) && !Guid.TryParseExact(group.Key, "N", out _)
+            && !InvestmentKinds.ForecastClasses.Contains(group.Key)))
             return (null, "Reload the app to add a new portfolio group.");
 
         var groups = requested
@@ -52,10 +64,7 @@ public sealed partial class InvestmentAllocationService
                 ForecastClass = InvestmentKinds.ForecastClasses.FirstOrDefault(item =>
                     item.Equals(group.ForecastClass, StringComparison.OrdinalIgnoreCase))
             }).ToArray();
-        var keys = groups.Select(group => group.Key).ToArray();
-        if (await context.InvestmentInstruments.AnyAsync(instrument =>
-            instrument.AllocationSleeve != null && !keys.Contains(instrument.AllocationSleeve), cancellationToken))
-            return (null, "Move investments to another portfolio group before removing their group.");
+        var keys = groups.Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
 
         if (plan is null)
         {
@@ -63,12 +72,33 @@ public sealed partial class InvestmentAllocationService
             context.InvestmentPlans.Add(plan);
         }
 
+        // Removing a group releases its investments in the same save, so a plan never points an
+        // investment at a group that no longer exists. Undo sends those assignments back.
+        var now = DateTime.UtcNow;
+        var restore = (value.RestoreAssignments ?? [])
+            .Where(item => item.Sleeve is not null && keys.Contains(item.Sleeve))
+            .GroupBy(item => item.InstrumentId)
+            .ToDictionary(item => item.Key, item => item.Last().Sleeve!);
+        var restoreIds = restore.Keys.ToList();
+        var instruments = await context.InvestmentInstruments
+            .Where(instrument => instrument.AllocationSleeve != null || restoreIds.Contains(instrument.Id))
+            .ToListAsync(cancellationToken);
+        foreach (var instrument in instruments)
+        {
+            var sleeve = restore.TryGetValue(instrument.Id, out var restored)
+                ? restored
+                : instrument.AllocationSleeve is { } current && keys.Contains(current) ? current : null;
+            if (sleeve == instrument.AllocationSleeve) continue;
+            instrument.AllocationSleeve = sleeve;
+            instrument.UpdatedAt = now;
+        }
+
         plan.GroupsJson = JsonSerializer.Serialize(groups);
-        plan.GroupingEnabled = value.GroupingEnabled ?? previous.GroupingEnabled;
-        plan.TargetsEnabled = value.TargetsEnabled ?? previous.TargetsEnabled;
+        plan.GroupingEnabled = groupingEnabled;
+        plan.TargetsEnabled = targetsEnabled;
         plan.WatchDrift = value.WatchDrift;
         plan.AlertDrift = value.AlertDrift;
-        plan.UpdatedAt = DateTime.UtcNow;
+        plan.UpdatedAt = now;
         await context.SaveChangesAsync(cancellationToken);
         return (ToDto(plan), null);
     }

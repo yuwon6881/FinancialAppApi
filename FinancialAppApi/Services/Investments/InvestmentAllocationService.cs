@@ -306,6 +306,10 @@ public sealed record InvestmentPlanMutationDto(
     decimal AlertDrift,
     IReadOnlyList<InvestmentGroup>? Groups = null,
     bool? GroupingEnabled = null,
-    bool? TargetsEnabled = null);
+    bool? TargetsEnabled = null,
+    IReadOnlyList<InvestmentAssignmentRestoreDto>? RestoreAssignments = null);
+
+/// <summary>An assignment an undo puts back after the save it reverses removed its group.</summary>
+public sealed record InvestmentAssignmentRestoreDto(Guid InstrumentId, string? Sleeve);
 
 public sealed record AllocationSleeveMutationDto(string? Sleeve);
