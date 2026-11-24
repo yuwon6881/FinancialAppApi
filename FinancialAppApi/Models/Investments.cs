@@ -9,7 +9,7 @@ public static class InvestmentKinds
         "Stock", "ETF", "MutualFund"
     };
 
-    public static readonly HashSet<string> AllocationSleeves = new(StringComparer.OrdinalIgnoreCase)
+    public static readonly HashSet<string> ForecastClasses = new(StringComparer.OrdinalIgnoreCase)
     {
         "USEquity", "InternationalExUS", "Bonds"
     };
@@ -79,10 +79,9 @@ public sealed class InvestmentPlan : IUserOwnedEntity
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     [Required] public string UserId { get; set; } = string.Empty;
-    public decimal UsEquityTarget { get; set; } = 66;
-    public decimal InternationalExUsTarget { get; set; } = 10;
-    public decimal BondsTarget { get; set; } = 24;
-    public string? GroupsJson { get; set; }
+    public bool GroupingEnabled { get; set; }
+    public bool TargetsEnabled { get; set; }
+    public string GroupsJson { get; set; } = "[]";
     public decimal WatchDrift { get; set; } = 3;
     public decimal AlertDrift { get; set; } = 5;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

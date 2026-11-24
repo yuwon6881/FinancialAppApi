@@ -8,27 +8,19 @@ public sealed record InvestmentGroup(string Key, string Label, decimal TargetPer
 
 public sealed partial class InvestmentAllocationService
 {
-    private static InvestmentGroup[] DefaultGroups(decimal us, decimal international, decimal bonds) =>
-    [
-        new("USEquity", "US Equity", us, "USEquity"),
-        new("InternationalExUS", "International ex-US", international, "InternationalExUS"),
-        new("Bonds", "Bonds", bonds, "Bonds")
-    ];
-
-    public static string? ValidatePlan(InvestmentPlanMutationDto value)
+    internal static string? ValidatePlan(InvestmentPlanMutationDto value, IReadOnlyList<InvestmentGroup> groups)
     {
-        var groups = value.Groups ?? DefaultGroups(value.UsEquityTarget, value.InternationalExUsTarget, value.BondsTarget);
-        if (groups.Count is < 1 or > 20)
-            return "Use between 1 and 20 portfolio groups.";
+        if (groups.Count > 20)
+            return "Use at most 20 portfolio groups.";
         if (groups.Any(group => group is null || string.IsNullOrWhiteSpace(group.Label) || group.Label.Trim().Length > 60
-            || (!InvestmentKinds.AllocationSleeves.Contains(group.Key ?? "") && !Guid.TryParseExact(group.Key, "N", out _))
-            || (group.ForecastClass is not null && !InvestmentKinds.AllocationSleeves.Contains(group.ForecastClass))))
+            || group.Key is not { Length: >= 1 and <= 32 } || !group.Key.All(char.IsAsciiLetterOrDigit)
+            || (group.ForecastClass is not null && !InvestmentKinds.ForecastClasses.Contains(group.ForecastClass))))
             return "Each group needs a valid name, identifier and forecast assumption.";
         if (groups.Select(group => group.Key).Distinct(StringComparer.OrdinalIgnoreCase).Count() != groups.Count
             || groups.Select(group => group.Label.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).Count() != groups.Count)
             return "Each group must have a different name and identifier.";
         if (groups.Any(group => group.TargetPercentage is <= 0 or > 100 || decimal.Round(group.TargetPercentage, 2) != group.TargetPercentage)
-            || groups.Sum(group => group.TargetPercentage) != 100)
+            || (groups.Count > 0 && groups.Sum(group => group.TargetPercentage) != 100))
             return "Group targets must be positive and total exactly 100%.";
         if (value.WatchDrift <= 0 || value.AlertDrift <= value.WatchDrift || value.AlertDrift > 100
             || decimal.Round(value.WatchDrift, 2) != value.WatchDrift || decimal.Round(value.AlertDrift, 2) != value.AlertDrift)
@@ -40,20 +32,25 @@ public sealed partial class InvestmentAllocationService
         InvestmentPlanMutationDto value,
         CancellationToken cancellationToken)
     {
-        var error = ValidatePlan(value);
-        if (error is not null) return (null, error);
-
         await using var lease = await LockPlanAsync(cancellationToken);
         var plan = await context.InvestmentPlans.SingleOrDefaultAsync(cancellationToken);
-        if (value.Groups is null && plan?.GroupsJson is not null)
-            return (null, "Reload the app to edit these portfolio groups.");
+        var previous = ToDto(plan);
+        var requested = value.Groups ?? ApplyLegacyTargets(value, previous.Groups);
+        if (requested is null)
+            return (null, "Reload the app to edit this investment plan.");
+        var error = ValidatePlan(value, requested);
+        if (error is not null) return (null, error);
+        var existingKeys = previous.Groups.Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
+        if (requested.Any(group => !existingKeys.Contains(group.Key) && !Guid.TryParseExact(group.Key, "N", out _)))
+            return (null, "Reload the app to add a new portfolio group.");
 
-        var groups = (value.Groups ?? DefaultGroups(value.UsEquityTarget, value.InternationalExUsTarget, value.BondsTarget))
+        var groups = requested
             .Select(group => group with
             {
-                Key = CanonicalGroupKey(group.Key),
+                Key = Guid.TryParseExact(group.Key, "N", out var id) ? id.ToString("N") : group.Key,
                 Label = group.Label.Trim(),
-                ForecastClass = group.ForecastClass is null ? null : CanonicalGroupKey(group.ForecastClass)
+                ForecastClass = InvestmentKinds.ForecastClasses.FirstOrDefault(item =>
+                    item.Equals(group.ForecastClass, StringComparison.OrdinalIgnoreCase))
             }).ToArray();
         var keys = groups.Select(group => group.Key).ToArray();
         if (await context.InvestmentInstruments.AnyAsync(instrument =>
@@ -66,18 +63,9 @@ public sealed partial class InvestmentAllocationService
             context.InvestmentPlans.Add(plan);
         }
 
-        // Keep the original columns readable by older clients and retain the legacy mutation path
-        // while the plan uses only the original groups with their original names and assumptions.
-        var standard = DefaultGroups(0, 0, 0);
-        var isDefaultShape = groups.Length == standard.Length && groups.Zip(standard).All(pair =>
-            pair.First with { TargetPercentage = 0 } == pair.Second);
-        if (isDefaultShape)
-        {
-            plan.UsEquityTarget = groups[0].TargetPercentage;
-            plan.InternationalExUsTarget = groups[1].TargetPercentage;
-            plan.BondsTarget = groups[2].TargetPercentage;
-        }
-        plan.GroupsJson = isDefaultShape ? null : JsonSerializer.Serialize(groups);
+        plan.GroupsJson = JsonSerializer.Serialize(groups);
+        plan.GroupingEnabled = value.GroupingEnabled ?? previous.GroupingEnabled;
+        plan.TargetsEnabled = value.TargetsEnabled ?? previous.TargetsEnabled;
         plan.WatchDrift = value.WatchDrift;
         plan.AlertDrift = value.AlertDrift;
         plan.UpdatedAt = DateTime.UtcNow;
@@ -99,6 +87,7 @@ public sealed partial class InvestmentAllocationService
         if (sleeve is not null)
         {
             var plan = await context.InvestmentPlans.AsNoTracking().SingleOrDefaultAsync(cancellationToken);
+            if (plan?.GroupingEnabled != true) return (true, false);
             group = ToDto(plan).Groups.FirstOrDefault(value => value.Key.Equals(sleeve, StringComparison.OrdinalIgnoreCase));
             if (group is null) return (true, false);
         }
@@ -131,18 +120,23 @@ public sealed partial class InvestmentAllocationService
 
     public static InvestmentPlanDto ToDto(InvestmentPlan? value)
     {
-        var us = value?.UsEquityTarget ?? 66;
-        var international = value?.InternationalExUsTarget ?? 10;
-        var bonds = value?.BondsTarget ?? 24;
-        var groups = value?.GroupsJson is { } json
+        var groups = value is not null && value.GroupsJson is { } json
             ? JsonSerializer.Deserialize<InvestmentGroup[]>(json) ?? throw new InvalidOperationException("Missing investment groups.")
-            : DefaultGroups(us, international, bonds);
-        return new InvestmentPlanDto(value?.Id, us, international, bonds,
-            value?.WatchDrift ?? 3, value?.AlertDrift ?? 5, value?.UpdatedAt, groups);
+            : [];
+        return new InvestmentPlanDto(value?.Id, value?.WatchDrift ?? 3, value?.AlertDrift ?? 5,
+            value?.UpdatedAt, groups, value?.GroupingEnabled ?? false, value?.TargetsEnabled ?? false);
     }
 
-    private static string CanonicalGroupKey(string key) => InvestmentKinds.AllocationSleeves
-        .FirstOrDefault(standard => standard.Equals(key, StringComparison.OrdinalIgnoreCase)) ?? key.ToLowerInvariant();
+    // An older client can replay a queued percentage edit against the same migrated groups.
+    private static InvestmentGroup[]? ApplyLegacyTargets(InvestmentPlanMutationDto value, IReadOnlyList<InvestmentGroup> groups)
+    {
+        if (value.UsEquityTarget is not { } us || value.InternationalExUsTarget is not { } international
+            || value.BondsTarget is not { } bonds) return null;
+        var targets = new Dictionary<string, decimal> { ["USEquity"] = us, ["InternationalExUS"] = international, ["Bonds"] = bonds };
+        return groups.Count == targets.Count && groups.All(group => targets.ContainsKey(group.Key))
+            ? groups.Select(group => group with { TargetPercentage = targets[group.Key] }).ToArray()
+            : null;
+    }
 
     private Task<IAsyncDisposable> LockPlanAsync(CancellationToken cancellationToken) =>
         PostgresAdvisoryLock.AcquireAsync(context, $"financial-app:investment-plan:{context.CurrentUserId}", cancellationToken);

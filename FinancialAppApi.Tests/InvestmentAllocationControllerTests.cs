@@ -9,12 +9,52 @@ namespace FinancialAppApi.Tests;
 public sealed class InvestmentAllocationControllerTests
 {
     [Fact]
+    public async Task GroupsAndTargetsCanBeToggledAndTheLastGroupCanBeRemoved()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var fund = new InvestmentInstrument { Symbol = "FUND", Name = "Fund", Type = "ETF" };
+        context.InvestmentInstruments.Add(fund);
+        await context.SaveChangesAsync();
+        var controller = NewController(context);
+        async Task<InvestmentAllocationOverviewDto> Read() =>
+            Assert.IsType<InvestmentAllocationOverviewDto>(
+                Assert.IsType<OkObjectResult>((await controller.GetAllocation()).Result).Value);
+        var initial = await Read();
+        Assert.False(initial.Plan.GroupingEnabled);
+        Assert.False(initial.Plan.TargetsEnabled);
+        Assert.Empty(initial.Plan.Groups);
+
+        var group = new InvestmentGroup("a1111111111111111111111111111111", "Income", 100, null);
+        var plan = new InvestmentPlanMutationDto(66, 10, 24, 3, 5, [group], true, false);
+        Assert.IsType<OkObjectResult>((await controller.UpdatePlan(plan)).Result);
+        Assert.IsType<NoContentResult>(await controller.UpdateAllocationSleeve(fund.Id, new(group.Key)));
+        var grouped = await Read();
+        Assert.Null(Assert.Single(grouped.Sleeves).TargetPercentage);
+        Assert.Null(grouped.ContributionPlan);
+
+        Assert.IsType<OkObjectResult>((await controller.UpdatePlan(plan with { GroupingEnabled = false, TargetsEnabled = true })).Result);
+        var disabled = await Read();
+        Assert.Empty(disabled.Sleeves);
+        Assert.Single(disabled.Plan.Groups);
+        Assert.Equal(group.Key, Assert.Single(disabled.Assignments).Sleeve);
+        Assert.IsType<BadRequestObjectResult>(await controller.UpdateAllocationSleeve(fund.Id, new(group.Key)));
+
+        Assert.IsType<OkObjectResult>((await controller.UpdatePlan(plan with { TargetsEnabled = true })).Result);
+        Assert.Equal(100, Assert.Single((await Read()).Sleeves).TargetPercentage);
+        Assert.IsType<BadRequestObjectResult>((await controller.UpdatePlan(plan with { Groups = [] })).Result);
+        Assert.IsType<NoContentResult>(await controller.UpdateAllocationSleeve(fund.Id, new(null)));
+        Assert.IsType<OkObjectResult>((await controller.UpdatePlan(plan with { Groups = [] })).Result);
+        Assert.Empty((await Read()).Plan.Groups);
+    }
+
+    [Fact]
     public async Task PlanAndClassificationRoutesValidateAndPersist()
     {
         await using var context = TestHelpers.NewInMemoryContext();
         var first = new InvestmentInstrument { Symbol = "AAA", Name = "First", Type = "ETF", Currency = "USD" };
         var second = new InvestmentInstrument { Symbol = "BBB", Name = "Second", Type = "ETF", Currency = "USD" };
         context.InvestmentInstruments.AddRange(first, second);
+        context.InvestmentPlans.Add(InvestmentAllocationServiceTests.MigratedPlan());
         await context.SaveChangesAsync();
         var controller = NewController(context);
 
@@ -30,7 +70,7 @@ public sealed class InvestmentAllocationControllerTests
         var plan = Assert.IsType<InvestmentPlanDto>(
             Assert.IsType<OkObjectResult>((await controller.UpdatePlan(
                 new InvestmentPlanMutationDto(60, 20, 20, 3, 5))).Result).Value);
-        Assert.Equal(60, plan.UsEquityTarget);
+        Assert.Equal(60, plan.Groups.Single(group => group.Key == "USEquity").TargetPercentage);
         Assert.IsType<NoContentResult>(await controller.UpdateAllocationSleeve(
             first.Id, new AllocationSleeveMutationDto("USEquity")));
         Assert.IsType<NoContentResult>(await controller.UpdateAllocationOrder(
@@ -47,6 +87,7 @@ public sealed class InvestmentAllocationControllerTests
         await using var context = TestHelpers.NewInMemoryContext();
         var fund = new InvestmentInstrument { Symbol = "VNQ", Name = "Real estate fund", Type = "ETF", Currency = "USD" };
         context.InvestmentInstruments.Add(fund);
+        context.InvestmentPlans.Add(InvestmentAllocationServiceTests.MigratedPlan());
         await context.SaveChangesAsync();
         var controller = NewController(context);
         const string groupKey = "a1111111111111111111111111111111";

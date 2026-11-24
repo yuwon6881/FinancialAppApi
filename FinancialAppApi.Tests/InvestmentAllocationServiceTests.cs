@@ -1,3 +1,5 @@
+using System.Text.Json;
+using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services.Investments;
 
@@ -5,6 +7,28 @@ namespace FinancialAppApi.Tests;
 
 public sealed class InvestmentAllocationServiceTests
 {
+    internal static InvestmentPlan MigratedPlan(decimal us = 66, decimal international = 10, decimal bonds = 24) =>
+        new()
+        {
+            GroupsJson = JsonSerializer.Serialize(Groups(us, international, bonds)),
+            GroupingEnabled = true,
+            TargetsEnabled = true
+        };
+
+    private static InvestmentGroup[] Groups(decimal us, decimal international, decimal bonds) =>
+    [
+        new("USEquity", "US Equity", us, "USEquity"),
+        new("InternationalExUS", "International ex-US", international, "InternationalExUS"),
+        new("Bonds", "Bonds", bonds, "Bonds")
+    ];
+
+    private static AppDbContext NewPlannedContext(decimal us = 66, decimal international = 10, decimal bonds = 24)
+    {
+        var context = TestHelpers.NewInMemoryContext();
+        context.InvestmentPlans.Add(MigratedPlan(us, international, bonds));
+        return context;
+    }
+
     [Theory]
     [InlineData(66, 10, 24, 3, 5, true)]
     [InlineData(65, 10, 24, 3, 5, false)]
@@ -20,7 +44,7 @@ public sealed class InvestmentAllocationServiceTests
         bool valid)
     {
         var error = InvestmentAllocationService.ValidatePlan(
-            new InvestmentPlanMutationDto(us, international, bonds, watch, alert));
+            new InvestmentPlanMutationDto(us, international, bonds, watch, alert), Groups(us, international, bonds));
 
         Assert.Equal(valid, error is null);
     }
@@ -28,7 +52,7 @@ public sealed class InvestmentAllocationServiceTests
     [Fact]
     public async Task AllocationMutationsPersistThroughTheDomainService()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = NewPlannedContext();
         var first = Instrument("AAA", null);
         var second = Instrument("BBB", null);
         context.InvestmentInstruments.AddRange(first, second);
@@ -47,7 +71,7 @@ public sealed class InvestmentAllocationServiceTests
             CancellationToken.None);
 
         Assert.Null(error);
-        Assert.Equal(60, plan!.UsEquityTarget);
+        Assert.Equal(60, plan!.Groups.Single(group => group.Key == "USEquity").TargetPercentage);
         Assert.True(sleeveFound && sleeveValid);
         Assert.True(orderUpdated);
         Assert.Equal("USEquity", first.AllocationSleeve);
@@ -58,7 +82,7 @@ public sealed class InvestmentAllocationServiceTests
     [Fact]
     public async Task Allocation_AggregatesAccounts_ExcludesCashAndUsesCashBeforeContribution()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = NewPlannedContext();
         var first = new InvestmentAccount { Name = "Broker one", BaseCurrency = "USD" };
         var second = new InvestmentAccount { Name = "Broker two", BaseCurrency = "USD" };
         var us = Instrument("VTI", "USEquity");
@@ -94,12 +118,23 @@ public sealed class InvestmentAllocationServiceTests
         Assert.Contains(portfolio.Allocation.Recommendations, value => value.Kind == "Sell");
         Assert.Contains(portfolio.Allocation.Recommendations, value => value.Kind == "Buy");
         Assert.Contains(portfolio.Allocation.Recommendations, value => value.Kind == "TransferBuy");
+
+        var (_, planError) = await new InvestmentAllocationService(context).UpdatePlanAsync(
+            new(null, null, null, 3, 5, portfolio.Allocation.Plan.Groups, true, false), CancellationToken.None);
+        Assert.Null(planError);
+        var grouped = (await NewPortfolioService(context).GetPortfolioAsync("1m", CancellationToken.None)).Allocation;
+        var shares = grouped.Sleeves.Single(value => value.Sleeve == "USEquity");
+        Assert.Equal(80, shares.CurrentPercentage);
+        Assert.Null(shares.TargetPercentage);
+        Assert.Null(shares.DriftPercentagePoints);
+        Assert.Empty(grouped.Recommendations);
+        Assert.Null(grouped.ContributionPlan);
     }
 
     [Fact]
     public async Task Allocation_IsIncompleteAndSuppressesAmountsForUnassignedHolding()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = NewPlannedContext();
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         var instrument = Instrument("VTI", null);
         context.InvestmentAccounts.Add(account);
@@ -120,7 +155,7 @@ public sealed class InvestmentAllocationServiceTests
     [Fact]
     public async Task Allocation_UsesUsualCycleContributionBeforeSuggestingSales()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = NewPlannedContext();
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         var us = Instrument("VTI", "USEquity");
         var international = Instrument("VXUS", "InternationalExUS");
@@ -163,7 +198,7 @@ public sealed class InvestmentAllocationServiceTests
     [Fact]
     public async Task Allocation_OnTrack_HasNoGuidance()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = NewPlannedContext();
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         var us = Instrument("VTI", "USEquity");
         var international = Instrument("VXUS", "InternationalExUS");
@@ -186,7 +221,7 @@ public sealed class InvestmentAllocationServiceTests
     [Fact]
     public async Task Allocation_OnlySuggestsSalesWhenUsualGrowthDepositCannotRestoreWatchBand()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = NewPlannedContext();
         context.FinancialSettings.Add(new FinancialSetting { Currency = "USD", CycleDay = 1 });
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         var us = Instrument("VTI", "USEquity");
@@ -223,7 +258,7 @@ public sealed class InvestmentAllocationServiceTests
     [Fact]
     public async Task ContributionPlan_SplitsARoutineDepositByTargetWhenOnTrack()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = NewPlannedContext(34, 33, 33);
         context.FinancialSettings.Add(new FinancialSetting { Currency = "USD", CycleDay = 1 });
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         var us = Instrument("VTI", "USEquity");
@@ -231,14 +266,6 @@ public sealed class InvestmentAllocationServiceTests
         var bonds = Instrument("BND", "Bonds");
         context.InvestmentAccounts.Add(account);
         context.InvestmentInstruments.AddRange(us, international, bonds);
-        context.InvestmentPlans.Add(new InvestmentPlan
-        {
-            UsEquityTarget = 34,
-            InternationalExUsTarget = 33,
-            BondsTarget = 33,
-            WatchDrift = 3,
-            AlertDrift = 5
-        });
         await context.SaveChangesAsync();
         AddPosition(context, account, us, 340);
         AddPosition(context, account, international, 330);
@@ -275,7 +302,7 @@ public sealed class InvestmentAllocationServiceTests
     [Fact]
     public async Task ContributionPlan_UsesCashAndNewMoneyToFullyCorrectLargeDrift()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = NewPlannedContext(34, 33, 33);
         context.FinancialSettings.Add(new FinancialSetting { Currency = "USD", CycleDay = 1 });
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         var us = Instrument("VTI", "USEquity");
@@ -283,14 +310,6 @@ public sealed class InvestmentAllocationServiceTests
         var bonds = Instrument("BND", "Bonds");
         context.InvestmentAccounts.Add(account);
         context.InvestmentInstruments.AddRange(us, international, bonds);
-        context.InvestmentPlans.Add(new InvestmentPlan
-        {
-            UsEquityTarget = 34,
-            InternationalExUsTarget = 33,
-            BondsTarget = 33,
-            WatchDrift = 3,
-            AlertDrift = 5
-        });
         await context.SaveChangesAsync();
         // Bonds are heavily underweight, so the same deposit should favour them.
         AddPosition(context, account, us, 500);
@@ -325,7 +344,7 @@ public sealed class InvestmentAllocationServiceTests
     [Fact]
     public async Task ContributionPlan_UsesMedianDepositAndFallsBackToIdleCash()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = NewPlannedContext();
         context.FinancialSettings.Add(new FinancialSetting { Currency = "USD", CycleDay = 1 });
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         var us = Instrument("VTI", "USEquity");
@@ -355,7 +374,7 @@ public sealed class InvestmentAllocationServiceTests
     [Fact]
     public async Task ContributionPlan_FallsBackToUninvestedCashWhenThereIsNoDepositHistory()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = NewPlannedContext();
         context.FinancialSettings.Add(new FinancialSetting { Currency = "USD", CycleDay = 1 });
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         var us = Instrument("VTI", "USEquity");
@@ -390,7 +409,7 @@ public sealed class InvestmentAllocationServiceTests
     [Fact]
     public async Task ContributionPlan_SplitsCashBeforeTheFirstHoldingIsBought()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = NewPlannedContext();
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         context.InvestmentAccounts.Add(account);
         context.InvestmentCashFlows.Add(new InvestmentCashFlow
@@ -417,7 +436,7 @@ public sealed class InvestmentAllocationServiceTests
     [Fact]
     public async Task ContributionPlan_IsUnavailableWhenPositiveCashCannotBeConverted()
     {
-        await using var context = TestHelpers.NewInMemoryContext();
+        await using var context = NewPlannedContext();
         var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
         var us = Instrument("VTI", "USEquity");
         var international = Instrument("VXUS", "InternationalExUS");

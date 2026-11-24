@@ -152,7 +152,8 @@ public class DatabaseInvariantTests
             (typeof(Loan), "ck_loans_ratebasis", "\"RateBasis\" IN ('Yearly', 'Monthly')"),
             (typeof(Loan), "ck_loans_schedulestatus", "\"ScheduleStatus\" IN ('Complete', 'Incomplete')"),
             (typeof(LoanRepaymentAction), "ck_loanrepaymentactions_kind", "\"Kind\" IN ('AdvanceCycles', 'FullSettlement')"),
-            (typeof(InvestmentInstrument), "ck_investmentinstruments_allocationsleeve", "\"AllocationSleeve\" IS NULL OR \"AllocationSleeve\" IN ('USEquity', 'InternationalExUS', 'Bonds') OR (length(\"AllocationSleeve\") = 32 AND ltrim(\"AllocationSleeve\", '0123456789abcdef') = '')"),
+            (typeof(InvestmentInstrument), "ck_investmentinstruments_allocationsleeve", "\"AllocationSleeve\" IS NULL OR (length(\"AllocationSleeve\") BETWEEN 1 AND 32 AND ltrim(\"AllocationSleeve\", '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz') = '')"),
+            (typeof(InvestmentPlan), "ck_investmentplans_groups_array", "jsonb_typeof(\"GroupsJson\") = 'array'"),
         };
 
         foreach (var (entityType, name, sql) in expected)

@@ -22,7 +22,7 @@ public partial class AppDbContext
             entity.Property(e => e.UpdatedAt).HasColumnType("timestamp with time zone");
             entity.ToTable(t => t.HasCheckConstraint(
                 "ck_investmentinstruments_allocationsleeve",
-                "\"AllocationSleeve\" IS NULL OR \"AllocationSleeve\" IN ('USEquity', 'InternationalExUS', 'Bonds') OR (length(\"AllocationSleeve\") = 32 AND ltrim(\"AllocationSleeve\", '0123456789abcdef') = '')"));
+                "\"AllocationSleeve\" IS NULL OR (length(\"AllocationSleeve\") BETWEEN 1 AND 32 AND ltrim(\"AllocationSleeve\", '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz') = '')"));
         });
 
         modelBuilder.Entity<InvestmentInstrumentMarketMapping>(entity =>
@@ -39,9 +39,6 @@ public partial class AppDbContext
 
         modelBuilder.Entity<InvestmentPlan>(entity =>
         {
-            entity.Property(e => e.UsEquityTarget).HasColumnType("numeric(5,2)");
-            entity.Property(e => e.InternationalExUsTarget).HasColumnType("numeric(5,2)");
-            entity.Property(e => e.BondsTarget).HasColumnType("numeric(5,2)");
             entity.Property(e => e.GroupsJson).HasColumnType("jsonb");
             entity.Property(e => e.WatchDrift).HasColumnType("numeric(5,2)");
             entity.Property(e => e.AlertDrift).HasColumnType("numeric(5,2)");
@@ -50,10 +47,10 @@ public partial class AppDbContext
             entity.HasIndex(e => e.UserId).IsUnique();
             entity.ToTable(t =>
             {
-                t.HasCheckConstraint("ck_investmentplans_targets_positive",
-                    "\"UsEquityTarget\" > 0 AND \"InternationalExUsTarget\" > 0 AND \"BondsTarget\" > 0");
-                t.HasCheckConstraint("ck_investmentplans_targets_total",
-                    "\"UsEquityTarget\" + \"InternationalExUsTarget\" + \"BondsTarget\" = 100");
+                t.HasCheckConstraint("ck_investmentplans_groups_array",
+                    Database.ProviderName == "Microsoft.EntityFrameworkCore.Sqlite"
+                        ? "json_type(\"GroupsJson\") = 'array'"
+                        : "jsonb_typeof(\"GroupsJson\") = 'array'");
                 t.HasCheckConstraint("ck_investmentplans_drift_bands",
                     "\"WatchDrift\" > 0 AND \"AlertDrift\" > \"WatchDrift\" AND \"AlertDrift\" <= 100");
             });

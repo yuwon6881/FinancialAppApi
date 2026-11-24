@@ -5,13 +5,12 @@ namespace FinancialAppApi.Services.Investments;
 
 public sealed record InvestmentPlanDto(
     Guid? Id,
-    decimal UsEquityTarget,
-    decimal InternationalExUsTarget,
-    decimal BondsTarget,
     decimal WatchDrift,
     decimal AlertDrift,
     DateTime? UpdatedAt,
-    IReadOnlyList<InvestmentGroup> Groups);
+    IReadOnlyList<InvestmentGroup> Groups,
+    bool GroupingEnabled,
+    bool TargetsEnabled);
 
 public sealed record InvestmentAllocationAssignmentDto(
     Guid InstrumentId,
@@ -23,7 +22,7 @@ public sealed record InvestmentAllocationAssignmentDto(
 public sealed record InvestmentSleeveAllocationDto(
     string Sleeve,
     string Label,
-    decimal TargetPercentage,
+    decimal? TargetPercentage,
     decimal? CurrentPercentage,
     decimal? Value,
     decimal? DriftPercentagePoints,
@@ -46,7 +45,7 @@ public sealed record InvestmentContributionSleeveDto(
     decimal ProjectedDriftPercentagePoints);
 
 /// <summary>
-/// How to split the next routine Growth deposit across the three sleeves so the
+/// How to split the next routine Growth deposit across the portfolio groups so the
 /// portfolio keeps (or moves back toward) its target mix without selling anything.
 /// Unlike <see cref="InvestmentAllocationOverviewDto.Recommendations"/> this is
 /// produced even when the plan is on track, because the routine question — "I am
@@ -110,7 +109,8 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
         foreach (var holding in holdings)
         {
             var assignment = instruments.FirstOrDefault(value => value.Id == holding.InstrumentId);
-            if (assignment?.AllocationSleeve is not { } key || !targets.ContainsKey(key))
+            if (plan.GroupingEnabled && plan.TargetsEnabled && targets.Count > 0
+                && (assignment?.AllocationSleeve is not { } key || !targets.ContainsKey(key)))
                 reasons.Add($"{holding.Symbol} must be assigned to a portfolio group.");
             if (holding.LatestPriceNative is null)
                 reasons.Add($"{holding.Symbol} does not have a current price.");
@@ -141,6 +141,18 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
             AutomaticRefreshMinutes,
             staleInputs);
         var availableCash = PositiveCash(cashBalances);
+        var investedValue = holdings.Any(value => value.ValueApp is null)
+            ? (decimal?)null : holdings.Sum(value => value.ValueApp!.Value);
+        var roundedCash = availableCash is { } positiveCash ? RoundMoney(positiveCash) : (decimal?)null;
+        if (!plan.GroupingEnabled || targets.Count == 0)
+        {
+            return new InvestmentAllocationOverviewDto(
+                "NotStarted", appCurrency, plan, assignments, [], [], [], freshness,
+                investedValue is { } total ? RoundMoney(total) : null, roundedCash, null);
+        }
+        if (!plan.TargetsEnabled)
+            return BuildGroupedOverview(appCurrency, plan, assignments, holdings, freshness, investedValue, roundedCash);
+
         var cashReasons = cashBalances
             .Where(value => value.Amount > 0 && value.AmountApp is null)
             .Select(value => $"{value.Currency} cash in {value.AccountName} cannot be valued in {appCurrency}.")
@@ -169,16 +181,17 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
         {
             return new InvestmentAllocationOverviewDto(
                 "Incomplete", appCurrency, plan, assignments,
-                IncompleteSleeves(plan, holdings, instruments), [], incompleteReasons,
+                IncompleteSleeves(plan, holdings, instruments.ToDictionary(value => value.Id, value => value.AllocationSleeve)),
+                [], incompleteReasons,
                 freshness, null, availableCash, null);
         }
 
-        var investedValue = holdings.Sum(value => value.ValueApp!.Value);
-        if (investedValue <= 0)
+        var totalInvested = holdings.Sum(value => value.ValueApp!.Value);
+        if (totalInvested <= 0)
         {
             return new InvestmentAllocationOverviewDto(
                 "NotStarted", appCurrency, plan, assignments,
-                EmptySleeves(plan), [], cashReasons, freshness, investedValue, availableCash,
+                EmptySleeves(plan), [], cashReasons, freshness, totalInvested, availableCash,
                 availableCash is null ? null : 0);
         }
 
@@ -188,31 +201,48 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
                     instruments.First(instrument => instrument.Id == holding.InstrumentId)
                         .AllocationSleeve == definition.Key)
                 .Sum(holding => holding.ValueApp!.Value));
-        var sleeves = BuildValuedSleeves(plan, investedValue, values);
+        var sleeves = BuildValuedSleeves(plan, totalInvested, values);
         var status = sleeves.Any(value => value.Status == "Alert")
             ? "Alert"
             : sleeves.Any(value => value.Status == "Watch") ? "Watch" : "OnTrack";
         var minimumNewMoney = plan.Groups.Max(definition =>
-            values[definition.Key] / (targets[definition.Key] / 100m) - investedValue);
+            values[definition.Key] / (targets[definition.Key] / 100m) - totalInvested);
         minimumNewMoney = Math.Max(0, minimumNewMoney);
 
         var recommendations = status == "OnTrack" || availableCash is null
             ? new List<InvestmentAllocationRecommendationDto>()
             : BuildRecommendations(
-                appCurrency, investedValue, values, targets, availableCash.Value, usualGrowthDeposit,
+                appCurrency, totalInvested, values, targets, availableCash.Value, usualGrowthDeposit,
                 plan.WatchDrift, labels);
 
         return new InvestmentAllocationOverviewDto(
             status, appCurrency, plan, assignments, sleeves, recommendations, incompleteReasons,
-            freshness, RoundMoney(investedValue), availableCash is null ? null : RoundMoney(availableCash.Value),
+            freshness, RoundMoney(totalInvested), availableCash is null ? null : RoundMoney(availableCash.Value),
             availableCash is null ? null : RoundMoney(Math.Max(0, minimumNewMoney - availableCash.Value - (usualGrowthDeposit ?? 0))),
             availableCash is null ? null : BuildContributionPlan(
-                appCurrency, investedValue, values, targets, minimumNewMoney, status != "OnTrack",
+                appCurrency, totalInvested, values, targets, minimumNewMoney, status != "OnTrack",
                 usualGrowthDeposit, cyclesObserved, availableCash.Value, labels));
     }
 
     internal static string ClassifyDrift(decimal absoluteDrift, decimal watchDrift, decimal alertDrift)
         => absoluteDrift >= alertDrift ? "Alert" : absoluteDrift >= watchDrift ? "Watch" : "OnTrack";
+
+    private static InvestmentAllocationOverviewDto BuildGroupedOverview(
+        string currency, InvestmentPlanDto plan, IReadOnlyList<InvestmentAllocationAssignmentDto> assignments,
+        IReadOnlyList<InvestmentHoldingDto> holdings, InvestmentMarketDataFreshnessDto freshness,
+        decimal? total, decimal? cash)
+    {
+        var basketValues = IncompleteSleeves(plan, holdings, assignments.ToDictionary(value => value.InstrumentId, value => value.Sleeve));
+        var sleeves = basketValues.Select(sleeve => sleeve with
+        {
+            TargetPercentage = null,
+            CurrentPercentage = sleeve.Value is { } value && total > 0 ? Math.Round(value / total.Value * 100m, 2) : null,
+            Value = sleeve.Value is { } amount ? RoundMoney(amount) : null,
+            Status = "NotStarted"
+        }).ToList();
+        return new("NotStarted", currency, plan, assignments, sleeves, [], [], freshness,
+            total is { } invested ? RoundMoney(invested) : null, cash, null);
+    }
 
     private static IReadOnlyList<InvestmentSleeveAllocationDto> EmptySleeves(InvestmentPlanDto plan)
         => plan.Groups.Select(value => new InvestmentSleeveAllocationDto(
@@ -221,10 +251,9 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
     private static IReadOnlyList<InvestmentSleeveAllocationDto> IncompleteSleeves(
         InvestmentPlanDto plan,
         IReadOnlyList<InvestmentHoldingDto> holdings,
-        IReadOnlyList<InvestmentInstrumentSetupDto> instruments)
+        IReadOnlyDictionary<Guid, string?> assignments)
     {
         var targets = Targets(plan);
-        var assignments = instruments.ToDictionary(instrument => instrument.Id, instrument => instrument.AllocationSleeve);
         return plan.Groups.Select(definition =>
         {
             var members = holdings.Where(holding => assignments.GetValueOrDefault(holding.InstrumentId) == definition.Key).ToList();
@@ -270,11 +299,13 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
 }
 
 public sealed record InvestmentPlanMutationDto(
-    decimal UsEquityTarget,
-    decimal InternationalExUsTarget,
-    decimal BondsTarget,
+    decimal? UsEquityTarget,
+    decimal? InternationalExUsTarget,
+    decimal? BondsTarget,
     decimal WatchDrift,
     decimal AlertDrift,
-    IReadOnlyList<InvestmentGroup>? Groups = null);
+    IReadOnlyList<InvestmentGroup>? Groups = null,
+    bool? GroupingEnabled = null,
+    bool? TargetsEnabled = null);
 
 public sealed record AllocationSleeveMutationDto(string? Sleeve);
