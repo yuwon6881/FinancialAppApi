@@ -121,7 +121,7 @@ gcloud builds submit . \
 ## Configure OpenAI
 
 The AI assistant, category/note suggestions, vault cleanup suggestions and receipt
-OCR all use the OpenAI Responses API. The default model is `gpt-5.4-mini`; override
+OCR all use the OpenAI Responses API. The default model is `gpt-5.4`; override
 `OpenAiModel` or a feature-specific `OpenAiModels__*` environment variable only
 after validating that workload. Store the API key only in Secret Manager:
 

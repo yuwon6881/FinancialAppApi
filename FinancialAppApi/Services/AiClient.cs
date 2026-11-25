@@ -34,7 +34,7 @@ public sealed record AiGenerationOptions(
 // explicit compute budget; transport, retries, usage telemetry and provider parsing stay here.
 public partial class AiClient
 {
-    private const string DefaultPrimaryModel = "gpt-5.4-mini";
+    private const string DefaultPrimaryModel = "gpt-5.4";
     private const string ResponsesEndpoint = "https://api.openai.com/v1/responses";
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(250);
 
