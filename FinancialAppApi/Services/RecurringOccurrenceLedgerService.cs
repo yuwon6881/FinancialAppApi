@@ -114,6 +114,7 @@ public sealed partial class RecurringOccurrenceLedgerService
         var occurrences = _known.Values.Where(occurrence =>
             activeIds.Contains(occurrence.RecurringPaymentId)
             && RecurringOccurrenceStatus.IsUnresolved(occurrence.Status)
+            && occurrence.OccurrenceDate >= windowStart
             && occurrence.OccurrenceDate <= today
             && (endDates[occurrence.RecurringPaymentId] is not { } end
                 || today <= end)).ToList();

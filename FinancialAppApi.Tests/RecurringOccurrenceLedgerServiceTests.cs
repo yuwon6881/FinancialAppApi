@@ -68,6 +68,26 @@ public class RecurringOccurrenceLedgerServiceTests
     }
 
     [Fact]
+    public async Task GetPendingDueAsync_KeepsItsLookbackAfterReadingAnOlderCycle()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var historicalDate = new DateOnly(2023, 8, 5);
+        var payment = Payment();
+        payment.StartDate = "2023-08-05";
+        payment.OccurrenceTrackingStartDate = historicalDate;
+        context.RecurringPayments.Add(payment);
+        await context.SaveChangesAsync();
+        var ledger = Ledger(context, ClockAt(2026, 8, 5));
+
+        var history = await ledger.GetRangeAsync([payment], historicalDate, historicalDate);
+        var reminders = await ledger.GetPendingDueAsync([payment]);
+
+        Assert.Equal(RecurringOccurrenceStatus.Pending, Assert.Single(history).Status);
+        Assert.Equal(new DateOnly(2024, 8, 5), reminders.First().OccurrenceDate);
+        Assert.DoesNotContain(reminders, occurrence => occurrence.OccurrenceDate == historicalDate);
+    }
+
+    [Fact]
     public async Task GetPendingDueAsync_KeepsPendingOccurrenceOnEndDate()
     {
         await using var context = TestHelpers.NewInMemoryContext();
