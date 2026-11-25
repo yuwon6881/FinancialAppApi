@@ -438,15 +438,20 @@ public partial class FinancialService
         if (!summaryOnly)
         {
             var today = _financialClock.Today;
+            var upcomingEnd = today.AddDays(31);
+            // The warning follows today's due dates even when the dashboard is viewing an older
+            // cycle. Use the same tagged payments for occurrence backfill and the remaining amount.
+            var upcomingTransactions = await _recurringOccurrenceLedger.LoadTaggedTransactionsAsync(
+                today, upcomingEnd, cancellationToken);
             var upcomingOccurrences = await _recurringOccurrenceLedger.GetRangeAsync(
-                allRecurring, today, today.AddDays(31), cancellationToken: cancellationToken);
+                allRecurring, today, upcomingEnd, upcomingTransactions, cancellationToken);
             recurringAccountShortfalls = RecurringAccountShortfallEvaluator.EvaluateShortfalls(
                 upcomingOccurrences,
                 allRecurring,
                 snapshot.LedgerAccounts,
                 snapshot.LedgerAccountBalances.Current,
                 today,
-                snapshot.CycleRelevantTransactions);
+                upcomingTransactions);
         }
 
         var result = new

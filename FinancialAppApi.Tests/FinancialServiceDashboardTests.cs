@@ -85,6 +85,24 @@ public class FinancialServiceDashboardTests
         Assert.Equal(2025, setting.SelectedYear);
     }
 
+    [Theory]
+    [InlineData(false, 2026)]
+    [InlineData(true, 2021)]
+    public async Task GetDashboardInsightsAsync_OffersYearsContainingJanuaryDatesInDecemberCycles(
+        bool hasHistory, int expectedFirstYear)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 15 });
+        if (hasHistory) context.Transactions.Add(Tx("first", 2022, 1, 4, "Food", -20m));
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context, new DateTimeOffset(2027, 1, 4, 0, 0, 0, TimeSpan.Zero))
+            .GetDashboardInsightsAsync("Dec", 2026);
+
+        var years = (List<int>)response.GetType().GetProperty("availableYears")!.GetValue(response)!;
+        Assert.Equal(Enumerable.Range(expectedFirstYear, 2027 - expectedFirstYear + 1), years);
+    }
+
     [Fact]
     public async Task GetDashboardInsightsAsync_CurrentYearRunsThroughCurrentCycleNotSelectedCycle()
     {
@@ -761,6 +779,49 @@ public class FinancialServiceDashboardTests
         Assert.Equal(900m, GetAmount(shortfall, "shortfall"));
         Assert.Equal("Checking Account", (string)shortfall.GetType().GetProperty("accountName")!.GetValue(shortfall)!);
         Assert.Equal(1, (int)shortfall.GetType().GetProperty("offsetDays")!.GetValue(shortfall)!);
+    }
+
+    [Theory]
+    [InlineData(2025)]
+    [InlineData(2026)]
+    public async Task GetDashboardDataAsync_UsesPaidSoFarForUpcomingBillInAnotherCycle(int selectedYear)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 1 });
+        var accountId = TestHelpers.AccountIdFor("Essentials");
+        context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = accountId, Name = "Checking", Bucket = "Essentials", Kind = LedgerAccountKind.Bank,
+        });
+        var opening = Tx("opening", 2026, 12, 1, "Income", 300m);
+        opening.AccountId = accountId;
+        var partial = Tx("partial", 2026, 12, 25, "Bills", -200m);
+        partial.AccountId = accountId;
+        partial.RecurringPaymentId = "rent";
+        partial.RecurringOccurrenceDate = new DateOnly(2027, 1, 2);
+        context.Transactions.AddRange(opening, partial);
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "rent", Name = "Rent", Amount = 600m, Frequency = "Monthly", Category = "Bills",
+            LedgerCategory = "Essentials", AccountId = accountId, PaymentMode = RecurringPaymentMode.AutoDeduct,
+            StartDate = "2026-01-02", NextDueDate = "2027-01-02", DueDate = 2, Active = true,
+        });
+        context.RecurringPaymentOccurrences.Add(new RecurringPaymentOccurrence
+        {
+            Id = "occ-rent-20270102", RecurringPaymentId = "rent", OccurrenceDate = new DateOnly(2027, 1, 2),
+            Name = "Rent", ScheduledAmount = 600m, Category = "Bills", LedgerCategory = "Essentials",
+            AccountId = accountId, PaymentMode = RecurringPaymentMode.AutoDeduct,
+            Status = RecurringOccurrenceStatus.PartiallyPaid,
+        });
+        await context.SaveChangesAsync();
+
+        var response = await NewService(context, new DateTimeOffset(2026, 12, 28, 0, 0, 0, TimeSpan.Zero))
+            .GetDashboardDataAsync("Dec", selectedYear);
+
+        var shortfall = Assert.Single(GetObjects(response, "recurringAccountShortfalls"));
+        Assert.Equal(400m, GetAmount(shortfall, "amount"));
+        Assert.Equal(100m, GetAmount(shortfall, "accountBalance"));
+        Assert.Equal(300m, GetAmount(shortfall, "shortfall"));
     }
 
     [Fact]

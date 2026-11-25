@@ -2,6 +2,7 @@ using System.Data.Common;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
+using FinancialAppApi.Services.Accounts;
 using FinancialAppApi.Services.Investments;
 using FinancialAppApi.Services.Loans;
 using Microsoft.Data.Sqlite;
@@ -13,6 +14,43 @@ namespace FinancialAppApi.Tests;
 
 public sealed class PerformanceQueryCountTests
 {
+    [Fact]
+    public async Task HistoricalAccountSnapshot_UsesBoundedReplaysForBothBalanceDates()
+    {
+        await using var fixture = await SqliteFixture.CreateAsync();
+        var accountId = TestHelpers.AccountIdFor("Essentials");
+        var movements = new (DateOnly Date, decimal Amount)[]
+        {
+            (new DateOnly(2021, 11, 20), 100m),
+            (new DateOnly(2021, 12, 20), -10m),
+            (new DateOnly(2022, 1, 15), -20m),
+            (new DateOnly(2026, 3, 20), 30m),
+        };
+        fixture.Context.Transactions.AddRange(movements.Select(movement => new Transaction
+        {
+            Id = $"movement-{movement.Date:yyyy-MM-dd}", Date = TransactionDate.StartOfDate(movement.Date),
+            Description = "Movement", Category = "Other", LedgerCategory = "Essentials",
+            AccountId = accountId, Amount = movement.Amount,
+        }));
+        await fixture.Context.SaveChangesAsync();
+        await new CycleBalanceService(fixture.Context).EnsureComputedThroughAsync(2026, 2, 15);
+        var account = await fixture.Context.LedgerAccounts.SingleAsync(item => item.Id == accountId);
+        fixture.Counter.Reset();
+
+        var clock = new FinancialClock(
+            TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+            new FixedTimeProvider(new DateTimeOffset(2026, 3, 23, 0, 0, 0, TimeSpan.Zero)));
+        var snapshot = await new LedgerAccountBalanceService(fixture.Context, clock: clock)
+            .GetBalanceSnapshotAsync([account], TransactionDate.StartOfDate(new DateOnly(2022, 1, 15)), cycleDay: 15);
+
+        Assert.Equal(90m, snapshot.ThroughExclusive[accountId]);
+        Assert.Equal(100m, snapshot.Current[accountId]);
+        var ledgerReads = fixture.Counter.Commands.Where(sql => sql.Contains("FROM \"Transactions\"")).ToList();
+        Assert.Equal(2, ledgerReads.Count);
+        Assert.All(ledgerReads, sql => Assert.Contains("\"Date\" >=", sql));
+        Assert.Single(ledgerReads, sql => sql.Contains("\"Date\" <"));
+    }
+
     [Fact]
     public async Task OrdinaryTransactionPage_SkipsFullHistoryStabilityReplay()
     {
@@ -468,16 +506,17 @@ public sealed class PerformanceQueryCountTests
 
     private sealed class CountingCommandInterceptor : DbCommandInterceptor
     {
-        public int CommandCount { get; private set; }
+        public List<string> Commands { get; } = [];
+        public int CommandCount => Commands.Count;
 
-        public void Reset() => CommandCount = 0;
+        public void Reset() => Commands.Clear();
 
         public override InterceptionResult<DbDataReader> ReaderExecuting(
             DbCommand command,
             CommandEventData eventData,
             InterceptionResult<DbDataReader> result)
         {
-            CommandCount++;
+            Commands.Add(command.CommandText);
             return result;
         }
 
@@ -487,7 +526,7 @@ public sealed class PerformanceQueryCountTests
             InterceptionResult<DbDataReader> result,
             CancellationToken cancellationToken = default)
         {
-            CommandCount++;
+            Commands.Add(command.CommandText);
             return ValueTask.FromResult(result);
         }
     }

@@ -103,7 +103,7 @@ public partial class FinancialService
         // otherwise depress the savings-rate average early in the month.
         var (pastThreeMonthsRewardsAverage, hasRewardsHistory) =
             CalculatePastRewardsAverageFromTxs(last6Txs, activeYear, activeMonthIndex, cycleDay);
-        var availableYears = await GetAvailableYearsAsync(cancellationToken);
+        var availableYears = await GetAvailableYearsAsync(cycleDay, cancellationToken);
 
         return new
         {

@@ -28,12 +28,7 @@ public partial class RecurringOccurrenceLedgerService
         CancellationToken cancellationToken)
     {
         var transactions = knownTransactions == null
-            ? await _context.Transactions.AsNoTracking()
-                .Where(transaction => transaction.RecurringPaymentId != null
-                    && transaction.RecurringOccurrenceDate != null
-                    && transaction.RecurringOccurrenceDate >= start
-                    && transaction.RecurringOccurrenceDate <= end)
-                .ToListAsync(cancellationToken)
+            ? await LoadTaggedTransactionsAsync(start, end, cancellationToken)
             : knownTransactions
                 .Where(transaction => transaction.RecurringPaymentId != null
                     && transaction.RecurringOccurrenceDate != null
@@ -128,6 +123,14 @@ public partial class RecurringOccurrenceLedgerService
             Remember(backfilled);
         }
     }
+
+    internal Task<List<Transaction>> LoadTaggedTransactionsAsync(DateOnly start, DateOnly end, CancellationToken cancellationToken) =>
+        _context.Transactions.AsNoTracking()
+            .Where(transaction => transaction.RecurringPaymentId != null
+                && transaction.RecurringOccurrenceDate != null
+                && transaction.RecurringOccurrenceDate >= start
+                && transaction.RecurringOccurrenceDate <= end)
+            .ToListAsync(cancellationToken);
 
     private static DateOnly TrackingStart(RecurringPayment payment) =>
         payment.OccurrenceTrackingStartDate != default

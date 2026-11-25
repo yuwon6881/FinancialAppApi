@@ -53,26 +53,14 @@ public sealed class LedgerAccountBalanceService
         var (anchorYear, anchorMonth) = CategoryAttributionService.GetCycleYearAndMonthIndexForDate(
             _clock.Today,
             cycleDay);
-
-        // Everything strictly before the anchor cycle is already summed in the snapshot, so only
-        // the anchor cycle onwards (including any future-dated rows) has to be replayed.
+        if (throughExclusive is { } cutoff)
+        {
+            var historical = CycleBeforeCutoff(cutoff, cycleDay);
+            if (historical.CompareTo((anchorYear, anchorMonth)) < 0)
+                (anchorYear, anchorMonth) = historical;
+        }
         var resumed = await ResumeFromSnapshotAsync(anchorYear, anchorMonth, cycleDay, cancellationToken);
-
-        // A cutoff at or before the anchor cycle needs rows the snapshot has already folded in, so
-        // a partial replay could not answer it -- fall back to the scan.
-        if (resumed is null || (throughExclusive.HasValue && throughExclusive.Value <= resumed.Value.ReplayFrom))
-        {
-            return Project(await ScanAsync(accountsById, throughExclusive, cancellationToken), accountRows);
-        }
-
-        var (balances, replayFrom) = resumed.Value;
-        await foreach (var transaction in TransactionsFrom(replayFrom, throughExclusive)
-            .AsAsyncEnumerable()
-            .WithCancellation(cancellationToken))
-        {
-            LedgerAccountBalanceMath.Accumulate(balances, transaction.ToTransaction(), accountsById);
-        }
-
+        var balances = await ReadBalancesAsync(accountsById, resumed, throughExclusive, cancellationToken);
         return Project(balances, accountRows);
     }
 
@@ -100,14 +88,22 @@ public sealed class LedgerAccountBalanceService
             resolvedCycleDay,
             cancellationToken);
 
+        if (resumed is { } currentOpening && throughExclusive < currentOpening.ReplayFrom)
+        {
+            // A single replay would cover all the cycles between the historical selection and
+            // today. Start each balance from its own opening snapshot instead.
+            var (year, month) = CycleBeforeCutoff(throughExclusive, resolvedCycleDay);
+            var historicalOpening = await ResumeFromSnapshotAsync(year, month, resolvedCycleDay, cancellationToken);
+            var historicalBalances = await ReadBalancesAsync(accountsById, historicalOpening, throughExclusive, cancellationToken);
+            var currentBalances = await ReadBalancesAsync(accountsById, currentOpening, null, cancellationToken);
+            return new LedgerAccountBalanceSnapshot(Project(currentBalances, accountRows), Project(historicalBalances, accountRows));
+        }
+
         // Both answers share one opening snapshot and one pass; they differ only in whether a row
         // falls before the cutoff. Without a usable snapshot the same single pass runs over the
         // whole history instead, which is the original behavior.
-        var usableSnapshot = resumed is not null && throughExclusive > resumed.Value.ReplayFrom;
-        var opening = usableSnapshot
-            ? resumed!.Value.Balances
-            : new Dictionary<string, decimal>(StringComparer.Ordinal);
-        var replayFrom = usableSnapshot ? resumed!.Value.ReplayFrom : (DateTime?)null;
+        var opening = resumed?.Balances ?? new Dictionary<string, decimal>(StringComparer.Ordinal);
+        var replayFrom = resumed?.ReplayFrom;
 
         var current = new Dictionary<string, decimal>(opening, StringComparer.Ordinal);
         var through = new Dictionary<string, decimal>(opening, StringComparer.Ordinal);
@@ -125,6 +121,11 @@ public sealed class LedgerAccountBalanceService
             Project(current, accountRows),
             Project(through, accountRows));
     }
+
+    private static (int Year, int Month) CycleBeforeCutoff(DateTime cutoff, int cycleDay) =>
+        cutoff <= new DateTime(1, 1, cycleDay)
+            ? (1, 1)
+            : CategoryAttributionService.GetCycleYearAndMonthIndexForDate(TransactionDate.ToDateOnly(cutoff.AddTicks(-1)), cycleDay);
 
     /// <summary>
     /// Returns the cumulative balances entering (<paramref name="year"/>, <paramref name="monthIndex"/>)
@@ -148,13 +149,14 @@ public sealed class LedgerAccountBalanceService
         return (new Dictionary<string, decimal>(opening, StringComparer.Ordinal), replayFrom);
     }
 
-    private async Task<Dictionary<string, decimal>> ScanAsync(
+    private async Task<Dictionary<string, decimal>> ReadBalancesAsync(
         IReadOnlyDictionary<string, LedgerAccount> accountsById,
+        (Dictionary<string, decimal> Balances, DateTime ReplayFrom)? snapshot,
         DateTime? throughExclusive,
         CancellationToken cancellationToken)
     {
-        var balances = new Dictionary<string, decimal>(StringComparer.Ordinal);
-        var query = TransactionsFrom(null, throughExclusive);
+        var balances = snapshot?.Balances ?? new Dictionary<string, decimal>(StringComparer.Ordinal);
+        var query = TransactionsFrom(snapshot?.ReplayFrom, throughExclusive);
 
         await foreach (var transaction in query.AsAsyncEnumerable().WithCancellation(cancellationToken))
         {

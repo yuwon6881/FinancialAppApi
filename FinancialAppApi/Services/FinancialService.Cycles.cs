@@ -236,24 +236,20 @@ public partial class FinancialService
         return (average, average > 0);
     }
 
-    private async Task<List<int>> GetAvailableYearsAsync(CancellationToken cancellationToken)
+    private async Task<List<int>> GetAvailableYearsAsync(int cycleDay, CancellationToken cancellationToken)
     {
-        var yearRange = await _context.Transactions
-            .GroupBy(_ => 1)
-            .Select(g => new { Min = g.Min(t => t.Date.Year), Max = g.Max(t => t.Date.Year) })
-            .FirstOrDefaultAsync(cancellationToken);
+        var dates = _context.Transactions.Select(transaction => (DateTime?)transaction.Date);
+        var first = await dates.OrderBy(date => date).FirstOrDefaultAsync(cancellationToken);
+        var last = first.HasValue
+            ? await dates.OrderByDescending(date => date).FirstOrDefaultAsync(cancellationToken)
+            : null;
 
-        var currentYear = _financialClock.LocalNow.Year;
-        var minYear = yearRange?.Min ?? 0;
-        var maxYear = yearRange?.Max ?? 0;
-
-        if (minYear == 0 || maxYear == 0)
-        {
-            return [currentYear];
-        }
-
-        minYear = Math.Min(minYear, currentYear);
-        maxYear = Math.Max(maxYear, currentYear);
+        var today = _financialClock.Today;
+        int CycleYear(DateOnly date) => CategoryAttributionService.GetCycleYearAndMonthIndexForDate(date, cycleDay).year;
+        // Early-January dates can belong to December's cycle. Keep the current calendar year
+        // selectable as well, so the next cycle can be opened before it starts.
+        var minYear = Math.Min(CycleYear(today), first.HasValue ? CycleYear(TransactionDate.ToDateOnly(first.Value)) : today.Year);
+        var maxYear = Math.Max(today.Year, last.HasValue ? CycleYear(TransactionDate.ToDateOnly(last.Value)) : today.Year);
 
         return Enumerable.Range(minYear, maxYear - minYear + 1).ToList();
     }
