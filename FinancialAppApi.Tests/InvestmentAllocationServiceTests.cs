@@ -132,6 +132,49 @@ public sealed class InvestmentAllocationServiceTests
     }
 
     [Fact]
+    public async Task Allocation_ComputesDriftAndContributionSplitsForAnEntirelyCustomPlan()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var account = new InvestmentAccount { Name = "Broker", BaseCurrency = "USD" };
+        var entries = new[]
+        {
+            (Symbol: "PROP", Label: "Property", Target: 45m, Value: 43m, Status: "OnTrack"),
+            (Symbol: "METL", Label: "Metals", Target: 25m, Value: 22m, Status: "Watch"),
+            (Symbol: "CASH", Label: "Cash funds", Target: 20m, Value: 25m, Status: "Alert"),
+            (Symbol: "SMOL", Label: "Small companies", Target: 10m, Value: 10m, Status: "OnTrack")
+        };
+        var groups = entries.Select(entry => new InvestmentGroup(Guid.NewGuid().ToString("N"), entry.Label, entry.Target, null)).ToArray();
+        context.InvestmentAccounts.Add(account);
+        var instruments = entries.Select((entry, index) => Instrument(entry.Symbol, groups[index].Key)).ToArray();
+        context.InvestmentInstruments.AddRange(instruments);
+        context.InvestmentPlans.Add(new InvestmentPlan
+        {
+            GroupsJson = JsonSerializer.Serialize(groups),
+            GroupingEnabled = true,
+            TargetsEnabled = true
+        });
+        await context.SaveChangesAsync();
+        for (var index = 0; index < entries.Length; index++)
+            AddPosition(context, account, instruments[index], entries[index].Value);
+        context.InvestmentCashFlows.Add(new InvestmentCashFlow
+        {
+            AccountId = account.Id, Currency = "USD", Type = "Deposit", Amount = 125,
+            Date = DateOnly.FromDateTime(DateTime.UtcNow)
+        });
+        await context.SaveChangesAsync();
+
+        var allocation = (await NewPortfolioService(context).GetPortfolioAsync("1m", CancellationToken.None)).Allocation;
+
+        Assert.Equal("Alert", allocation.Status);
+        Assert.Equal(entries.Select(entry => entry.Label), allocation.Sleeves.Select(sleeve => sleeve.Label));
+        Assert.Equal(entries.Select(entry => entry.Status), allocation.Sleeves.Select(sleeve => sleeve.Status));
+        Assert.Equal(entries.Select(entry => (decimal?)(entry.Value - entry.Target)), allocation.Sleeves.Select(sleeve => sleeve.DriftPercentagePoints));
+        Assert.NotNull(allocation.ContributionPlan);
+        Assert.Equal(groups.Select(group => group.Key), allocation.ContributionPlan.Sleeves.Select(sleeve => sleeve.Sleeve));
+        Assert.Equal(allocation.ContributionPlan.Amount, allocation.ContributionPlan.Sleeves.Sum(sleeve => sleeve.Amount));
+    }
+
+    [Fact]
     public async Task Allocation_IsIncompleteAndSuppressesAmountsForUnassignedHolding()
     {
         await using var context = NewPlannedContext();
