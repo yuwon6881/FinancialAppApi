@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FinancialAppApi.Database;
 using FinancialAppApi.Models;
 using FinancialAppApi.Services;
@@ -326,6 +327,36 @@ public class TransactionQueryServiceTests
         using var reader = new StreamReader(destination);
         var csv = await reader.ReadToEndAsync();
         Assert.Contains("\"Coffee\rBeans\"", csv);
+    }
+
+    [Fact]
+    public async Task GetAutocompleteSuggestionsAsync_MatchesTheSharedSourceContract()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var path = Path.Combine(AppContext.BaseDirectory, "Parity", "Fixtures", "autocomplete-source.cases.json");
+        using var fixture = JsonDocument.Parse(await File.ReadAllTextAsync(path));
+        var testCase = Assert.Single(fixture.RootElement.GetProperty("cases").EnumerateArray());
+        var rows = testCase.GetProperty("input").GetProperty("rows").EnumerateArray();
+        foreach (var row in rows)
+        {
+            var transaction = NewTransaction(
+                row.GetProperty("id").GetString()!,
+                row.GetProperty("description").GetString()!,
+                row.GetProperty("category").GetString()!,
+                row.GetProperty("ledgerCategory").GetString()!,
+                row.GetProperty("amount").GetDecimal(),
+                row.GetProperty("postedAt").GetDateTime(),
+                DateOnly.FromDateTime(row.GetProperty("date").GetDateTime()));
+            transaction.AccountId = row.GetProperty("accountId").GetString();
+            context.Transactions.Add(transaction);
+        }
+        await context.SaveChangesAsync();
+
+        var suggestions = await new TransactionQueryService(context).GetAutocompleteSuggestionsAsync();
+
+        var actual = JsonSerializer.SerializeToElement(suggestions, JsonSerializerOptions.Web);
+        var expected = testCase.GetProperty("expected").GetProperty("suggestions");
+        Assert.True(JsonElement.DeepEquals(expected, actual), $"Expected {expected}, got {actual}");
     }
 
     [Fact]

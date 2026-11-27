@@ -295,7 +295,7 @@ public partial class TransactionQueryService
             .ThenByDescending(t => t.PostedAt)
             .ThenByDescending(t => t.Id)
             .Take(300)
-            .Select(t => new { t.Description, t.Category, t.LedgerCategory, t.Amount })
+            .Select(t => new { t.Description, t.Category, t.LedgerCategory, t.Amount, t.Id, t.Date, t.PostedAt, t.AccountId })
             .ToListAsync(cancellationToken);
 
         var suggestions = new List<AutocompleteSuggestion>();
@@ -314,7 +314,8 @@ public partial class TransactionQueryService
                     Description = tx.Description.Trim(),
                     Category = tx.Category,
                     LedgerCategory = tx.LedgerCategory,
-                    TxType = txType
+                    TxType = txType,
+                    Source = new AutocompleteSource(tx.Id, TransactionDate.ToDateOnly(tx.Date), tx.PostedAt, tx.AccountId)
                 });
             }
         }

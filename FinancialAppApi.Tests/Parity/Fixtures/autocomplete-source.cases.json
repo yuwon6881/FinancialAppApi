@@ -1,0 +1,22 @@
+{
+  "domain": "autocomplete-source",
+  "version": 1,
+  "cases": [
+    {
+      "id": "latest-expense-with-same-description-as-refund",
+      "input": {
+        "rows": [
+          { "id": "earlier", "date": "2026-07-09", "postedAt": "2026-07-09T11:59:00Z", "description": "Coffee", "category": "Food", "ledgerCategory": "Essentials", "amount": -15, "accountId": "card" },
+          { "id": "purchase", "date": "2026-07-09", "postedAt": "2026-07-09T12:00:00Z", "description": " Coffee ", "category": "Food", "ledgerCategory": "Essentials", "amount": -10, "accountId": "checking" },
+          { "id": "refund", "date": "2026-07-09", "postedAt": "2026-07-09T12:01:00Z", "description": "Coffee", "category": "Food", "ledgerCategory": "Essentials", "amount": 10, "accountId": "savings" }
+        ]
+      },
+      "expected": {
+        "suggestions": [
+          { "description": "Coffee", "category": "Food", "ledgerCategory": "Essentials", "txType": "inflow", "source": { "id": "refund", "date": "2026-07-09", "postedAt": "2026-07-09T12:01:00Z", "accountId": "savings" } },
+          { "description": "Coffee", "category": "Food", "ledgerCategory": "Essentials", "txType": "outflow", "source": { "id": "purchase", "date": "2026-07-09", "postedAt": "2026-07-09T12:00:00Z", "accountId": "checking" } }
+        ]
+      }
+    }
+  ]
+}

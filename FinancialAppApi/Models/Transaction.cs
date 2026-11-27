@@ -89,4 +89,7 @@ public class AutocompleteSuggestion
     public string Category { get; set; } = string.Empty;
     public string LedgerCategory { get; set; } = string.Empty;
     public string TxType { get; set; } = string.Empty;
+    public required AutocompleteSource Source { get; init; }
 }
+
+public sealed record AutocompleteSource(string Id, DateOnly Date, DateTime PostedAt, string? AccountId);
