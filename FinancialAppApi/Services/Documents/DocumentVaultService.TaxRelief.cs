@@ -80,6 +80,14 @@ public partial class DocumentVaultService
 
     public bool IsTaxYearAllowed(int taxYear) => IsAllowedTaxYear(taxYear);
 
+    /// <summary>
+    /// The year the tracker describes when the client has not chosen one: the newest year holding a
+    /// document, or the current tax year for a vault that is still empty. An empty vault must still
+    /// name a year, because relief categories are set up per year and an upload requires one.
+    /// </summary>
+    public int ResolveDefaultTaxYear(IReadOnlyList<int> availableYears) =>
+        availableYears.Count > 0 ? availableYears[0] : _financialClock.Today.Year;
+
     public async Task<bool> CanReadTaxYearAsync(int taxYear, CancellationToken ct = default) =>
         IsAllowedTaxYear(taxYear)
         || await _context.VaultDocuments.AsNoTracking().AnyAsync(document => document.TaxYear == taxYear, ct);

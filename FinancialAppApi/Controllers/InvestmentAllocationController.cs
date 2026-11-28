@@ -40,7 +40,7 @@ public sealed class InvestmentAllocationController(
             return BadRequest(new { message = "Each investment may appear only once in the classification order." });
 
         if (!await allocationService.UpdateAllocationOrderAsync(dto.InstrumentIds, HttpContext.RequestAborted))
-            return BadRequest(new { message = "The classification order contains an unknown investment." });
+            return BadRequest(new { message = "This order is out of date: it must list every current investment and nothing else. Reload and try again." });
         return NoContent();
     }
 }

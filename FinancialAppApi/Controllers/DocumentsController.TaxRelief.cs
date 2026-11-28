@@ -17,22 +17,18 @@ public partial class DocumentsController
         if (taxYear is { } requestedYear && !_service.IsTaxYearAllowed(requestedYear)
             && !availableYears.Contains(requestedYear))
             return BadRequest(new { message = _service.TaxYearValidationMessage });
-        var selectedTaxYear = taxYear ?? availableYears.FirstOrDefault();
+        var selectedTaxYear = taxYear ?? _service.ResolveDefaultTaxYear(availableYears);
         var usage = await _service.GetUsageAsync(ct);
         var retention = await _retentionService.GetReviewAsync(ct);
-        var summary = selectedTaxYear == 0
-            ? null
-            : await _service.GetTaxYearSummaryAsync(selectedTaxYear, ct);
-        var reliefCategories = selectedTaxYear == 0
-            ? []
-            : await _service.GetReliefCategoriesAsync(selectedTaxYear, ct);
+        var summary = await _service.GetTaxYearSummaryAsync(selectedTaxYear, ct);
+        var reliefCategories = await _service.GetReliefCategoriesAsync(selectedTaxYear, ct);
 
         return Ok(new
         {
             usage,
             availableYears,
             retention,
-            selectedTaxYear = selectedTaxYear == 0 ? (int?)null : selectedTaxYear,
+            selectedTaxYear = (int?)selectedTaxYear,
             summary,
             reliefCategories,
         });

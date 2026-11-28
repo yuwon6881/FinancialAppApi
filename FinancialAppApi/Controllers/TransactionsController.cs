@@ -406,7 +406,8 @@ public class TransactionsController : ControllerBase
             dto.AccountId,
             dto.CounterAccountId,
             dto.SplitAccountIds,
-            dto.StabilityRepaymentCycles);
+            dto.StabilityRepaymentCycles,
+            PostsNextStatement: dto.PostsNextStatement);
     }
 
     public static TransactionDto MapToDto(Transaction t, string? stabilityReloadStatus = null)
@@ -433,6 +434,7 @@ public class TransactionsController : ControllerBase
             SavingsGoalId = t.SavingsGoalId,
             ExcludeFromAutocomplete = t.ExcludeFromAutocomplete,
             IsAccountBalanceAdjustment = t.IsAccountBalanceAdjustment,
+            PostsNextStatement = t.PostsNextStatement,
             StabilityReloadStatus = stabilityReloadStatus
         };
     }
@@ -461,6 +463,7 @@ public class TransactionsController : ControllerBase
             SavingsGoalId = t.SavingsGoalId,
             ExcludeFromAutocomplete = t.ExcludeFromAutocomplete,
             IsAccountBalanceAdjustment = t.IsAccountBalanceAdjustment,
+            PostsNextStatement = t.PostsNextStatement,
             StabilityReloadStatus = t.StabilityReloadStatus
         };
     }
@@ -487,6 +490,9 @@ public class TransactionDto
     public int? SavingsGoalId { get; set; }
     public bool ExcludeFromAutocomplete { get; set; }
     public bool IsAccountBalanceAdjustment { get; set; }
+    // A card purchase the bank posted after its statement closed. Optional on update, where an
+    // omitted value keeps the stored one; responses always carry it.
+    public bool? PostsNextStatement { get; set; }
     public string? StabilityReloadStatus { get; set; }
 }
 

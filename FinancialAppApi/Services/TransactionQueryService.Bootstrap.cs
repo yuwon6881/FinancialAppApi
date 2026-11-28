@@ -44,7 +44,8 @@ public partial class TransactionQueryService
                 AccountId: transaction.AccountId,
                 CounterAccountId: transaction.CounterAccountId,
                 ExcludeFromAutocomplete: transaction.ExcludeFromAutocomplete,
-                IsAccountBalanceAdjustment: transaction.IsAccountBalanceAdjustment))
+                IsAccountBalanceAdjustment: transaction.IsAccountBalanceAdjustment,
+                PostsNextStatement: transaction.PostsNextStatement))
             .ToList();
         return new TransactionListResult(items);
     }

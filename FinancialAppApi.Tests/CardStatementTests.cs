@@ -73,6 +73,33 @@ public sealed class CardStatementTests
         Assert.Equal(370m, owed - statement.ChargedSince);
     }
 
+    // A purchase made just before a close that the bank posted after it belongs to the next
+    // statement, but only when it is marked so and only from the period that just closed.
+    [Theory]
+    [InlineData("2026-11-14", true, 60)] // the day before the latest close, posted after it
+    [InlineData("2026-11-14", false, 0)] // the same purchase, posted before the close
+    [InlineData("2026-10-15", true, 0)] // on the close before: that statement is long settled
+    [InlineData("2026-10-10", true, 0)]
+    public async Task AChargeMarkedForTheNextStatementCountsOnlyFromThePeriodThatJustClosed(
+        string date, bool postsNextStatement, decimal expected)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var service = Service(context);
+        await service.CreateAsync(Bank());
+        await service.CreateAsync(Card(statementDay: 15));
+        var row = Row("late-post", DateOnly.Parse(date), -60m);
+        row.PostsNextStatement = postsNextStatement;
+        context.Transactions.Add(row);
+        await context.SaveChangesAsync();
+
+        var statements = await new CardStatementService(context)
+            .GetStatementsAsync(await service.GetAccountsAsync(), new DateOnly(2026, 11, 28), CancellationToken.None);
+
+        var statement = Assert.Single(statements).Value;
+        Assert.Equal(new DateOnly(2026, 11, 15), statement.StatementDate);
+        Assert.Equal(expected, statement.ChargedSince);
+    }
+
     [Fact]
     public async Task ACardWithoutAStatementDayHasNoStatement()
     {

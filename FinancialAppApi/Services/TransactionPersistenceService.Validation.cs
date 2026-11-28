@@ -79,6 +79,28 @@ public partial class TransactionPersistenceService
         Code: code,
         MissingBuckets: missingBuckets);
 
+    /// <summary>
+    /// "Posts on the next statement" only means something for a row on a card, so the flag is kept
+    /// only when the row's account or counter account is one of this user's credit cards.
+    /// </summary>
+    private async Task<bool> ResolvePostsNextStatementAsync(
+        bool requested,
+        Transaction transaction,
+        CancellationToken cancellationToken)
+    {
+        if (!requested) return false;
+        var accountIds = new[] { transaction.AccountId, transaction.CounterAccountId }
+            .Where(value => value is not null)
+            .Select(value => value!)
+            .ToList();
+        if (accountIds.Count == 0) return false;
+        var kinds = await _context.LedgerAccounts.AsNoTracking()
+            .Where(account => accountIds.Contains(account.Id))
+            .Select(account => account.Kind)
+            .ToListAsync(cancellationToken);
+        return kinds.Any(LedgerAccountKind.IsCreditCard);
+    }
+
     private async Task<TransactionMutationResult?> ValidateAccountReferencesAsync(
         Transaction transaction,
         CancellationToken cancellationToken)

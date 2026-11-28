@@ -734,6 +734,61 @@ public class TransactionPersistenceServiceTests
         Assert.Equal(5, await context.Transactions.CountAsync());
     }
 
+    [Fact]
+    public async Task PostsNextStatement_IsKeptOnlyOnACardRow()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        SeedCategories(context);
+        context.LedgerAccounts.AddRange(
+            new LedgerAccount
+            {
+                Id = "essentials-bank",
+                Name = "Essentials bank",
+                Bucket = "Essentials",
+                Kind = LedgerAccountKind.Bank,
+            },
+            new LedgerAccount
+            {
+                Id = "essentials-card",
+                Name = "Visa",
+                Bucket = "Essentials",
+                Kind = LedgerAccountKind.CreditCard,
+            });
+        await context.SaveChangesAsync();
+        var service = NewService(context);
+
+        var bankRow = await service.CreateTransactionAsync(
+            NewRequest("bank-row", ledgerCategory: "Essentials") with
+            {
+                AccountId = "essentials-bank",
+                PostsNextStatement = true,
+            });
+        var cardRow = await service.CreateTransactionAsync(
+            NewRequest("card-row", ledgerCategory: "Essentials") with
+            {
+                AccountId = "essentials-card",
+                PostsNextStatement = true,
+            });
+
+        Assert.Equal(TransactionMutationStatus.Created, bankRow.Status);
+        Assert.False(bankRow.Transaction!.PostsNextStatement);
+        Assert.Equal(TransactionMutationStatus.Created, cardRow.Status);
+        Assert.True(cardRow.Transaction!.PostsNextStatement);
+
+        // An update that omits the flag keeps it; moving the row off the card drops it.
+        var kept = await service.UpdateTransactionAsync(
+            "card-row",
+            NewRequest("card-row", ledgerCategory: "Essentials") with { AccountId = "essentials-card" });
+        Assert.Equal(TransactionMutationStatus.Updated, kept.Status);
+        Assert.True(kept.Transaction!.PostsNextStatement);
+
+        var moved = await service.UpdateTransactionAsync(
+            "card-row",
+            NewRequest("card-row", ledgerCategory: "Essentials") with { AccountId = "essentials-bank" });
+        Assert.Equal(TransactionMutationStatus.Updated, moved.Status);
+        Assert.False(moved.Transaction!.PostsNextStatement);
+    }
+
     private static TransactionPersistenceService NewService(
         AppDbContext context,
         FinancialClock? clock = null,

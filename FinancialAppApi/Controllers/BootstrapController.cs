@@ -278,19 +278,14 @@ public class BootstrapController : ControllerBase
         if (requested.Contains(RefreshSliceNames.Documents))
         {
             var availableYears = await _documentVaultService.GetAvailableTaxYearsAsync(cancellationToken);
-            var selectedTaxYear = availableYears.FirstOrDefault();
-            var selectedYear = selectedTaxYear == 0 ? (int?)null : selectedTaxYear;
+            var selectedYear = _documentVaultService.ResolveDefaultTaxYear(availableYears);
             response.Documents = new BootstrapDocumentsRefreshDto(
                 await _documentVaultService.GetUsageAsync(cancellationToken),
                 availableYears,
                 await _documentRetentionService.GetReviewAsync(cancellationToken),
                 selectedYear,
-                selectedYear is null
-                    ? null
-                    : await _documentVaultService.GetTaxYearSummaryAsync(selectedYear.Value, cancellationToken),
-                selectedYear is null
-                    ? []
-                    : await _documentVaultService.GetReliefCategoriesAsync(selectedYear.Value, cancellationToken));
+                await _documentVaultService.GetTaxYearSummaryAsync(selectedYear, cancellationToken),
+                await _documentVaultService.GetReliefCategoriesAsync(selectedYear, cancellationToken));
         }
 
         return Ok(response);

@@ -30,6 +30,7 @@ public partial class AppDbContext
             entity.Property(e => e.Amount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.ExcludeFromAutocomplete).HasDefaultValue(false);
             entity.Property(e => e.IsAccountBalanceAdjustment).HasDefaultValue(false);
+            entity.Property(e => e.PostsNextStatement).HasDefaultValue(false);
             entity.Property(e => e.StabilityRecoveryTopUpAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.Date).HasColumnType("timestamp with time zone");
             entity.Property(e => e.PostedAt).HasColumnType("timestamp with time zone");

@@ -25,7 +25,8 @@ public sealed record TransactionProjection(
     string? AccountId = null,
     string? CounterAccountId = null,
     bool ExcludeFromAutocomplete = false,
-    bool IsAccountBalanceAdjustment = false);
+    bool IsAccountBalanceAdjustment = false,
+    bool PostsNextStatement = false);
 
 public sealed record TransactionListResult(
     IReadOnlyList<TransactionProjection> Items,
@@ -137,7 +138,8 @@ public partial class TransactionQueryService
                 t.AccountId,
                 t.CounterAccountId,
                 t.ExcludeFromAutocomplete,
-                t.IsAccountBalanceAdjustment
+                t.IsAccountBalanceAdjustment,
+                t.PostsNextStatement
                 ))
                 .ToListAsync(cancellationToken);
 
@@ -195,7 +197,8 @@ public partial class TransactionQueryService
                     t.AccountId,
                     t.CounterAccountId,
                     t.ExcludeFromAutocomplete,
-                    t.IsAccountBalanceAdjustment
+                    t.IsAccountBalanceAdjustment,
+                    t.PostsNextStatement
                 ))
                 .ToListAsync(cancellationToken);
             return new TransactionListResult(
@@ -237,7 +240,8 @@ public partial class TransactionQueryService
                 t.AccountId,
                 t.CounterAccountId,
                     t.ExcludeFromAutocomplete,
-                    t.IsAccountBalanceAdjustment
+                    t.IsAccountBalanceAdjustment,
+                    t.PostsNextStatement
             ))
             .ToListAsync(cancellationToken);
 

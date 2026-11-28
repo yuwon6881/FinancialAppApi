@@ -98,7 +98,9 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
         var plan = ToDto(planEntity);
         var targets = Targets(plan);
         var labels = plan.Groups.ToDictionary(group => group.Key, group => group.Label);
-        var assignments = instruments.Select(value => new InvestmentAllocationAssignmentDto(
+        // Archived investments hold no units and cannot be bought, so they take no part in
+        // classification, group counts, or the notices a group removal raises.
+        var assignments = instruments.Where(value => !value.IsArchived).Select(value => new InvestmentAllocationAssignmentDto(
                 value.Id, value.Symbol, value.Name, value.AllocationSleeve, value.AllocationOrder))
             .OrderBy(value => value.Order)
             .ThenBy(value => value.Symbol)
@@ -168,7 +170,7 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
             var emptyValues = targets.Keys.ToDictionary(key => key, _ => 0m);
             return new InvestmentAllocationOverviewDto(
                 "NotStarted", appCurrency, plan, assignments,
-                EmptySleeves(plan), [], cashReasons, freshness, 0, availableCash,
+                EmptySleeves(plan), [], cashReasons, freshness, 0, roundedCash,
                 availableCash is null ? null : 0,
                 availableCash is null ? null : BuildContributionPlan(
                     appCurrency, 0, emptyValues, targets, 0, false,
@@ -181,9 +183,11 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
         {
             return new InvestmentAllocationOverviewDto(
                 "Incomplete", appCurrency, plan, assignments,
-                IncompleteSleeves(plan, holdings, instruments.ToDictionary(value => value.Id, value => value.AllocationSleeve)),
+                IncompleteSleeves(plan, holdings, instruments.ToDictionary(value => value.Id, value => value.AllocationSleeve))
+                    .Select(sleeve => sleeve with { Value = sleeve.Value is { } value ? RoundMoney(value) : null })
+                    .ToList(),
                 [], incompleteReasons,
-                freshness, null, availableCash, null);
+                freshness, null, roundedCash, null);
         }
 
         var totalInvested = holdings.Sum(value => value.ValueApp!.Value);
@@ -191,7 +195,7 @@ public sealed partial class InvestmentAllocationService(AppDbContext context)
         {
             return new InvestmentAllocationOverviewDto(
                 "NotStarted", appCurrency, plan, assignments,
-                EmptySleeves(plan), [], cashReasons, freshness, totalInvested, availableCash,
+                EmptySleeves(plan), [], cashReasons, freshness, totalInvested, roundedCash,
                 availableCash is null ? null : 0);
         }
 

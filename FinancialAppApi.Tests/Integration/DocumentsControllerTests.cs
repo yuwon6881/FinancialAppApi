@@ -262,6 +262,36 @@ public sealed class DocumentsControllerTests : IntegrationTestBase
         Assert.Equal(7, review.GetProperty("keepYears").GetInt32());
     }
 
+    [Fact]
+    public async Task Overview_OnAnEmptyAccount_OffersTheCurrentTaxYearSoAFirstCategoryCanBeSetUp()
+    {
+        // A new account has no documents and no relief categories. Uploading needs a category, and
+        // the only place to add one is the tracker for a selected year, so the overview must name a
+        // year even before any document exists; otherwise a new user can never upload anything.
+        var client = await CreateSignedInClientAsync();
+
+        var empty = await client.GetFromJsonAsync<JsonElement>("/api/documents/overview");
+        Assert.Equal(2026, empty.GetProperty("selectedTaxYear").GetInt32());
+        Assert.Empty(empty.GetProperty("availableYears").EnumerateArray());
+        Assert.Empty(empty.GetProperty("reliefCategories").EnumerateArray());
+
+        var refresh = await client.GetFromJsonAsync<JsonElement>("/api/bootstrap/refresh?slices=documents");
+        Assert.Equal(2026, refresh.GetProperty("documents").GetProperty("selectedTaxYear").GetInt32());
+
+        var categoryId = await AddCategoryAsync(client, 2026);
+
+        var configured = await client.GetFromJsonAsync<JsonElement>("/api/documents/overview");
+        Assert.Equal(2026, configured.GetProperty("selectedTaxYear").GetInt32());
+        // The year filter still lists only years that hold a document.
+        Assert.Empty(configured.GetProperty("availableYears").EnumerateArray());
+        var category = Assert.Single(configured.GetProperty("reliefCategories").EnumerateArray());
+        Assert.Equal(categoryId, category.GetProperty("id").GetString());
+
+        using var uploadForm = CreateUploadForm(Encoding.UTF8.GetBytes("%PDF-1.7 first"), "first.pdf", categoryId);
+        var upload = await client.PostAsync("/api/documents", uploadForm);
+        Assert.Equal(HttpStatusCode.OK, upload.StatusCode);
+    }
+
     /// <summary>
     /// A refusal with an empty body leaves the client nothing to show but its own generic fallback,
     /// which is the regression these assertions exist to catch.

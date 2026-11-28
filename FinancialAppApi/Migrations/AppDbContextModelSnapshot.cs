@@ -2180,6 +2180,11 @@ namespace FinancialAppApi.Migrations
                     b.Property<DateTime>("PostedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("PostsNextStatement")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<DateOnly?>("RecurringOccurrenceDate")
                         .HasColumnType("date");
 

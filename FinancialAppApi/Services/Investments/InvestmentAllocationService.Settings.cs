@@ -134,12 +134,22 @@ public sealed partial class InvestmentAllocationService
     {
         var instruments = await context.InvestmentInstruments
             .ToDictionaryAsync(value => value.Id, cancellationToken);
-        if (instruments.Count != instrumentIds.Count || instrumentIds.Any(id => !instruments.ContainsKey(id)))
+        var listed = instrumentIds.ToHashSet();
+        // Every active investment must be placed. Archived ones are not shown for ordering, but a
+        // change queued before an archive may still name them, so they are accepted either way.
+        if (listed.Count != instrumentIds.Count || instrumentIds.Any(id => !instruments.ContainsKey(id))
+            || instruments.Values.Any(value => !value.IsArchived && !listed.Contains(value.Id)))
             return false;
 
-        for (var index = 0; index < instrumentIds.Count; index++)
+        var ordered = instrumentIds.Concat(instruments.Values
+                .Where(value => !listed.Contains(value.Id))
+                .OrderBy(value => value.AllocationOrder)
+                .ThenBy(value => value.Symbol)
+                .Select(value => value.Id))
+            .ToList();
+        for (var index = 0; index < ordered.Count; index++)
         {
-            var instrument = instruments[instrumentIds[index]];
+            var instrument = instruments[ordered[index]];
             instrument.AllocationOrder = index;
             instrument.UpdatedAt = DateTime.UtcNow;
         }

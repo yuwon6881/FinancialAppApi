@@ -37,6 +37,11 @@ public class Transaction : IUserOwnedEntity
     // corrections out of the put-back lifecycle while still applying their balance change.
     public bool IsAccountBalanceAdjustment { get; set; }
 
+    // True when a card purchase dated in a statement period was posted by the bank after that
+    // period closed, so it belongs to the next statement. Only meaningful on a row that touches a
+    // credit card account; the server stores false for any other row.
+    public bool PostsNextStatement { get; set; }
+
     // Placement for the bucket leg this row represents. A same-user restrictive composite FK
     // preserves historical attribution and prevents removal while transactions reference it.
     [StringLength(100)]

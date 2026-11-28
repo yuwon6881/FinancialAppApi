@@ -39,7 +39,9 @@ public sealed record TransactionMutationRequest(
     int? StabilityRepaymentCycles = null,
     // Internal only, never bound from HTTP: the loan repayment path settles dates from the loan's
     // own frozen cadence, which the bill's editable cadence and tracking window may no longer match.
-    bool OccurrenceAuthorizedByLoan = false);
+    bool OccurrenceAuthorizedByLoan = false,
+    // Null on update keeps the stored value; the server keeps true only on a credit card row.
+    bool? PostsNextStatement = null);
 
 public sealed record TransactionMutationResult(
     TransactionMutationStatus Status,
@@ -177,7 +179,9 @@ public partial class TransactionPersistenceService
 
         var accountValidation = await ValidateAccountReferencesAsync(transaction, cancellationToken);
         if (accountValidation is not null) return accountValidation;
-        var occurrence = await ResolveRecurringOccurrenceDateAsync(
+        transaction.PostsNextStatement = await ResolvePostsNextStatementAsync(
+            request.PostsNextStatement ?? false, transaction, cancellationToken);
+        var occurrence =await ResolveRecurringOccurrenceDateAsync(
             transaction,
             request.RecurringOccurrenceDate,
             request.OccurrenceAuthorizedByLoan,
@@ -507,6 +511,8 @@ public partial class TransactionPersistenceService
             : NoOpPoolLock.Instance;
         var accountValidation = await ValidateAccountReferencesAsync(accountProbe, cancellationToken);
         if (accountValidation is not null) return accountValidation;
+        var postsNextStatement = await ResolvePostsNextStatementAsync(
+            request.PostsNextStatement ?? transaction.PostsNextStatement, accountProbe, cancellationToken);
 
         var splitContext = await LoadIncomeSplitContextAsync(
             ledgerValidation.LedgerCategory, putDate, transaction.PostedAt, transaction.Id,
@@ -541,6 +547,7 @@ public partial class TransactionPersistenceService
             : StabilityReloadIntent.Normalize(request.StabilityReloadIntent);
         transaction.AccountId = accountProbe.AccountId;
         transaction.CounterAccountId = accountProbe.CounterAccountId;
+        transaction.PostsNextStatement = postsNextStatement;
         transaction.StabilityRepaymentCycles = transaction.StabilityReloadIntent == StabilityReloadIntent.Required
             && Stability.StabilityReloadLedger.CanCarryReloadStatus(transaction)
             ? request.StabilityRepaymentCycles ?? transaction.StabilityRepaymentCycles

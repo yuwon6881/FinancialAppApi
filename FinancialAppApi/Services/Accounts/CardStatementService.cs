@@ -8,13 +8,16 @@ namespace FinancialAppApi.Services.Accounts;
 /// Where a card stands against its latest statement: the day it closed and what was charged to the
 /// card after it. What is still due on that statement is what is owed today less those later
 /// charges, so a payment, refund or rebate since the close counts against the statement while a new
-/// purchase waits for the next one.
+/// purchase waits for the next one. A purchase marked <see cref="Transaction.PostsNextStatement"/>
+/// that is dated in the closed period, after the close before it, was posted by the bank after the
+/// close and so also counts as charged since: it belongs to the next statement, not this one.
 /// </summary>
 public sealed record CardStatement(DateOnly StatementDate, decimal ChargedSince);
 
 /// <summary>
 /// Reads <see cref="CardStatement"/> for cards that record a statement day. Only the rows after the
-/// latest close are read, so the cost is bounded by one statement period, never by account age.
+/// close before the latest one are read (late-posted purchases can only come from that period), so
+/// the cost is bounded by two statement periods, never by account age.
 /// </summary>
 public sealed class CardStatementService
 {
@@ -55,13 +58,17 @@ public sealed class CardStatementService
     {
         var cards = accounts
             .Where(account => LedgerAccountKind.IsCreditCard(account.Kind) && account.StatementDay is not null)
-            .Select(account => (Account: account, Closed: LastStatementDate(account.StatementDay!.Value, today)))
+            .Select(account =>
+            {
+                var closed = LastStatementDate(account.StatementDay!.Value, today);
+                return (Account: account, Closed: closed, Previous: LastStatementDate(account.StatementDay!.Value, closed));
+            })
             .ToList();
         if (cards.Count == 0) return new Dictionary<string, CardStatement>(StringComparer.Ordinal);
 
         var charged = cards.ToDictionary(card => card.Account.Id, _ => 0m, StringComparer.Ordinal);
         var accountsById = accounts.ToDictionary(account => account.Id, StringComparer.Ordinal);
-        var from = TransactionDate.ExclusiveEndOfDate(cards.Min(card => card.Closed));
+        var from = TransactionDate.ExclusiveEndOfDate(cards.Min(card => card.Previous));
         var cardIds = cards.Select(card => card.Account.Id).ToList();
 
         // Placement is explicit, so a row can only land on a card that it names.
@@ -76,13 +83,17 @@ public sealed class CardStatementService
                 Amount = transaction.Amount,
                 AccountId = transaction.AccountId,
                 CounterAccountId = transaction.CounterAccountId,
+                PostsNextStatement = transaction.PostsNextStatement,
             });
         await foreach (var transaction in rows.AsAsyncEnumerable().WithCancellation(cancellationToken))
         {
             var date = TransactionDate.ToDateOnly(transaction.Date);
-            foreach (var (account, closed) in cards)
+            foreach (var (account, closed, previous) in cards)
             {
-                if (date <= closed) continue;
+                // Dated after the close, or dated in the closed period but posted after its close.
+                var countsSinceClose = date > closed
+                    || (transaction.PostsNextStatement && date > previous);
+                if (!countsSinceClose) continue;
                 var amount = LedgerAccountAttribution.GetAccountAmount(transaction, account, accountsById);
                 if (amount < 0m) charged[account.Id] -= amount;
             }
