@@ -95,6 +95,7 @@ public sealed class ReportMetricsCalculatorTests
         Assert.Equal(31, insights.CycleLengthDays);
         // 10 elapsed days - 2 distinct expense days in the elapsed window = 8 no-spend days
         Assert.Equal(8, insights.NoSpendDays);
+        Assert.Equal(4.5m, insights.AverageDailySpend);
     }
 
     [Fact]

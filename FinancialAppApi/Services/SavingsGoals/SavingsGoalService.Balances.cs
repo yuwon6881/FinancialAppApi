@@ -36,6 +36,20 @@ public partial class SavingsGoalService
         return openingBalance + cycleTxs.Sum(t => CategoryAttributionService.GetCategoryAmount(t, fundingBucket));
     }
 
+    internal async Task<decimal> GetCommittedTotalAsync(
+        string fundingBucket,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureFundingBucket(fundingBucket);
+        var cycleDay = await GetCycleDayAsync(cancellationToken);
+        var pendingBucket = await GetPendingBucketRecurringAsync(fundingBucket, cycleDay, cancellationToken);
+        var totalEarmarked = await _context.SavingsGoals
+            .AsNoTracking()
+            .Where(goal => goal.Status == SavingsGoalStatus.Active && goal.FundingBucket == fundingBucket)
+            .SumAsync(goal => goal.EarmarkedAmount, cancellationToken);
+        return MoneyRounding.RoundMoney(totalEarmarked + Math.Max(0m, pendingBucket));
+    }
+
     private async Task<decimal> GetUnassignedAsync(
         string fundingBucket = SavingsGoalFundingBucket.Rewards,
         int? cycleDay = null,

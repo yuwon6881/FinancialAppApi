@@ -9,6 +9,7 @@ using FinancialAppApi.Services.Accounts;
 using FinancialAppApi.Services.AI;
 using FinancialAppApi.Services.AI.Agent;
 using FinancialAppApi.Services.AI.Tools;
+using FinancialAppApi.Services.Forecast;
 using FinancialAppApi.Services.Loans;
 using FinancialAppApi.Services.SavingsGoals;
 using FinancialAppApi.Services.Stability;
@@ -131,6 +132,7 @@ static AiAssistantService NewService(AppDbContext db, AiClient client, IConfigur
         new GetCategoryLimitsTool(db, transactions, new AiRecurringBillStatusService(db, occurrences)),
         new GetBudgetPlanTool(db, new StabilityRecoveryService(db, new CycleBalanceService(db), clock)),
         new ForecastLedgerBalanceTool(transactions, accounts),
+        new ForecastCashFlowTool(new CashFlowForecastService(db, accounts, occurrenceService, clock)),
         new AnalyzeTransactionsTool(transactions)
     ]);
     var agent = new AiAgentServices(

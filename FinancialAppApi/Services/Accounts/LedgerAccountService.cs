@@ -22,7 +22,10 @@ public sealed record LedgerAccountMutation(
     decimal OpeningAmount = 0m,
     decimal? CreditLimit = null,
     // An absent limit keeps the stored one; a client that predates credit cards must not erase it.
-    bool HasCreditLimit = false);
+    bool HasCreditLimit = false,
+    int? StatementDay = null,
+    // Absent keeps the stored statement day, exactly like the limit.
+    bool HasStatementDay = false);
 
 public sealed record LedgerAccountMutationResult(
     LedgerAccountMutationStatus Status,
@@ -48,7 +51,8 @@ public sealed record LedgerAccountReconcileRequest(
     string Bucket,
     decimal ExpectedBucketTotal,
     IReadOnlyList<LedgerAccountReconcileTarget> Targets,
-    string? Description = null);
+    string? Description = null,
+    decimal? ExpectedRewardsCommitted = null);
 
 public sealed record LedgerAccountReconcileTransaction(
     string Id,
@@ -105,6 +109,11 @@ public sealed partial class LedgerAccountService
         DateTime? throughExclusive = null) =>
         _balanceService.GetBalancesAsync(accounts, cancellationToken, throughExclusive);
 
+    public Task<IReadOnlyDictionary<string, CardStatement>> GetCardStatementsAsync(
+        IReadOnlyCollection<LedgerAccount> accounts,
+        CancellationToken cancellationToken = default) =>
+        new CardStatementService(_context, _clock).GetStatementsAsync(accounts, cancellationToken);
+
     public Task<LedgerAccountBalanceSnapshot> GetBalanceSnapshotAsync(
         IReadOnlyCollection<LedgerAccount> accounts,
         DateTime throughExclusive,
@@ -152,6 +161,9 @@ public sealed partial class LedgerAccountService
             IsArchived = false,
             CreditLimit = LedgerAccountKind.IsCreditCard(mutation.Kind) && mutation.HasCreditLimit
                 ? RoundLimit(mutation.CreditLimit)
+                : null,
+            StatementDay = LedgerAccountKind.IsCreditCard(mutation.Kind) && mutation.HasStatementDay
+                ? mutation.StatementDay
                 : null,
             CreatedAt = now,
             UpdatedAt = now,
@@ -280,8 +292,16 @@ public sealed partial class LedgerAccountService
         account.Bucket = nextBucket;
         account.Kind = LedgerAccountKind.Normalize(mutation.Kind);
         account.IsArchived = mutation.IsArchived;
-        if (!LedgerAccountKind.IsCreditCard(account.Kind)) account.CreditLimit = null;
-        else if (mutation.HasCreditLimit) account.CreditLimit = RoundLimit(mutation.CreditLimit);
+        if (!LedgerAccountKind.IsCreditCard(account.Kind))
+        {
+            account.CreditLimit = null;
+            account.StatementDay = null;
+        }
+        else
+        {
+            if (mutation.HasCreditLimit) account.CreditLimit = RoundLimit(mutation.CreditLimit);
+            if (mutation.HasStatementDay) account.StatementDay = mutation.StatementDay;
+        }
         account.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync(cancellationToken);
@@ -339,7 +359,18 @@ public sealed partial class LedgerAccountService
         if (mutation.OpeningAmount > 9999999999.99m
             || mutation.OpeningAmount < (isCard ? -9999999999.99m : 0m))
             return "Opening amount cannot be negative.";
-        return ValidateCreditLimit(mutation.Kind, mutation.CreditLimit, mutation.HasCreditLimit);
+        return ValidateCreditLimit(mutation.Kind, mutation.CreditLimit, mutation.HasCreditLimit)
+            ?? ValidateStatementDay(mutation.Kind, mutation.StatementDay, mutation.HasStatementDay);
+    }
+
+    internal static string? ValidateStatementDay(string? kind, int? statementDay, bool hasStatementDay)
+    {
+        if (!hasStatementDay || statementDay is null) return null;
+        if (!LedgerAccountKind.IsCreditCard(kind))
+            return "Only a credit card has a statement day.";
+        if (statementDay is < 1 or > LedgerAccountKind.MaxStatementDay)
+            return "Choose a statement day from 1 to 31.";
+        return null;
     }
 
     internal const string CreditCardBucketMessage =

@@ -29,7 +29,8 @@ Ask AI answers questions about the signed-in user's own money and prepares chang
 | `get_category_limits` | Effective-dated limit progress and projection. |
 | `get_goals_and_rewards` | Savings-goal pools and pace; wishlist affordability and the Wishlist page's forecast. |
 | `get_budget_plan` | Allocation and stability-fund position. |
-| `forecast_ledger_balance` | Time for a bucket to reach a target. |
+| `forecast_ledger_balance` | Long-range estimate of when a bucket reaches a target, from its recent savings pace. |
+| `forecast_cash_flow` | The Forecast screen's projection (`CashFlowForecastService`): bucket balances through the next 1–12 cycles with upcoming bills, plus optional income, everyday spending, dated what-ifs and skipped bills. |
 | `get_loans` / `get_investments` | Loan terms and replay; stored portfolio calculations. |
 
 Each tool is one file under `Services/AI/Tools`, wraps existing services or pure calculators, records the ids it returns as evidence, and declares its sensitive-mode behaviour. `AiToolExecutor` turns argument mistakes, budget exhaustion, and server failures into model-readable errors and strips money fields at any depth in sensitive mode.

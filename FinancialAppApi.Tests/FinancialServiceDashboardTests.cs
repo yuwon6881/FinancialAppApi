@@ -187,6 +187,28 @@ public class FinancialServiceDashboardTests
     }
 
     [Fact]
+    public async Task GetDashboardDataAsync_ReportsStabilityTargetAtClosedCycleBoundary()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.FinancialSettings.Add(new FinancialSetting { CycleDay = 28, TargetStabilityFund = 2000m });
+        context.StabilityPlanRevisions.AddRange(
+            new StabilityPlanRevision { EffectiveAt = DateTime.UnixEpoch, TargetStabilityFund = 1000m },
+            new StabilityPlanRevision
+            {
+                // Midnight on the next cycle's first day in Kuala Lumpur.
+                EffectiveAt = new DateTime(2026, 6, 27, 16, 0, 0, DateTimeKind.Utc),
+                TargetStabilityFund = 2000m
+            });
+        await context.SaveChangesAsync();
+        var service = NewService(context, new DateTimeOffset(2026, 8, 1, 0, 0, 0, TimeSpan.Zero), "Asia/Kuala_Lumpur");
+        var response = await service.GetDashboardDataAsync("May", 2026, persistSelection: false, summaryOnly: true);
+        var stats = response.GetType().GetProperty("stats")!.GetValue(response)!;
+
+        Assert.Equal(1000m, ObfuscationHelper.Deobfuscate(
+            (string)stats.GetType().GetProperty("stabilityTargetAtCycleClose")!.GetValue(stats)!));
+    }
+
+    [Fact]
     public async Task GetDashboardDataAsync_SummaryOnlyOmitsUnneededDashboardExtras()
     {
         await using var context = TestHelpers.NewInMemoryContext();
@@ -719,7 +741,8 @@ public class FinancialServiceDashboardTests
             .GetDashboardDataAsync("Jul", 2026);
         var insights = response.GetType().GetProperty("todayPlanInsights")!.GetValue(response)!;
 
-        Assert.Single(GetObjects(response, "activeRecurringPayments"));
+        var occurrence = Assert.Single(GetObjects(response, "activeRecurringPayments"));
+        Assert.False((bool)occurrence.GetType().GetProperty("isActiveSchedule")!.GetValue(occurrence)!);
         Assert.Equal(0, insights.GetType().GetProperty("unpaidRecurringCount")!.GetValue(insights));
         Assert.Equal(0m, GetAmount(insights, "unpaidRecurringTotal"));
     }
@@ -1001,12 +1024,12 @@ public class FinancialServiceDashboardTests
         return ObfuscationHelper.Deobfuscate(raw);
     }
 
-    private static FinancialService NewService(AppDbContext context, DateTimeOffset? utcNow = null)
+    private static FinancialService NewService(AppDbContext context, DateTimeOffset? utcNow = null, string timeZone = "UTC")
     {
         var occurrences = new RecurringOccurrenceService(NullLogger<RecurringOccurrenceService>.Instance);
         var clock = utcNow.HasValue
             ? new FinancialClock(
-                TestHelpers.NewConfiguration(("Financial:TimeZoneId", "UTC")),
+                TestHelpers.NewConfiguration(("Financial:TimeZoneId", timeZone)),
                 new FixedTimeProvider(utcNow.Value))
             : null;
         return new FinancialService(

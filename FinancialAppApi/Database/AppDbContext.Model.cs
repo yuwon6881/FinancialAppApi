@@ -89,6 +89,9 @@ public partial class AppDbContext
                     "ck_ledgeraccounts_creditlimit",
                     $"\"CreditLimit\" IS NULL OR (\"Kind\" = '{LedgerAccountKind.CreditCard}' AND \"CreditLimit\" > 0)");
                 table.HasCheckConstraint(
+                    "ck_ledgeraccounts_statementday",
+                    $"\"StatementDay\" IS NULL OR (\"Kind\" = '{LedgerAccountKind.CreditCard}' AND \"StatementDay\" BETWEEN 1 AND {LedgerAccountKind.MaxStatementDay})");
+                table.HasCheckConstraint(
                     "ck_ledgeraccounts_creditcard_bucket",
                     $"\"Kind\" <> '{LedgerAccountKind.CreditCard}' OR \"Bucket\" IN ({string.Join(", ", LedgerAccountKind.CreditCardBuckets.Select(value => $"'{value}'"))})");
             });

@@ -283,4 +283,130 @@ public sealed class LedgerAccountsControllerTests
         var deleteResult = await aliceController.DeleteAccount("bob-acct");
         Assert.IsType<NotFoundResult>(deleteResult);
     }
+
+    [Fact]
+    public async Task PutAccount_SetsAStatementDayAndReturnsTheLatestStatement()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        TestHelpers.SeedLedgerAccounts(context);
+        await context.SaveChangesAsync();
+        var controller = CreateController(context);
+        var created = await controller.PostAccount(new LedgerAccountMutationDto
+        {
+            Id = "acct-visa",
+            Name = "Visa",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.CreditCard,
+        });
+        Assert.IsType<CreatedAtActionResult>(created.Result);
+
+        var result = await controller.PutAccount("acct-visa", new LedgerAccountMutationDto
+        {
+            Name = "Visa",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.CreditCard,
+            StatementDay = ToJsonElement(15),
+        });
+
+        var dto = Assert.IsType<LedgerAccountDto>(Assert.IsType<OkObjectResult>(result.Result).Value);
+        Assert.Equal(15, dto.StatementDay);
+        var expected = CardStatementService.LastStatementDate(15, FinancialClock.Utc.Today);
+        Assert.Equal(expected.ToString("yyyy-MM-dd"), dto.StatementDate);
+        Assert.True(ObfuscationHelper.TryDeobfuscate(dto.ChargedSinceStatement!, out var charged));
+        Assert.Equal(0m, charged);
+    }
+
+    [Fact]
+    public async Task PutAccount_RejectsAStatementDayThatIsNotAWholeNumber()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var controller = CreateController(context);
+
+        var result = await controller.PutAccount("acct-visa", new LedgerAccountMutationDto
+        {
+            Name = "Visa",
+            Bucket = "Essentials",
+            Kind = LedgerAccountKind.CreditCard,
+            StatementDay = ToJsonElement("fifteenth"),
+        });
+
+        Assert.IsType<BadRequestObjectResult>(result.Result);
+    }
+
+    [Fact]
+    public async Task Reconcile_ParsesObfuscatedExpectedRewardsCommittedAndRejectsConflict()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.LedgerAccounts.Add(new LedgerAccount
+        {
+            Id = "acct-rewards",
+            Name = "RYT Reward",
+            Bucket = "Rewards",
+            Kind = LedgerAccountKind.Bank,
+            UserId = TestHelpers.DefaultUserId,
+        });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "tx-rewards-init",
+            UserId = TestHelpers.DefaultUserId,
+            Date = DateTime.UtcNow,
+            PostedAt = DateTime.UtcNow,
+            Description = "Opening",
+            Category = "Adjustment",
+            LedgerCategory = "Rewards",
+            Amount = 1052.43m,
+            AccountId = "acct-rewards",
+        });
+        context.SavingsGoals.Add(new SavingsGoal
+        {
+            UserId = TestHelpers.DefaultUserId,
+            Name = "Treat goal",
+            FundingBucket = "Rewards",
+            TargetDate = DateTime.UtcNow.AddMonths(1),
+            TargetAmount = 500m,
+            EarmarkedAmount = 487.25m,
+        });
+        await context.SaveChangesAsync();
+        var controller = CreateController(context);
+
+        var conflict = await controller.Reconcile(new LedgerAccountReconcileDto
+        {
+            OperationId = "op-rewards-conflict",
+            Bucket = "Rewards",
+            ExpectedBucketTotal = ToJsonElement(ObfuscationHelper.Obfuscate(1052.43m)),
+            ExpectedRewardsCommitted = ToJsonElement(ObfuscationHelper.Obfuscate(487.25m)),
+            Targets =
+            [
+                new LedgerAccountReconcileTargetDto
+                {
+                    Id = "acct-rewards",
+                    Name = "RYT Reward",
+                    Kind = LedgerAccountKind.Bank,
+                    ExpectedCurrent = ToJsonElement(ObfuscationHelper.Obfuscate(1052.43m)),
+                    Target = ToJsonElement(ObfuscationHelper.Obfuscate(400m)),
+                },
+            ],
+        });
+        Assert.IsType<ConflictObjectResult>(conflict);
+
+        var ok = await controller.Reconcile(new LedgerAccountReconcileDto
+        {
+            OperationId = "op-rewards-ok",
+            Bucket = "Rewards",
+            ExpectedBucketTotal = ToJsonElement(ObfuscationHelper.Obfuscate(1052.43m)),
+            ExpectedRewardsCommitted = ToJsonElement(ObfuscationHelper.Obfuscate(487.25m)),
+            Targets =
+            [
+                new LedgerAccountReconcileTargetDto
+                {
+                    Id = "acct-rewards",
+                    Name = "RYT Reward",
+                    Kind = LedgerAccountKind.Bank,
+                    ExpectedCurrent = ToJsonElement(ObfuscationHelper.Obfuscate(1052.43m)),
+                    Target = ToJsonElement(ObfuscationHelper.Obfuscate(787.25m)),
+                },
+            ],
+        });
+        Assert.IsType<OkObjectResult>(ok);
+    }
 }

@@ -280,6 +280,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<Services.AI.Tools.IAiTool, Services.AI.Tools.GetCategoryLimitsTool>();
         services.AddScoped<Services.AI.Tools.IAiTool, Services.AI.Tools.GetBudgetPlanTool>();
         services.AddScoped<Services.AI.Tools.IAiTool, Services.AI.Tools.ForecastLedgerBalanceTool>();
+        services.AddScoped<Services.AI.Tools.IAiTool, Services.AI.Tools.ForecastCashFlowTool>();
         services.AddScoped<Services.AI.Tools.IAiTool, Services.AI.Tools.AnalyzeTransactionsTool>();
         services.AddScoped<Services.AI.AiRecurringBillStatusService>();
         services.AddScoped<Services.AI.Agent.AiToolContextFactory>();

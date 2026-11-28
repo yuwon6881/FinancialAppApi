@@ -54,6 +54,22 @@ public static class AiToolSchema
         ["description"] = $"{description} Format yyyy-MM-dd."
     };
 
+    public static JsonObject ObjectArray(
+        string description,
+        IEnumerable<(string Name, JsonObject Schema)> properties,
+        string[] required,
+        int maxItems)
+    {
+        var items = Object(properties, required);
+        return new JsonObject
+        {
+            ["type"] = "array",
+            ["description"] = description,
+            ["items"] = items,
+            ["maxItems"] = maxItems
+        };
+    }
+
     public static JsonObject StringArray(string description, int maxItems) => new()
     {
         ["type"] = "array",

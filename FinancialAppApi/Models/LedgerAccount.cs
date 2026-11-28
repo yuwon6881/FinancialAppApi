@@ -33,6 +33,10 @@ public sealed class LedgerAccount : IUserOwnedEntity
     // nothing adds it to a balance; it only bounds what the card can still pay out.
     public decimal? CreditLimit { get; set; }
 
+    // The day of the month a card's statement closes (1-31; a later day than a month has closes on
+    // its last day). Unknown stays null: without it there is no statement balance to offer.
+    public int? StatementDay { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
@@ -58,6 +62,8 @@ public static class LedgerAccountKind
     public static readonly string[] CreditCardBuckets = ["Essentials", "Rewards"];
 
     public const decimal MaxCreditLimit = 9999999999.99m;
+
+    public const int MaxStatementDay = 31;
 
     public static bool IsCreditCard(string? value) =>
         string.Equals(value, CreditCard, StringComparison.OrdinalIgnoreCase);

@@ -71,6 +71,8 @@ public class DatabaseInvariantTests
         Assert.Equal("\"Kind\" IN ('Bank', 'EWallet', 'Cash', 'Card', 'CreditCard', 'Other')", kindConstraint.Sql);
         var limitConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_creditlimit");
         Assert.Equal("\"CreditLimit\" IS NULL OR (\"Kind\" = 'CreditCard' AND \"CreditLimit\" > 0)", limitConstraint.Sql);
+        var statementDayConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_statementday");
+        Assert.Equal("\"StatementDay\" IS NULL OR (\"Kind\" = 'CreditCard' AND \"StatementDay\" BETWEEN 1 AND 31)", statementDayConstraint.Sql);
         var cardBucketConstraint = Assert.Single(entity.GetCheckConstraints(), constraint => constraint.Name == "ck_ledgeraccounts_creditcard_bucket");
         Assert.Equal("\"Kind\" <> 'CreditCard' OR \"Bucket\" IN ('Essentials', 'Rewards')", cardBucketConstraint.Sql);
 

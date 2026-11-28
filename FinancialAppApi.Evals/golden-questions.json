@@ -57,6 +57,7 @@
 
   { "id": "forecast-growth", "domain": "forecast", "question": "how long until my Growth reaches 50000?", "expectTools": ["forecast_ledger_balance"] },
   { "id": "forecast-stability", "domain": "forecast", "question": "when will my emergency savings hit 15k?", "expectTools": ["forecast_ledger_balance"] },
+  { "id": "forecast-cash-flow", "domain": "forecast", "question": "will I run short on Essentials in the next two months if I spend 800 on a trip on the 15th?", "expectTools": ["forecast_cash_flow"] },
 
   { "id": "analyze-duplicates", "domain": "analysis", "question": "do I have any duplicate charges recently?", "expectTools": ["analyze_transactions"], "mustMention": ["Shopee"] },
   { "id": "analyze-unusual", "domain": "analysis", "question": "anything unusual in my spending lately?", "expectTools": ["analyze_transactions"] },

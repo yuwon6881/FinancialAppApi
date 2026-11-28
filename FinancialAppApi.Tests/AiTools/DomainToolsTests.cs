@@ -226,7 +226,7 @@ public class DomainToolsTests
 
         Assert.Equal(
             [
-                "analyze_transactions", "compare_cycles", "forecast_ledger_balance", "get_accounts", "get_budget_plan",
+                "analyze_transactions", "compare_cycles", "forecast_cash_flow", "forecast_ledger_balance", "get_accounts", "get_budget_plan",
                 "get_category_limits", "get_cycle_summary", "get_goals_and_rewards", "get_investments", "get_loans",
                 "get_purchase_pattern", "get_recurring", "get_spending_breakdown", "search_transactions"
             ],

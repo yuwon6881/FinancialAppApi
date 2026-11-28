@@ -94,6 +94,17 @@ public sealed class AiToolArgs
             : throw new AiToolArgumentException($"{name} accepts at most {maxItems} entries.");
     }
 
+    // Each entry is read with the same bounded accessors as the top-level arguments.
+    public IReadOnlyList<AiToolArgs> OptionalObjectArray(string name, int maxItems)
+    {
+        if (!TryGet(name, out var value)) return [];
+        if (value.ValueKind != JsonValueKind.Array) throw Invalid(name, "an array of objects");
+        if (value.GetArrayLength() > maxItems) throw new AiToolArgumentException($"{name} accepts at most {maxItems} entries.");
+        return value.EnumerateArray()
+            .Select(item => item.ValueKind == JsonValueKind.Object ? new AiToolArgs(item.Clone()) : throw Invalid(name, "an array of objects"))
+            .ToList();
+    }
+
     // Canonical text used to recognise a repeated identical call within one turn.
     public string CanonicalJson() => JsonSerializer.Serialize(_root);
 

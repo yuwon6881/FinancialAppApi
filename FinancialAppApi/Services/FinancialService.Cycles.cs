@@ -132,6 +132,7 @@ public partial class FinancialService
 
     private static List<ActiveRecurringItem> BuildActiveRecurringList(
         List<RecurringPaymentOccurrence> occurrences,
+        IReadOnlySet<string> activePaymentIds,
         IReadOnlyCollection<Transaction>? transactions = null)
     {
         var nonDiscardedTxs = transactions?
@@ -164,6 +165,7 @@ public partial class FinancialService
                 occurrence.Status == RecurringOccurrenceStatus.Discarded,
                 occurrence.Status,
                 occurrence.PaidDate?.ToString("yyyy-MM-dd"),
+                activePaymentIds.Contains(occurrence.RecurringPaymentId),
                 scheduledAmount: scheduled.HasValue ? ObfuscationHelper.Obfuscate(scheduled.Value) : null,
                 paidAmount: ObfuscationHelper.Obfuscate(paid),
                 remainingAmount: remaining.HasValue ? ObfuscationHelper.Obfuscate(remaining.Value) : null);

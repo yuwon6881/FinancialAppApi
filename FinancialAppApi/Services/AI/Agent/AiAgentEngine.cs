@@ -114,7 +114,7 @@ public sealed class AiAgentEngine
                     output = execution.Output;
                     succeeded = execution.Succeeded;
                     anyApproximate |= execution.Approximate || execution.Truncated;
-                    if (call.Name is "compare_cycles" or "get_spending_breakdown" or "analyze_transactions" or "forecast_ledger_balance")
+                    if (call.Name is "compare_cycles" or "get_spending_breakdown" or "analyze_transactions" or "forecast_ledger_balance" or "forecast_cash_flow")
                         analysisCalls++;
                 }
                 trace.Add(new AiToolTrace(call.Name, call.ArgumentsJson, succeeded));

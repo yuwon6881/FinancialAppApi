@@ -54,6 +54,13 @@ public sealed partial class LedgerAccountService
             .GroupBy(target => target.Id!, StringComparer.Ordinal)
             .Any(group => group.Count() > 1))
             return new(LedgerAccountMutationStatus.Invalid, "An account cannot appear more than once.");
+        if (request.ExpectedRewardsCommitted.HasValue)
+        {
+            if (!bucket.Equals(SavingsGoalFundingBucket.Rewards, StringComparison.OrdinalIgnoreCase))
+                return new(LedgerAccountMutationStatus.Invalid, "Rewards commitment expectations apply only to the Rewards bucket.");
+            if (request.ExpectedRewardsCommitted.Value < 0m)
+                return new(LedgerAccountMutationStatus.Invalid, "Committed Rewards amount cannot be negative.");
+        }
 
         await using var poolLease = await _sharedPoolMutationLock.AcquireAsync(cancellationToken);
         var strategy = _context.Database.CreateExecutionStrategy();
@@ -178,6 +185,7 @@ public sealed partial class LedgerAccountService
                         if (target.HasCreditLimit && target.CreditLimit is not null)
                             return await InvalidAsync(databaseTransaction, "Only a credit card can have a credit limit.");
                         account.CreditLimit = null;
+                        account.StatementDay = null;
                     }
                     else
                     {
@@ -196,6 +204,23 @@ public sealed partial class LedgerAccountService
                     account => balances.GetValueOrDefault(account.Id));
                 foreach (var target in resolvedTargets.Where(target => !balances.ContainsKey(target.Id!)))
                     working[target.Id!] = 0m;
+
+                if (request.ExpectedRewardsCommitted.HasValue)
+                {
+                    var actualCommitted = await new SavingsGoals.SavingsGoalService(
+                            _context,
+                            _cycleBalanceService,
+                            _clock,
+                            sharedPoolMutationLock: _sharedPoolMutationLock)
+                        .GetCommittedTotalAsync(SavingsGoalFundingBucket.Rewards, cancellationToken);
+                    if (!NearlyEqual(actualCommitted, request.ExpectedRewardsCommitted.Value))
+                        return await ConflictAsync(databaseTransaction, "The amount reserved in Rewards changed while this editor was open.");
+
+                    var nextBucketTotal = RoundMoney(working.Keys.Sum(id =>
+                        resolvedTargets.FirstOrDefault(target => target.Id == id)?.Target ?? working[id]));
+                    if (actualCommitted - nextBucketTotal >= 0.005m)
+                        return await ConflictAsync(databaseTransaction, "Rewards cannot go below what is committed to goals and bills.");
+                }
 
                 var createdTransactions = new List<LedgerAccountReconcileTransaction>();
                 var adjustmentIndex = 0;

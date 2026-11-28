@@ -52,6 +52,7 @@ public class BootstrapController : ControllerBase
     private readonly InvestmentPortfolioService _investmentPortfolioService;
     private readonly DocumentVaultService _documentVaultService;
     private readonly DocumentRetentionService _documentRetentionService;
+    private readonly Services.Accounts.LedgerAccountService? _accountService;
 
     public BootstrapController(
         FinancialService financialService,
@@ -64,7 +65,8 @@ public class BootstrapController : ControllerBase
         LoanService loanService,
         InvestmentPortfolioService investmentPortfolioService,
         DocumentVaultService documentVaultService,
-        DocumentRetentionService documentRetentionService)
+        DocumentRetentionService documentRetentionService,
+        Services.Accounts.LedgerAccountService? accountService = null)
     {
         _savingsGoalService = savingsGoalService;
         _loanService = loanService;
@@ -77,6 +79,7 @@ public class BootstrapController : ControllerBase
         _investmentPortfolioService = investmentPortfolioService;
         _documentVaultService = documentVaultService;
         _documentRetentionService = documentRetentionService;
+        _accountService = accountService;
     }
 
     // GET: api/bootstrap?month=Jul&year=2026
@@ -146,6 +149,7 @@ public class BootstrapController : ControllerBase
         var walletBalance = await _financialService.GetWalletBalanceAsync(snapshot, cancellationToken);
         var accounts = snapshot.LedgerAccounts;
         var accountBalances = snapshot.LedgerAccountBalances.Current;
+        var cardStatements = await GetCardStatementsAsync(accounts, cancellationToken);
 
         return Ok(new
         {
@@ -161,7 +165,7 @@ public class BootstrapController : ControllerBase
             loans = loanDtos,
             autocomplete,
             walletBalance,
-            accounts = accounts.Select(account => LedgerAccountsController.MapToDto(account, accountBalances)).ToList(),
+            accounts = accounts.Select(account => LedgerAccountsController.MapToDto(account, accountBalances, cardStatements)).ToList(),
         });
     }
 
@@ -225,10 +229,12 @@ public class BootstrapController : ControllerBase
             var transactions = await BuildCycleTransactionsAsync(coreSnapshot, cancellationToken);
             response.Transactions = transactions.Select(TransactionsController.MapToDto).ToList();
             response.WalletBalance = ToWireJson(await _financialService.GetWalletBalanceAsync(coreSnapshot, cancellationToken));
+            var cardStatements = await GetCardStatementsAsync(coreSnapshot.LedgerAccounts, cancellationToken);
             response.Accounts = coreSnapshot.LedgerAccounts
                 .Select(account => LedgerAccountsController.MapToDto(
                     account,
-                    coreSnapshot.LedgerAccountBalances.Current))
+                    coreSnapshot.LedgerAccountBalances.Current,
+                    cardStatements))
                 .ToList();
             response.Autocomplete = await _transactionQueryService.GetAutocompleteSuggestionsAsync(cancellationToken);
         }
@@ -312,6 +318,11 @@ public class BootstrapController : ControllerBase
             snapshot.Cycle.CycleDay,
             statusMap).Items;
     }
+
+    private async Task<IReadOnlyDictionary<string, Services.Accounts.CardStatement>?> GetCardStatementsAsync(
+        IReadOnlyList<LedgerAccount> accounts,
+        CancellationToken cancellationToken) =>
+        _accountService is null ? null : await _accountService.GetCardStatementsAsync(accounts, cancellationToken);
 
     // Mirrors FinancialController's validation so a bad period is rejected identically here.
     private static bool IsValidPeriod(string? month, int? year)

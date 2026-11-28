@@ -48,6 +48,126 @@ public sealed class LedgerAccountReconciliationTests
         Assert.Single(context.LedgerAccounts);
     }
 
+    [Theory]
+    [InlineData(60, 80)]
+    [InlineData(70, 60)]
+    public async Task RewardsFreeBalanceCorrectionRejectsStaleOrUncoveredCommitments(
+        int expectedRewardsCommitted, int target)
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        context.LedgerAccounts.Add(new LedgerAccount { Id = "rewards", Name = "Rewards bank", Bucket = "Rewards", Kind = LedgerAccountKind.Bank });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "rewards-opening", Description = "Opening balance", Date = DateTime.UtcNow,
+            Amount = 100m, Category = "Adjustment", LedgerCategory = "Rewards", AccountId = "rewards"
+        });
+        context.SavingsGoals.Add(new SavingsGoal
+        {
+            Name = "Car service", FundingBucket = "Rewards", TargetDate = DateTime.UtcNow.AddMonths(1),
+            TargetAmount = 100m, EarmarkedAmount = 70m,
+        });
+        await context.SaveChangesAsync();
+
+        var result = await Service(context).ReconcileAsync(new(
+            "free-rewards", "Rewards", 100m,
+            [new("rewards", "Rewards bank", LedgerAccountKind.Bank, false, 100m, target)],
+            ExpectedRewardsCommitted: expectedRewardsCommitted));
+
+        Assert.Equal(LedgerAccountMutationStatus.Conflict, result.Status);
+        Assert.Single(context.Transactions);
+        Assert.Equal(70m, context.SavingsGoals.Single().EarmarkedAmount);
+    }
+
+    [Fact]
+    public async Task RewardsFreeBalanceCorrectionSucceedsWhenCommittedMatchesGoalsAndPendingBills()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        context.LedgerAccounts.AddRange(
+            new LedgerAccount { Id = "rewards-main", Name = "Rewards bank", Bucket = "Rewards", Kind = LedgerAccountKind.Bank },
+            new LedgerAccount { Id = "rewards-cash", Name = "Rewards cash", Bucket = "Rewards", Kind = LedgerAccountKind.Cash });
+        context.Transactions.AddRange(
+            new Transaction
+            {
+                Id = "rewards-opening-1", Description = "Opening balance", Date = DateTime.UtcNow,
+                Amount = 1052.43m, Category = "Adjustment", LedgerCategory = "Rewards", AccountId = "rewards-main"
+            },
+            new Transaction
+            {
+                Id = "rewards-opening-2", Description = "Opening cash", Date = DateTime.UtcNow,
+                Amount = 100m, Category = "Adjustment", LedgerCategory = "Rewards", AccountId = "rewards-cash"
+            });
+        context.SavingsGoals.Add(new SavingsGoal
+        {
+            Name = "Car service", FundingBucket = "Rewards", TargetDate = DateTime.UtcNow.AddMonths(1),
+            TargetAmount = 500m, EarmarkedAmount = 400m,
+        });
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "rec-rewards-1",
+            Name = "Spotify",
+            Amount = 87.25m,
+            Category = "Subscriptions",
+            LedgerCategory = "Rewards",
+            AccountId = "rewards-main",
+            Frequency = "Monthly",
+            StartDate = today.ToString("yyyy-MM-dd"),
+            NextDueDate = today.ToString("yyyy-MM-dd"),
+            Active = true,
+        });
+        await context.SaveChangesAsync();
+
+        // Committed = 400 + 87.25 = 487.25. Setting free-to-spend to 300 gives bucket total 787.25 (687.25 + 100).
+        var result = await Service(context).ReconcileAsync(new(
+            "free-rewards-ok", "Rewards", 1152.43m,
+            [
+                new("rewards-main", "Rewards bank", LedgerAccountKind.Bank, false, 1052.43m, 687.25m),
+                new("rewards-cash", "Rewards cash", LedgerAccountKind.Cash, false, 100m, 100m),
+            ],
+            ExpectedRewardsCommitted: 487.25m));
+
+        Assert.Equal(LedgerAccountMutationStatus.Success, result.Status);
+        var adjustment = Assert.Single(result.Transactions!);
+        Assert.Equal("rewards-main", adjustment.AccountId);
+        Assert.Equal(-365.18m, adjustment.Amount);
+        Assert.Equal(400m, context.SavingsGoals.Single().EarmarkedAmount);
+    }
+
+    [Fact]
+    public async Task RewardsFreeBalanceCorrectionRejectsStalePendingRewardsBillExpectation()
+    {
+        await using var context = TestHelpers.NewInMemoryContext();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        context.LedgerAccounts.Add(new LedgerAccount { Id = "rewards", Name = "Rewards bank", Bucket = "Rewards", Kind = LedgerAccountKind.Bank });
+        context.Transactions.Add(new Transaction
+        {
+            Id = "rewards-opening", Description = "Opening balance", Date = DateTime.UtcNow,
+            Amount = 500m, Category = "Adjustment", LedgerCategory = "Rewards", AccountId = "rewards"
+        });
+        context.RecurringPayments.Add(new RecurringPayment
+        {
+            Id = "rec-rewards-stale",
+            Name = "Treat club",
+            Amount = 50m,
+            Category = "Subscriptions",
+            LedgerCategory = "Rewards",
+            AccountId = "rewards",
+            Frequency = "Monthly",
+            StartDate = today.ToString("yyyy-MM-dd"),
+            NextDueDate = today.ToString("yyyy-MM-dd"),
+            Active = true,
+        });
+        await context.SaveChangesAsync();
+
+        var result = await Service(context).ReconcileAsync(new(
+            "free-rewards-bill-stale", "Rewards", 500m,
+            [new("rewards", "Rewards bank", LedgerAccountKind.Bank, false, 500m, 450m)],
+            ExpectedRewardsCommitted: 0m));
+
+        Assert.Equal(LedgerAccountMutationStatus.Conflict, result.Status);
+        Assert.Single(context.Transactions);
+    }
+
     [Fact]
     public async Task ReconcileAsync_ReturnsConflict409_WhenBucketTotalChangedUnderneathPreview()
     {

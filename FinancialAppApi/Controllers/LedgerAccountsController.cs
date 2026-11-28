@@ -3,6 +3,7 @@ using System.Text.Json;
 using FinancialAppApi.Database;
 using FinancialAppApi.Filters;
 using FinancialAppApi.Models;
+using FinancialAppApi.Services;
 using FinancialAppApi.Services.Accounts;
 using Microsoft.AspNetCore.Mvc;
 using FinancialAppApi.Contracts;
@@ -27,7 +28,8 @@ public sealed class LedgerAccountsController : ControllerBase
     {
         var accounts = await _accountService.GetAccountsAsync(HttpContext.RequestAborted);
         var balances = await _accountService.GetBalancesAsync(accounts, HttpContext.RequestAborted);
-        return Ok(accounts.Select(account => MapToDto(account, balances)).ToList());
+        var statements = await _accountService.GetCardStatementsAsync(accounts, HttpContext.RequestAborted);
+        return Ok(accounts.Select(account => MapToDto(account, balances, statements)).ToList());
     }
 
     [HttpPost]
@@ -43,10 +45,11 @@ public sealed class LedgerAccountsController : ControllerBase
 
         var accounts = await _accountService.GetAccountsAsync(HttpContext.RequestAborted);
         var balances = await _accountService.GetBalancesAsync(accounts, HttpContext.RequestAborted);
+        var statements = await _accountService.GetCardStatementsAsync(accounts, HttpContext.RequestAborted);
         return CreatedAtAction(
             nameof(GetAccounts),
             null,
-            MapToDto(result.Account!, balances));
+            MapToDto(result.Account!, balances, statements));
     }
 
     [HttpPut("{id}")]
@@ -63,7 +66,8 @@ public sealed class LedgerAccountsController : ControllerBase
 
         var accounts = await _accountService.GetAccountsAsync(HttpContext.RequestAborted);
         var balances = await _accountService.GetBalancesAsync(accounts, HttpContext.RequestAborted);
-        return Ok(MapToDto(result.Account!, balances));
+        var statements = await _accountService.GetCardStatementsAsync(accounts, HttpContext.RequestAborted);
+        return Ok(MapToDto(result.Account!, balances, statements));
     }
 
     [HttpDelete("{id}")]
@@ -82,7 +86,8 @@ public sealed class LedgerAccountsController : ControllerBase
         if (dto.Targets is null)
             return BadRequest(new { message = "At least one account target is required." });
 
-        if (ReadAmount(dto.ExpectedBucketTotal) is not { } bucketTotal)
+        if (ReadAmount(dto.ExpectedBucketTotal) is not { } bucketTotal
+            || !TryReadOptionalAmount(dto.ExpectedRewardsCommitted, out var expectedRewardsCommitted, out _))
             return BadRequest(new { message = "Enter a valid current bucket balance." });
         var targets = new List<LedgerAccountReconcileTarget>(dto.Targets.Count);
         foreach (var target in dto.Targets)
@@ -96,7 +101,12 @@ public sealed class LedgerAccountsController : ControllerBase
                 target.ExpectedName, target.ExpectedKind, target.ExpectedIsArchived, creditLimit, hasCreditLimit));
         }
         var request = new LedgerAccountReconcileRequest(
-            dto.OperationId ?? string.Empty, dto.Bucket ?? string.Empty, bucketTotal, targets, dto.Description);
+            dto.OperationId ?? string.Empty,
+            dto.Bucket ?? string.Empty,
+            bucketTotal,
+            targets,
+            dto.Description,
+            expectedRewardsCommitted.HasValue ? MoneyRounding.RoundMoney(expectedRewardsCommitted.Value) : null);
         var result = await _accountService.ReconcileAsync(request, HttpContext.RequestAborted);
         if (result.Status == LedgerAccountMutationStatus.Conflict)
             return Conflict(new { message = result.Message });
@@ -105,9 +115,10 @@ public sealed class LedgerAccountsController : ControllerBase
 
         var accounts = result.Accounts ?? [];
         var balances = await _accountService.GetBalancesAsync(accounts, HttpContext.RequestAborted);
+        var statements = await _accountService.GetCardStatementsAsync(accounts, HttpContext.RequestAborted);
         return Ok(new
         {
-            accounts = accounts.Select(account => MapToDto(account, balances)).ToList(),
+            accounts = accounts.Select(account => MapToDto(account, balances, statements)).ToList(),
             transactions = (result.Transactions ?? []).Select(transaction => new
             {
                 id = transaction.Id,
@@ -127,26 +138,40 @@ public sealed class LedgerAccountsController : ControllerBase
 
     internal static LedgerAccountDto MapToDto(
         LedgerAccount account,
-        IReadOnlyDictionary<string, decimal> balances) => new()
+        IReadOnlyDictionary<string, decimal> balances,
+        IReadOnlyDictionary<string, CardStatement>? statements = null)
     {
-        Id = account.Id,
-        Name = account.Name,
-        Bucket = account.Bucket,
-        Kind = account.Kind,
-        IsArchived = account.IsArchived,
-        Remaining = ObfuscationHelper.Obfuscate(
-            balances.TryGetValue(account.Id, out var balance) ? balance : 0m),
-        CreditLimit = account.CreditLimit is { } limit ? ObfuscationHelper.Obfuscate(limit) : null,
-        CreatedAt = account.CreatedAt.ToUniversalTime().ToString("O"),
-        UpdatedAt = account.UpdatedAt.ToUniversalTime().ToString("O"),
-    };
+        var statement = account.StatementDay is not null && statements is not null
+            && statements.TryGetValue(account.Id, out var found)
+                ? found
+                : null;
+        return new()
+        {
+            Id = account.Id,
+            Name = account.Name,
+            Bucket = account.Bucket,
+            Kind = account.Kind,
+            IsArchived = account.IsArchived,
+            Remaining = ObfuscationHelper.Obfuscate(
+                balances.TryGetValue(account.Id, out var balance) ? balance : 0m),
+            CreditLimit = account.CreditLimit is { } limit ? ObfuscationHelper.Obfuscate(limit) : null,
+            StatementDay = account.StatementDay,
+            // Both or neither: a client cannot work out what is due from only one of them.
+            StatementDate = statement?.StatementDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            ChargedSinceStatement = statement is null ? null : ObfuscationHelper.Obfuscate(statement.ChargedSince),
+            CreatedAt = account.CreatedAt.ToUniversalTime().ToString("O"),
+            UpdatedAt = account.UpdatedAt.ToUniversalTime().ToString("O"),
+        };
+    }
 
     private static LedgerAccountMutation? ToMutation(LedgerAccountMutationDto dto, string? id = null)
     {
         var opening = dto.OpeningAmount.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
             ? 0m
             : ReadAmount(dto.OpeningAmount);
-        if (opening is null || !TryReadOptionalAmount(dto.CreditLimit, out var creditLimit, out var hasCreditLimit))
+        if (opening is null
+            || !TryReadOptionalAmount(dto.CreditLimit, out var creditLimit, out var hasCreditLimit)
+            || !TryReadOptionalDay(dto.StatementDay, out var statementDay, out var hasStatementDay))
             return null;
         return new(
             id ?? dto.Id ?? string.Empty,
@@ -156,7 +181,17 @@ public sealed class LedgerAccountsController : ControllerBase
             dto.IsArchived,
             opening.Value,
             creditLimit,
-            hasCreditLimit);
+            hasCreditLimit,
+            statementDay,
+            hasStatementDay);
+    }
+
+    // Absent keeps the stored day, null clears it, and a whole number sets it.
+    private static bool TryReadOptionalDay(JsonElement value, out int? day, out bool isPresent)
+    {
+        isPresent = value.ValueKind != JsonValueKind.Undefined;
+        day = value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) ? number : null;
+        return value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null || day.HasValue;
     }
 
     // Absent keeps the stored value, null clears it, and a number sets it.
@@ -189,6 +224,7 @@ public sealed class LedgerAccountMutationDto
     public bool IsArchived { get; set; }
     public JsonElement OpeningAmount { get; set; }
     public JsonElement CreditLimit { get; set; }
+    public JsonElement StatementDay { get; set; }
 }
 
 public sealed class LedgerAccountDto
@@ -200,6 +236,11 @@ public sealed class LedgerAccountDto
     public bool IsArchived { get; set; }
     public string Remaining { get; set; } = string.Empty;
     public string? CreditLimit { get; set; }
+    public int? StatementDay { get; set; }
+    /// <summary>The latest statement close (yyyy-MM-dd), when the card records a statement day.</summary>
+    public string? StatementDate { get; set; }
+    /// <summary>Charged to the card after that close; what is owed less this is still due on the statement.</summary>
+    public string? ChargedSinceStatement { get; set; }
     public string CreatedAt { get; set; } = string.Empty;
     public string UpdatedAt { get; set; } = string.Empty;
 }
@@ -209,6 +250,7 @@ public sealed class LedgerAccountReconcileDto
     public string? OperationId { get; set; }
     public string? Bucket { get; set; }
     public JsonElement ExpectedBucketTotal { get; set; }
+    public JsonElement ExpectedRewardsCommitted { get; set; }
     public string? Description { get; set; }
     public List<LedgerAccountReconcileTargetDto>? Targets { get; set; }
 }

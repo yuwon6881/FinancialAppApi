@@ -50,6 +50,7 @@ public partial class FinancialService
         bool isDiscarded,
         string status,
         string? paidDate,
+        bool isActiveSchedule,
         string? scheduledAmount = null,
         string? paidAmount = null,
         string? remainingAmount = null);
@@ -369,7 +370,21 @@ public partial class FinancialService
             ? selectedRemStability / setting.TargetStabilityFund
             : 0m;
 
-        var activeRecurringList = BuildActiveRecurringList(snapshot.RecurringOccurrences, snapshot.CycleRelevantTransactions);
+        decimal? stabilityTargetAtCycleClose = null;
+        if (activeRangeEndOnly < _financialClock.Today)
+        {
+            var nextCycleStartUtc = _financialClock.UtcAtStartOfDay(activeRangeEndOnly.AddDays(1));
+            stabilityTargetAtCycleClose = await _context.StabilityPlanRevisions
+                .AsNoTracking()
+                .Where(revision => revision.EffectiveAt < nextCycleStartUtc)
+                .OrderByDescending(revision => revision.EffectiveAt)
+                .ThenByDescending(revision => revision.Id)
+                .Select(revision => (decimal?)revision.TargetStabilityFund)
+                .FirstOrDefaultAsync(cancellationToken) ?? setting.TargetStabilityFund;
+        }
+
+        var activePaymentIds = allRecurring.Select(payment => payment.Id).ToHashSet(StringComparer.Ordinal);
+        var activeRecurringList = BuildActiveRecurringList(snapshot.RecurringOccurrences, activePaymentIds, snapshot.CycleRelevantTransactions);
         var selectedMonthRecurring = activeRecurringList
             .OrderBy(item => item.status == "Pending" || item.status == "PartiallyPaid" ? 0 : item.status == "Paid" ? 1 : 2)
             .ThenBy(item => item.dueDate)
@@ -377,7 +392,7 @@ public partial class FinancialService
 
         var pendingRecurring = BuildPendingRecurringItems(
             snapshot.RecurringOccurrences,
-            allRecurring.Select(payment => payment.Id).ToHashSet(StringComparer.Ordinal),
+            activePaymentIds,
             snapshot.CycleRelevantTransactions);
 
         // Hoisted out of BuildTodayPlanInsights so the recovery block can hold its proposed draw
@@ -482,7 +497,10 @@ public partial class FinancialService
                 monthlyExpenses = ObfuscationHelper.Obfuscate(monthlyOutflow),
                 activeRecurringTotal = ObfuscationHelper.Obfuscate(activeRecurringTotal),
                 growthPercentAchieved = (double)Math.Max(0, growthPercentAchieved),
-                stabilityPercentReached = (double)Math.Max(0, stabilityPercentReached)
+                stabilityPercentReached = (double)Math.Max(0, stabilityPercentReached),
+                stabilityTargetAtCycleClose = stabilityTargetAtCycleClose.HasValue
+                    ? ObfuscationHelper.Obfuscate(stabilityTargetAtCycleClose.Value)
+                    : null
             },
             activeRecurringPayments = selectedMonthRecurring,
             trendPoints = ObfuscateTrendPoints(trendPoints),

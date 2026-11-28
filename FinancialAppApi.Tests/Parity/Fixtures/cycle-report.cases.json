@@ -1,0 +1,21 @@
+{
+  "domain": "cycle-report",
+  "version": 1,
+  "cases": [
+    {
+      "id": "financial-cycle-with-future-expense",
+      "why": "Daily spend and no-spend days measure the elapsed part of the cycle. The expense entry count covers the whole selected cycle.",
+      "input": {
+        "start": "2026-07-28",
+        "end": "2026-08-27",
+        "today": "2026-08-06",
+        "expenses": [
+          { "date": "2026-07-28", "amount": 10 },
+          { "date": "2026-07-28", "amount": 35 },
+          { "date": "2026-08-27", "amount": 50 }
+        ]
+      },
+      "expected": { "averageDailySpend": 4.5, "noSpendDays": 9, "expenseEntryCount": 3 }
+    }
+  ]
+}

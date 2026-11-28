@@ -65,9 +65,12 @@ public static class ReportMetricsCalculator
                 : today.DayNumber - startDate.DayNumber + 1;
 
         var maxObservedDate = today < endDate.AddDays(-1) ? today : endDate.AddDays(-1);
-        var distinctExpenseDays = expenses
+        var elapsedExpenses = expenses
+            .Where(transaction => TransactionDate.ToDateOnly(transaction.Date) >= startDate &&
+                TransactionDate.ToDateOnly(transaction.Date) <= maxObservedDate)
+            .ToList();
+        var distinctExpenseDays = elapsedExpenses
             .Select(transaction => TransactionDate.ToDateOnly(transaction.Date))
-            .Where(date => date >= startDate && date <= maxObservedDate)
             .Distinct()
             .Count();
 
@@ -76,10 +79,8 @@ public static class ReportMetricsCalculator
             largest is null ? null : Math.Abs(largest.Amount),
             biggestDay?.Date.ToString("yyyy-MM-dd"),
             biggestDay?.Total,
-            // Divided by days elapsed, not by the whole cycle: mid-cycle the full-length divisor
-            // is not a spend rate at all, and it disagreed with the cycle calendar's own
-            // "Avg /day" and with the elapsed-day pacing used for category limits.
-            expenses.Count > 0 && elapsedDays > 0 ? totalSpend / elapsedDays : null,
+            // Future-dated ledger entries belong to the cycle totals but do not affect elapsed pacing.
+            distinctExpenseDays > 0 ? Math.Abs(elapsedExpenses.Sum(transaction => transaction.Amount)) / elapsedDays : null,
             cycleLengthDays,
             expenses.Count > 0 ? firstHalf : null,
             expenses.Count > 0 ? secondHalf : null,
